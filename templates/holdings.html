@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Holdings</h2>
+{% if ib_warning %}<p class="warning">{{ ib_warning }}</p>{% endif %}
 <table>
   <thead>
     <tr>

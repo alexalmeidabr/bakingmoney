@@ -76,18 +76,18 @@ def get_scenarios_map(db: Session, ticker: str, horizon_years: int = 5):
 
 
 @app.on_event("startup")
-def startup():
+async def startup():
     Base.metadata.create_all(bind=engine)
-    ib_service.safe_connect()
+    await ib_service.connect_async()
 
 
 @app.get("/api/health")
-def api_health():
+async def api_health():
     return ib_service.health()
 
 
 @app.get("/api/holdings")
-def api_holdings(db: Session = Depends(get_db)):
+async def api_holdings(db: Session = Depends(get_db)):
     positions = ib_service.get_positions()
     payload = []
     for pos in positions:
@@ -110,7 +110,7 @@ def api_holdings(db: Session = Depends(get_db)):
 
 
 @app.get("/api/watchlist")
-def api_watchlist(db: Session = Depends(get_db)):
+async def api_watchlist(db: Session = Depends(get_db)):
     items = db.query(WatchlistItem).order_by(WatchlistItem.ticker.asc()).all()
     payload = []
     for item in items:
@@ -205,18 +205,20 @@ def home_redirect():
 
 
 @app.get("/holdings", response_class=HTMLResponse)
-def holdings_page(request: Request, db: Session = Depends(get_db)):
-    rows = api_holdings(db)
+async def holdings_page(request: Request, db: Session = Depends(get_db)):
+    rows = await api_holdings(db)
     return templates.TemplateResponse(
-        "holdings.html", {"request": request, "rows": rows, "page_title": "Holdings"}
+        "holdings.html",
+        {"request": request, "rows": rows, "page_title": "Holdings", "ib_warning": ib_service.last_error},
     )
 
 
 @app.get("/watchlist", response_class=HTMLResponse)
-def watchlist_page(request: Request, db: Session = Depends(get_db)):
-    rows = api_watchlist(db)
+async def watchlist_page(request: Request, db: Session = Depends(get_db)):
+    rows = await api_watchlist(db)
     return templates.TemplateResponse(
-        "watchlist.html", {"request": request, "rows": rows, "page_title": "Watchlist"}
+        "watchlist.html",
+        {"request": request, "rows": rows, "page_title": "Watchlist", "ib_warning": ib_service.last_error},
     )
 
 

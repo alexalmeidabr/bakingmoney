@@ -1,5 +1,8 @@
+import logging
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -15,41 +18,49 @@ class IBService:
         self.port = port
         self.client_id = client_id
         self.ib = None
+        self.last_error: str | None = None
 
-    def connect(self):
+    async def connect_async(self):
         if self.ib is None:
             from ib_insync import IB
 
             self.ib = IB()
-        if not self.ib.isConnected():
-            self.ib.connect(self.host, self.port, clientId=self.client_id)
 
-    def safe_connect(self):
+        if self.ib.isConnected():
+            self.last_error = None
+            return True
+
         try:
-            self.connect()
-        except Exception:
+            await self.ib.connectAsync(self.host, self.port, clientId=self.client_id)
+            self.last_error = None
+            return self.ib.isConnected()
+        except Exception as exc:
+            self.last_error = f"IB connection failed: {exc}"
+            logger.warning(self.last_error)
             return False
-        return self.ib.isConnected()
+
+    def is_connected(self):
+        return self.ib is not None and self.ib.isConnected()
 
     def health(self) -> dict[str, Any]:
-        connected = self.safe_connect()
         return {
-            "connected": connected,
+            "connected": self.is_connected(),
             "host": self.host,
             "port": self.port,
             "client_id": self.client_id,
+            "warning": self.last_error,
         }
 
     def get_positions(self):
-        if not self.safe_connect():
+        if not self.is_connected():
             return []
         return self.ib.positions()
 
     def get_last_price(self, ticker: str) -> PriceResult:
         from ib_insync import Stock
 
-        if not self.safe_connect():
-            return PriceResult(price=None, currency=None, warning="IB not connected")
+        if not self.is_connected():
+            return PriceResult(price=None, currency=None, warning=self.last_error or "IB not connected")
 
         contract = Stock(ticker, "SMART", "USD")
         try:

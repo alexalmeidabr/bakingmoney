@@ -1,18 +1,5 @@
-import asyncio
 from dataclasses import dataclass
 from typing import Any
-
-
-if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-from ib_insync import IB, Stock
 
 
 @dataclass
@@ -27,9 +14,13 @@ class IBService:
         self.host = host
         self.port = port
         self.client_id = client_id
-        self.ib = IB()
+        self.ib = None
 
     def connect(self):
+        if self.ib is None:
+            from ib_insync import IB
+
+            self.ib = IB()
         if not self.ib.isConnected():
             self.ib.connect(self.host, self.port, clientId=self.client_id)
 
@@ -55,6 +46,8 @@ class IBService:
         return self.ib.positions()
 
     def get_last_price(self, ticker: str) -> PriceResult:
+        from ib_insync import Stock
+
         if not self.safe_connect():
             return PriceResult(price=None, currency=None, warning="IB not connected")
 

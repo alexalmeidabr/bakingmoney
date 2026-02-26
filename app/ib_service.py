@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -18,13 +19,20 @@ class IBService:
         self.port = port
         self.client_id = client_id
         self.ib = None
+        self.Stock = None
         self.last_error: str | None = None
 
     async def connect_async(self):
-        if self.ib is None:
-            from ib_insync import IB
+        loop = asyncio.get_running_loop()
+        asyncio.set_event_loop(loop)
+        if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+        from ib_insync import IB, Stock
+
+        if self.ib is None:
             self.ib = IB()
+            self.Stock = Stock
 
         if self.ib.isConnected():
             self.last_error = None
@@ -57,12 +65,10 @@ class IBService:
         return self.ib.positions()
 
     def get_last_price(self, ticker: str) -> PriceResult:
-        from ib_insync import Stock
-
-        if not self.is_connected():
+        if not self.is_connected() or self.Stock is None:
             return PriceResult(price=None, currency=None, warning=self.last_error or "IB not connected")
 
-        contract = Stock(ticker, "SMART", "USD")
+        contract = self.Stock(ticker, "SMART", "USD")
         try:
             self.ib.qualifyContracts(contract)
             tick = self.ib.reqMktData(contract, "", False, False)

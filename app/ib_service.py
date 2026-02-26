@@ -65,6 +65,13 @@ class IBService:
             return []
         return self.ib.positions()
 
+    @staticmethod
+    def _extract_price(tick) -> float | None:
+        for value in (tick.marketPrice(), tick.last, tick.close, tick.midpoint(), tick.bid, tick.ask):
+            if value is not None and value == value and value > 0:
+                return float(value)
+        return None
+
     def get_last_price(self, ticker: str) -> PriceResult:
         if not self.is_connected() or self.Stock is None:
             return PriceResult(price=None, currency=None, warning=self.last_error or "IB not connected")
@@ -72,12 +79,23 @@ class IBService:
         contract = self.Stock(ticker, "SMART", "USD")
         try:
             self.ib.qualifyContracts(contract)
-            tick = self.ib.reqMktData(contract, "", False, False)
-            self.ib.sleep(1.0)
-            price = tick.marketPrice() or tick.last or tick.close
             currency = getattr(contract, "currency", "USD")
-            if price is None or price != price:
-                return PriceResult(price=None, currency=currency, warning="Market data unavailable")
-            return PriceResult(price=float(price), currency=currency, warning=None)
-        except Exception:
+
+            # Try live market data first.
+            self.ib.reqMarketDataType(1)
+            live_tick = self.ib.reqTickers(contract)[0]
+            live_price = self._extract_price(live_tick)
+            if live_price is not None:
+                return PriceResult(price=live_price, currency=currency, warning=None)
+
+            # Fallback to delayed market data where live subscriptions are unavailable.
+            self.ib.reqMarketDataType(3)
+            delayed_tick = self.ib.reqTickers(contract)[0]
+            delayed_price = self._extract_price(delayed_tick)
+            if delayed_price is not None:
+                return PriceResult(price=delayed_price, currency=currency, warning="Using delayed market data")
+
+            return PriceResult(price=None, currency=currency, warning="Market data unavailable (no live/delayed entitlement)")
+        except Exception as exc:
+            logger.warning("Price fetch failed for %s: %s", ticker, exc)
             return PriceResult(price=None, currency="USD", warning="Market data unavailable")

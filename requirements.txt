@@ -1,1 +1,7 @@
+fastapi
+uvicorn
+ib_insync
 python-dotenv
+SQLAlchemy
+Jinja2
+pytest

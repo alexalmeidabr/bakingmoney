@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Holdings</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Ticker</th><th>Name</th><th>Currency</th><th>Last Price</th><th>Key Ratios</th>
+      <th>Bear</th><th>Base</th><th>Bull</th><th>Extreme</th>
+      <th>Assumptions & Risks</th><th>What to look for</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr class="expandable" onclick="toggleDetails('h-{{ loop.index }}')">
+      <td>{{ row.ticker }}</td>
+      <td>{{ row.name }}</td>
+      <td>{{ row.currency or '-' }}</td>
+      <td>{{ row.last_price if row.last_price is not none else '-' }}{% if row.warning %}<div class="warning">{{ row.warning }}</div>{% endif %}</td>
+      <td>
+        P/E: {{ row.ratios.pe or '-' }}<br/>
+        P/S: {{ row.ratios.ps or '-' }}<br/>
+        EV/EBITDA: {{ row.ratios.ev_ebitda or '-' }}<br/>
+        Div Yield: {{ row.ratios.dividend_yield or '-' }}
+      </td>
+      {% for st in ['bear', 'base', 'bull', 'extreme'] %}
+      {% set sc = row.scenarios.get(st, {}) %}
+      <td class="scenario">
+        Price: {{ sc.get('price_low', '-') }} - {{ sc.get('price_high', '-') }}<br/>
+        CAGR: {{ sc.get('cagr_low', '-') }} - {{ sc.get('cagr_high', '-') }}<br/>
+        Prob: {{ sc.get('probability', '-') }}
+      </td>
+      {% endfor %}
+      <td class="muted">Click row to expand</td>
+      <td class="muted">Click row to expand</td>
+    </tr>
+    <tr id="h-{{ loop.index }}" class="details">
+      <td colspan="11">
+        {% for st in ['bear', 'base', 'bull', 'extreme'] %}
+          {% set sc = row.scenarios.get(st, {}) %}
+          <strong>{{ st|upper }}</strong><br/>
+          <em>Assumptions & Risks:</em> {{ sc.get('assumptions_risks', '-') }}<br/>
+          <em>What to look for:</em> {{ sc.get('what_to_look_for', '-') }}<br/><br/>
+        {% endfor %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

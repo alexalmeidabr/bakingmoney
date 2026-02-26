@@ -1,3 +1,4 @@
+import app  # noqa: F401
 import os
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request

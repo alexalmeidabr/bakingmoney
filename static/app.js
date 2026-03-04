@@ -105,7 +105,7 @@ async function loadWatchlist() {
       const row = document.createElement('tr');
       row.innerHTML = `
         <td>${item.symbol ?? ''}</td>
-        <td>${formatNumber(item.price)}</td>
+        <td title="${item.warning || ''}">${formatNumber(item.price)}</td>
         <td>${formatNumber(item.pe)}</td>
         <td>${formatNumber(item.forwardPe)}</td>
         <td><button class="remove-btn" data-symbol="${item.symbol}">Remove</button></td>
@@ -120,7 +120,8 @@ async function loadWatchlist() {
       });
     });
 
-    watchlistStatusEl.textContent = `Loaded ${items.length} watchlist item(s).`;
+    const missingPriceWarnings = items.filter((item) => item.warning).length;
+    watchlistStatusEl.textContent = `Loaded ${items.length} watchlist item(s).${missingPriceWarnings ? ` ${missingPriceWarnings} missing price(s): delayed/unavailable.` : ''}`;
     watchlistTable.classList.remove('hidden');
   } catch (error) {
     watchlistStatusEl.textContent = `Error: ${error.message}`;

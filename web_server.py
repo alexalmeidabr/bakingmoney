@@ -19,9 +19,11 @@ DB_PATH = BASE_DIR / "bakingmoney.db"
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "7496"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "7"))
-IB_MARKET_DATA_TYPE = int(os.getenv("IB_MARKET_DATA_TYPE", "3"))
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
 CACHE_TTL_HOURS = 24
+NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
+
+_ib = None
 
 
 def ensure_event_loop():
@@ -29,6 +31,21 @@ def ensure_event_loop():
         asyncio.get_event_loop()
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+def get_ib_connection():
+    """Create/reuse one IB connection; set delayed market data once per connection."""
+    global _ib
+    ensure_event_loop()
+    from ib_insync import IB
+
+    if _ib and _ib.isConnected():
+        return _ib
+
+    _ib = IB()
+    _ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=5)
+    _ib.reqMarketDataType(3)  # delayed
+    return _ib
 
 
 def utc_now_iso():
@@ -56,7 +73,7 @@ def first_valid_number(*values):
     return None
 
 
-def extract_price_fields(ticker):
+def extract_price(ticker):
     if not ticker:
         return None
 
@@ -105,32 +122,36 @@ def init_db():
 
 def fetch_ib_prices(symbols):
     prices = {symbol: None for symbol in symbols}
+    warnings = {symbol: None for symbol in symbols}
     if not symbols:
-        return prices
+        return prices, warnings
 
-    ensure_event_loop()
-    from ib_insync import IB, Stock
+    from ib_insync import Stock
 
-    ib = IB()
     try:
-        ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=5)
-        ib.reqMarketDataType(IB_MARKET_DATA_TYPE)
-
+        ib = get_ib_connection()
         contracts = [Stock(symbol, "SMART", "USD") for symbol in symbols]
         qualified = ib.qualifyContracts(*contracts) if contracts else []
 
         if qualified:
             tickers = ib.reqTickers(*qualified)
+            ib.sleep(1.0)
             for ticker in tickers:
                 contract = getattr(ticker, "contract", None)
                 symbol = getattr(contract, "symbol", None)
-                if symbol:
-                    prices[symbol.upper()] = extract_price_fields(ticker)
-    finally:
-        if ib.isConnected():
-            ib.disconnect()
+                if not symbol:
+                    continue
 
-    return prices
+                symbol = symbol.upper()
+                price = extract_price(ticker)
+                prices[symbol] = price
+                if price is None:
+                    warnings[symbol] = NO_PRICE_WARNING
+    except Exception:
+        for symbol in symbols:
+            warnings[symbol] = NO_PRICE_WARNING
+
+    return prices, warnings
 
 
 def get_fundamentals_for_symbol(conn, symbol):
@@ -261,11 +282,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def handle_positions_api(self):
         try:
-            ensure_event_loop()
-            from ib_insync import IB
-
-            ib = IB()
-            ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=5)
+            ib = get_ib_connection()
             positions = ib.positions()
 
             data = []
@@ -289,9 +306,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 },
                 status=500,
             )
-        finally:
-            if "ib" in locals() and ib.isConnected():
-                ib.disconnect()
 
     def handle_watchlist_get(self):
         conn = get_db_connection()
@@ -301,7 +315,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             ).fetchall()
             symbols = [row["symbol"] for row in rows]
 
-            prices = fetch_ib_prices(symbols)
+            prices, quote_warnings = fetch_ib_prices(symbols)
             items = []
             for symbol in symbols:
                 fundamentals = get_fundamentals_for_symbol(conn, symbol)
@@ -311,6 +325,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         "price": prices.get(symbol),
                         "pe": fundamentals["pe"],
                         "forwardPe": fundamentals["forwardPe"],
+                        "warning": quote_warnings.get(symbol),
                     }
                 )
 
@@ -365,13 +380,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def handle_watchlist_import_positions(self):
         try:
-            ensure_event_loop()
-            from ib_insync import IB
-
-            ib = IB()
-            ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=5)
+            ib = get_ib_connection()
             positions = ib.positions()
-            symbols = sorted({normalize_symbol(p.contract.symbol) for p in positions if p.contract})
+            symbols = sorted(
+                {normalize_symbol(p.contract.symbol) for p in positions if p.contract}
+            )
             symbols = [s for s in symbols if s]
 
             conn = get_db_connection()
@@ -398,9 +411,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 },
                 status=500,
             )
-        finally:
-            if "ib" in locals() and ib.isConnected():
-                ib.disconnect()
 
 
 if __name__ == "__main__":

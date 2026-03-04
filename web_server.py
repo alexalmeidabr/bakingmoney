@@ -6,9 +6,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse
-
-import requests
+from urllib.parse import urlencode, urlparse
+from urllib.request import urlopen
 
 
 HOST = "127.0.0.1"
@@ -155,17 +154,16 @@ def get_fundamentals_for_symbol(conn, symbol):
     pe = None
     forward_pe = None
     try:
-        response = requests.get(
-            "https://finnhub.io/api/v1/stock/metric",
-            params={
+        query = urlencode(
+            {
                 "symbol": symbol,
                 "metric": "all",
                 "token": FINNHUB_API_KEY,
-            },
-            timeout=8,
+            }
         )
-        if response.ok:
-            payload = response.json()
+        url = f"https://finnhub.io/api/v1/stock/metric?{query}"
+        with urlopen(url, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
             metrics = payload.get("metric", {})
             pe = safe_number(metrics.get("peBasicExclExtraTTM"))
             forward_pe = safe_number(metrics.get("peNormalizedAnnual"))

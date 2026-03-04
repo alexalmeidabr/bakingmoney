@@ -21,4 +21,4 @@ This repo now includes a simple local web UI for viewing IBKR positions using a 
 ### Endpoints
 
 - `GET /` -> serves the single-page UI.
-- `GET /api/positions` -> returns IBKR positions as JSON (`symbol`, `quantity`, `avgCost`, and `currency` when available).
+- `GET /api/positions` -> returns IBKR positions as JSON (`symbol`, `position`, `price`, `avgCost`, `changePercent`, `marketValue`, `unrealizedPnL`, `dailyPnL`, and `currency` when available).

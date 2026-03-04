@@ -21,11 +21,25 @@ menuItems.forEach((item) => {
   });
 });
 
-function formatNumber(value) {
-  if (typeof value !== 'number') {
-    return value;
+function formatNumber(value, digits = 2) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '—';
   }
-  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return value.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+function formatPercent(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '—';
+  }
+  return `${value.toFixed(2)}%`;
+}
+
+function pnlClass(value) {
+  if (typeof value !== 'number' || Number.isNaN(value) || value === 0) {
+    return '';
+  }
+  return value > 0 ? 'pnl-positive' : 'pnl-negative';
 }
 
 async function loadPositions() {
@@ -53,8 +67,13 @@ async function loadPositions() {
       const row = document.createElement('tr');
       row.innerHTML = `
         <td>${position.symbol ?? ''}</td>
-        <td>${formatNumber(position.quantity ?? '')}</td>
-        <td>${formatNumber(position.avgCost ?? '')}</td>
+        <td>${formatNumber(position.position, 4)}</td>
+        <td>${formatNumber(position.price)}</td>
+        <td>${formatNumber(position.avgCost)}</td>
+        <td class="${pnlClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>
+        <td>${formatNumber(position.marketValue)}</td>
+        <td class="${pnlClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td>
+        <td class="${pnlClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td>
         <td>${position.currency ?? ''}</td>
       `;
       tableBody.appendChild(row);

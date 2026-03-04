@@ -100,8 +100,14 @@ body {
   color: #b42318;
 }
 
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
 table {
   width: 100%;
+  min-width: 980px;
   border-collapse: collapse;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -114,6 +120,7 @@ td {
   padding: 12px;
   text-align: left;
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
 }
 
 thead {
@@ -126,6 +133,16 @@ tbody tr:nth-child(even) {
 
 tbody tr:hover {
   background: #eef4ff;
+}
+
+.pnl-positive {
+  color: #067647;
+  font-weight: 600;
+}
+
+.pnl-negative {
+  color: #b42318;
+  font-weight: 600;
 }
 
 .hidden {

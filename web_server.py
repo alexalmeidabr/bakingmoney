@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -14,6 +15,18 @@ STATIC_DIR = BASE_DIR / "static"
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "7496"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "7"))
+
+
+def ensure_event_loop():
+    """Ensure a current event loop exists (needed by ib_insync on newer Python)."""
+    if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
 
 class BakingMoneyHandler(SimpleHTTPRequestHandler):
@@ -46,6 +59,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def handle_positions_api(self):
         try:
+            ensure_event_loop()
             from ib_insync import IB
 
             ib = IB()

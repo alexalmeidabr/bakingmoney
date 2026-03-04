@@ -19,14 +19,10 @@ IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "7"))
 
 def ensure_event_loop():
     """Ensure a current event loop exists (needed by ib_insync on newer Python)."""
-    if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
     try:
         asyncio.get_event_loop()
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
 
 class BakingMoneyHandler(SimpleHTTPRequestHandler):

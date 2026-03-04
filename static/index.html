@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BakingMoney Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h1>BakingMoney</h1>
+        <nav>
+          <button class="menu-item active" data-view="positions">My Positions</button>
+          <button class="menu-item" data-view="watchlist">Watchlist</button>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <section id="positions" class="view active">
+          <div class="view-header">
+            <h2>My Positions</h2>
+            <button id="refresh-btn">Refresh</button>
+          </div>
+
+          <p id="status" class="status">Loading positions…</p>
+
+          <table id="positions-table" class="hidden">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Quantity</th>
+                <th>Avg Cost</th>
+                <th>Currency</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </section>
+
+        <section id="watchlist" class="view">
+          <h2>Watchlist</h2>
+          <p class="coming-soon">Coming soon</p>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

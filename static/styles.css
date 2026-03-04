@@ -1,0 +1,138 @@
+:root {
+  --bg: #f5f7fb;
+  --surface: #ffffff;
+  --sidebar: #101828;
+  --sidebar-text: #e4e7ec;
+  --accent: #2e90fa;
+  --text: #101828;
+  --muted: #667085;
+  --border: #eaecf0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: var(--sidebar);
+  color: var(--sidebar-text);
+  padding: 24px;
+}
+
+.sidebar h1 {
+  margin: 0 0 28px;
+  font-size: 1.4rem;
+}
+
+.menu-item {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-text);
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.menu-item.active {
+  background: rgba(46, 144, 250, 0.2);
+  color: #ffffff;
+}
+
+.content {
+  padding: 28px;
+}
+
+.view {
+  display: none;
+}
+
+.view.active {
+  display: block;
+}
+
+.view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+#refresh-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+#refresh-btn:hover {
+  border-color: var(--accent);
+}
+
+.status {
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+.status.error {
+  color: #b42318;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+th,
+td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+thead {
+  background: #f9fafb;
+}
+
+tbody tr:nth-child(even) {
+  background: #fcfcfd;
+}
+
+tbody tr:hover {
+  background: #eef4ff;
+}
+
+.hidden {
+  display: none;
+}
+
+.coming-soon {
+  color: var(--muted);
+  font-size: 1.1rem;
+}

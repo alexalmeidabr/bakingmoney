@@ -2,28 +2,45 @@ import asyncio
 import json
 import math
 import os
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse
+
+import requests
 
 
 HOST = "127.0.0.1"
 PORT = 8080
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
+DB_PATH = BASE_DIR / "bakingmoney.db"
 
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "7496"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "7"))
 IB_MARKET_DATA_TYPE = int(os.getenv("IB_MARKET_DATA_TYPE", "3"))
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
+CACHE_TTL_HOURS = 24
 
 
 def ensure_event_loop():
-    """Ensure a current event loop exists (needed by ib_insync on newer Python)."""
     try:
         asyncio.get_event_loop()
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def parse_iso(dt_str):
+    try:
+        return datetime.fromisoformat(dt_str)
+    except Exception:
+        return None
 
 
 def safe_number(value):
@@ -42,24 +59,141 @@ def first_valid_number(*values):
 
 def extract_price_fields(ticker):
     if not ticker:
-        return None, None
+        return None
 
     market_price = None
     if hasattr(ticker, "marketPrice"):
         market_price = safe_number(ticker.marketPrice())
 
-    price = first_valid_number(
+    return first_valid_number(
         market_price,
         getattr(ticker, "last", None),
         getattr(ticker, "close", None),
     )
 
-    close = first_valid_number(
-        getattr(ticker, "close", None),
-        getattr(ticker, "prevClose", None),
-    )
 
-    return price, close
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS watchlist (
+              symbol TEXT PRIMARY KEY,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fundamentals_cache (
+              symbol TEXT PRIMARY KEY,
+              pe REAL,
+              forward_pe REAL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_ib_prices(symbols):
+    prices = {symbol: None for symbol in symbols}
+    if not symbols:
+        return prices
+
+    ensure_event_loop()
+    from ib_insync import IB, Stock
+
+    ib = IB()
+    try:
+        ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=5)
+        ib.reqMarketDataType(IB_MARKET_DATA_TYPE)
+
+        contracts = [Stock(symbol, "SMART", "USD") for symbol in symbols]
+        qualified = ib.qualifyContracts(*contracts) if contracts else []
+
+        if qualified:
+            tickers = ib.reqTickers(*qualified)
+            for ticker in tickers:
+                contract = getattr(ticker, "contract", None)
+                symbol = getattr(contract, "symbol", None)
+                if symbol:
+                    prices[symbol.upper()] = extract_price_fields(ticker)
+    finally:
+        if ib.isConnected():
+            ib.disconnect()
+
+    return prices
+
+
+def get_fundamentals_for_symbol(conn, symbol):
+    cache_row = conn.execute(
+        "SELECT symbol, pe, forward_pe, updated_at FROM fundamentals_cache WHERE symbol = ?",
+        (symbol,),
+    ).fetchone()
+
+    now = datetime.now(timezone.utc)
+    if cache_row:
+        updated_at = parse_iso(cache_row["updated_at"])
+        if updated_at and now - updated_at <= timedelta(hours=CACHE_TTL_HOURS):
+            return {"pe": cache_row["pe"], "forwardPe": cache_row["forward_pe"]}
+
+    if not FINNHUB_API_KEY:
+        return {
+            "pe": cache_row["pe"] if cache_row else None,
+            "forwardPe": cache_row["forward_pe"] if cache_row else None,
+        }
+
+    pe = None
+    forward_pe = None
+    try:
+        response = requests.get(
+            "https://finnhub.io/api/v1/stock/metric",
+            params={
+                "symbol": symbol,
+                "metric": "all",
+                "token": FINNHUB_API_KEY,
+            },
+            timeout=8,
+        )
+        if response.ok:
+            payload = response.json()
+            metrics = payload.get("metric", {})
+            pe = safe_number(metrics.get("peBasicExclExtraTTM"))
+            forward_pe = safe_number(metrics.get("peNormalizedAnnual"))
+    except Exception:
+        pe = None
+        forward_pe = None
+
+    conn.execute(
+        """
+        INSERT INTO fundamentals_cache (symbol, pe, forward_pe, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(symbol) DO UPDATE SET
+          pe = excluded.pe,
+          forward_pe = excluded.forward_pe,
+          updated_at = excluded.updated_at
+        """,
+        (symbol, pe, forward_pe, utc_now_iso()),
+    )
+    conn.commit()
+
+    return {"pe": pe, "forwardPe": forward_pe}
+
+
+def normalize_symbol(value):
+    if not isinstance(value, str):
+        return None
+    symbol = value.strip().upper()
+    return symbol if symbol else None
 
 
 class BakingMoneyHandler(SimpleHTTPRequestHandler):
@@ -74,11 +208,28 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return None
+
+        if length <= 0:
+            return None
+
+        body = self.rfile.read(length)
+        try:
+            return json.loads(body.decode("utf-8"))
+        except Exception:
+            return None
+
     def do_GET(self):
         path = urlparse(self.path).path
 
         if path == "/api/positions":
             return self.handle_positions_api()
+        if path == "/api/watchlist":
+            return self.handle_watchlist_get()
 
         if path == "/":
             self.path = "/static/index.html"
@@ -90,6 +241,26 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
         return super().do_GET()
 
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/api/watchlist":
+            return self.handle_watchlist_post()
+        if path == "/api/watchlist/import-positions":
+            return self.handle_watchlist_import_positions()
+
+        self.send_error(404, "Not Found")
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        prefix = "/api/watchlist/"
+        if path.startswith(prefix):
+            symbol = normalize_symbol(path[len(prefix) :])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_watchlist_delete(symbol)
+
+        self.send_error(404, "Not Found")
+
     def handle_positions_api(self):
         try:
             ensure_event_loop()
@@ -97,55 +268,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
             ib = IB()
             ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=5)
-            ib.reqMarketDataType(IB_MARKET_DATA_TYPE)
-
             positions = ib.positions()
-            contracts = [p.contract for p in positions]
-            tickers_by_conid = {}
-
-            if contracts:
-                ib.qualifyContracts(*contracts)
-                tickers = ib.reqTickers(*contracts)
-                tickers_by_conid = {
-                    t.contract.conId: t for t in tickers if getattr(t, "contract", None)
-                }
 
             data = []
             for p in positions:
                 contract = p.contract
-                ticker = tickers_by_conid.get(contract.conId)
-
-                qty = safe_number(p.position)
-                avg_cost = safe_number(p.avgCost)
-                price, close = extract_price_fields(ticker)
-
-                market_value = qty * price if qty is not None and price is not None else None
-                unrealized_pnl = (
-                    (price - avg_cost) * qty
-                    if qty is not None and price is not None and avg_cost is not None
-                    else None
-                )
-                daily_pnl = (
-                    (price - close) * qty
-                    if qty is not None and price is not None and close is not None
-                    else None
-                )
-                change_percent = (
-                    ((price - close) / close) * 100
-                    if price is not None and close not in (None, 0)
-                    else None
-                )
-
                 data.append(
                     {
                         "symbol": contract.symbol,
-                        "position": qty,
-                        "avgCost": avg_cost,
-                        "price": price,
-                        "changePercent": change_percent,
-                        "marketValue": market_value,
-                        "unrealizedPnL": unrealized_pnl,
-                        "dailyPnL": daily_pnl,
+                        "position": safe_number(p.position),
+                        "avgCost": safe_number(p.avgCost),
                         "currency": getattr(contract, "currency", None),
                     }
                 )
@@ -163,11 +295,121 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if "ib" in locals() and ib.isConnected():
                 ib.disconnect()
 
+    def handle_watchlist_get(self):
+        conn = get_db_connection()
+        try:
+            rows = conn.execute(
+                "SELECT symbol FROM watchlist ORDER BY symbol ASC"
+            ).fetchall()
+            symbols = [row["symbol"] for row in rows]
+
+            prices = fetch_ib_prices(symbols)
+            items = []
+            for symbol in symbols:
+                fundamentals = get_fundamentals_for_symbol(conn, symbol)
+                items.append(
+                    {
+                        "symbol": symbol,
+                        "price": prices.get(symbol),
+                        "pe": fundamentals["pe"],
+                        "forwardPe": fundamentals["forwardPe"],
+                    }
+                )
+
+            self._send_json({"watchlist": items})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to fetch watchlist.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_watchlist_post(self):
+        payload = self._read_json_body() or {}
+        symbol = normalize_symbol(payload.get("symbol"))
+        if not symbol:
+            return self._send_json({"error": "Symbol is required."}, status=400)
+
+        conn = get_db_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO watchlist (symbol, created_at)
+                VALUES (?, ?)
+                ON CONFLICT(symbol) DO NOTHING
+                """,
+                (symbol, utc_now_iso()),
+            )
+            conn.commit()
+            self._send_json({"ok": True, "symbol": symbol}, status=201)
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to add symbol.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_watchlist_delete(self, symbol):
+        conn = get_db_connection()
+        try:
+            conn.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol,))
+            conn.commit()
+            self._send_json({"ok": True, "symbol": symbol})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to remove symbol.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_watchlist_import_positions(self):
+        try:
+            ensure_event_loop()
+            from ib_insync import IB
+
+            ib = IB()
+            ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=5)
+            positions = ib.positions()
+            symbols = sorted({normalize_symbol(p.contract.symbol) for p in positions if p.contract})
+            symbols = [s for s in symbols if s]
+
+            conn = get_db_connection()
+            try:
+                for symbol in symbols:
+                    conn.execute(
+                        """
+                        INSERT INTO watchlist (symbol, created_at)
+                        VALUES (?, ?)
+                        ON CONFLICT(symbol) DO NOTHING
+                        """,
+                        (symbol, utc_now_iso()),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            self._send_json({"ok": True, "addedSymbols": symbols})
+        except Exception as exc:
+            self._send_json(
+                {
+                    "error": "Unable to import symbols from positions.",
+                    "details": str(exc),
+                },
+                status=500,
+            )
+        finally:
+            if "ib" in locals() and ib.isConnected():
+                ib.disconnect()
+
 
 if __name__ == "__main__":
     if not STATIC_DIR.exists():
         raise FileNotFoundError("Missing static directory. Expected: ./static")
 
+    init_db()
     server = HTTPServer((HOST, PORT), BakingMoneyHandler)
     print(f"Server running at http://{HOST}:{PORT}")
     server.serve_forever()

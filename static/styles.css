@@ -77,9 +77,23 @@ body {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
-#refresh-btn {
+.watchlist-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.watchlist-actions input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 160px;
+}
+
+button {
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: 8px;
@@ -87,7 +101,7 @@ body {
   cursor: pointer;
 }
 
-#refresh-btn:hover {
+button:hover {
   border-color: var(--accent);
 }
 
@@ -107,7 +121,7 @@ body {
 
 table {
   width: 100%;
-  min-width: 980px;
+  min-width: 720px;
   border-collapse: collapse;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -135,21 +149,10 @@ tbody tr:hover {
   background: #eef4ff;
 }
 
-.pnl-positive {
-  color: #067647;
-  font-weight: 600;
-}
-
-.pnl-negative {
+.remove-btn {
   color: #b42318;
-  font-weight: 600;
 }
 
 .hidden {
   display: none;
-}
-
-.coming-soon {
-  color: var(--muted);
-  font-size: 1.1rem;
 }

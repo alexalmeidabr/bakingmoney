@@ -31,12 +31,7 @@
                 <tr>
                   <th>Symbol</th>
                   <th>Position</th>
-                  <th>Price</th>
                   <th>Avg Cost</th>
-                  <th>Change %</th>
-                  <th>Market Value</th>
-                  <th>Unrealized P&amp;L</th>
-                  <th>Daily P&amp;L</th>
                   <th>Currency</th>
                 </tr>
               </thead>
@@ -46,8 +41,31 @@
         </section>
 
         <section id="watchlist" class="view">
-          <h2>Watchlist</h2>
-          <p class="coming-soon">Coming soon</p>
+          <div class="view-header">
+            <h2>Watchlist</h2>
+            <div class="watchlist-actions">
+              <input id="watchlist-symbol-input" type="text" placeholder="e.g. MSFT" maxlength="16" />
+              <button id="add-symbol-btn">Add Symbol</button>
+              <button id="add-positions-btn">Add From Positions</button>
+            </div>
+          </div>
+
+          <p id="watchlist-status" class="status">Loading watchlist…</p>
+
+          <div class="table-wrap">
+            <table id="watchlist-table" class="hidden">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Price</th>
+                  <th>P/E</th>
+                  <th>Forward P/E</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </section>
       </main>
     </div>

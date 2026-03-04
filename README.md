@@ -11,6 +11,7 @@ This repo now includes a simple local web UI for viewing IBKR positions using a 
    - `IB_HOST` (default `127.0.0.1`)
    - `IB_PORT` (default `7496`)
    - `IB_CLIENT_ID` (default `7`)
+   - `IB_MARKET_DATA_TYPE` (default `3`, delayed data; use `1` for live)
 3. Run:
    ```bash
    py web_server.py

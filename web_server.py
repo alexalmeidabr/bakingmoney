@@ -15,6 +15,7 @@ STATIC_DIR = BASE_DIR / "static"
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "7496"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "7"))
+IB_MARKET_DATA_TYPE = int(os.getenv("IB_MARKET_DATA_TYPE", "3"))
 
 
 def ensure_event_loop():
@@ -29,6 +30,36 @@ def safe_number(value):
     if isinstance(value, (int, float)) and math.isfinite(value):
         return float(value)
     return None
+
+
+def first_valid_number(*values):
+    for value in values:
+        numeric = safe_number(value)
+        if numeric is not None:
+            return numeric
+    return None
+
+
+def extract_price_fields(ticker):
+    if not ticker:
+        return None, None
+
+    market_price = None
+    if hasattr(ticker, "marketPrice"):
+        market_price = safe_number(ticker.marketPrice())
+
+    price = first_valid_number(
+        market_price,
+        getattr(ticker, "last", None),
+        getattr(ticker, "close", None),
+    )
+
+    close = first_valid_number(
+        getattr(ticker, "close", None),
+        getattr(ticker, "prevClose", None),
+    )
+
+    return price, close
 
 
 class BakingMoneyHandler(SimpleHTTPRequestHandler):
@@ -66,11 +97,14 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
             ib = IB()
             ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=5)
+            ib.reqMarketDataType(IB_MARKET_DATA_TYPE)
+
             positions = ib.positions()
             contracts = [p.contract for p in positions]
             tickers_by_conid = {}
 
             if contracts:
+                ib.qualifyContracts(*contracts)
                 tickers = ib.reqTickers(*contracts)
                 tickers_by_conid = {
                     t.contract.conId: t for t in tickers if getattr(t, "contract", None)
@@ -83,8 +117,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
                 qty = safe_number(p.position)
                 avg_cost = safe_number(p.avgCost)
-                price = safe_number(ticker.marketPrice()) if ticker else None
-                close = safe_number(getattr(ticker, "close", None)) if ticker else None
+                price, close = extract_price_fields(ticker)
 
                 market_value = qty * price if qty is not None and price is not None else None
                 unrealized_pnl = (

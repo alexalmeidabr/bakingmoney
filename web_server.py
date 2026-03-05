@@ -206,8 +206,11 @@ def get_fundamentals_for_symbol(conn, symbol):
             "forwardPe": cache_row["forward_pe"] if cache_row else None,
         }
 
-    pe = None
-    forward_pe = None
+    cached_pe = cache_row["pe"] if cache_row else None
+    cached_forward_pe = cache_row["forward_pe"] if cache_row else None
+
+    pe = cached_pe
+    forward_pe = cached_forward_pe
     try:
         query = urlencode(
             {
@@ -220,11 +223,19 @@ def get_fundamentals_for_symbol(conn, symbol):
         with urlopen(url, timeout=8) as response:
             payload = json.loads(response.read().decode("utf-8"))
             metrics = payload.get("metric", {})
-            pe = safe_number(metrics.get("peBasicExclExtraTTM"))
-            forward_pe = safe_number(metrics.get("peNormalizedAnnual"))
+            pe = first_valid_number(
+                metrics.get("peBasicExclExtraTTM"),
+                metrics.get("peTTM"),
+                metrics.get("peExclExtraAnnual"),
+                cached_pe,
+            )
+            forward_pe = first_valid_number(
+                metrics.get("peNormalizedAnnual"),
+                metrics.get("peBasicExclExtraAnnual"),
+                cached_forward_pe,
+            )
     except Exception:
-        pe = None
-        forward_pe = None
+        return {"pe": cached_pe, "forwardPe": cached_forward_pe}
 
     conn.execute(
         """

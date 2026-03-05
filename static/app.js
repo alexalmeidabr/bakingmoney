@@ -5,6 +5,7 @@ const positionsStatusEl = document.getElementById('status');
 const positionsTable = document.getElementById('positions-table');
 const positionsTableBody = positionsTable.querySelector('tbody');
 const refreshBtn = document.getElementById('refresh-btn');
+const positionSortHeaders = document.querySelectorAll('#positions-table th.sortable');
 
 const watchlistStatusEl = document.getElementById('watchlist-status');
 const watchlistTable = document.getElementById('watchlist-table');
@@ -13,6 +14,9 @@ const watchlistSymbolInput = document.getElementById('watchlist-symbol-input');
 const addSymbolBtn = document.getElementById('add-symbol-btn');
 const addPositionsBtn = document.getElementById('add-positions-btn');
 
+let latestPositions = [];
+let positionSort = { key: 'symbol', direction: 'asc' };
+
 function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return 'N/A';
@@ -20,6 +24,13 @@ function formatNumber(value, digits = 2) {
   return value.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
+function formatCurrencyValue(value, currency, digits = 2) {
+  const formatted = formatNumber(value, digits);
+  if (!currency) {
+    return formatted;
+  }
+  return formatted === 'N/A' ? formatted : `${formatted} ${currency}`;
+}
 
 function formatPercent(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -33,6 +44,53 @@ function valueClass(value) {
     return '';
   }
   return value > 0 ? 'pnl-positive' : 'pnl-negative';
+}
+
+function compareValues(left, right, direction = 'asc') {
+  if (left == null && right == null) return 0;
+  if (left == null) return 1;
+  if (right == null) return -1;
+
+  let result = 0;
+  if (typeof left === 'number' && typeof right === 'number') {
+    result = left - right;
+  } else {
+    result = String(left).localeCompare(String(right));
+  }
+
+  return direction === 'asc' ? result : -result;
+}
+
+function sortPositions(positions) {
+  const { key, direction } = positionSort;
+  return [...positions].sort((a, b) => compareValues(a[key], b[key], direction));
+}
+
+function updateSortHeaderState() {
+  positionSortHeaders.forEach((header) => {
+    const isActive = header.dataset.sortKey === positionSort.key;
+    header.dataset.sortDirection = isActive ? positionSort.direction : '';
+  });
+}
+
+function renderPositions() {
+  const sortedPositions = sortPositions(latestPositions);
+  positionsTableBody.innerHTML = '';
+
+  sortedPositions.forEach((position) => {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${position.symbol ?? ''}</td>
+      <td>${formatNumber(position.position, 4)}</td>
+      <td>${formatCurrencyValue(position.price, position.currency)}</td>
+      <td>${formatNumber(position.avgCost)}</td>
+      <td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>
+      <td>${formatCurrencyValue(position.marketValue, position.currency)}</td>
+      <td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td>
+      <td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td>
+    `;
+    positionsTableBody.appendChild(row);
+  });
 }
 
 function setView(targetView) {
@@ -69,28 +127,16 @@ async function loadPositions() {
     }
 
     const positions = payload.positions || [];
-    positionsTableBody.innerHTML = '';
+    latestPositions = positions;
 
     if (positions.length === 0) {
+      positionsTableBody.innerHTML = '';
       positionsStatusEl.textContent = 'No positions found.';
       return;
     }
 
-    positions.forEach((position) => {
-      const row = document.createElement('tr');
-      row.innerHTML = `
-        <td>${position.symbol ?? ''}</td>
-        <td>${formatNumber(position.position, 4)}</td>
-        <td>${formatNumber(position.price)}</td>
-        <td>${formatNumber(position.avgCost)}</td>
-        <td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>
-        <td>${formatNumber(position.marketValue)}</td>
-        <td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td>
-        <td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td>
-        <td>${position.currency ?? ''}</td>
-      `;
-      positionsTableBody.appendChild(row);
-    });
+    updateSortHeaderState();
+    renderPositions();
 
     positionsStatusEl.textContent = `Loaded ${positions.length} position(s).`;
     positionsTable.classList.remove('hidden');
@@ -125,7 +171,7 @@ async function loadWatchlist() {
       const row = document.createElement('tr');
       row.innerHTML = `
         <td>${item.symbol ?? ''}</td>
-        <td title="${item.warning || ''}">${formatNumber(item.price)}</td>
+        <td title="${item.warning || ''}">${formatCurrencyValue(item.price, 'USD')}</td>
         <td>${formatNumber(item.pe)}</td>
         <td>${formatNumber(item.forwardPe)}</td>
         <td><button class="remove-btn" data-symbol="${item.symbol}">Remove</button></td>
@@ -217,6 +263,22 @@ async function importFromPositions() {
   }
 }
 
+positionSortHeaders.forEach((header) => {
+  header.addEventListener('click', () => {
+    const { sortKey } = header.dataset;
+    if (!sortKey) return;
+
+    if (positionSort.key === sortKey) {
+      positionSort.direction = positionSort.direction === 'asc' ? 'desc' : 'asc';
+    } else {
+      positionSort = { key: sortKey, direction: 'asc' };
+    }
+
+    updateSortHeaderState();
+    renderPositions();
+  });
+});
+
 refreshBtn.addEventListener('click', loadPositions);
 addSymbolBtn.addEventListener('click', addSymbol);
 addPositionsBtn.addEventListener('click', importFromPositions);
@@ -226,4 +288,5 @@ watchlistSymbolInput.addEventListener('keydown', (event) => {
   }
 });
 
+updateSortHeaderState();
 loadPositions();

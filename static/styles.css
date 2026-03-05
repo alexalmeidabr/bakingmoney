@@ -167,3 +167,24 @@ tbody tr:hover {
   color: #b42318;
   font-weight: 600;
 }
+
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.sortable::after {
+  content: ' ↕';
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+th.sortable[data-sort-direction='asc']::after {
+  content: ' ↑';
+  color: var(--accent);
+}
+
+th.sortable[data-sort-direction='desc']::after {
+  content: ' ↓';
+  color: var(--accent);
+}

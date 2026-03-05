@@ -188,6 +188,92 @@ def fetch_ib_prices(symbols):
     return prices, warnings
 
 
+def extract_finnhub_pe_values(data):
+    metric = data.get("metric", {}) if isinstance(data, dict) else {}
+    if not isinstance(metric, dict):
+        metric = {}
+
+    pe_candidate_keys = [
+        key
+        for key in metric.keys()
+        if isinstance(key, str) and "pe" in key.lower()
+    ][:50]
+
+    pe = safe_number(metric.get("peBasicExclExtraTTM"))
+    pe_key_used = "peBasicExclExtraTTM" if pe is not None else None
+
+    if pe is None:
+        for key in metric.keys():
+            if not isinstance(key, str):
+                continue
+            key_lower = key.lower()
+            if "pe" not in key_lower or "peg" in key_lower:
+                continue
+            value = safe_number(metric.get(key))
+            if value is not None:
+                pe = value
+                pe_key_used = key
+                break
+
+    forward_pe = None
+    forward_pe_key_used = None
+    for key in metric.keys():
+        if not isinstance(key, str):
+            continue
+        key_lower = key.lower()
+        if "peg" in key_lower:
+            continue
+        has_pe = "pe" in key_lower
+        forward_match = "forward" in key_lower and has_pe
+        normalized_annual_match = has_pe and (
+            "normalized" in key_lower or "annual" in key_lower
+        )
+        if not (forward_match or normalized_annual_match):
+            continue
+
+        value = safe_number(metric.get(key))
+        if value is not None:
+            forward_pe = value
+            forward_pe_key_used = key
+            break
+
+    return {
+        "hasMetric": bool(metric),
+        "pe": pe,
+        "forwardPe": forward_pe,
+        "peKeyUsed": pe_key_used,
+        "forwardPeKeyUsed": forward_pe_key_used,
+        "peCandidateKeys": pe_candidate_keys,
+    }
+
+
+def fetch_finnhub_metric_snapshot(symbol):
+    if not FINNHUB_API_KEY:
+        return {
+            "httpStatus": None,
+            "hasMetric": False,
+            "pe": None,
+            "forwardPe": None,
+            "peKeyUsed": None,
+            "forwardPeKeyUsed": None,
+            "peCandidateKeys": [],
+        }
+
+    query = urlencode(
+        {
+            "symbol": symbol,
+            "metric": "all",
+            "token": FINNHUB_API_KEY,
+        }
+    )
+    url = f"https://finnhub.io/api/v1/stock/metric?{query}"
+    with urlopen(url, timeout=8) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+        extracted = extract_finnhub_pe_values(payload)
+        extracted["httpStatus"] = getattr(response, "status", None)
+        return extracted
+
+
 def get_fundamentals_for_symbol(conn, symbol):
     cache_row = conn.execute(
         "SELECT symbol, pe, forward_pe, updated_at FROM fundamentals_cache WHERE symbol = ?",
@@ -206,36 +292,15 @@ def get_fundamentals_for_symbol(conn, symbol):
             "forwardPe": cache_row["forward_pe"] if cache_row else None,
         }
 
-    cached_pe = cache_row["pe"] if cache_row else None
-    cached_forward_pe = cache_row["forward_pe"] if cache_row else None
-
-    pe = cached_pe
-    forward_pe = cached_forward_pe
     try:
-        query = urlencode(
-            {
-                "symbol": symbol,
-                "metric": "all",
-                "token": FINNHUB_API_KEY,
-            }
-        )
-        url = f"https://finnhub.io/api/v1/stock/metric?{query}"
-        with urlopen(url, timeout=8) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            metrics = payload.get("metric", {})
-            pe = first_valid_number(
-                metrics.get("peBasicExclExtraTTM"),
-                metrics.get("peTTM"),
-                metrics.get("peExclExtraAnnual"),
-                cached_pe,
-            )
-            forward_pe = first_valid_number(
-                metrics.get("peNormalizedAnnual"),
-                metrics.get("peBasicExclExtraAnnual"),
-                cached_forward_pe,
-            )
+        snapshot = fetch_finnhub_metric_snapshot(symbol)
+        pe = snapshot["pe"]
+        forward_pe = snapshot["forwardPe"]
     except Exception:
-        return {"pe": cached_pe, "forwardPe": cached_forward_pe}
+        return {
+            "pe": cache_row["pe"] if cache_row else None,
+            "forwardPe": cache_row["forward_pe"] if cache_row else None,
+        }
 
     conn.execute(
         """
@@ -288,12 +353,15 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return None
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
 
         if path == "/api/positions":
             return self.handle_positions_api()
         if path == "/api/watchlist":
             return self.handle_watchlist_get()
+        if path == "/api/debug/finnhub":
+            return self.handle_debug_finnhub(parsed_url.query)
 
         if path == "/":
             self.path = "/static/index.html"
@@ -313,6 +381,32 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_watchlist_import_positions()
 
         self.send_error(404, "Not Found")
+
+    def handle_debug_finnhub(self, query_string):
+        from urllib.parse import parse_qs
+
+        params = parse_qs(query_string or "")
+        symbol = normalize_symbol((params.get("symbol") or [""])[0])
+        if not symbol:
+            return self._send_json({"error": "symbol query parameter is required"}, status=400)
+
+        try:
+            snapshot = fetch_finnhub_metric_snapshot(symbol)
+            self._send_json(snapshot)
+        except Exception as exc:
+            self._send_json(
+                {
+                    "httpStatus": None,
+                    "hasMetric": False,
+                    "pe": None,
+                    "forwardPe": None,
+                    "peKeyUsed": None,
+                    "forwardPeKeyUsed": None,
+                    "peCandidateKeys": [],
+                    "error": str(exc),
+                },
+                status=500,
+            )
 
     def do_DELETE(self):
         path = urlparse(self.path).path

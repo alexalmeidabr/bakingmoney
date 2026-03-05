@@ -88,6 +88,16 @@ def extract_price(ticker):
     )
 
 
+
+
+def extract_close(ticker):
+    if not ticker:
+        return None
+    return first_valid_number(
+        getattr(ticker, "close", None),
+        getattr(ticker, "prevClose", None),
+    )
+
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -284,15 +294,55 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         try:
             ib = get_ib_connection()
             positions = ib.positions()
+            contracts = [p.contract for p in positions if p.contract]
+            tickers_by_conid = {}
+
+            if contracts:
+                qualified = ib.qualifyContracts(*contracts)
+                if qualified:
+                    tickers = ib.reqTickers(*qualified)
+                    ib.sleep(1.0)
+                    tickers_by_conid = {
+                        t.contract.conId: t for t in tickers if getattr(t, "contract", None)
+                    }
 
             data = []
             for p in positions:
                 contract = p.contract
+                ticker = tickers_by_conid.get(getattr(contract, "conId", None))
+
+                qty = safe_number(p.position)
+                avg_cost = safe_number(p.avgCost)
+                price = extract_price(ticker)
+                close = extract_close(ticker)
+
+                market_value = qty * price if qty is not None and price is not None else None
+                unrealized_pnl = (
+                    (price - avg_cost) * qty
+                    if qty is not None and price is not None and avg_cost is not None
+                    else None
+                )
+                daily_pnl = (
+                    (price - close) * qty
+                    if qty is not None and price is not None and close is not None
+                    else None
+                )
+                change_percent = (
+                    ((price - close) / close) * 100
+                    if price is not None and close not in (None, 0)
+                    else None
+                )
+
                 data.append(
                     {
                         "symbol": contract.symbol,
-                        "position": safe_number(p.position),
-                        "avgCost": safe_number(p.avgCost),
+                        "position": qty,
+                        "price": price,
+                        "avgCost": avg_cost,
+                        "changePercent": change_percent,
+                        "marketValue": market_value,
+                        "unrealizedPnL": unrealized_pnl,
+                        "dailyPnL": daily_pnl,
                         "currency": getattr(contract, "currency", None),
                     }
                 )

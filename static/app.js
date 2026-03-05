@@ -20,6 +20,21 @@ function formatNumber(value, digits = 2) {
   return value.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
+
+function formatPercent(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'N/A';
+  }
+  return `${value.toFixed(2)}%`;
+}
+
+function valueClass(value) {
+  if (typeof value !== 'number' || Number.isNaN(value) || value === 0) {
+    return '';
+  }
+  return value > 0 ? 'pnl-positive' : 'pnl-negative';
+}
+
 function setView(targetView) {
   menuItems.forEach((item) => {
     item.classList.toggle('active', item.dataset.view === targetView);
@@ -66,7 +81,12 @@ async function loadPositions() {
       row.innerHTML = `
         <td>${position.symbol ?? ''}</td>
         <td>${formatNumber(position.position, 4)}</td>
+        <td>${formatNumber(position.price)}</td>
         <td>${formatNumber(position.avgCost)}</td>
+        <td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>
+        <td>${formatNumber(position.marketValue)}</td>
+        <td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td>
+        <td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td>
         <td>${position.currency ?? ''}</td>
       `;
       positionsTableBody.appendChild(row);

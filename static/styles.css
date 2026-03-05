@@ -156,3 +156,14 @@ tbody tr:hover {
 .hidden {
   display: none;
 }
+
+
+.pnl-positive {
+  color: #067647;
+  font-weight: 600;
+}
+
+.pnl-negative {
+  color: #b42318;
+  font-weight: 600;
+}

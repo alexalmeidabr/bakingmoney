@@ -27,7 +27,7 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
 ### Endpoints
 
 - `GET /` -> serves the single-page UI.
-- `GET /api/positions` -> returns IBKR positions as JSON (`symbol`, `position`, `avgCost`, `currency`).
+- `GET /api/positions` -> returns IBKR positions as JSON (`symbol`, `position`, `price`, `avgCost`, `changePercent`, `marketValue`, `unrealizedPnL`, `dailyPnL`, `currency`).
 - `GET /api/watchlist` -> returns watchlist as JSON (`symbol`, `price`, `pe`, `forwardPe`).
 - `POST /api/watchlist` with body `{"symbol":"MSFT"}` -> adds symbol to watchlist.
 - `DELETE /api/watchlist/{symbol}` -> removes symbol.

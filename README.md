@@ -11,17 +11,25 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
    ```bash
    pip install -r requirements.txt
    ```
-3. (Optional) set environment variables (or copy from `.env.example`):
+3. Create a local `.env` file in the project root (this file is local-only and should not be committed).
+   Example:
+   ```env
+   FINNHUB_API_KEY=your_finnhub_api_key
+   IB_HOST=127.0.0.1
+   IB_PORT=7496
+   IB_CLIENT_ID=7
+   ```
+4. (Optional) override or add environment variables in `.env` (or copy from `.env.example`):
    - `IB_HOST` (default `127.0.0.1`)
    - `IB_PORT` (default `7496`)
    - `IB_CLIENT_ID` (default `7`)
    - `IB_MARKET_DATA_TYPE` (default `3`, delayed data; use `1` for live)
    - `FINNHUB_API_KEY` (required for P/E and Forward P/E)
-4. Run:
+5. Run:
    ```bash
    py web_server.py
    ```
-5. Open:
+6. Open:
    http://127.0.0.1:8080
 
 ### Endpoints
@@ -32,6 +40,7 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
 - `POST /api/watchlist` with body `{"symbol":"MSFT"}` -> adds symbol to watchlist.
 - `DELETE /api/watchlist/{symbol}` -> removes symbol.
 - `POST /api/watchlist/import-positions` -> adds all current position symbols to watchlist.
+- `GET /api/debug/finnhub?symbol=MSFT` -> debug Finnhub snapshot parsing (`httpStatus`, `hasMetric`, `pe`, `forwardPe`, key metadata, API key presence).
 
 ### Database
 

@@ -9,6 +9,10 @@ from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 HOST = "127.0.0.1"
 PORT = 8080
@@ -257,6 +261,8 @@ def fetch_finnhub_metric_snapshot(symbol):
             "peKeyUsed": None,
             "forwardPeKeyUsed": None,
             "peCandidateKeys": [],
+            "apiKeyPresent": bool(FINNHUB_API_KEY),
+            "apiKeyLast4": FINNHUB_API_KEY[-4:] if FINNHUB_API_KEY else None,
         }
 
     query = urlencode(
@@ -392,6 +398,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
         try:
             snapshot = fetch_finnhub_metric_snapshot(symbol)
+            snapshot["apiKeyPresent"] = bool(FINNHUB_API_KEY)
+            snapshot["apiKeyLast4"] = FINNHUB_API_KEY[-4:] if FINNHUB_API_KEY else None
             self._send_json(snapshot)
         except Exception as exc:
             self._send_json(
@@ -403,6 +411,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     "peKeyUsed": None,
                     "forwardPeKeyUsed": None,
                     "peCandidateKeys": [],
+                    "apiKeyPresent": bool(FINNHUB_API_KEY),
+                    "apiKeyLast4": FINNHUB_API_KEY[-4:] if FINNHUB_API_KEY else None,
                     "error": str(exc),
                 },
                 status=500,

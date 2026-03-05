@@ -140,23 +140,47 @@ def fetch_ib_prices(symbols):
 
     try:
         ib = get_ib_connection()
-        contracts = [Stock(symbol, "SMART", "USD") for symbol in symbols]
+        position_contracts_by_symbol = {}
+        try:
+            for position in ib.positions():
+                contract = getattr(position, "contract", None)
+                contract_symbol = normalize_symbol(getattr(contract, "symbol", None))
+                if contract and contract_symbol and contract_symbol not in position_contracts_by_symbol:
+                    position_contracts_by_symbol[contract_symbol] = contract
+        except Exception:
+            position_contracts_by_symbol = {}
+
+        contracts = [
+            position_contracts_by_symbol.get(symbol, Stock(symbol, "SMART", "USD"))
+            for symbol in symbols
+        ]
         qualified = ib.qualifyContracts(*contracts) if contracts else []
+        symbol_by_conid = {
+            getattr(contract, "conId", None): symbol
+            for symbol, contract in zip(symbols, contracts)
+            if getattr(contract, "conId", None)
+        }
 
         if qualified:
             tickers = ib.reqTickers(*qualified)
             ib.sleep(1.0)
             for ticker in tickers:
                 contract = getattr(ticker, "contract", None)
-                symbol = getattr(contract, "symbol", None)
+                conid = getattr(contract, "conId", None)
+                symbol = symbol_by_conid.get(conid)
+                if not symbol:
+                    symbol = normalize_symbol(getattr(contract, "symbol", None))
                 if not symbol:
                     continue
 
-                symbol = symbol.upper()
                 price = extract_price(ticker)
                 prices[symbol] = price
                 if price is None:
                     warnings[symbol] = NO_PRICE_WARNING
+
+        for symbol in symbols:
+            if prices[symbol] is None and warnings[symbol] is None:
+                warnings[symbol] = NO_PRICE_WARNING
     except Exception:
         for symbol in symbols:
             warnings[symbol] = NO_PRICE_WARNING

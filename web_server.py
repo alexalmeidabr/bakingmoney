@@ -324,7 +324,7 @@ Context:
 
 Method requirements:
 1) First infer what this company likely does and its business model using the symbol + company metadata hints + market analysis and commentary.
-2) Then build Bear/Base/Bull scenarios grounded in company-specific drivers of that business model.
+2) Then build Bear/Base/Bull 5 year horizon scenarios grounded in company-specific drivers of that business model.
 3) Prioritize company-specific operating drivers (adoption, pricing power, unit economics, margins, utilization, contract pipeline, product mix, competition, moat/technology leadership, capex/capacity, execution risk, dilution/balance-sheet constraints).
 4) Avoid generic macro/finance boilerplate (rates, GDP, regulation, valuation multiples, broad market mood) unless it is truly a top driver for this company; keep macro variables to at most 1-2 items.
 

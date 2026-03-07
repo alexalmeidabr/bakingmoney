@@ -375,6 +375,9 @@ def request_ai_analysis(symbol, current_price=None):
         },
     }
 
+    prompt_text = build_analysis_prompt(symbol, effective_price)
+    logger.info("OpenAI analysis prompt for %s: %s", symbol, prompt_text)
+
     body = {
         "model": OPENAI_MODEL,
         "input": [
@@ -389,7 +392,7 @@ def request_ai_analysis(symbol, current_price=None):
             },
             {
                 "role": "user",
-                "content": [{"type": "input_text", "text": build_analysis_prompt(symbol, effective_price)}],
+                "content": [{"type": "input_text", "text": prompt_text}],
             },
         ],
         "reasoning": {"effort": reasoning_effort},
@@ -435,6 +438,41 @@ def request_ai_analysis(symbol, current_price=None):
         raise RuntimeError("AI response did not contain output text")
 
     return output_text, effective_price
+
+
+def refresh_analysis_market_prices(conn):
+    rows = conn.execute(
+        """
+        SELECT id, symbol, current_price, expected_price
+        FROM analysis_symbols
+        ORDER BY symbol ASC
+        """
+    ).fetchall()
+
+    symbols = [row["symbol"] for row in rows]
+    if not symbols:
+        return
+
+    prices, _warnings = fetch_ib_prices(symbols)
+    now = utc_now_iso()
+
+    for row in rows:
+        symbol = row["symbol"]
+        latest_price = prices.get(symbol)
+        if latest_price is None:
+            continue
+
+        new_upside = calculate_upside(row["expected_price"], latest_price)
+        conn.execute(
+            """
+            UPDATE analysis_symbols
+            SET current_price = ?, upside = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (latest_price, new_upside, now, row["id"]),
+        )
+
+    conn.commit()
 
 
 def list_analysis_symbols(conn):
@@ -745,6 +783,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def handle_analysis_get(self):
         conn = get_db_connection()
         try:
+            refresh_analysis_market_prices(conn)
             self._send_json({"analysis": list_analysis_symbols(conn)})
         except Exception as exc:
             self._send_json(

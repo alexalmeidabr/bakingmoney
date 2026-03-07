@@ -124,6 +124,7 @@ function renderAnalysisList() {
     const row = document.createElement('tr');
     row.innerHTML = `
       <td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td>
+      <td>${formatCurrencyValue(item.current_price, 'USD')}</td>
       <td>${formatCurrencyValue(item.expected_price, 'USD')}</td>
       <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
       <td>${formatNumber(item.overall_confidence, 2)}</td>

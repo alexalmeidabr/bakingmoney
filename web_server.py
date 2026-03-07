@@ -44,6 +44,13 @@ logger = logging.getLogger(__name__)
 
 
 def ensure_event_loop():
+    """Ensure a current event loop exists for libraries that call get_event_loop()."""
+    try:
+        asyncio.get_running_loop()
+        return
+    except RuntimeError:
+        pass
+
     try:
         asyncio.get_event_loop()
     except RuntimeError:
@@ -198,6 +205,7 @@ def fetch_ib_prices(symbols):
     if not symbols:
         return prices, warnings
 
+    ensure_event_loop()
     from ib_insync import Stock
 
     try:
@@ -578,6 +586,7 @@ def upsert_analysis(conn, symbol, current_price=None):
 
 
 def get_positions_with_prices():
+    ensure_event_loop()
     ib = get_ib_connection()
     positions = ib.positions()
     symbols = sorted({normalize_symbol(p.contract.symbol) for p in positions if p.contract})
@@ -657,6 +666,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def handle_positions_api(self):
         try:
+            ensure_event_loop()
             ib = get_ib_connection()
             positions = ib.positions()
             contracts = [p.contract for p in positions if p.contract]

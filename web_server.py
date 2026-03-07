@@ -300,43 +300,36 @@ def get_company_context(symbol):
 
 
 def build_analysis_prompt(symbol, current_price=None, company_context=None):
-    company_context = company_context or {}
-    price_anchor = (
-        f"Current price from TWS/IBKR: {current_price:.4f}"
-        if current_price is not None
-        else "Current price from TWS/IBKR: unavailable"
-    )
+    _company_context = company_context or {}
+    current_price_text = f"{current_price:.4f}" if current_price is not None else "unavailable"
 
-    long_name = company_context.get("long_name") or "unknown"
-    industry = company_context.get("industry") or "unknown"
-    category = company_context.get("category") or "unknown"
-    subcategory = company_context.get("subcategory") or "unknown"
+    return f"""You are an experienced equity research analyst building a 5-year scenario analysis for a publicly traded company.
 
-    return f"""You are an equity analyst building a 5-year scenario analysis for a stock.
-
-Your job is to infer what the company actually does from the context below, identify the few business drivers that matter most, and build a realistic Bear / Base / Bull view for the stock.
-
-Context:
+Company context:
 - Symbol: {symbol}
-- Company name hint: {long_name}
-- Industry hint: {industry}
-- Category hint: {category}
-- Subcategory hint: {subcategory}
-- {price_anchor}
+- Current price: {current_price_text} USD
 
-Analytical instructions:
-- First infer the company’s likely business model, main revenue drivers, and major risks from the symbol and metadata hints.
-- Then build a company-specific 5-year stock analysis.
-- Focus on the company’s actual business model, not generic macro or market commentary.
-- Prefer the few most material company-specific drivers, such as adoption, pricing power, margins, utilization, capacity expansion, contract wins, competitive position, technology edge, execution, capital intensity, or dilution risk, when relevant.
-- Avoid generic variables such as interest rates, GDP, regulation, legal risk, valuation multiples, or broad market mood unless they are truly among the top drivers for this specific company.
-- Think like a practical stock analyst, not like a macro strategist.
-- Do not try to cover every possible factor. Focus on the most important ones.
+Task:
+1. Infer what the company most likely does, its business model, and the economic engine that drives revenue, margins, and valuation.
+2. Identify the few company-specific factors that are most likely to materially drive the stock over the next 5 years.
+3. Build Bear, Base, and Bull stock price scenarios, for a 5 years horizon, based on those drivers.
 
-Return ONLY valid JSON matching this contract:
+Guidance:
+- Focus on company-specific business drivers, not generic market commentary.
+- Prefer factors such as product adoption, demand growth, pricing power, margins, utilization, capacity expansion, technology advantage, customer concentration, contract pipeline, competitive position, capital intensity, execution risk, or dilution risk when relevant.
+- Avoid generic variables such as GDP growth, interest rates, regulation, legal risk, or valuation multiples unless they are clearly among the top drivers for this company.
+- Do not try to cover every possible factor. Focus on the few that matter most.
+
+Definitions:
+- A key variable is one of the most important company-specific factors that could materially push the stock price up or down over 5 years.
+- Confidence means how strong the current evidence is that the variable is acting in that direction now.
+- Importance means how much that variable could influence the stock price over the 5-year horizon.
+
+Return ONLY valid JSON using this exact structure:
+
 {{
   "symbol": "{symbol}",
-  "assumptions": "concise company-specific text",
+  "assumptions": "short explanation of the thesis behind the scenarios",
   "scenarios": [
     {{"name": "Bear", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
     {{"name": "Base", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
@@ -348,20 +341,19 @@ Return ONLY valid JSON matching this contract:
 }}
 
 Rules:
-- Scenarios must be exactly 3 entries in this exact order: Bear, Base, Bull.
-- Probabilities must sum to 100.
-- key_variables must include 5 to 8 items.
-- At least most key_variables must be company-specific.
-- type must be exactly Bullish or Bearish.
-- confidence must be an integer from 0 to 10.
-- importance must be an integer from 0 to 10.
-- assumptions must be concise, company-specific, and explain the logic behind the Bear / Base / Bull scenarios.
-- confidence = strength of current evidence that the variable is acting in that direction now.
-- importance = how much the variable can influence stock price over 5 years.
-- If current price is known, use it as an anchor, but do not force the Base case too close to current price if the business profile justifies a different outcome.
-- Use realistic ranges.
-- No markdown.
-- No commentary outside JSON."""
+- Exactly 3 scenarios in this order: Bear, Base, Bull
+- Probabilities must sum to 100
+- Provide 6 to 8 key variables
+- Most key variables should be company-specific business drivers
+- type must be exactly Bullish or Bearish
+- confidence must be an integer from 0 to 10
+- importance must be an integer from 0 to 10
+- assumptions should describe the assumption taken to build the bear, base and bull scenarios
+- If current price is known, use it as an anchor, but do not force the Base case too close to the current price if the business profile justifies otherwise
+- Use realistic ranges
+- JSON only
+- No markdown
+- No commentary outside JSON"""
 
 
 def request_ai_analysis(symbol, current_price=None):
@@ -414,7 +406,7 @@ def request_ai_analysis(symbol, current_price=None):
                 },
                 "key_variables": {
                     "type": "array",
-                    "minItems": 5,
+                    "minItems": 6,
                     "maxItems": 8,
                     "items": {
                         "type": "object",

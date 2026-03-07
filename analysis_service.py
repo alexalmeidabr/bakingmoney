@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 SCENARIO_ORDER = ["Bear", "Base", "Bull"]
 SCENARIO_SET = set(SCENARIO_ORDER)
 VARIABLE_TYPES = {"Bullish", "Bearish"}
-MIN_KEY_VARIABLES = 5
+MIN_KEY_VARIABLES = 6
 MAX_KEY_VARIABLES = 8
 
 

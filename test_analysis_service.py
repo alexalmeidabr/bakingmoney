@@ -67,7 +67,7 @@ class AnalysisServiceTests(unittest.TestCase):
 
     def test_key_variables_minimum_count_enforced(self):
         payload = build_valid_payload()
-        payload["key_variables"] = payload["key_variables"][:4]
+        payload["key_variables"] = payload["key_variables"][:5]
         with self.assertRaises(AnalysisValidationError):
             parse_analysis_payload(payload)
 

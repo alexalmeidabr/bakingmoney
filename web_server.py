@@ -126,6 +126,13 @@ def normalize_reasoning_effort(raw_value):
     return raw_value if raw_value in allowed else "medium"
 
 
+def model_supports_temperature(model_name):
+    if not isinstance(model_name, str):
+        return True
+    normalized = model_name.strip().lower()
+    return not normalized.startswith("gpt-5")
+
+
 def get_latest_price_for_symbol(symbol):
     prices, warnings = fetch_ib_prices([symbol])
     price = prices.get(symbol)
@@ -309,12 +316,13 @@ def request_ai_analysis(symbol, current_price=None):
 
     temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
     reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
+    supports_temperature = model_supports_temperature(OPENAI_MODEL)
 
     logger.info(
-        "Requesting analysis symbol=%s model=%s temp=%.2f reasoning=%s current_price=%s",
+        "Requesting analysis symbol=%s model=%s temp=%s reasoning=%s current_price=%s",
         symbol,
         OPENAI_MODEL,
-        temperature,
+        f"{temperature:.2f}" if supports_temperature else "omitted",
         reasoning_effort,
         f"{effective_price:.4f}" if isinstance(effective_price, (int, float)) else "None",
     )
@@ -369,7 +377,6 @@ def request_ai_analysis(symbol, current_price=None):
 
     body = {
         "model": OPENAI_MODEL,
-        "temperature": temperature,
         "input": [
             {
                 "role": "system",
@@ -388,6 +395,9 @@ def request_ai_analysis(symbol, current_price=None):
         "reasoning": {"effort": reasoning_effort},
         "text": {"format": {"type": "json_schema", "name": json_schema["name"], "schema": json_schema["schema"], "strict": True}},
     }
+    if supports_temperature:
+        body["temperature"] = temperature
+
     request = Request(
         "https://api.openai.com/v1/responses",
         data=json.dumps(body).encode("utf-8"),

@@ -26,7 +26,7 @@ Local web UI for IBKR positions + AI-powered analysis using standard-library `ht
    - `IB_MARKET_DATA_TYPE` (default `3`, delayed data; use `1` for live)
    - `OPENAI_API_KEY` (required for Analysis generation)
    - `OPENAI_MODEL` (optional, default `gpt-5-mini`)
-   - `OPENAI_TEMPERATURE` (optional, default `0.1`, clamped to `[0.0, 2.0]`)
+   - `OPENAI_TEMPERATURE` (optional, default `0.1`, clamped to `[0.0, 2.0]`; automatically omitted for GPT-5 family models)
    - `OPENAI_REASONING_EFFORT` (optional, default `medium`; allowed: `low`, `medium`, `high`)
 5. Run:
    ```bash

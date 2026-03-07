@@ -331,7 +331,7 @@ Method requirements:
 Return ONLY valid JSON matching this contract:
 {{
   "symbol": "{symbol}",
-  "assumptions": "concise company-specific text",
+  "assumptions": "concise company-specific text explaining assumptions used to build Bear/Base/Bull scenarios",
   "scenarios": [
     {{"name": "Bear", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
     {{"name": "Base", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
@@ -349,7 +349,7 @@ Rules:
 - type must be exactly Bullish or Bearish.
 - confidence must be an integer from 0 to 10.
 - importance must be an integer from 0 to 10.
-- assumptions must be concise and company-specific.
+- assumptions must be concise and company-specific, and explain assumptions used to build Bear/Base/Bull scenarios.
 - confidence = strength of current evidence that the variable is acting in that direction now.
 - importance = how much the variable can influence stock price over 5 years.
 - If current price is known: Bear range should generally be below current price, Base should be realistic vs current price, Bull should be above current price.

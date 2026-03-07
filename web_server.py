@@ -302,9 +302,9 @@ def get_company_context(symbol):
 def build_analysis_prompt(symbol, current_price=None, company_context=None):
     company_context = company_context or {}
     price_anchor = (
-        f"Current price from TWS/IBKR: {current_price:.4f}."
+        f"Current price from TWS/IBKR: {current_price:.4f}"
         if current_price is not None
-        else "Current price from TWS/IBKR is unavailable; proceed without a price anchor."
+        else "Current price from TWS/IBKR: unavailable"
     )
 
     long_name = company_context.get("long_name") or "unknown"
@@ -312,7 +312,9 @@ def build_analysis_prompt(symbol, current_price=None, company_context=None):
     category = company_context.get("category") or "unknown"
     subcategory = company_context.get("subcategory") or "unknown"
 
-    return f"""Goal: Analyze the company and stock price for symbol {symbol} over a 5-year horizon.
+    return f"""You are an equity analyst building a 5-year scenario analysis for a stock.
+
+Your job is to infer what the company actually does from the context below, identify the few business drivers that matter most, and build a realistic Bear / Base / Bull view for the stock.
 
 Context:
 - Symbol: {symbol}
@@ -322,16 +324,19 @@ Context:
 - Subcategory hint: {subcategory}
 - {price_anchor}
 
-Method requirements:
-1) First infer what this company likely does and its business model using the symbol + company metadata hints + market analysis and commentary.
-2) Then build Bear/Base/Bull 5 year horizon scenarios grounded in company-specific drivers of that business model.
-3) Prioritize company-specific operating drivers (adoption, pricing power, unit economics, margins, utilization, contract pipeline, product mix, competition, moat/technology leadership, capex/capacity, execution risk, dilution/balance-sheet constraints).
-4) Avoid generic macro/finance boilerplate (rates, GDP, regulation, valuation multiples, broad market mood) unless it is truly a top driver for this company; keep macro variables to at most 1-2 items.
+Analytical instructions:
+- First infer the company’s likely business model, main revenue drivers, and major risks from the symbol and metadata hints.
+- Then build a company-specific 5-year stock analysis.
+- Focus on the company’s actual business model, not generic macro or market commentary.
+- Prefer the few most material company-specific drivers, such as adoption, pricing power, margins, utilization, capacity expansion, contract wins, competitive position, technology edge, execution, capital intensity, or dilution risk, when relevant.
+- Avoid generic variables such as interest rates, GDP, regulation, legal risk, valuation multiples, or broad market mood unless they are truly among the top drivers for this specific company.
+- Think like a practical stock analyst, not like a macro strategist.
+- Do not try to cover every possible factor. Focus on the most important ones.
 
 Return ONLY valid JSON matching this contract:
 {{
   "symbol": "{symbol}",
-  "assumptions": "concise company-specific text explaining assumptions used to build Bear/Base/Bull scenarios",
+  "assumptions": "concise company-specific text",
   "scenarios": [
     {{"name": "Bear", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
     {{"name": "Base", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
@@ -345,15 +350,18 @@ Return ONLY valid JSON matching this contract:
 Rules:
 - Scenarios must be exactly 3 entries in this exact order: Bear, Base, Bull.
 - Probabilities must sum to 100.
-- key_variables must include 6 to 10 items and be mostly company-specific.
+- key_variables must include 5 to 8 items.
+- At least most key_variables must be company-specific.
 - type must be exactly Bullish or Bearish.
 - confidence must be an integer from 0 to 10.
 - importance must be an integer from 0 to 10.
-- assumptions must be concise and company-specific, and explain assumptions used to build Bear/Base/Bull scenarios.
+- assumptions must be concise, company-specific, and explain the logic behind the Bear / Base / Bull scenarios.
 - confidence = strength of current evidence that the variable is acting in that direction now.
 - importance = how much the variable can influence stock price over 5 years.
-- If current price is known: Bear range should generally be below current price, Base should be realistic vs current price, Bull should be above current price.
-- Do not include markdown or commentary. JSON only."""
+- If current price is known, use it as an anchor, but do not force the Base case too close to current price if the business profile justifies a different outcome.
+- Use realistic ranges.
+- No markdown.
+- No commentary outside JSON."""
 
 
 def request_ai_analysis(symbol, current_price=None):
@@ -406,8 +414,8 @@ def request_ai_analysis(symbol, current_price=None):
                 },
                 "key_variables": {
                     "type": "array",
-                    "minItems": 6,
-                    "maxItems": 10,
+                    "minItems": 5,
+                    "maxItems": 8,
                     "items": {
                         "type": "object",
                         "additionalProperties": False,

@@ -312,7 +312,7 @@ def build_analysis_prompt(symbol, current_price=None, company_context=None):
     category = company_context.get("category") or "unknown"
     subcategory = company_context.get("subcategory") or "unknown"
 
-    return f"""Analyze stock symbol {symbol} over a 5-year horizon.
+    return f"""Goal: Analyze the company and stock price for symbol {symbol} over a 5-year horizon.
 
 Context:
 - Symbol: {symbol}

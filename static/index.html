@@ -13,6 +13,7 @@
         <nav>
           <button class="menu-item active" data-view="positions">My Positions</button>
           <button class="menu-item" data-view="watchlist">Watchlist</button>
+          <button class="menu-item" data-view="analysis">Analysis</button>
         </nav>
       </aside>
 
@@ -69,6 +70,85 @@
               </thead>
               <tbody></tbody>
             </table>
+          </div>
+        </section>
+
+        <section id="analysis" class="view">
+          <div id="analysis-list-view" class="analysis-screen">
+            <div class="view-header">
+              <h2>Analysis</h2>
+              <div class="watchlist-actions">
+                <input id="analysis-symbol-input" type="text" placeholder="e.g. NVDA" maxlength="16" />
+                <button id="analysis-add-btn">Add Symbol</button>
+                <button id="analysis-import-btn">Import from My Positions</button>
+              </div>
+            </div>
+
+            <p id="analysis-status" class="status">Loading analysis…</p>
+
+            <div class="table-wrap">
+              <table id="analysis-table" class="hidden">
+                <thead>
+                  <tr>
+                    <th data-sort-key="symbol" class="sortable">Symbol</th>
+                    <th data-sort-key="expected_price" class="sortable">Expected Price</th>
+                    <th data-sort-key="upside" class="sortable">Upside</th>
+                    <th data-sort-key="overall_confidence" class="sortable">Confidence Level</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="analysis-detail-view" class="analysis-screen hidden">
+            <div class="view-header">
+              <button id="analysis-back-btn">← Back to Analysis</button>
+              <h2 id="analysis-detail-title">Analysis Detail</h2>
+            </div>
+
+            <p id="analysis-detail-status" class="status">Loading analysis detail…</p>
+
+            <div id="analysis-summary" class="detail-card hidden"></div>
+
+            <div class="detail-panels">
+              <section class="detail-card">
+                <h3>Scenarios</h3>
+                <div class="table-wrap">
+                  <table id="analysis-scenarios-table">
+                    <thead>
+                      <tr>
+                        <th>Scenario</th>
+                        <th>Price Low</th>
+                        <th>Price High</th>
+                        <th>CAGR Low</th>
+                        <th>CAGR High</th>
+                        <th>Probability</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="detail-card">
+                <h3>Key Variables</h3>
+                <div class="table-wrap">
+                  <table id="analysis-variables-table">
+                    <thead>
+                      <tr>
+                        <th>Variable</th>
+                        <th>Type</th>
+                        <th>Confidence</th>
+                        <th>Importance</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
           </div>
         </section>
       </main>

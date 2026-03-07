@@ -7,9 +7,18 @@ from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
+
+from analysis_service import (
+    AnalysisValidationError,
+    calculate_expected_price,
+    calculate_overall_confidence,
+    calculate_upside,
+    extract_json_payload,
+    parse_analysis_payload,
+)
 
 load_dotenv()
 
@@ -24,6 +33,8 @@ IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "7496"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "7"))
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 CACHE_TTL_HOURS = 24
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 
@@ -105,6 +116,7 @@ def extract_close(ticker):
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -126,6 +138,55 @@ def init_db():
               pe REAL,
               forward_pe REAL,
               updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_symbols (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              symbol TEXT NOT NULL UNIQUE,
+              current_price REAL,
+              expected_price REAL NOT NULL,
+              upside REAL,
+              overall_confidence REAL,
+              assumptions_text TEXT,
+              raw_ai_response TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_scenarios (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_symbol_id INTEGER NOT NULL,
+              scenario_name TEXT NOT NULL,
+              price_low REAL NOT NULL,
+              price_high REAL NOT NULL,
+              cagr_low REAL NOT NULL,
+              cagr_high REAL NOT NULL,
+              probability REAL NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_symbol_id) REFERENCES analysis_symbols(id) ON DELETE CASCADE,
+              UNIQUE(analysis_symbol_id, scenario_name)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_key_variables (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_symbol_id INTEGER NOT NULL,
+              variable_text TEXT NOT NULL,
+              variable_type TEXT NOT NULL,
+              confidence REAL NOT NULL,
+              importance REAL NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_symbol_id) REFERENCES analysis_symbols(id) ON DELETE CASCADE
             )
             """
         )
@@ -331,6 +392,266 @@ def normalize_symbol(value):
     return symbol if symbol else None
 
 
+def build_analysis_prompt(symbol):
+    return f"""You are analyzing a stock over a 5-year horizon.
+Return ONLY valid JSON with this schema:
+{{
+  "symbol": "{symbol}",
+  "assumptions": "short text",
+  "scenarios": [
+    {{
+      "name": "Bear",
+      "price_low": 40,
+      "price_high": 80,
+      "cagr_low": -15,
+      "cagr_high": -2,
+      "probability": 25
+    }},
+    {{
+      "name": "Base",
+      "price_low": 200,
+      "price_high": 350,
+      "cagr_low": 17,
+      "cagr_high": 31,
+      "probability": 50
+    }},
+    {{
+      "name": "Bull",
+      "price_low": 500,
+      "price_high": 900,
+      "cagr_low": 41,
+      "cagr_high": 59,
+      "probability": 25
+    }}
+  ],
+  "key_variables": [
+    {{
+      "variable": "Growth of global demand for AI training and inference compute",
+      "type": "Bullish",
+      "confidence": 9,
+      "importance": 10
+    }}
+  ]
+}}
+
+Rules for the model:
+- Always include exactly 3 scenarios: Bear, Base, Bull
+- Probabilities should total 100
+- Confidence must be from 0 to 10
+- Importance must be from 0 to 10
+- Type must be either Bullish or Bearish
+- Keep assumptions concise
+- Return JSON only, no markdown, no commentary"""
+
+
+def request_ai_analysis(symbol):
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is required for analysis generation")
+
+    body = {
+        "model": OPENAI_MODEL,
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": build_analysis_prompt(symbol)}]}
+        ],
+        "reasoning": {"effort": "high"},
+        "text": {"format": {"type": "json_object"}},
+    }
+    request = Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    with urlopen(request, timeout=60) as response:
+        raw = json.loads(response.read().decode("utf-8"))
+
+    output_text = raw.get("output_text")
+    if not output_text:
+        for item in raw.get("output", []):
+            for content in item.get("content", []):
+                if content.get("type") in ("output_text", "text") and content.get("text"):
+                    output_text = content["text"]
+                    break
+            if output_text:
+                break
+
+    if not output_text:
+        raise RuntimeError("AI response did not contain output text")
+
+    return output_text
+
+
+def list_analysis_symbols(conn):
+    rows = conn.execute(
+        """
+        SELECT symbol, current_price, expected_price, upside, overall_confidence, updated_at
+        FROM analysis_symbols
+        ORDER BY symbol ASC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_analysis_detail(conn, symbol):
+    row = conn.execute(
+        """
+        SELECT id, symbol, current_price, expected_price, upside, overall_confidence, assumptions_text,
+               created_at, updated_at
+        FROM analysis_symbols
+        WHERE symbol = ?
+        """,
+        (symbol,),
+    ).fetchone()
+    if not row:
+        return None
+
+    scenarios = conn.execute(
+        """
+        SELECT scenario_name, price_low, price_high, cagr_low, cagr_high, probability
+        FROM analysis_scenarios
+        WHERE analysis_symbol_id = ?
+        ORDER BY CASE scenario_name WHEN 'Bear' THEN 1 WHEN 'Base' THEN 2 WHEN 'Bull' THEN 3 ELSE 99 END
+        """,
+        (row["id"],),
+    ).fetchall()
+
+    key_variables = conn.execute(
+        """
+        SELECT variable_text, variable_type, confidence, importance
+        FROM analysis_key_variables
+        WHERE analysis_symbol_id = ?
+        ORDER BY id ASC
+        """,
+        (row["id"],),
+    ).fetchall()
+
+    return {
+        "symbol": row["symbol"],
+        "current_price": row["current_price"],
+        "expected_price": row["expected_price"],
+        "upside": row["upside"],
+        "overall_confidence": row["overall_confidence"],
+        "assumptions": row["assumptions_text"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "scenarios": [dict(s) for s in scenarios],
+        "key_variables": [dict(v) for v in key_variables],
+    }
+
+
+def upsert_analysis(conn, symbol, current_price=None):
+    ai_raw_text = request_ai_analysis(symbol)
+    payload = extract_json_payload(ai_raw_text)
+    parsed = parse_analysis_payload(payload)
+
+    if parsed["symbol"] != symbol:
+        parsed["symbol"] = symbol
+
+    expected_price = calculate_expected_price(parsed["scenarios"])
+    upside = calculate_upside(expected_price, current_price)
+    overall_confidence = calculate_overall_confidence(parsed["key_variables"])
+    now = utc_now_iso()
+
+    conn.execute("BEGIN")
+    try:
+        conn.execute(
+            """
+            INSERT INTO analysis_symbols (
+                symbol, current_price, expected_price, upside, overall_confidence,
+                assumptions_text, raw_ai_response, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                current_price = excluded.current_price,
+                expected_price = excluded.expected_price,
+                upside = excluded.upside,
+                overall_confidence = excluded.overall_confidence,
+                assumptions_text = excluded.assumptions_text,
+                raw_ai_response = excluded.raw_ai_response,
+                updated_at = excluded.updated_at
+            """,
+            (
+                symbol,
+                current_price,
+                expected_price,
+                upside,
+                overall_confidence,
+                parsed["assumptions"],
+                json.dumps(payload),
+                now,
+                now,
+            ),
+        )
+
+        analysis_row = conn.execute(
+            "SELECT id FROM analysis_symbols WHERE symbol = ?",
+            (symbol,),
+        ).fetchone()
+        analysis_symbol_id = analysis_row["id"]
+
+        conn.execute("DELETE FROM analysis_scenarios WHERE analysis_symbol_id = ?", (analysis_symbol_id,))
+        conn.execute("DELETE FROM analysis_key_variables WHERE analysis_symbol_id = ?", (analysis_symbol_id,))
+
+        for scenario in parsed["scenarios"]:
+            conn.execute(
+                """
+                INSERT INTO analysis_scenarios (
+                    analysis_symbol_id, scenario_name, price_low, price_high,
+                    cagr_low, cagr_high, probability, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    analysis_symbol_id,
+                    scenario["scenario_name"],
+                    scenario["price_low"],
+                    scenario["price_high"],
+                    scenario["cagr_low"],
+                    scenario["cagr_high"],
+                    scenario["probability"],
+                    now,
+                    now,
+                ),
+            )
+
+        for variable in parsed["key_variables"]:
+            conn.execute(
+                """
+                INSERT INTO analysis_key_variables (
+                    analysis_symbol_id, variable_text, variable_type,
+                    confidence, importance, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    analysis_symbol_id,
+                    variable["variable_text"],
+                    variable["variable_type"],
+                    variable["confidence"],
+                    variable["importance"],
+                    now,
+                    now,
+                ),
+            )
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    return get_analysis_detail(conn, symbol)
+
+
+def get_positions_with_prices():
+    ib = get_ib_connection()
+    positions = ib.positions()
+    symbols = sorted({normalize_symbol(p.contract.symbol) for p in positions if p.contract})
+    symbols = [s for s in symbols if s]
+    prices, _warnings = fetch_ib_prices(symbols)
+    return symbols, prices
+
+
 class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(BASE_DIR), **kwargs)
@@ -366,6 +687,13 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_positions_api()
         if path == "/api/watchlist":
             return self.handle_watchlist_get()
+        if path == "/api/analysis":
+            return self.handle_analysis_get()
+        if path.startswith("/api/analysis/"):
+            symbol = normalize_symbol(path[len("/api/analysis/") :])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_analysis_detail_get(symbol)
         if path == "/api/debug/finnhub":
             return self.handle_debug_finnhub(parsed_url.query)
 
@@ -385,6 +713,10 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_watchlist_post()
         if path == "/api/watchlist/import-positions":
             return self.handle_watchlist_import_positions()
+        if path == "/api/analysis":
+            return self.handle_analysis_post()
+        if path == "/api/analysis/import-from-positions":
+            return self.handle_analysis_import_positions()
 
         self.send_error(404, "Not Found")
 
@@ -421,11 +753,17 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def do_DELETE(self):
         path = urlparse(self.path).path
         prefix = "/api/watchlist/"
+        analysis_prefix = "/api/analysis/"
         if path.startswith(prefix):
             symbol = normalize_symbol(path[len(prefix) :])
             if not symbol:
                 return self._send_json({"error": "Invalid symbol"}, status=400)
             return self.handle_watchlist_delete(symbol)
+        if path.startswith(analysis_prefix):
+            symbol = normalize_symbol(path[len(analysis_prefix) :])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_analysis_delete(symbol)
 
         self.send_error(404, "Not Found")
 
@@ -600,6 +938,106 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 },
                 status=500,
             )
+
+    def handle_analysis_get(self):
+        conn = get_db_connection()
+        try:
+            self._send_json({"analysis": list_analysis_symbols(conn)})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to fetch analysis list.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_analysis_detail_get(self, symbol):
+        conn = get_db_connection()
+        try:
+            detail = get_analysis_detail(conn, symbol)
+            if not detail:
+                return self._send_json({"error": "Analysis symbol not found"}, status=404)
+            self._send_json({"analysis": detail})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to fetch analysis details.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_analysis_post(self):
+        payload = self._read_json_body() or {}
+        symbol = normalize_symbol(payload.get("symbol"))
+        if not symbol:
+            return self._send_json({"error": "Symbol is required."}, status=400)
+
+        explicit_current_price = safe_number(payload.get("currentPrice"))
+        current_price = explicit_current_price
+        if current_price is None:
+            prices, _warnings = fetch_ib_prices([symbol])
+            current_price = prices.get(symbol)
+
+        conn = get_db_connection()
+        try:
+            detail = upsert_analysis(conn, symbol, current_price=current_price)
+            self._send_json({"ok": True, "analysis": detail}, status=201)
+        except AnalysisValidationError as exc:
+            self._send_json(
+                {"error": "AI response validation failed.", "details": str(exc)},
+                status=422,
+            )
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to create analysis.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_analysis_import_positions(self):
+        conn = get_db_connection()
+        try:
+            symbols, prices = get_positions_with_prices()
+            imported = []
+            failures = []
+
+            for symbol in symbols:
+                try:
+                    upsert_analysis(conn, symbol, current_price=prices.get(symbol))
+                    imported.append(symbol)
+                except Exception as exc:
+                    failures.append({"symbol": symbol, "error": str(exc)})
+
+            self._send_json(
+                {
+                    "ok": len(failures) == 0,
+                    "importedSymbols": imported,
+                    "failures": failures,
+                },
+                status=207 if failures else 200,
+            )
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to import analysis from positions.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_analysis_delete(self, symbol):
+        conn = get_db_connection()
+        try:
+            conn.execute("DELETE FROM analysis_symbols WHERE symbol = ?", (symbol,))
+            conn.commit()
+            self._send_json({"ok": True, "symbol": symbol})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to remove analysis symbol.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

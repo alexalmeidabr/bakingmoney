@@ -25,6 +25,8 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
    - `IB_CLIENT_ID` (default `7`)
    - `IB_MARKET_DATA_TYPE` (default `3`, delayed data; use `1` for live)
    - `FINNHUB_API_KEY` (required for P/E and Forward P/E)
+   - `OPENAI_API_KEY` (required for Analysis generation)
+   - `OPENAI_MODEL` (optional, default `gpt-5`)
 5. Run:
    ```bash
    py web_server.py
@@ -41,6 +43,11 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
 - `DELETE /api/watchlist/{symbol}` -> removes symbol.
 - `POST /api/watchlist/import-positions` -> adds all current position symbols to watchlist.
 - `GET /api/debug/finnhub?symbol=MSFT` -> debug Finnhub snapshot parsing (`httpStatus`, `hasMetric`, `pe`, `forwardPe`, key metadata, API key presence).
+- `GET /api/analysis` -> list analyzed symbols (`symbol`, `expected_price`, `upside`, `overall_confidence`).
+- `GET /api/analysis/{symbol}` -> detail for a symbol (`scenarios`, `key_variables`, assumptions + summary fields).
+- `POST /api/analysis` with body `{"symbol":"MSFT"}` -> generates analysis via ChatGPT Thinking Mode and stores normalized rows.
+- `POST /api/analysis/import-from-positions` -> imports symbols from current IBKR positions and generates analyses.
+- `DELETE /api/analysis/{symbol}` -> removes analysis symbol and all child rows.
 
 ### Database
 
@@ -48,5 +55,8 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
 
 - `watchlist(symbol TEXT PRIMARY KEY, created_at TEXT)`
 - `fundamentals_cache(symbol TEXT PRIMARY KEY, pe REAL, forward_pe REAL, updated_at TEXT)`
+- `analysis_symbols(id INTEGER PK, symbol UNIQUE, current_price, expected_price, upside, overall_confidence, assumptions_text, raw_ai_response, timestamps)`
+- `analysis_scenarios(id INTEGER PK, analysis_symbol_id FK, scenario_name, price/cagr ranges, probability, timestamps)`
+- `analysis_key_variables(id INTEGER PK, analysis_symbol_id FK, variable_text, variable_type, confidence, importance, timestamps)`
 
 Finnhub fundamentals are cached for 24 hours.

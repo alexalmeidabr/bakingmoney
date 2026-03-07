@@ -265,23 +265,73 @@ def fetch_ib_prices(symbols):
     return prices, warnings
 
 
-def build_analysis_prompt(symbol, current_price=None):
+def get_company_context(symbol):
+    """Best-effort company metadata from IBKR contract details."""
+    ensure_event_loop()
+    from ib_insync import Stock
+
+    context = {
+        "long_name": None,
+        "industry": None,
+        "category": None,
+        "subcategory": None,
+    }
+
+    try:
+        ib = get_ib_connection()
+        contract = Stock(symbol, "SMART", "USD")
+        qualified = ib.qualifyContracts(contract)
+        if not qualified:
+            return context
+
+        details = ib.reqContractDetails(qualified[0])
+        if not details:
+            return context
+
+        detail = details[0]
+        context["long_name"] = getattr(detail, "longName", None)
+        context["industry"] = getattr(detail, "industry", None)
+        context["category"] = getattr(detail, "category", None)
+        context["subcategory"] = getattr(detail, "subcategory", None)
+    except Exception as exc:
+        logger.info("Company context unavailable for %s (%s)", symbol, exc)
+
+    return context
+
+
+def build_analysis_prompt(symbol, current_price=None, company_context=None):
+    company_context = company_context or {}
     price_anchor = (
         f"Current price from TWS/IBKR: {current_price:.4f}."
         if current_price is not None
         else "Current price from TWS/IBKR is unavailable; proceed without a price anchor."
     )
 
+    long_name = company_context.get("long_name") or "unknown"
+    industry = company_context.get("industry") or "unknown"
+    category = company_context.get("category") or "unknown"
+    subcategory = company_context.get("subcategory") or "unknown"
+
     return f"""Analyze stock symbol {symbol} over a 5-year horizon.
 
 Context:
 - Symbol: {symbol}
+- Company name hint: {long_name}
+- Industry hint: {industry}
+- Category hint: {category}
+- Subcategory hint: {subcategory}
 - {price_anchor}
+
+Method requirements:
+1) First infer what this company likely does and its business model using the symbol + company metadata hints + market analysis and commentary.
+2) Then build Bear/Base/Bull scenarios grounded in company-specific drivers of that business model.
+3) Prioritize company-specific operating drivers (adoption, pricing power, unit economics, margins, utilization, contract pipeline, product mix, competition, moat/technology leadership, capex/capacity, execution risk, dilution/balance-sheet constraints).
+4) Avoid generic macro/finance boilerplate (rates, GDP, regulation, valuation multiples, broad market mood) unless it is truly a top driver for this company; keep macro variables to at most 1-2 items.
 
 Return ONLY valid JSON matching this contract:
 {{
   "symbol": "{symbol}",
-  "assumptions": "concise text",
+  "assumptions": "concise company-specific text",
   "scenarios": [
     {{"name": "Bear", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
     {{"name": "Base", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
@@ -295,11 +345,11 @@ Return ONLY valid JSON matching this contract:
 Rules:
 - Scenarios must be exactly 3 entries in this exact order: Bear, Base, Bull.
 - Probabilities must sum to 100.
-- key_variables must include 6 to 10 items.
+- key_variables must include 6 to 10 items and be mostly company-specific.
 - type must be exactly Bullish or Bearish.
 - confidence must be an integer from 0 to 10.
 - importance must be an integer from 0 to 10.
-- assumptions must be concise.
+- assumptions must be concise and company-specific.
 - confidence = strength of current evidence that the variable is acting in that direction now.
 - importance = how much the variable can influence stock price over 5 years.
 - If current price is known: Bear range should generally be below current price, Base should be realistic vs current price, Bull should be above current price.
@@ -375,7 +425,17 @@ def request_ai_analysis(symbol, current_price=None):
         },
     }
 
-    prompt_text = build_analysis_prompt(symbol, effective_price)
+    company_context = get_company_context(symbol)
+    logger.info(
+        "Company context for %s: name=%s industry=%s category=%s subcategory=%s",
+        symbol,
+        company_context.get("long_name") or "unknown",
+        company_context.get("industry") or "unknown",
+        company_context.get("category") or "unknown",
+        company_context.get("subcategory") or "unknown",
+    )
+
+    prompt_text = build_analysis_prompt(symbol, effective_price, company_context=company_context)
     logger.info("OpenAI analysis prompt for %s: %s", symbol, prompt_text)
 
     body = {

@@ -34,7 +34,9 @@ IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "7496"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "7"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower() or "medium"
+OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 
 _ib = None
@@ -100,6 +102,30 @@ def normalize_symbol(value):
         return None
     symbol = value.strip().upper()
     return symbol if symbol else None
+
+
+def parse_temperature(raw_value):
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return 0.1
+    if not math.isfinite(value):
+        return 0.1
+    return max(0.0, min(2.0, value))
+
+
+def normalize_reasoning_effort(raw_value):
+    allowed = {"low", "medium", "high"}
+    return raw_value if raw_value in allowed else "medium"
+
+
+def get_latest_price_for_symbol(symbol):
+    prices, warnings = fetch_ib_prices([symbol])
+    price = prices.get(symbol)
+    warning = warnings.get(symbol)
+    if price is None:
+        logger.info("Price anchor unavailable for %s (%s)", symbol, warning or "unknown reason")
+    return price
 
 
 def get_db_connection():
@@ -224,69 +250,135 @@ def fetch_ib_prices(symbols):
     return prices, warnings
 
 
-def build_analysis_prompt(symbol):
-    return """You are analyzing a stock over a 5-year horizon.
-Return ONLY valid JSON with this schema:
-{
-  "symbol": "%s",
-  "assumptions": "short text",
+def build_analysis_prompt(symbol, current_price=None):
+    price_anchor = (
+        f"Current price from TWS/IBKR: {current_price:.4f}."
+        if current_price is not None
+        else "Current price from TWS/IBKR is unavailable; proceed without a price anchor."
+    )
+
+    return f"""Analyze stock symbol {symbol} over a 5-year horizon.
+
+Context:
+- Symbol: {symbol}
+- {price_anchor}
+
+Return ONLY valid JSON matching this contract:
+{{
+  "symbol": "{symbol}",
+  "assumptions": "concise text",
   "scenarios": [
-    {
-      "name": "Bear",
-      "price_low": 40,
-      "price_high": 80,
-      "cagr_low": -15,
-      "cagr_high": -2,
-      "probability": 25
-    },
-    {
-      "name": "Base",
-      "price_low": 200,
-      "price_high": 350,
-      "cagr_low": 17,
-      "cagr_high": 31,
-      "probability": 50
-    },
-    {
-      "name": "Bull",
-      "price_low": 500,
-      "price_high": 900,
-      "cagr_low": 41,
-      "cagr_high": 59,
-      "probability": 25
-    }
+    {{"name": "Bear", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
+    {{"name": "Base", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
+    {{"name": "Bull", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}}
   ],
   "key_variables": [
-    {
-      "variable": "Growth of global demand for AI training and inference compute",
-      "type": "Bullish",
-      "confidence": 9,
-      "importance": 10
-    }
+    {{"variable": "text", "type": "Bullish|Bearish", "confidence": integer_0_to_10, "importance": integer_0_to_10}}
   ]
-}
+}}
 
-Rules for the model:
-- Always include exactly 3 scenarios: Bear, Base, Bull
-- Probabilities should total 100
-- Confidence must be from 0 to 10
-- Importance must be from 0 to 10
-- Type must be either Bullish or Bearish
-- Keep assumptions concise
-- Return JSON only, no markdown, no commentary""" % symbol
+Rules:
+- Scenarios must be exactly 3 entries in this exact order: Bear, Base, Bull.
+- Probabilities must sum to 100.
+- key_variables must include 6 to 10 items.
+- type must be exactly Bullish or Bearish.
+- confidence must be an integer from 0 to 10.
+- importance must be an integer from 0 to 10.
+- assumptions must be concise.
+- confidence = strength of current evidence that the variable is acting in that direction now.
+- importance = how much the variable can influence stock price over 5 years.
+- If current price is known: Bear range should generally be below current price, Base should be realistic vs current price, Bull should be above current price.
+- Do not include markdown or commentary. JSON only."""
 
 
-def request_ai_analysis(symbol):
+def request_ai_analysis(symbol, current_price=None):
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is required for analysis generation")
 
+    effective_price = current_price
+    if effective_price is None:
+        effective_price = get_latest_price_for_symbol(symbol)
+
+    temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
+    reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
+
+    logger.info(
+        "Requesting analysis symbol=%s model=%s temp=%.2f reasoning=%s current_price=%s",
+        symbol,
+        OPENAI_MODEL,
+        temperature,
+        reasoning_effort,
+        f"{effective_price:.4f}" if isinstance(effective_price, (int, float)) else "None",
+    )
+
+    json_schema = {
+        "name": "analysis_response",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "assumptions": {"type": "string"},
+                "scenarios": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string", "enum": ["Bear", "Base", "Bull"]},
+                            "price_low": {"type": "number"},
+                            "price_high": {"type": "number"},
+                            "cagr_low": {"type": "number"},
+                            "cagr_high": {"type": "number"},
+                            "probability": {"type": "number"},
+                        },
+                        "required": ["name", "price_low", "price_high", "cagr_low", "cagr_high", "probability"],
+                    },
+                },
+                "key_variables": {
+                    "type": "array",
+                    "minItems": 6,
+                    "maxItems": 10,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "variable": {"type": "string"},
+                            "type": {"type": "string", "enum": ["Bullish", "Bearish"]},
+                            "confidence": {"type": "integer", "minimum": 0, "maximum": 10},
+                            "importance": {"type": "integer", "minimum": 0, "maximum": 10},
+                        },
+                        "required": ["variable", "type", "confidence", "importance"],
+                    },
+                },
+            },
+            "required": ["symbol", "assumptions", "scenarios", "key_variables"],
+        },
+    }
+
     body = {
         "model": OPENAI_MODEL,
+        "temperature": temperature,
         "input": [
-            {"role": "user", "content": [{"type": "input_text", "text": build_analysis_prompt(symbol)}]}
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "You are a disciplined financial scenario analysis engine. Be consistent, conservative, and structured.",
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": build_analysis_prompt(symbol, effective_price)}],
+            },
         ],
-        "reasoning": {"effort": "high"},
-        "text": {"format": {"type": "json_object"}},
+        "reasoning": {"effort": reasoning_effort},
+        "text": {"format": {"type": "json_schema", "name": json_schema["name"], "schema": json_schema["schema"], "strict": True}},
     }
     request = Request(
         "https://api.openai.com/v1/responses",
@@ -324,7 +416,7 @@ def request_ai_analysis(symbol):
     if not output_text:
         raise RuntimeError("AI response did not contain output text")
 
-    return output_text
+    return output_text, effective_price
 
 
 def list_analysis_symbols(conn):
@@ -386,7 +478,7 @@ def get_analysis_detail(conn, symbol):
 
 
 def upsert_analysis(conn, symbol, current_price=None):
-    ai_raw_text = request_ai_analysis(symbol)
+    ai_raw_text, effective_current_price = request_ai_analysis(symbol, current_price=current_price)
     payload = extract_json_payload(ai_raw_text)
     parsed = parse_analysis_payload(payload)
 
@@ -394,7 +486,7 @@ def upsert_analysis(conn, symbol, current_price=None):
         parsed["symbol"] = symbol
 
     expected_price = calculate_expected_price(parsed["scenarios"])
-    upside = calculate_upside(expected_price, current_price)
+    upside = calculate_upside(expected_price, effective_current_price)
     overall_confidence = calculate_overall_confidence(parsed["key_variables"])
     now = utc_now_iso()
 
@@ -417,7 +509,7 @@ def upsert_analysis(conn, symbol, current_price=None):
             """,
             (
                 symbol,
-                current_price,
+                effective_current_price,
                 expected_price,
                 upside,
                 overall_confidence,
@@ -664,10 +756,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self._send_json({"error": "Symbol is required."}, status=400)
 
         explicit_current_price = safe_number(payload.get("currentPrice"))
-        current_price = explicit_current_price
-        if current_price is None:
-            prices, _warnings = fetch_ib_prices([symbol])
-            current_price = prices.get(symbol)
+        current_price = explicit_current_price if explicit_current_price is not None else get_latest_price_for_symbol(symbol)
 
         conn = get_db_connection()
         try:

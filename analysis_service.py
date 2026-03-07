@@ -1,11 +1,12 @@
 import json
 import math
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 SCENARIO_ORDER = ["Bear", "Base", "Bull"]
 SCENARIO_SET = set(SCENARIO_ORDER)
 VARIABLE_TYPES = {"Bullish", "Bearish"}
+MIN_KEY_VARIABLES = 6
+MAX_KEY_VARIABLES = 10
 
 
 class AnalysisValidationError(ValueError):
@@ -24,12 +25,22 @@ def _safe_float(value: Any, name: str) -> float:
     return number
 
 
+def _safe_int_0_10(value: Any, name: str) -> int:
+    number = _safe_float(value, name)
+    rounded = round(number)
+    if not math.isclose(number, rounded, abs_tol=1e-9):
+        raise AnalysisValidationError(f"{name} must be an integer")
+    integer = int(rounded)
+    if integer < 0 or integer > 10:
+        raise AnalysisValidationError(f"{name} must be in [0, 10]")
+    return integer
+
+
 def _normalize_probability(value: float) -> float:
     return value / 100.0 if value > 1 else value
 
 
 def extract_json_payload(text: str) -> Dict[str, Any]:
-    """Extract a JSON object from model output that may include extra whitespace."""
     if not isinstance(text, str) or not text.strip():
         raise AnalysisValidationError("AI response was empty")
 
@@ -119,6 +130,10 @@ def parse_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     raw_variables = payload.get("key_variables")
     if not isinstance(raw_variables, list):
         raise AnalysisValidationError("key_variables must be an array")
+    if len(raw_variables) < MIN_KEY_VARIABLES or len(raw_variables) > MAX_KEY_VARIABLES:
+        raise AnalysisValidationError(
+            f"key_variables must contain between {MIN_KEY_VARIABLES} and {MAX_KEY_VARIABLES} items"
+        )
 
     key_variables = []
     for index, item in enumerate(raw_variables):
@@ -133,13 +148,8 @@ def parse_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         if variable_type not in VARIABLE_TYPES:
             raise AnalysisValidationError(f"key_variables[{index}].type must be Bullish or Bearish")
 
-        confidence = _safe_float(item.get("confidence"), f"key_variables[{index}].confidence")
-        importance = _safe_float(item.get("importance"), f"key_variables[{index}].importance")
-
-        if confidence < 0 or confidence > 10:
-            raise AnalysisValidationError(f"key_variables[{index}].confidence must be in [0, 10]")
-        if importance < 0 or importance > 10:
-            raise AnalysisValidationError(f"key_variables[{index}].importance must be in [0, 10]")
+        confidence = _safe_int_0_10(item.get("confidence"), f"key_variables[{index}].confidence")
+        importance = _safe_int_0_10(item.get("importance"), f"key_variables[{index}].importance")
 
         key_variables.append(
             {

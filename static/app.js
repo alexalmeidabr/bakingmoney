@@ -37,6 +37,17 @@ let positionSort = { key: 'symbol', direction: 'asc' };
 let latestAnalysis = [];
 let analysisSort = { key: 'symbol', direction: 'asc' };
 
+function extractErrorMessage(payload, fallback) {
+  if (!payload || typeof payload !== 'object') {
+    return fallback;
+  }
+  const parts = [];
+  if (payload.error) parts.push(payload.error);
+  if (payload.details) parts.push(payload.details);
+  if (payload.debugHint) parts.push(payload.debugHint);
+  return parts.length ? parts.join(' ') : fallback;
+}
+
 function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return 'N/A';
@@ -193,7 +204,7 @@ async function loadPositions() {
     const payload = await response.json();
 
     if (!response.ok) {
-      throw new Error(payload.error || payload.details || 'Request failed');
+      throw new Error(extractErrorMessage(payload, 'Request failed'));
     }
 
     const positions = payload.positions || [];
@@ -226,7 +237,7 @@ async function loadWatchlist() {
     const payload = await response.json();
 
     if (!response.ok) {
-      throw new Error(payload.error || payload.details || 'Request failed');
+      throw new Error(extractErrorMessage(payload, 'Request failed'));
     }
 
     const items = payload.watchlist || [];
@@ -275,7 +286,7 @@ async function loadAnalysis() {
     const payload = await response.json();
 
     if (!response.ok) {
-      throw new Error(payload.error || payload.details || 'Request failed');
+      throw new Error(extractErrorMessage(payload, 'Request failed'));
     }
 
     latestAnalysis = payload.analysis || [];
@@ -312,7 +323,7 @@ async function addSymbol() {
 
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || payload.details || 'Unable to add symbol');
+      throw new Error(extractErrorMessage(payload, 'Unable to add symbol'));
     }
 
     watchlistSymbolInput.value = '';
@@ -338,7 +349,7 @@ async function addAnalysisSymbol() {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || payload.details || 'Unable to add analysis');
+      throw new Error(extractErrorMessage(payload, 'Unable to add analysis'));
     }
 
     analysisSymbolInput.value = '';
@@ -357,7 +368,7 @@ async function importAnalysisFromPositions() {
     const response = await fetch('/api/analysis/import-from-positions', { method: 'POST' });
     const payload = await response.json();
     if (!response.ok && response.status !== 207) {
-      throw new Error(payload.error || payload.details || 'Unable to import analysis');
+      throw new Error(extractErrorMessage(payload, 'Unable to import analysis'));
     }
 
     await loadAnalysis();
@@ -383,7 +394,7 @@ async function loadAnalysisDetail(symbol) {
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`);
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || payload.details || 'Unable to load details');
+      throw new Error(extractErrorMessage(payload, 'Unable to load details'));
     }
 
     const item = payload.analysis;
@@ -441,7 +452,7 @@ async function deleteAnalysis(symbol) {
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`, { method: 'DELETE' });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || payload.details || 'Unable to delete');
+      throw new Error(extractErrorMessage(payload, 'Unable to delete'));
     }
     await loadAnalysis();
   } catch (error) {
@@ -460,7 +471,7 @@ async function removeSymbol(symbol) {
 
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || payload.details || 'Unable to remove symbol');
+      throw new Error(extractErrorMessage(payload, 'Unable to remove symbol'));
     }
 
     await loadWatchlist();
@@ -480,7 +491,7 @@ async function importFromPositions() {
 
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || payload.details || 'Unable to import positions');
+      throw new Error(extractErrorMessage(payload, 'Unable to import positions'));
     }
 
     await loadWatchlist();

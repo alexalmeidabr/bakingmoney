@@ -2,11 +2,13 @@ import asyncio
 import json
 import math
 import os
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
@@ -39,6 +41,8 @@ CACHE_TTL_HOURS = 24
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 
 _ib = None
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_event_loop():
@@ -466,8 +470,18 @@ def request_ai_analysis(symbol):
         method="POST",
     )
 
-    with urlopen(request, timeout=60) as response:
-        raw = json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=60) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        response_text = ""
+        try:
+            response_text = exc.read().decode("utf-8")
+        except Exception:
+            response_text = ""
+        raise RuntimeError(
+            f"OpenAI request failed with status {getattr(exc, 'code', 'unknown')}: {response_text[:400]}"
+        ) from exc
 
     output_text = raw.get("output_text")
     if not output_text:
@@ -983,13 +997,19 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             detail = upsert_analysis(conn, symbol, current_price=current_price)
             self._send_json({"ok": True, "analysis": detail}, status=201)
         except AnalysisValidationError as exc:
+            logger.warning("Analysis validation failed for symbol %s: %s", symbol, exc)
             self._send_json(
                 {"error": "AI response validation failed.", "details": str(exc)},
                 status=422,
             )
         except Exception as exc:
+            logger.exception("Unable to create analysis for symbol %s", symbol)
             self._send_json(
-                {"error": "Unable to create analysis.", "details": str(exc)},
+                {
+                    "error": "Unable to create analysis.",
+                    "details": str(exc),
+                    "debugHint": "Check server logs for traceback details.",
+                },
                 status=500,
             )
         finally:
@@ -1007,6 +1027,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     upsert_analysis(conn, symbol, current_price=prices.get(symbol))
                     imported.append(symbol)
                 except Exception as exc:
+                    logger.exception("Failed analysis import for symbol %s", symbol)
                     failures.append({"symbol": symbol, "error": str(exc)})
 
             self._send_json(
@@ -1018,6 +1039,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 status=207 if failures else 200,
             )
         except Exception as exc:
+            logger.exception("Unable to import analysis from positions")
             self._send_json(
                 {"error": "Unable to import analysis from positions.", "details": str(exc)},
                 status=500,
@@ -1041,6 +1063,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    )
+
     if not STATIC_DIR.exists():
         raise FileNotFoundError("Missing static directory. Expected: ./static")
 

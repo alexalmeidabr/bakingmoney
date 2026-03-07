@@ -11,73 +11,17 @@
       <aside class="sidebar">
         <h1>BakingMoney</h1>
         <nav>
-          <button class="menu-item active" data-view="positions">My Positions</button>
-          <button class="menu-item" data-view="watchlist">Watchlist</button>
-          <button class="menu-item" data-view="analysis">Analysis</button>
+          <button class="menu-item active" data-view="analysis">Analysis</button>
+          <button class="menu-item" data-view="positions">My Positions</button>
         </nav>
       </aside>
 
       <main class="content">
-        <section id="positions" class="view active">
-          <div class="view-header">
-            <h2>My Positions</h2>
-            <button id="refresh-btn">Refresh</button>
-          </div>
-
-          <p id="status" class="status">Loading positions…</p>
-
-          <div class="table-wrap">
-            <table id="positions-table" class="hidden">
-              <thead>
-                <tr>
-                  <th data-sort-key="symbol" class="sortable">Symbol</th>
-                  <th data-sort-key="position" class="sortable">Position</th>
-                  <th data-sort-key="price" class="sortable">Price</th>
-                  <th data-sort-key="avgCost" class="sortable">Avg Cost</th>
-                  <th data-sort-key="changePercent" class="sortable">Change %</th>
-                  <th data-sort-key="marketValue" class="sortable">Market Value</th>
-                  <th data-sort-key="unrealizedPnL" class="sortable">Unrealized P&amp;L</th>
-                  <th data-sort-key="dailyPnL" class="sortable">Daily P&amp;L</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </section>
-
-        <section id="watchlist" class="view">
-          <div class="view-header">
-            <h2>Watchlist</h2>
-            <div class="watchlist-actions">
-              <input id="watchlist-symbol-input" type="text" placeholder="e.g. MSFT" maxlength="16" />
-              <button id="add-symbol-btn">Add Symbol</button>
-              <button id="add-positions-btn">Add From Positions</button>
-            </div>
-          </div>
-
-          <p id="watchlist-status" class="status">Loading watchlist…</p>
-
-          <div class="table-wrap">
-            <table id="watchlist-table" class="hidden">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Price</th>
-                  <th>P/E</th>
-                  <th>Forward P/E</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </section>
-
-        <section id="analysis" class="view">
+        <section id="analysis" class="view active">
           <div id="analysis-list-view" class="analysis-screen">
             <div class="view-header">
               <h2>Analysis</h2>
-              <div class="watchlist-actions">
+              <div class="table-actions">
                 <input id="analysis-symbol-input" type="text" placeholder="e.g. NVDA" maxlength="16" />
                 <button id="analysis-add-btn">Add Symbol</button>
                 <button id="analysis-import-btn">Import from My Positions</button>
@@ -149,6 +93,33 @@
                 </div>
               </section>
             </div>
+          </div>
+        </section>
+
+        <section id="positions" class="view">
+          <div class="view-header">
+            <h2>My Positions</h2>
+            <button id="refresh-btn">Refresh</button>
+          </div>
+
+          <p id="status" class="status">Loading positions…</p>
+
+          <div class="table-wrap">
+            <table id="positions-table" class="hidden">
+              <thead>
+                <tr>
+                  <th data-sort-key="symbol" class="sortable">Symbol</th>
+                  <th data-sort-key="position" class="sortable">Position</th>
+                  <th data-sort-key="price" class="sortable">Price</th>
+                  <th data-sort-key="avgCost" class="sortable">Avg Cost</th>
+                  <th data-sort-key="changePercent" class="sortable">Change %</th>
+                  <th data-sort-key="marketValue" class="sortable">Market Value</th>
+                  <th data-sort-key="unrealizedPnL" class="sortable">Unrealized P&amp;L</th>
+                  <th data-sort-key="dailyPnL" class="sortable">Daily P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
           </div>
         </section>
       </main>

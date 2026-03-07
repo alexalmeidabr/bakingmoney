@@ -1,14 +1,14 @@
 import asyncio
 import json
+import logging
 import math
 import os
-import logging
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
 from urllib.error import HTTPError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
@@ -24,7 +24,6 @@ from analysis_service import (
 
 load_dotenv()
 
-
 HOST = "127.0.0.1"
 PORT = 8080
 BASE_DIR = Path(__file__).parent
@@ -34,14 +33,11 @@ DB_PATH = BASE_DIR / "bakingmoney.db"
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "7496"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "7"))
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
-CACHE_TTL_HOURS = 24
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 
 _ib = None
-
 logger = logging.getLogger(__name__)
 
 
@@ -53,7 +49,6 @@ def ensure_event_loop():
 
 
 def get_ib_connection():
-    """Create/reuse one IB connection; set delayed market data once per connection."""
     global _ib
     ensure_event_loop()
     from ib_insync import IB
@@ -63,19 +58,12 @@ def get_ib_connection():
 
     _ib = IB()
     _ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=5)
-    _ib.reqMarketDataType(3)  # delayed
+    _ib.reqMarketDataType(3)
     return _ib
 
 
 def utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
-
-
-def parse_iso(dt_str):
-    try:
-        return datetime.fromisoformat(dt_str)
-    except Exception:
-        return None
 
 
 def safe_number(value):
@@ -95,27 +83,24 @@ def first_valid_number(*values):
 def extract_price(ticker):
     if not ticker:
         return None
-
     market_price = None
     if hasattr(ticker, "marketPrice"):
         market_price = safe_number(ticker.marketPrice())
-
-    return first_valid_number(
-        market_price,
-        getattr(ticker, "last", None),
-        getattr(ticker, "close", None),
-    )
-
-
+    return first_valid_number(market_price, getattr(ticker, "last", None), getattr(ticker, "close", None))
 
 
 def extract_close(ticker):
     if not ticker:
         return None
-    return first_valid_number(
-        getattr(ticker, "close", None),
-        getattr(ticker, "prevClose", None),
-    )
+    return first_valid_number(getattr(ticker, "close", None), getattr(ticker, "prevClose", None))
+
+
+def normalize_symbol(value):
+    if not isinstance(value, str):
+        return None
+    symbol = value.strip().upper()
+    return symbol if symbol else None
+
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -127,24 +112,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS watchlist (
-              symbol TEXT PRIMARY KEY,
-              created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fundamentals_cache (
-              symbol TEXT PRIMARY KEY,
-              pe REAL,
-              forward_pe REAL,
-              updated_at TEXT NOT NULL
-            )
-            """
-        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS analysis_symbols (
@@ -257,186 +224,47 @@ def fetch_ib_prices(symbols):
     return prices, warnings
 
 
-def extract_finnhub_pe_values(data):
-    metric = data.get("metric", {}) if isinstance(data, dict) else {}
-    if not isinstance(metric, dict):
-        metric = {}
-
-    pe_candidate_keys = [
-        key
-        for key in metric.keys()
-        if isinstance(key, str) and "pe" in key.lower()
-    ][:50]
-
-    pe = safe_number(metric.get("peBasicExclExtraTTM"))
-    pe_key_used = "peBasicExclExtraTTM" if pe is not None else None
-
-    if pe is None:
-        for key in metric.keys():
-            if not isinstance(key, str):
-                continue
-            key_lower = key.lower()
-            if "pe" not in key_lower or "peg" in key_lower:
-                continue
-            value = safe_number(metric.get(key))
-            if value is not None:
-                pe = value
-                pe_key_used = key
-                break
-
-    forward_pe = None
-    forward_pe_key_used = None
-    for key in metric.keys():
-        if not isinstance(key, str):
-            continue
-        key_lower = key.lower()
-        if "peg" in key_lower:
-            continue
-        has_pe = "pe" in key_lower
-        forward_match = "forward" in key_lower and has_pe
-        normalized_annual_match = has_pe and (
-            "normalized" in key_lower or "annual" in key_lower
-        )
-        if not (forward_match or normalized_annual_match):
-            continue
-
-        value = safe_number(metric.get(key))
-        if value is not None:
-            forward_pe = value
-            forward_pe_key_used = key
-            break
-
-    return {
-        "hasMetric": bool(metric),
-        "pe": pe,
-        "forwardPe": forward_pe,
-        "peKeyUsed": pe_key_used,
-        "forwardPeKeyUsed": forward_pe_key_used,
-        "peCandidateKeys": pe_candidate_keys,
-    }
-
-
-def fetch_finnhub_metric_snapshot(symbol):
-    if not FINNHUB_API_KEY:
-        return {
-            "httpStatus": None,
-            "hasMetric": False,
-            "pe": None,
-            "forwardPe": None,
-            "peKeyUsed": None,
-            "forwardPeKeyUsed": None,
-            "peCandidateKeys": [],
-            "apiKeyPresent": bool(FINNHUB_API_KEY),
-            "apiKeyLast4": FINNHUB_API_KEY[-4:] if FINNHUB_API_KEY else None,
-        }
-
-    query = urlencode(
-        {
-            "symbol": symbol,
-            "metric": "all",
-            "token": FINNHUB_API_KEY,
-        }
-    )
-    url = f"https://finnhub.io/api/v1/stock/metric?{query}"
-    with urlopen(url, timeout=8) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-        extracted = extract_finnhub_pe_values(payload)
-        extracted["httpStatus"] = getattr(response, "status", None)
-        return extracted
-
-
-def get_fundamentals_for_symbol(conn, symbol):
-    cache_row = conn.execute(
-        "SELECT symbol, pe, forward_pe, updated_at FROM fundamentals_cache WHERE symbol = ?",
-        (symbol,),
-    ).fetchone()
-
-    now = datetime.now(timezone.utc)
-    if cache_row:
-        updated_at = parse_iso(cache_row["updated_at"])
-        if updated_at and now - updated_at <= timedelta(hours=CACHE_TTL_HOURS):
-            return {"pe": cache_row["pe"], "forwardPe": cache_row["forward_pe"]}
-
-    if not FINNHUB_API_KEY:
-        return {
-            "pe": cache_row["pe"] if cache_row else None,
-            "forwardPe": cache_row["forward_pe"] if cache_row else None,
-        }
-
-    try:
-        snapshot = fetch_finnhub_metric_snapshot(symbol)
-        pe = snapshot["pe"]
-        forward_pe = snapshot["forwardPe"]
-    except Exception:
-        return {
-            "pe": cache_row["pe"] if cache_row else None,
-            "forwardPe": cache_row["forward_pe"] if cache_row else None,
-        }
-
-    conn.execute(
-        """
-        INSERT INTO fundamentals_cache (symbol, pe, forward_pe, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(symbol) DO UPDATE SET
-          pe = excluded.pe,
-          forward_pe = excluded.forward_pe,
-          updated_at = excluded.updated_at
-        """,
-        (symbol, pe, forward_pe, utc_now_iso()),
-    )
-    conn.commit()
-
-    return {"pe": pe, "forwardPe": forward_pe}
-
-
-def normalize_symbol(value):
-    if not isinstance(value, str):
-        return None
-    symbol = value.strip().upper()
-    return symbol if symbol else None
-
-
 def build_analysis_prompt(symbol):
-    return f"""You are analyzing a stock over a 5-year horizon.
+    return """You are analyzing a stock over a 5-year horizon.
 Return ONLY valid JSON with this schema:
-{{
-  "symbol": "{symbol}",
+{
+  "symbol": "%s",
   "assumptions": "short text",
   "scenarios": [
-    {{
+    {
       "name": "Bear",
       "price_low": 40,
       "price_high": 80,
       "cagr_low": -15,
       "cagr_high": -2,
       "probability": 25
-    }},
-    {{
+    },
+    {
       "name": "Base",
       "price_low": 200,
       "price_high": 350,
       "cagr_low": 17,
       "cagr_high": 31,
       "probability": 50
-    }},
-    {{
+    },
+    {
       "name": "Bull",
       "price_low": 500,
       "price_high": 900,
       "cagr_low": 41,
       "cagr_high": 59,
       "probability": 25
-    }}
+    }
   ],
   "key_variables": [
-    {{
+    {
       "variable": "Growth of global demand for AI training and inference compute",
       "type": "Bullish",
       "confidence": 9,
       "importance": 10
-    }}
+    }
   ]
-}}
+}
 
 Rules for the model:
 - Always include exactly 3 scenarios: Bear, Base, Bull
@@ -445,7 +273,7 @@ Rules for the model:
 - Importance must be from 0 to 10
 - Type must be either Bullish or Bearish
 - Keep assumptions concise
-- Return JSON only, no markdown, no commentary"""
+- Return JSON only, no markdown, no commentary""" % symbol
 
 
 def request_ai_analysis(symbol):
@@ -683,10 +511,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             return None
-
         if length <= 0:
             return None
-
         body = self.rfile.read(length)
         try:
             return json.loads(body.decode("utf-8"))
@@ -699,8 +525,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/positions":
             return self.handle_positions_api()
-        if path == "/api/watchlist":
-            return self.handle_watchlist_get()
         if path == "/api/analysis":
             return self.handle_analysis_get()
         if path.startswith("/api/analysis/"):
@@ -708,8 +532,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if not symbol:
                 return self._send_json({"error": "Invalid symbol"}, status=400)
             return self.handle_analysis_detail_get(symbol)
-        if path == "/api/debug/finnhub":
-            return self.handle_debug_finnhub(parsed_url.query)
 
         if path == "/":
             self.path = "/static/index.html"
@@ -723,10 +545,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path == "/api/watchlist":
-            return self.handle_watchlist_post()
-        if path == "/api/watchlist/import-positions":
-            return self.handle_watchlist_import_positions()
         if path == "/api/analysis":
             return self.handle_analysis_post()
         if path == "/api/analysis/import-from-positions":
@@ -734,45 +552,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
         self.send_error(404, "Not Found")
 
-    def handle_debug_finnhub(self, query_string):
-        from urllib.parse import parse_qs
-
-        params = parse_qs(query_string or "")
-        symbol = normalize_symbol((params.get("symbol") or [""])[0])
-        if not symbol:
-            return self._send_json({"error": "symbol query parameter is required"}, status=400)
-
-        try:
-            snapshot = fetch_finnhub_metric_snapshot(symbol)
-            snapshot["apiKeyPresent"] = bool(FINNHUB_API_KEY)
-            snapshot["apiKeyLast4"] = FINNHUB_API_KEY[-4:] if FINNHUB_API_KEY else None
-            self._send_json(snapshot)
-        except Exception as exc:
-            self._send_json(
-                {
-                    "httpStatus": None,
-                    "hasMetric": False,
-                    "pe": None,
-                    "forwardPe": None,
-                    "peKeyUsed": None,
-                    "forwardPeKeyUsed": None,
-                    "peCandidateKeys": [],
-                    "apiKeyPresent": bool(FINNHUB_API_KEY),
-                    "apiKeyLast4": FINNHUB_API_KEY[-4:] if FINNHUB_API_KEY else None,
-                    "error": str(exc),
-                },
-                status=500,
-            )
-
     def do_DELETE(self):
         path = urlparse(self.path).path
-        prefix = "/api/watchlist/"
         analysis_prefix = "/api/analysis/"
-        if path.startswith(prefix):
-            symbol = normalize_symbol(path[len(prefix) :])
-            if not symbol:
-                return self._send_json({"error": "Invalid symbol"}, status=400)
-            return self.handle_watchlist_delete(symbol)
         if path.startswith(analysis_prefix):
             symbol = normalize_symbol(path[len(analysis_prefix) :])
             if not symbol:
@@ -843,111 +625,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             self._send_json(
                 {
                     "error": "Unable to fetch positions from IBKR. Check that TWS is running and API access is enabled.",
-                    "details": str(exc),
-                },
-                status=500,
-            )
-
-    def handle_watchlist_get(self):
-        conn = get_db_connection()
-        try:
-            rows = conn.execute(
-                "SELECT symbol FROM watchlist ORDER BY symbol ASC"
-            ).fetchall()
-            symbols = [row["symbol"] for row in rows]
-
-            prices, quote_warnings = fetch_ib_prices(symbols)
-            items = []
-            for symbol in symbols:
-                fundamentals = get_fundamentals_for_symbol(conn, symbol)
-                items.append(
-                    {
-                        "symbol": symbol,
-                        "price": prices.get(symbol),
-                        "pe": fundamentals["pe"],
-                        "forwardPe": fundamentals["forwardPe"],
-                        "warning": quote_warnings.get(symbol),
-                    }
-                )
-
-            self._send_json({"watchlist": items})
-        except Exception as exc:
-            self._send_json(
-                {"error": "Unable to fetch watchlist.", "details": str(exc)},
-                status=500,
-            )
-        finally:
-            conn.close()
-
-    def handle_watchlist_post(self):
-        payload = self._read_json_body() or {}
-        symbol = normalize_symbol(payload.get("symbol"))
-        if not symbol:
-            return self._send_json({"error": "Symbol is required."}, status=400)
-
-        conn = get_db_connection()
-        try:
-            conn.execute(
-                """
-                INSERT INTO watchlist (symbol, created_at)
-                VALUES (?, ?)
-                ON CONFLICT(symbol) DO NOTHING
-                """,
-                (symbol, utc_now_iso()),
-            )
-            conn.commit()
-            self._send_json({"ok": True, "symbol": symbol}, status=201)
-        except Exception as exc:
-            self._send_json(
-                {"error": "Unable to add symbol.", "details": str(exc)},
-                status=500,
-            )
-        finally:
-            conn.close()
-
-    def handle_watchlist_delete(self, symbol):
-        conn = get_db_connection()
-        try:
-            conn.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol,))
-            conn.commit()
-            self._send_json({"ok": True, "symbol": symbol})
-        except Exception as exc:
-            self._send_json(
-                {"error": "Unable to remove symbol.", "details": str(exc)},
-                status=500,
-            )
-        finally:
-            conn.close()
-
-    def handle_watchlist_import_positions(self):
-        try:
-            ib = get_ib_connection()
-            positions = ib.positions()
-            symbols = sorted(
-                {normalize_symbol(p.contract.symbol) for p in positions if p.contract}
-            )
-            symbols = [s for s in symbols if s]
-
-            conn = get_db_connection()
-            try:
-                for symbol in symbols:
-                    conn.execute(
-                        """
-                        INSERT INTO watchlist (symbol, created_at)
-                        VALUES (?, ?)
-                        ON CONFLICT(symbol) DO NOTHING
-                        """,
-                        (symbol, utc_now_iso()),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
-
-            self._send_json({"ok": True, "addedSymbols": symbols})
-        except Exception as exc:
-            self._send_json(
-                {
-                    "error": "Unable to import symbols from positions.",
                     "details": str(exc),
                 },
                 status=500,

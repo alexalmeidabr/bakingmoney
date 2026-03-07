@@ -2,7 +2,7 @@
 
 ## Local UI MVP
 
-Local web UI for IBKR positions + watchlist using standard-library `http.server` and vanilla HTML/CSS/JS.
+Local web UI for IBKR positions + AI-powered analysis using standard-library `http.server` and vanilla HTML/CSS/JS.
 
 ### Run it
 
@@ -14,7 +14,7 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
 3. Create a local `.env` file in the project root (this file is local-only and should not be committed).
    Example:
    ```env
-   FINNHUB_API_KEY=your_finnhub_api_key
+   OPENAI_API_KEY=your_openai_api_key
    IB_HOST=127.0.0.1
    IB_PORT=7496
    IB_CLIENT_ID=7
@@ -24,7 +24,6 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
    - `IB_PORT` (default `7496`)
    - `IB_CLIENT_ID` (default `7`)
    - `IB_MARKET_DATA_TYPE` (default `3`, delayed data; use `1` for live)
-   - `FINNHUB_API_KEY` (required for P/E and Forward P/E)
    - `OPENAI_API_KEY` (required for Analysis generation)
    - `OPENAI_MODEL` (optional, default `gpt-5`)
 5. Run:
@@ -38,11 +37,6 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
 
 - `GET /` -> serves the single-page UI.
 - `GET /api/positions` -> returns IBKR positions as JSON (`symbol`, `position`, `price`, `avgCost`, `changePercent`, `marketValue`, `unrealizedPnL`, `dailyPnL`, `currency`).
-- `GET /api/watchlist` -> returns watchlist as JSON (`symbol`, `price`, `pe`, `forwardPe`).
-- `POST /api/watchlist` with body `{"symbol":"MSFT"}` -> adds symbol to watchlist.
-- `DELETE /api/watchlist/{symbol}` -> removes symbol.
-- `POST /api/watchlist/import-positions` -> adds all current position symbols to watchlist.
-- `GET /api/debug/finnhub?symbol=MSFT` -> debug Finnhub snapshot parsing (`httpStatus`, `hasMetric`, `pe`, `forwardPe`, key metadata, API key presence).
 - `GET /api/analysis` -> list analyzed symbols (`symbol`, `expected_price`, `upside`, `overall_confidence`).
 - `GET /api/analysis/{symbol}` -> detail for a symbol (`scenarios`, `key_variables`, assumptions + summary fields).
 - `POST /api/analysis` with body `{"symbol":"MSFT"}` -> generates analysis via ChatGPT Thinking Mode and stores normalized rows.
@@ -53,10 +47,6 @@ Local web UI for IBKR positions + watchlist using standard-library `http.server`
 
 `bakingmoney.db` is created automatically with:
 
-- `watchlist(symbol TEXT PRIMARY KEY, created_at TEXT)`
-- `fundamentals_cache(symbol TEXT PRIMARY KEY, pe REAL, forward_pe REAL, updated_at TEXT)`
 - `analysis_symbols(id INTEGER PK, symbol UNIQUE, current_price, expected_price, upside, overall_confidence, assumptions_text, raw_ai_response, timestamps)`
 - `analysis_scenarios(id INTEGER PK, analysis_symbol_id FK, scenario_name, price/cagr ranges, probability, timestamps)`
 - `analysis_key_variables(id INTEGER PK, analysis_symbol_id FK, variable_text, variable_type, confidence, importance, timestamps)`
-
-Finnhub fundamentals are cached for 24 hours.

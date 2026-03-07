@@ -7,13 +7,6 @@ const positionsTableBody = positionsTable.querySelector('tbody');
 const refreshBtn = document.getElementById('refresh-btn');
 const positionSortHeaders = document.querySelectorAll('#positions-table th.sortable');
 
-const watchlistStatusEl = document.getElementById('watchlist-status');
-const watchlistTable = document.getElementById('watchlist-table');
-const watchlistTableBody = watchlistTable.querySelector('tbody');
-const watchlistSymbolInput = document.getElementById('watchlist-symbol-input');
-const addSymbolBtn = document.getElementById('add-symbol-btn');
-const addPositionsBtn = document.getElementById('add-positions-btn');
-
 const analysisStatusEl = document.getElementById('analysis-status');
 const analysisTable = document.getElementById('analysis-table');
 const analysisTableBody = analysisTable.querySelector('tbody');
@@ -38,9 +31,7 @@ let latestAnalysis = [];
 let analysisSort = { key: 'symbol', direction: 'asc' };
 
 function extractErrorMessage(payload, fallback) {
-  if (!payload || typeof payload !== 'object') {
-    return fallback;
-  }
+  if (!payload || typeof payload !== 'object') return fallback;
   const parts = [];
   if (payload.error) parts.push(payload.error);
   if (payload.details) parts.push(payload.details);
@@ -49,31 +40,23 @@ function extractErrorMessage(payload, fallback) {
 }
 
 function formatNumber(value, digits = 2) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return 'N/A';
-  }
+  if (typeof value !== 'number' || Number.isNaN(value)) return 'N/A';
   return value.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
 function formatCurrencyValue(value, currency, digits = 2) {
   const formatted = formatNumber(value, digits);
-  if (!currency) {
-    return formatted;
-  }
+  if (!currency) return formatted;
   return formatted === 'N/A' ? formatted : `${formatted} ${currency}`;
 }
 
 function formatPercent(value) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return 'N/A';
-  }
+  if (typeof value !== 'number' || Number.isNaN(value)) return 'N/A';
   return `${value.toFixed(2)}%`;
 }
 
 function valueClass(value) {
-  if (typeof value !== 'number' || Number.isNaN(value) || value === 0) {
-    return '';
-  }
+  if (typeof value !== 'number' || Number.isNaN(value) || value === 0) return '';
   return value > 0 ? 'pnl-positive' : 'pnl-negative';
 }
 
@@ -83,11 +66,8 @@ function compareValues(left, right, direction = 'asc') {
   if (right == null) return -1;
 
   let result = 0;
-  if (typeof left === 'number' && typeof right === 'number') {
-    result = left - right;
-  } else {
-    result = String(left).localeCompare(String(right));
-  }
+  if (typeof left === 'number' && typeof right === 'number') result = left - right;
+  else result = String(left).localeCompare(String(right));
 
   return direction === 'asc' ? result : -result;
 }
@@ -117,10 +97,10 @@ function updateAnalysisSortHeaderState() {
 }
 
 function renderPositions() {
-  const sortedPositions = sortPositions(latestPositions);
+  const sorted = sortPositions(latestPositions);
   positionsTableBody.innerHTML = '';
 
-  sortedPositions.forEach((position) => {
+  sorted.forEach((position) => {
     const row = document.createElement('tr');
     row.innerHTML = `
       <td>${position.symbol ?? ''}</td>
@@ -153,34 +133,12 @@ function renderAnalysisList() {
   });
 
   analysisTableBody.querySelectorAll('.remove-btn').forEach((button) => {
-    button.addEventListener('click', async () => {
-      await deleteAnalysis(button.dataset.symbol);
-    });
+    button.addEventListener('click', async () => deleteAnalysis(button.dataset.symbol));
   });
 
   analysisTableBody.querySelectorAll('.symbol-link').forEach((button) => {
-    button.addEventListener('click', async () => {
-      await loadAnalysisDetail(button.dataset.symbol);
-    });
+    button.addEventListener('click', async () => loadAnalysisDetail(button.dataset.symbol));
   });
-}
-
-function setView(targetView) {
-  menuItems.forEach((item) => {
-    item.classList.toggle('active', item.dataset.view === targetView);
-  });
-
-  views.forEach((view) => {
-    view.classList.toggle('active', view.id === targetView);
-  });
-
-  if (targetView === 'watchlist') {
-    loadWatchlist();
-  }
-  if (targetView === 'analysis') {
-    showAnalysisList();
-    loadAnalysis();
-  }
 }
 
 function showAnalysisList() {
@@ -188,10 +146,19 @@ function showAnalysisList() {
   analysisDetailView.classList.add('hidden');
 }
 
+function setView(targetView) {
+  menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === targetView));
+  views.forEach((view) => view.classList.toggle('active', view.id === targetView));
+
+  if (targetView === 'analysis') {
+    showAnalysisList();
+    loadAnalysis();
+  }
+  if (targetView === 'positions') loadPositions();
+}
+
 menuItems.forEach((item) => {
-  item.addEventListener('click', () => {
-    setView(item.dataset.view);
-  });
+  item.addEventListener('click', () => setView(item.dataset.view));
 });
 
 async function loadPositions() {
@@ -202,15 +169,10 @@ async function loadPositions() {
   try {
     const response = await fetch('/api/positions');
     const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
 
-    if (!response.ok) {
-      throw new Error(extractErrorMessage(payload, 'Request failed'));
-    }
-
-    const positions = payload.positions || [];
-    latestPositions = positions;
-
-    if (positions.length === 0) {
+    latestPositions = payload.positions || [];
+    if (latestPositions.length === 0) {
       positionsTableBody.innerHTML = '';
       positionsStatusEl.textContent = 'No positions found.';
       return;
@@ -218,61 +180,11 @@ async function loadPositions() {
 
     updateSortHeaderState();
     renderPositions();
-
-    positionsStatusEl.textContent = `Loaded ${positions.length} position(s).`;
+    positionsStatusEl.textContent = `Loaded ${latestPositions.length} position(s).`;
     positionsTable.classList.remove('hidden');
   } catch (error) {
     positionsStatusEl.textContent = `Error: ${error.message}`;
     positionsStatusEl.className = 'status error';
-  }
-}
-
-async function loadWatchlist() {
-  watchlistStatusEl.textContent = 'Loading watchlist…';
-  watchlistStatusEl.className = 'status';
-  watchlistTable.classList.add('hidden');
-
-  try {
-    const response = await fetch('/api/watchlist');
-    const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(extractErrorMessage(payload, 'Request failed'));
-    }
-
-    const items = payload.watchlist || [];
-    watchlistTableBody.innerHTML = '';
-
-    if (items.length === 0) {
-      watchlistStatusEl.textContent = 'Watchlist is empty.';
-      return;
-    }
-
-    items.forEach((item) => {
-      const row = document.createElement('tr');
-      row.innerHTML = `
-        <td>${item.symbol ?? ''}</td>
-        <td title="${item.warning || ''}">${formatCurrencyValue(item.price, 'USD')}</td>
-        <td>${formatNumber(item.pe)}</td>
-        <td>${formatNumber(item.forwardPe)}</td>
-        <td><button class="remove-btn" data-symbol="${item.symbol}">Remove</button></td>
-      `;
-      watchlistTableBody.appendChild(row);
-    });
-
-    watchlistTableBody.querySelectorAll('.remove-btn').forEach((button) => {
-      button.addEventListener('click', async () => {
-        const symbol = button.dataset.symbol;
-        await removeSymbol(symbol);
-      });
-    });
-
-    const missingPriceWarnings = items.filter((item) => item.warning).length;
-    watchlistStatusEl.textContent = `Loaded ${items.length} watchlist item(s).${missingPriceWarnings ? ` ${missingPriceWarnings} missing price(s): delayed/unavailable.` : ''}`;
-    watchlistTable.classList.remove('hidden');
-  } catch (error) {
-    watchlistStatusEl.textContent = `Error: ${error.message}`;
-    watchlistStatusEl.className = 'status error';
   }
 }
 
@@ -284,15 +196,13 @@ async function loadAnalysis() {
   try {
     const response = await fetch('/api/analysis');
     const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(extractErrorMessage(payload, 'Request failed'));
-    }
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
 
     latestAnalysis = payload.analysis || [];
+    analysisTableBody.innerHTML = '';
+
     if (latestAnalysis.length === 0) {
       analysisStatusEl.textContent = 'Analysis is empty.';
-      analysisTableBody.innerHTML = '';
       return;
     }
 
@@ -303,34 +213,6 @@ async function loadAnalysis() {
   } catch (error) {
     analysisStatusEl.textContent = `Error: ${error.message}`;
     analysisStatusEl.className = 'status error';
-  }
-}
-
-async function addSymbol() {
-  const symbol = watchlistSymbolInput.value.trim().toUpperCase();
-  if (!symbol) {
-    return;
-  }
-
-  watchlistStatusEl.textContent = 'Adding symbol…';
-
-  try {
-    const response = await fetch('/api/watchlist', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol }),
-    });
-
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(extractErrorMessage(payload, 'Unable to add symbol'));
-    }
-
-    watchlistSymbolInput.value = '';
-    await loadWatchlist();
-  } catch (error) {
-    watchlistStatusEl.textContent = `Error: ${error.message}`;
-    watchlistStatusEl.className = 'status error';
   }
 }
 
@@ -348,9 +230,7 @@ async function addAnalysisSymbol() {
       body: JSON.stringify({ symbol }),
     });
     const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(extractErrorMessage(payload, 'Unable to add analysis'));
-    }
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to add analysis'));
 
     analysisSymbolInput.value = '';
     await loadAnalysis();
@@ -386,16 +266,13 @@ async function loadAnalysisDetail(symbol) {
   analysisDetailStatus.textContent = `Loading ${symbol} detail…`;
   analysisDetailStatus.className = 'status';
   analysisSummary.classList.add('hidden');
-
   analysisListView.classList.add('hidden');
   analysisDetailView.classList.remove('hidden');
 
   try {
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`);
     const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(extractErrorMessage(payload, 'Unable to load details'));
-    }
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load details'));
 
     const item = payload.analysis;
     analysisDetailTitle.textContent = `Analysis: ${item.symbol}`;
@@ -451,53 +328,11 @@ async function deleteAnalysis(symbol) {
   try {
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`, { method: 'DELETE' });
     const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(extractErrorMessage(payload, 'Unable to delete'));
-    }
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to delete'));
     await loadAnalysis();
   } catch (error) {
     analysisStatusEl.textContent = `Error: ${error.message}`;
     analysisStatusEl.className = 'status error';
-  }
-}
-
-async function removeSymbol(symbol) {
-  watchlistStatusEl.textContent = `Removing ${symbol}…`;
-
-  try {
-    const response = await fetch(`/api/watchlist/${encodeURIComponent(symbol)}`, {
-      method: 'DELETE',
-    });
-
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(extractErrorMessage(payload, 'Unable to remove symbol'));
-    }
-
-    await loadWatchlist();
-  } catch (error) {
-    watchlistStatusEl.textContent = `Error: ${error.message}`;
-    watchlistStatusEl.className = 'status error';
-  }
-}
-
-async function importFromPositions() {
-  watchlistStatusEl.textContent = 'Adding symbols from positions…';
-
-  try {
-    const response = await fetch('/api/watchlist/import-positions', {
-      method: 'POST',
-    });
-
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(extractErrorMessage(payload, 'Unable to import positions'));
-    }
-
-    await loadWatchlist();
-  } catch (error) {
-    watchlistStatusEl.textContent = `Error: ${error.message}`;
-    watchlistStatusEl.className = 'status error';
   }
 }
 
@@ -506,11 +341,8 @@ positionSortHeaders.forEach((header) => {
     const { sortKey } = header.dataset;
     if (!sortKey) return;
 
-    if (positionSort.key === sortKey) {
-      positionSort.direction = positionSort.direction === 'asc' ? 'desc' : 'asc';
-    } else {
-      positionSort = { key: sortKey, direction: 'asc' };
-    }
+    if (positionSort.key === sortKey) positionSort.direction = positionSort.direction === 'asc' ? 'desc' : 'asc';
+    else positionSort = { key: sortKey, direction: 'asc' };
 
     updateSortHeaderState();
     renderPositions();
@@ -522,11 +354,8 @@ analysisSortHeaders.forEach((header) => {
     const { sortKey } = header.dataset;
     if (!sortKey) return;
 
-    if (analysisSort.key === sortKey) {
-      analysisSort.direction = analysisSort.direction === 'asc' ? 'desc' : 'asc';
-    } else {
-      analysisSort = { key: sortKey, direction: 'asc' };
-    }
+    if (analysisSort.key === sortKey) analysisSort.direction = analysisSort.direction === 'asc' ? 'desc' : 'asc';
+    else analysisSort = { key: sortKey, direction: 'asc' };
 
     updateAnalysisSortHeaderState();
     renderAnalysisList();
@@ -534,22 +363,13 @@ analysisSortHeaders.forEach((header) => {
 });
 
 refreshBtn.addEventListener('click', loadPositions);
-addSymbolBtn.addEventListener('click', addSymbol);
-addPositionsBtn.addEventListener('click', importFromPositions);
-watchlistSymbolInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    addSymbol();
-  }
-});
 analysisAddBtn.addEventListener('click', addAnalysisSymbol);
 analysisImportBtn.addEventListener('click', importAnalysisFromPositions);
 analysisSymbolInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    addAnalysisSymbol();
-  }
+  if (event.key === 'Enter') addAnalysisSymbol();
 });
 analysisBackBtn.addEventListener('click', showAnalysisList);
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();
-loadPositions();
+setView('analysis');

@@ -38,28 +38,64 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower() or "medium"
 OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
+ANALYSIS_PROMPT_SETTING_KEY_COMPANY_NAME = "analysis_prompt_company_name"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
 ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
 
-DEFAULT_PROMPT_BUSINESS_MODEL = """You are an equity analyst.
+DEFAULT_PROMPT_COMPANY_NAME = """You are an equity analyst.
 
-Based on the company context below, identify what the company most likely does, how it makes money, and what economic engine drives its revenue and margins over a 5-year horizon.
+Identify the most likely publicly traded company associated with the stock ticker below.
 
-Company context:
+Ticker:
 - Symbol: $Symbol
-- Current price: $Price USD
+
+Instructions:
+- Interpret the ticker as a stock ticker for a publicly traded company.
+- Return the primary company most commonly associated with this ticker.
+- Do not provide a business description here.
+- Return only the company name.
+- Keep the answer concise and practical.
+- Do not ask for more information.
 
 Return ONLY valid JSON in this exact structure:
 {
   "symbol": "$Symbol",
+  "company_name": "company name"
+}
+
+Rules:
+- company_name must be a short company name only.
+- JSON only.
+- No markdown.
+- No commentary outside JSON."""
+
+DEFAULT_PROMPT_BUSINESS_MODEL = """You are an equity analyst.
+
+Describe the business model of the publicly traded company below.
+
+Company context:
+- Symbol: $Symbol
+- Company name: $CompanyName
+- Current price: $Price USD
+
+Instructions:
+- Explain what the company does in the real world.
+- Explain how it makes money.
+- Explain the core economic engine that drives revenue and margins.
+- Keep the description practical, concise, and business-focused.
+- Focus on the operating business, not stock valuation.
+
+Return ONLY valid JSON in this exact structure:
+{
+  "symbol": "$Symbol",
+  "company_name": "$CompanyName",
   "business_model": "concise description of what the company does, how it makes money, and the core economic engine",
   "business_summary": "short summary of the main revenue drivers, cost drivers, and major risks"
 }
 
 Rules:
 - Be specific and practical.
-- Focus on the business model, not stock valuation commentary.
 - business_model should be concise but concrete.
 - business_summary should be short and useful for later analysis.
 - JSON only.
@@ -72,6 +108,7 @@ Using the business model below, identify the few most important company-specific
 
 Company context:
 - Symbol: $Symbol
+- Company name: $CompanyName
 - Current price: $Price USD
 - Business model: $BusinessModel
 
@@ -112,6 +149,7 @@ DEFAULT_PROMPT_SCENARIOS = """You are an equity analyst building a 5-year stock 
 
 Company context:
 - Symbol: $Symbol
+- Company name: $CompanyName
 - Current price: $Price USD
 - Business model: $BusinessModel
 - Key variables: $KeyVariables
@@ -146,19 +184,24 @@ Rules:
 - No commentary outside JSON."""
 
 PROMPT_TEMPLATE_CONFIG = {
+    ANALYSIS_PROMPT_SETTING_KEY_COMPANY_NAME: {
+        "default": DEFAULT_PROMPT_COMPANY_NAME,
+        "required_vars": ["$Symbol"],
+    },
     ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL: {
         "default": DEFAULT_PROMPT_BUSINESS_MODEL,
-        "required_vars": ["$Symbol"],
+        "required_vars": ["$Symbol", "$CompanyName"],
     },
     ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES: {
         "default": DEFAULT_PROMPT_KEY_VARIABLES,
-        "required_vars": ["$Symbol", "$Price", "$BusinessModel"],
+        "required_vars": ["$Symbol", "$CompanyName", "$BusinessModel"],
     },
     ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS: {
         "default": DEFAULT_PROMPT_SCENARIOS,
-        "required_vars": ["$Symbol", "$Price", "$BusinessModel", "$KeyVariables"],
+        "required_vars": ["$Symbol", "$CompanyName", "$BusinessModel", "$KeyVariables"],
     },
 }
+
 
 
 _ib = None
@@ -296,8 +339,12 @@ def get_prompt_template(conn, key):
     ).fetchone()
 
     if row and row["value"]:
-        logger.info("Using custom prompt template key=%s", key)
-        return row["value"], "custom"
+        try:
+            validate_prompt_template(key, row["value"])
+            logger.info("Using custom prompt template key=%s", key)
+            return row["value"], "custom"
+        except ValueError as exc:
+            logger.warning("Invalid custom prompt template key=%s, falling back to default (%s)", key, exc)
 
     logger.info("Using default prompt template key=%s", key)
     return get_default_prompt_template(key), "default"
@@ -353,14 +400,16 @@ def format_key_variables_for_prompt(key_variables):
     return json.dumps(key_variables, separators=(",", ":"), ensure_ascii=False)
 
 
-def build_prompt_context(symbol, price=None, business_model="", key_variables=None):
+def build_prompt_context(symbol, price=None, company_name="", business_model="", key_variables=None):
     symbol_value = symbol or "unknown"
     price_value = f"{price:.2f}" if isinstance(price, (int, float)) and math.isfinite(price) else "unknown"
+    company_name_value = company_name or "unknown"
     business_value = business_model or ""
     key_vars_value = format_key_variables_for_prompt(key_variables or [])
     return {
         "$Symbol": symbol_value,
         "$Price": price_value,
+        "$CompanyName": company_name_value,
         "$BusinessModel": business_value,
         "$KeyVariables": key_vars_value,
     }
@@ -435,6 +484,7 @@ def init_db():
             )
             """
         )
+        ensure_column_exists(conn, "analysis_symbols", "company_name", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_model_text", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_summary_text", "TEXT")
         conn.commit()
@@ -535,11 +585,12 @@ def get_company_context(symbol):
     return context
 
 
-def build_analysis_prompt(symbol, current_price=None, template=None, business_model="", key_variables=None):
+def build_analysis_prompt(symbol, current_price=None, template=None, company_name="", business_model="", key_variables=None):
     base_template = template if template is not None else DEFAULT_PROMPT_SCENARIOS
     context = build_prompt_context(
         symbol=symbol,
         price=current_price,
+        company_name=company_name,
         business_model=business_model,
         key_variables=key_variables,
     )
@@ -626,13 +677,35 @@ def request_ai_step(step_name, prompt_text, json_schema):
     return payload
 
 
+def validate_step0_company_name(payload):
+    symbol = payload.get("symbol")
+    company_name = payload.get("company_name")
+
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise AnalysisValidationError("step0.symbol is required")
+    if not isinstance(company_name, str) or not company_name.strip():
+        raise AnalysisValidationError("step0.company_name is required")
+
+    cleaned_name = company_name.strip()
+    if len(cleaned_name) > 120:
+        raise AnalysisValidationError("step0.company_name must be concise")
+
+    return {
+        "symbol": symbol.strip().upper(),
+        "company_name": cleaned_name,
+    }
+
+
 def validate_step1_business_model(payload):
     symbol = payload.get("symbol")
+    company_name = payload.get("company_name")
     business_model = payload.get("business_model")
     business_summary = payload.get("business_summary")
 
     if not isinstance(symbol, str) or not symbol.strip():
         raise AnalysisValidationError("step1.symbol is required")
+    if company_name is not None and (not isinstance(company_name, str) or not company_name.strip()):
+        raise AnalysisValidationError("step1.company_name must be non-empty when provided")
     if not isinstance(business_model, str) or not business_model.strip():
         raise AnalysisValidationError("step1.business_model is required")
     if not isinstance(business_summary, str) or not business_summary.strip():
@@ -640,6 +713,7 @@ def validate_step1_business_model(payload):
 
     return {
         "symbol": symbol.strip().upper(),
+        "company_name": company_name.strip() if isinstance(company_name, str) else None,
         "business_model": business_model.strip(),
         "business_summary": business_summary.strip(),
     }
@@ -698,12 +772,25 @@ def request_ai_analysis(symbol, current_price=None):
         conn.close()
 
     logger.info(
-        "Prompt sources business_model=%s key_variables=%s scenarios=%s",
+        "Prompt sources company_name=%s business_model=%s key_variables=%s scenarios=%s",
+        sources[ANALYSIS_PROMPT_SETTING_KEY_COMPANY_NAME],
         sources[ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
         sources[ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES],
         sources[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
     )
 
+    schema_step0 = {
+        "name": "analysis_company_name",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "company_name": {"type": "string"},
+            },
+            "required": ["symbol", "company_name"],
+        },
+    }
     schema_step1 = {
         "name": "analysis_business_model",
         "schema": {
@@ -711,10 +798,11 @@ def request_ai_analysis(symbol, current_price=None):
             "additionalProperties": False,
             "properties": {
                 "symbol": {"type": "string"},
+                "company_name": {"type": "string"},
                 "business_model": {"type": "string"},
                 "business_summary": {"type": "string"},
             },
-            "required": ["symbol", "business_model", "business_summary"],
+            "required": ["symbol", "company_name", "business_model", "business_summary"],
         },
     }
     schema_step2 = {
@@ -775,7 +863,22 @@ def request_ai_analysis(symbol, current_price=None):
         },
     }
 
-    prompt1 = build_analysis_prompt(symbol, effective_price, template=templates[ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL])
+    logger.info("Starting AI step=company_name symbol=%s", symbol)
+    prompt0 = build_analysis_prompt(
+        symbol,
+        effective_price,
+        template=templates[ANALYSIS_PROMPT_SETTING_KEY_COMPANY_NAME],
+    )
+    step0_raw = request_ai_step("company_name", prompt0, schema_step0)
+    step0 = validate_step0_company_name(step0_raw)
+    logger.info("AI step=company_name completed symbol=%s company_name=%s", symbol, step0["company_name"])
+
+    prompt1 = build_analysis_prompt(
+        symbol,
+        effective_price,
+        template=templates[ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
+        company_name=step0["company_name"],
+    )
     step1_raw = request_ai_step("business_model", prompt1, schema_step1)
     step1 = validate_step1_business_model(step1_raw)
 
@@ -784,6 +887,7 @@ def request_ai_analysis(symbol, current_price=None):
         symbol,
         effective_price,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES],
+        company_name=step0["company_name"],
         business_model=business_for_prompt,
     )
     step2_raw = request_ai_step("key_variables", prompt2, schema_step2)
@@ -793,6 +897,7 @@ def request_ai_analysis(symbol, current_price=None):
         symbol,
         effective_price,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
+        company_name=step0["company_name"],
         business_model=business_for_prompt,
         key_variables=step2["key_variables"],
     )
@@ -801,10 +906,12 @@ def request_ai_analysis(symbol, current_price=None):
 
     return {
         "effective_price": effective_price,
+        "company_name": step0["company_name"],
         "business_model": step1,
         "key_variables": step2["key_variables"],
         "parsed": parsed,
         "raw": {
+            "step0": step0_raw,
             "step1": step1_raw,
             "step2": step2_raw,
             "step3": step3_raw,
@@ -861,7 +968,7 @@ def list_analysis_symbols(conn):
 def get_analysis_detail(conn, symbol):
     row = conn.execute(
         """
-        SELECT id, symbol, current_price, expected_price, upside, overall_confidence, assumptions_text,
+        SELECT id, symbol, company_name, current_price, expected_price, upside, overall_confidence, assumptions_text,
                business_model_text, business_summary_text, created_at, updated_at
         FROM analysis_symbols
         WHERE symbol = ?
@@ -893,6 +1000,7 @@ def get_analysis_detail(conn, symbol):
 
     return {
         "symbol": row["symbol"],
+        "company_name": row["company_name"],
         "current_price": row["current_price"],
         "expected_price": row["expected_price"],
         "upside": row["upside"],
@@ -924,11 +1032,12 @@ def upsert_analysis(conn, symbol, current_price=None):
         conn.execute(
             """
             INSERT INTO analysis_symbols (
-                symbol, current_price, expected_price, upside, overall_confidence,
+                symbol, company_name, current_price, expected_price, upside, overall_confidence,
                 assumptions_text, business_model_text, business_summary_text,
                 raw_ai_response, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol) DO UPDATE SET
+                company_name = excluded.company_name,
                 current_price = excluded.current_price,
                 expected_price = excluded.expected_price,
                 upside = excluded.upside,
@@ -941,6 +1050,7 @@ def upsert_analysis(conn, symbol, current_price=None):
             """,
             (
                 symbol,
+                ai_result["company_name"],
                 ai_result["effective_price"],
                 expected_price,
                 upside,
@@ -1340,7 +1450,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-        context = build_prompt_context(symbol=symbol, price=price)
+        context = build_prompt_context(symbol=symbol, price=price, company_name="resolved company name")
         preview = {
             key: render_prompt_template(template, context)
             for key, template in templates.items()

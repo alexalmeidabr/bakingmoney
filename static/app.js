@@ -25,6 +25,7 @@ const analysisScenariosBody = document.querySelector('#analysis-scenarios-table 
 const analysisVariablesBody = document.querySelector('#analysis-variables-table tbody');
 
 const configurationStatusEl = document.getElementById('configuration-status');
+const configPromptCompanyNameEl = document.getElementById('config-prompt-company-name');
 const configPromptBusinessModelEl = document.getElementById('config-prompt-business-model');
 const configPromptKeyVariablesEl = document.getElementById('config-prompt-key-variables');
 const configPromptScenariosEl = document.getElementById('config-prompt-scenarios');
@@ -291,6 +292,7 @@ async function loadAnalysisDetail(symbol) {
     analysisSummary.innerHTML = `
       <div class="summary-grid">
         <div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div>
+        <div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div>
         <div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div>
         <div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div>
         <div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div>
@@ -361,10 +363,11 @@ async function loadConfiguration() {
 
     const templates = payload.templates || {};
     const sources = payload.sources || {};
+    configPromptCompanyNameEl.value = templates.analysis_prompt_company_name || '';
     configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
     configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
     configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
-    configurationStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
+    configurationStatusEl.textContent = `Loaded prompt templates (company=${sources.analysis_prompt_company_name || 'default'}, business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
   } catch (error) {
     configurationStatusEl.textContent = `Error: ${error.message}`;
     configurationStatusEl.className = 'status error';
@@ -380,6 +383,7 @@ async function saveConfiguration() {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ templates: {
+        analysis_prompt_company_name: configPromptCompanyNameEl.value,
         analysis_prompt_business_model: configPromptBusinessModelEl.value,
         analysis_prompt_key_variables: configPromptKeyVariablesEl.value,
         analysis_prompt_scenarios: configPromptScenariosEl.value,
@@ -405,6 +409,7 @@ async function resetConfiguration() {
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset configuration'));
 
     const templates = payload.templates || {};
+    configPromptCompanyNameEl.value = templates.analysis_prompt_company_name || '';
     configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
     configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
     configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
@@ -434,7 +439,7 @@ async function previewConfiguration() {
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to preview prompt'));
 
     const rendered = payload.rendered_prompts || {};
-    configPreviewOutput.textContent = `Symbol: ${payload.symbol}\nPrice: ${payload.price}\n\n[Business Model Prompt]\n${rendered.analysis_prompt_business_model || ''}\n\n[Key Variables Prompt]\n${rendered.analysis_prompt_key_variables || ''}\n\n[Scenarios Prompt]\n${rendered.analysis_prompt_scenarios || ''}`;
+    configPreviewOutput.textContent = `Symbol: ${payload.symbol}\nPrice: ${payload.price}\n\n[Company Name Prompt]\n${rendered.analysis_prompt_company_name || ''}\n\n[Business Model Prompt]\n${rendered.analysis_prompt_business_model || ''}\n\n[Key Variables Prompt]\n${rendered.analysis_prompt_key_variables || ''}\n\n[Scenarios Prompt]\n${rendered.analysis_prompt_scenarios || ''}`;
   } catch (error) {
     configPreviewOutput.textContent = `Error: ${error.message}`;
   }

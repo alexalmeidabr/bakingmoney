@@ -107,20 +107,26 @@
           <p id="configuration-status" class="status">Loading configuration…</p>
 
           <section class="detail-card">
+            <h3>Identify Company Name Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required)</p>
+            <textarea id="config-prompt-company-name" class="config-textarea" rows="10"></textarea>
+          </section>
+
+          <section class="detail-card">
             <h3>Identify Business Model Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$Price</strong> (optional)</p>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional)</p>
             <textarea id="config-prompt-business-model" class="config-textarea" rows="14"></textarea>
           </section>
 
           <section class="detail-card">
             <h3>Identify Key Variables Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong></p>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong></p>
             <textarea id="config-prompt-key-variables" class="config-textarea" rows="14"></textarea>
           </section>
 
           <section class="detail-card">
             <h3>Build Scenarios Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
             <textarea id="config-prompt-scenarios" class="config-textarea" rows="14"></textarea>
             <div class="table-actions config-actions">
               <button id="config-save-btn">Save All</button>

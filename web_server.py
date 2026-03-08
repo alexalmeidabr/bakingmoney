@@ -148,7 +148,7 @@ Rules:
 PROMPT_TEMPLATE_CONFIG = {
     ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL: {
         "default": DEFAULT_PROMPT_BUSINESS_MODEL,
-        "required_vars": ["$Symbol", "$Price"],
+        "required_vars": ["$Symbol"],
     },
     ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES: {
         "default": DEFAULT_PROMPT_KEY_VARIABLES,

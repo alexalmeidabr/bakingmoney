@@ -107,12 +107,24 @@
           <p id="configuration-status" class="status">Loading configuration…</p>
 
           <section class="detail-card">
-            <h3>Analysis Prompt Template</h3>
-            <p class="status">Available variables: <strong>$Symbol</strong> = stock symbol, <strong>$Price</strong> = current price from TWS/IBKR.</p>
-            <textarea id="config-prompt-template" class="config-textarea" rows="18"></textarea>
+            <h3>Identify Business Model Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong>, <strong>$Price</strong></p>
+            <textarea id="config-prompt-business-model" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Identify Key Variables Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong>, <strong>$Price</strong>, <strong>$BusinessModel</strong></p>
+            <textarea id="config-prompt-key-variables" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Build Scenarios Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong>, <strong>$Price</strong>, <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
+            <textarea id="config-prompt-scenarios" class="config-textarea" rows="14"></textarea>
             <div class="table-actions config-actions">
-              <button id="config-save-btn">Save</button>
-              <button id="config-reset-btn">Reset to Default</button>
+              <button id="config-save-btn">Save All</button>
+              <button id="config-reset-btn">Reset All to Default</button>
             </div>
           </section>
 
@@ -120,7 +132,7 @@
             <h3>Preview</h3>
             <div class="table-actions">
               <input id="config-preview-symbol-input" type="text" placeholder="e.g. NBIS" maxlength="16" />
-              <button id="config-preview-btn">Preview Rendered Prompt</button>
+              <button id="config-preview-btn">Preview Rendered Prompts</button>
             </div>
             <pre id="config-preview-output" class="config-preview"></pre>
           </section>

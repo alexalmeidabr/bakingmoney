@@ -38,58 +38,128 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower() or "medium"
 OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
-ANALYSIS_PROMPT_SETTING_KEY = "analysis_prompt_template"
-DEFAULT_ANALYSIS_PROMPT_TEMPLATE = """You are an experienced equity research analyst building a 5-year scenario analysis for a publicly traded company.
+ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
+ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
+ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
+
+DEFAULT_PROMPT_BUSINESS_MODEL = """You are an equity analyst.
+
+Based on the company context below, identify what the company most likely does, how it makes money, and what economic engine drives its revenue and margins over a 5-year horizon.
 
 Company context:
 - Symbol: $Symbol
 - Current price: $Price USD
 
-Task:
-1. Infer what the company most likely does, its business model, and the economic engine that drives revenue, margins, and valuation.
-2. Identify the few company-specific factors that are most likely to materially drive the stock over the next 5 years.
-3. Build Bear, Base, and Bull stock price scenarios, for a 5 years horizon, based on those drivers.
-
-Guidance:
-- Focus on company-specific business drivers, not generic market commentary.
-- Prefer factors such as product adoption, demand growth, pricing power, margins, utilization, capacity expansion, technology advantage, customer concentration, contract pipeline, competitive position, capital intensity, execution risk, or dilution risk when relevant.
-- Avoid generic variables such as GDP growth, interest rates, regulation, legal risk, or valuation multiples unless they are clearly among the top drivers for this company.
-- Do not try to cover every possible factor. Focus on the few that matter most.
-
-Definitions:
-- A key variable is one of the most important company-specific factors that could materially push the stock price up or down over 5 years.
-- Confidence means how strong the current evidence is that the variable is acting in that direction now.
-- Importance means how much that variable could influence the stock price over the 5-year horizon.
-
-Return ONLY valid JSON using this exact structure:
-
+Return ONLY valid JSON in this exact structure:
 {
   "symbol": "$Symbol",
-  "assumptions": "short explanation of the thesis behind the scenarios",
-  "scenarios": [
-    {"name": "Bear", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number},
-    {"name": "Base", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number},
-    {"name": "Bull", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}
-  ],
+  "business_model": "concise description of what the company does, how it makes money, and the core economic engine",
+  "business_summary": "short summary of the main revenue drivers, cost drivers, and major risks"
+}
+
+Rules:
+- Be specific and practical.
+- Focus on the business model, not stock valuation commentary.
+- business_model should be concise but concrete.
+- business_summary should be short and useful for later analysis.
+- JSON only.
+- No markdown.
+- No commentary outside JSON."""
+
+DEFAULT_PROMPT_KEY_VARIABLES = """You are an equity analyst.
+
+Using the business model below, identify the few most important company-specific variables that could materially push the stock price up or down over the next 5 years.
+
+Company context:
+- Symbol: $Symbol
+- Current price: $Price USD
+- Business model: $BusinessModel
+
+Definitions:
+- A key variable is one of the most important company-specific factors that could materially move the stock price over 5 years.
+- Confidence means how strong the current evidence is that this variable is acting in that direction now.
+- Importance means how much this variable could influence the stock price over the 5-year horizon.
+
+Guidance:
+- Prefer company-specific drivers such as demand growth, product adoption, pricing power, margins, utilization, capacity expansion, customer concentration, contract pipeline, technology leadership, competitive position, execution risk, capital intensity, or dilution risk when relevant.
+- Avoid generic macro variables such as GDP growth, interest rates, regulation, legal risk, or valuation multiples unless they are truly dominant drivers for this specific company.
+- Focus on the few variables that matter most.
+
+Return ONLY valid JSON in this exact structure:
+{
+  "symbol": "$Symbol",
   "key_variables": [
-    {"variable": "text", "type": "Bullish|Bearish", "confidence": integer_0_to_10, "importance": integer_0_to_10}
+    {
+      "variable": "text",
+      "type": "Bullish",
+      "confidence": 0,
+      "importance": 0
+    }
   ]
 }
 
 Rules:
-- Exactly 3 scenarios in this order: Bear, Base, Bull
-- Probabilities must sum to 100
-- Provide 6 to 8 key variables
-- Most key variables should be company-specific business drivers
-- type must be exactly Bullish or Bearish
-- confidence must be an integer from 0 to 10
-- importance must be an integer from 0 to 10
-- assumptions should be concise and specific to the company
-- If current price is known, use it as an anchor, but do not force the Base case too close to the current price if the business profile justifies otherwise
-- Use realistic ranges
-- JSON only
-- No markdown
-- No commentary outside JSON"""
+- Return 6 to 8 key variables.
+- Most variables should be company-specific business drivers.
+- type must be exactly Bullish or Bearish.
+- confidence must be an integer from 0 to 10.
+- importance must be an integer from 0 to 10.
+- JSON only.
+- No markdown.
+- No commentary outside JSON."""
+
+DEFAULT_PROMPT_SCENARIOS = """You are an equity analyst building a 5-year stock scenario analysis.
+
+Company context:
+- Symbol: $Symbol
+- Current price: $Price USD
+- Business model: $BusinessModel
+- Key variables: $KeyVariables
+
+Task:
+Build Bear, Base, and Bull stock price scenarios over a 5-year horizon using the business model and key variables above.
+
+Definitions:
+- Bear = pessimistic but plausible outcome
+- Base = most likely central outcome
+- Bull = optimistic but plausible outcome
+
+Return ONLY valid JSON in this exact structure:
+{
+  "symbol": "$Symbol",
+  "assumptions": "short explanation of the thesis behind the scenarios",
+  "scenarios": [
+    {"name": "Bear", "price_low": 0, "price_high": 0, "cagr_low": 0, "cagr_high": 0, "probability": 0},
+    {"name": "Base", "price_low": 0, "price_high": 0, "cagr_low": 0, "cagr_high": 0, "probability": 0},
+    {"name": "Bull", "price_low": 0, "price_high": 0, "cagr_low": 0, "cagr_high": 0, "probability": 0}
+  ]
+}
+
+Rules:
+- Exactly 3 scenarios in this order: Bear, Base, Bull.
+- Probabilities must sum to 100.
+- Use realistic price ranges and CAGR ranges.
+- If current price is known, use it as an anchor, but do not force the Base case too close to the current price if the business profile justifies otherwise.
+- assumptions should be concise and reflect the business model and key variables.
+- JSON only.
+- No markdown.
+- No commentary outside JSON."""
+
+PROMPT_TEMPLATE_CONFIG = {
+    ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL: {
+        "default": DEFAULT_PROMPT_BUSINESS_MODEL,
+        "required_vars": ["$Symbol", "$Price"],
+    },
+    ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES: {
+        "default": DEFAULT_PROMPT_KEY_VARIABLES,
+        "required_vars": ["$Symbol", "$Price", "$BusinessModel"],
+    },
+    ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS: {
+        "default": DEFAULT_PROMPT_SCENARIOS,
+        "required_vars": ["$Symbol", "$Price", "$BusinessModel", "$KeyVariables"],
+    },
+}
+
 
 _ib = None
 logger = logging.getLogger(__name__)
@@ -201,30 +271,50 @@ def get_db_connection():
     return conn
 
 
-def validate_analysis_prompt_template(template):
+def get_default_prompt_template(key):
+    if key not in PROMPT_TEMPLATE_CONFIG:
+        raise ValueError(f"Unknown prompt template key: {key}")
+    return PROMPT_TEMPLATE_CONFIG[key]["default"]
+
+
+def validate_prompt_template(key, template):
+    if key not in PROMPT_TEMPLATE_CONFIG:
+        raise ValueError(f"Unknown prompt template key: {key}")
     if not isinstance(template, str) or not template.strip():
         raise ValueError("Prompt template cannot be empty")
-    if "$Symbol" not in template:
-        raise ValueError("Prompt template must include $Symbol")
-    if "$Price" not in template:
-        raise ValueError("Prompt template must include $Price")
+
+    required_vars = PROMPT_TEMPLATE_CONFIG[key]["required_vars"]
+    missing = [var for var in required_vars if var not in template]
+    if missing:
+        raise ValueError(f"Prompt template is missing required variable(s): {', '.join(missing)}")
 
 
-def get_analysis_prompt_template(conn):
+def get_prompt_template(conn, key):
     row = conn.execute(
         "SELECT value FROM app_settings WHERE key = ?",
-        (ANALYSIS_PROMPT_SETTING_KEY,),
+        (key,),
     ).fetchone()
+
     if row and row["value"]:
-        logger.info("Using custom analysis prompt template")
+        logger.info("Using custom prompt template key=%s", key)
         return row["value"], "custom"
 
-    logger.info("Using default analysis prompt template")
-    return DEFAULT_ANALYSIS_PROMPT_TEMPLATE, "default"
+    logger.info("Using default prompt template key=%s", key)
+    return get_default_prompt_template(key), "default"
 
 
-def save_analysis_prompt_template(conn, template):
-    validate_analysis_prompt_template(template)
+def get_all_prompt_templates(conn):
+    templates = {}
+    sources = {}
+    for key in PROMPT_TEMPLATE_CONFIG.keys():
+        template, source = get_prompt_template(conn, key)
+        templates[key] = template
+        sources[key] = source
+    return templates, sources
+
+
+def save_prompt_template(conn, key, template):
+    validate_prompt_template(key, template)
     conn.execute(
         """
         INSERT INTO app_settings (key, value, updated_at)
@@ -233,28 +323,52 @@ def save_analysis_prompt_template(conn, template):
           value = excluded.value,
           updated_at = excluded.updated_at
         """,
-        (ANALYSIS_PROMPT_SETTING_KEY, template, utc_now_iso()),
+        (key, template, utc_now_iso()),
     )
     conn.commit()
 
 
-def render_analysis_prompt(template, symbol, price):
-    symbol_value = symbol or "unknown"
-    if isinstance(price, (int, float)) and math.isfinite(price):
-        price_value = f"{price:.2f}"
-    else:
-        price_value = "unknown"
+def reset_prompt_template(conn, key):
+    save_prompt_template(conn, key, get_default_prompt_template(key))
 
-    rendered = template.replace("$Symbol", symbol_value)
-    rendered = rendered.replace("$Price", price_value)
+
+def render_prompt_template(template, context):
+    rendered = template
+    for placeholder, value in context.items():
+        rendered = rendered.replace(placeholder, value)
 
     logger.info(
         "Rendered prompt for symbol=%s with price=%s",
-        symbol_value,
-        price_value,
+        context.get("$Symbol", "unknown"),
+        context.get("$Price", "unknown"),
     )
     logger.debug("Rendered prompt body: %s", rendered)
-    return rendered, price_value
+    return rendered
+
+
+def format_key_variables_for_prompt(key_variables):
+    return json.dumps(key_variables, separators=(",", ":"), ensure_ascii=False)
+
+
+def build_prompt_context(symbol, price=None, business_model="", key_variables=None):
+    symbol_value = symbol or "unknown"
+    price_value = f"{price:.2f}" if isinstance(price, (int, float)) and math.isfinite(price) else "unknown"
+    business_value = business_model or ""
+    key_vars_value = format_key_variables_for_prompt(key_variables or [])
+    return {
+        "$Symbol": symbol_value,
+        "$Price": price_value,
+        "$BusinessModel": business_value,
+        "$KeyVariables": key_vars_value,
+    }
+
+
+def ensure_column_exists(conn, table_name, column_name, column_definition):
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    existing = {row["name"] for row in rows}
+    if column_name in existing:
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
 
 
 def init_db():
@@ -318,6 +432,8 @@ def init_db():
             )
             """
         )
+        ensure_column_exists(conn, "analysis_symbols", "business_model_text", "TEXT")
+        ensure_column_exists(conn, "analysis_symbols", "business_summary_text", "TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -416,88 +532,41 @@ def get_company_context(symbol):
     return context
 
 
-def build_analysis_prompt(symbol, current_price=None, template=None):
-    base_template = template if template is not None else DEFAULT_ANALYSIS_PROMPT_TEMPLATE
-    return render_analysis_prompt(base_template, symbol, current_price)[0]
+def build_analysis_prompt(symbol, current_price=None, template=None, business_model="", key_variables=None):
+    base_template = template if template is not None else DEFAULT_PROMPT_SCENARIOS
+    context = build_prompt_context(
+        symbol=symbol,
+        price=current_price,
+        business_model=business_model,
+        key_variables=key_variables,
+    )
+    return render_prompt_template(base_template, context)
 
 
-def request_ai_analysis(symbol, current_price=None):
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is required for analysis generation")
+def _extract_output_text(raw):
+    output_text = raw.get("output_text")
+    if output_text:
+        return output_text
 
-    effective_price = current_price
-    if effective_price is None:
-        effective_price = get_latest_price_for_symbol(symbol)
+    for item in raw.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") in ("output_text", "text") and content.get("text"):
+                return content["text"]
+    return None
 
+
+def request_ai_step(step_name, prompt_text, json_schema):
     temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
     reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
     supports_temperature = model_supports_temperature(OPENAI_MODEL)
 
     logger.info(
-        "Requesting analysis symbol=%s model=%s temp=%s reasoning=%s current_price=%s",
-        symbol,
+        "Starting AI step=%s model=%s temp=%s reasoning=%s",
+        step_name,
         OPENAI_MODEL,
         f"{temperature:.2f}" if supports_temperature else "omitted",
         reasoning_effort,
-        f"{effective_price:.4f}" if isinstance(effective_price, (int, float)) else "None",
     )
-
-    json_schema = {
-        "name": "analysis_response",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "symbol": {"type": "string"},
-                "assumptions": {"type": "string"},
-                "scenarios": {
-                    "type": "array",
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "name": {"type": "string", "enum": ["Bear", "Base", "Bull"]},
-                            "price_low": {"type": "number"},
-                            "price_high": {"type": "number"},
-                            "cagr_low": {"type": "number"},
-                            "cagr_high": {"type": "number"},
-                            "probability": {"type": "number"},
-                        },
-                        "required": ["name", "price_low", "price_high", "cagr_low", "cagr_high", "probability"],
-                    },
-                },
-                "key_variables": {
-                    "type": "array",
-                    "minItems": 6,
-                    "maxItems": 8,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "variable": {"type": "string"},
-                            "type": {"type": "string", "enum": ["Bullish", "Bearish"]},
-                            "confidence": {"type": "integer", "minimum": 0, "maximum": 10},
-                            "importance": {"type": "integer", "minimum": 0, "maximum": 10},
-                        },
-                        "required": ["variable", "type", "confidence", "importance"],
-                    },
-                },
-            },
-            "required": ["symbol", "assumptions", "scenarios", "key_variables"],
-        },
-    }
-
-    config_conn = get_db_connection()
-    try:
-        prompt_template, template_source = get_analysis_prompt_template(config_conn)
-    finally:
-        config_conn.close()
-
-    logger.info("Analysis prompt template source=%s", template_source)
-    prompt_text = build_analysis_prompt(symbol, effective_price, template=prompt_template)
 
     body = {
         "model": OPENAI_MODEL,
@@ -507,7 +576,7 @@ def request_ai_analysis(symbol, current_price=None):
                 "content": [
                     {
                         "type": "input_text",
-                        "text": "You are a disciplined financial scenario analysis engine. Be consistent, conservative, and structured.",
+                        "text": "You are a disciplined equity analyst. Produce company-specific, realistic, and concise analysis. Avoid generic filler and focus on the few business drivers that matter most.",
                     }
                 ],
             },
@@ -542,23 +611,202 @@ def request_ai_analysis(symbol, current_price=None):
         except Exception:
             response_text = ""
         raise RuntimeError(
-            f"OpenAI request failed with status {getattr(exc, 'code', 'unknown')}: {response_text[:400]}"
+            f"OpenAI request failed on step {step_name} with status {getattr(exc, 'code', 'unknown')}: {response_text[:400]}"
         ) from exc
 
-    output_text = raw.get("output_text")
+    output_text = _extract_output_text(raw)
     if not output_text:
-        for item in raw.get("output", []):
-            for content in item.get("content", []):
-                if content.get("type") in ("output_text", "text") and content.get("text"):
-                    output_text = content["text"]
-                    break
-            if output_text:
-                break
+        raise RuntimeError(f"AI step {step_name} response did not contain output text")
 
-    if not output_text:
-        raise RuntimeError("AI response did not contain output text")
+    payload = extract_json_payload(output_text)
+    logger.info("AI step=%s completed", step_name)
+    return payload
 
-    return output_text, effective_price
+
+def validate_step1_business_model(payload):
+    symbol = payload.get("symbol")
+    business_model = payload.get("business_model")
+    business_summary = payload.get("business_summary")
+
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise AnalysisValidationError("step1.symbol is required")
+    if not isinstance(business_model, str) or not business_model.strip():
+        raise AnalysisValidationError("step1.business_model is required")
+    if not isinstance(business_summary, str) or not business_summary.strip():
+        raise AnalysisValidationError("step1.business_summary is required")
+
+    return {
+        "symbol": symbol.strip().upper(),
+        "business_model": business_model.strip(),
+        "business_summary": business_summary.strip(),
+    }
+
+
+def validate_step2_key_variables(payload):
+    symbol = payload.get("symbol")
+    key_variables = payload.get("key_variables")
+
+    combined = {
+        "symbol": symbol,
+        "assumptions": "temp",
+        "scenarios": [
+            {"name": "Bear", "price_low": 1, "price_high": 2, "cagr_low": -1, "cagr_high": 0, "probability": 34},
+            {"name": "Base", "price_low": 2, "price_high": 3, "cagr_low": 0, "cagr_high": 1, "probability": 33},
+            {"name": "Bull", "price_low": 3, "price_high": 4, "cagr_low": 1, "cagr_high": 2, "probability": 33},
+        ],
+        "key_variables": key_variables,
+    }
+
+    parsed = parse_analysis_payload(combined)
+    return {
+        "symbol": parsed["symbol"],
+        "key_variables": parsed["key_variables"],
+    }
+
+
+def validate_step3_scenarios(payload, symbol, key_variables):
+    combined = {
+        "symbol": payload.get("symbol", symbol),
+        "assumptions": payload.get("assumptions"),
+        "scenarios": payload.get("scenarios"),
+        "key_variables": [
+            {
+                "variable": item["variable_text"],
+                "type": item["variable_type"],
+                "confidence": item["confidence"],
+                "importance": item["importance"],
+            }
+            for item in key_variables
+        ],
+    }
+    return parse_analysis_payload(combined)
+
+
+def request_ai_analysis(symbol, current_price=None):
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is required for analysis generation")
+
+    effective_price = current_price if current_price is not None else get_latest_price_for_symbol(symbol)
+
+    conn = get_db_connection()
+    try:
+        templates, sources = get_all_prompt_templates(conn)
+    finally:
+        conn.close()
+
+    logger.info(
+        "Prompt sources business_model=%s key_variables=%s scenarios=%s",
+        sources[ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
+        sources[ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES],
+        sources[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
+    )
+
+    schema_step1 = {
+        "name": "analysis_business_model",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "business_model": {"type": "string"},
+                "business_summary": {"type": "string"},
+            },
+            "required": ["symbol", "business_model", "business_summary"],
+        },
+    }
+    schema_step2 = {
+        "name": "analysis_key_variables",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "key_variables": {
+                    "type": "array",
+                    "minItems": 6,
+                    "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "variable": {"type": "string"},
+                            "type": {"type": "string", "enum": ["Bullish", "Bearish"]},
+                            "confidence": {"type": "integer", "minimum": 0, "maximum": 10},
+                            "importance": {"type": "integer", "minimum": 0, "maximum": 10},
+                        },
+                        "required": ["variable", "type", "confidence", "importance"],
+                    },
+                },
+            },
+            "required": ["symbol", "key_variables"],
+        },
+    }
+    schema_step3 = {
+        "name": "analysis_scenarios",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "assumptions": {"type": "string"},
+                "scenarios": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string", "enum": ["Bear", "Base", "Bull"]},
+                            "price_low": {"type": "number"},
+                            "price_high": {"type": "number"},
+                            "cagr_low": {"type": "number"},
+                            "cagr_high": {"type": "number"},
+                            "probability": {"type": "number"},
+                        },
+                        "required": ["name", "price_low", "price_high", "cagr_low", "cagr_high", "probability"],
+                    },
+                },
+            },
+            "required": ["symbol", "assumptions", "scenarios"],
+        },
+    }
+
+    prompt1 = build_analysis_prompt(symbol, effective_price, template=templates[ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL])
+    step1_raw = request_ai_step("business_model", prompt1, schema_step1)
+    step1 = validate_step1_business_model(step1_raw)
+
+    business_for_prompt = f"{step1['business_model']}\nSummary: {step1['business_summary']}"
+    prompt2 = build_analysis_prompt(
+        symbol,
+        effective_price,
+        template=templates[ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES],
+        business_model=business_for_prompt,
+    )
+    step2_raw = request_ai_step("key_variables", prompt2, schema_step2)
+    step2 = validate_step2_key_variables(step2_raw)
+
+    prompt3 = build_analysis_prompt(
+        symbol,
+        effective_price,
+        template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
+        business_model=business_for_prompt,
+        key_variables=step2["key_variables"],
+    )
+    step3_raw = request_ai_step("scenarios", prompt3, schema_step3)
+    parsed = validate_step3_scenarios(step3_raw, symbol, step2["key_variables"])
+
+    return {
+        "effective_price": effective_price,
+        "business_model": step1,
+        "key_variables": step2["key_variables"],
+        "parsed": parsed,
+        "raw": {
+            "step1": step1_raw,
+            "step2": step2_raw,
+            "step3": step3_raw,
+        },
+    }
 
 
 def refresh_analysis_market_prices(conn):
@@ -611,7 +859,7 @@ def get_analysis_detail(conn, symbol):
     row = conn.execute(
         """
         SELECT id, symbol, current_price, expected_price, upside, overall_confidence, assumptions_text,
-               created_at, updated_at
+               business_model_text, business_summary_text, created_at, updated_at
         FROM analysis_symbols
         WHERE symbol = ?
         """,
@@ -647,6 +895,8 @@ def get_analysis_detail(conn, symbol):
         "upside": row["upside"],
         "overall_confidence": row["overall_confidence"],
         "assumptions": row["assumptions_text"],
+        "business_model": row["business_model_text"],
+        "business_summary": row["business_summary_text"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "scenarios": [dict(s) for s in scenarios],
@@ -655,15 +905,14 @@ def get_analysis_detail(conn, symbol):
 
 
 def upsert_analysis(conn, symbol, current_price=None):
-    ai_raw_text, effective_current_price = request_ai_analysis(symbol, current_price=current_price)
-    payload = extract_json_payload(ai_raw_text)
-    parsed = parse_analysis_payload(payload)
+    ai_result = request_ai_analysis(symbol, current_price=current_price)
+    parsed = ai_result["parsed"]
 
     if parsed["symbol"] != symbol:
         parsed["symbol"] = symbol
 
     expected_price = calculate_expected_price(parsed["scenarios"])
-    upside = calculate_upside(expected_price, effective_current_price)
+    upside = calculate_upside(expected_price, ai_result["effective_price"])
     overall_confidence = calculate_overall_confidence(parsed["key_variables"])
     now = utc_now_iso()
 
@@ -673,25 +922,30 @@ def upsert_analysis(conn, symbol, current_price=None):
             """
             INSERT INTO analysis_symbols (
                 symbol, current_price, expected_price, upside, overall_confidence,
-                assumptions_text, raw_ai_response, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                assumptions_text, business_model_text, business_summary_text,
+                raw_ai_response, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol) DO UPDATE SET
                 current_price = excluded.current_price,
                 expected_price = excluded.expected_price,
                 upside = excluded.upside,
                 overall_confidence = excluded.overall_confidence,
                 assumptions_text = excluded.assumptions_text,
+                business_model_text = excluded.business_model_text,
+                business_summary_text = excluded.business_summary_text,
                 raw_ai_response = excluded.raw_ai_response,
                 updated_at = excluded.updated_at
             """,
             (
                 symbol,
-                effective_current_price,
+                ai_result["effective_price"],
                 expected_price,
                 upside,
                 overall_confidence,
                 parsed["assumptions"],
-                json.dumps(payload),
+                ai_result["business_model"]["business_model"],
+                ai_result["business_model"]["business_summary"],
+                json.dumps(ai_result["raw"]),
                 now,
                 now,
             ),
@@ -802,8 +1056,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if not symbol:
                 return self._send_json({"error": "Invalid symbol"}, status=400)
             return self.handle_analysis_detail_get(symbol)
-        if path == "/api/configuration/analysis-prompt":
-            return self.handle_configuration_prompt_get()
+        if path == "/api/configuration/prompts":
+            return self.handle_configuration_prompts_get()
 
         if path == "/":
             self.path = "/static/index.html"
@@ -821,17 +1075,17 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_post()
         if path == "/api/analysis/import-from-positions":
             return self.handle_analysis_import_positions()
-        if path == "/api/configuration/analysis-prompt/preview":
-            return self.handle_configuration_prompt_preview()
-        if path == "/api/configuration/analysis-prompt/reset":
-            return self.handle_configuration_prompt_reset()
+        if path == "/api/configuration/prompts/preview":
+            return self.handle_configuration_prompts_preview()
+        if path == "/api/configuration/prompts/reset":
+            return self.handle_configuration_prompts_reset()
 
         self.send_error(404, "Not Found")
 
     def do_PUT(self):
         path = urlparse(self.path).path
-        if path == "/api/configuration/analysis-prompt":
-            return self.handle_configuration_prompt_put()
+        if path == "/api/configuration/prompts":
+            return self.handle_configuration_prompts_put()
 
         self.send_error(404, "Not Found")
 
@@ -1020,51 +1274,56 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_configuration_prompt_get(self):
+    def handle_configuration_prompts_get(self):
         conn = get_db_connection()
         try:
-            template, source = get_analysis_prompt_template(conn)
-            self._send_json({"template": template, "source": source})
+            templates, sources = get_all_prompt_templates(conn)
+            self._send_json({"templates": templates, "sources": sources})
         except Exception as exc:
             self._send_json(
-                {"error": "Unable to load analysis prompt configuration.", "details": str(exc)},
+                {"error": "Unable to load prompt configuration.", "details": str(exc)},
                 status=500,
             )
         finally:
             conn.close()
 
-    def handle_configuration_prompt_put(self):
+    def handle_configuration_prompts_put(self):
         payload = self._read_json_body() or {}
-        template = payload.get("template")
+        templates = payload.get("templates")
+        if not isinstance(templates, dict):
+            return self._send_json({"error": "templates object is required"}, status=400)
 
         conn = get_db_connection()
         try:
-            save_analysis_prompt_template(conn, template)
+            for key, value in templates.items():
+                save_prompt_template(conn, key, value)
             self._send_json({"ok": True})
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=400)
         except Exception as exc:
             self._send_json(
-                {"error": "Unable to save analysis prompt configuration.", "details": str(exc)},
+                {"error": "Unable to save prompt configuration.", "details": str(exc)},
                 status=500,
             )
         finally:
             conn.close()
 
-    def handle_configuration_prompt_reset(self):
+    def handle_configuration_prompts_reset(self):
         conn = get_db_connection()
         try:
-            save_analysis_prompt_template(conn, DEFAULT_ANALYSIS_PROMPT_TEMPLATE)
-            self._send_json({"ok": True, "template": DEFAULT_ANALYSIS_PROMPT_TEMPLATE, "source": "default"})
+            for key in PROMPT_TEMPLATE_CONFIG.keys():
+                reset_prompt_template(conn, key)
+            templates, sources = get_all_prompt_templates(conn)
+            self._send_json({"ok": True, "templates": templates, "sources": sources})
         except Exception as exc:
             self._send_json(
-                {"error": "Unable to reset analysis prompt configuration.", "details": str(exc)},
+                {"error": "Unable to reset prompt configuration.", "details": str(exc)},
                 status=500,
             )
         finally:
             conn.close()
 
-    def handle_configuration_prompt_preview(self):
+    def handle_configuration_prompts_preview(self):
         payload = self._read_json_body() or {}
         symbol = normalize_symbol(payload.get("symbol"))
         if not symbol:
@@ -1074,16 +1333,21 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
         conn = get_db_connection()
         try:
-            template, _source = get_analysis_prompt_template(conn)
+            templates, _sources = get_all_prompt_templates(conn)
         finally:
             conn.close()
 
-        rendered_prompt, rendered_price = render_analysis_prompt(template, symbol, price)
+        context = build_prompt_context(symbol=symbol, price=price)
+        preview = {
+            key: render_prompt_template(template, context)
+            for key, template in templates.items()
+        }
+
         self._send_json(
             {
                 "symbol": symbol,
-                "price": rendered_price,
-                "rendered_prompt": rendered_prompt,
+                "price": context["$Price"],
+                "rendered_prompts": preview,
             }
         )
 

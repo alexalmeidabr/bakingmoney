@@ -44,10 +44,10 @@ Local web UI for IBKR positions + AI-powered analysis using standard-library `ht
 - `POST /api/analysis` with body `{"symbol":"MSFT"}` -> generates analysis via ChatGPT Thinking Mode and stores normalized rows.
 - `POST /api/analysis/import-from-positions` -> imports symbols from current IBKR positions and generates analyses.
 - `DELETE /api/analysis/{symbol}` -> removes analysis symbol and all child rows.
-- `GET /api/configuration/analysis-prompt` -> gets saved/default prompt template used for analysis generation.
-- `PUT /api/configuration/analysis-prompt` with body `{"template":"..."}` -> saves custom prompt template (must include `$Symbol` and `$Price`).
-- `POST /api/configuration/analysis-prompt/preview` with body `{"symbol":"MSFT"}` -> previews rendered template with runtime substitutions.
-- `POST /api/configuration/analysis-prompt/reset` -> resets stored template back to built-in default.
+- `GET /api/configuration/prompts` -> gets saved/default prompt template used for analysis generation.
+- `PUT /api/configuration/prompts` with body `{"templates":{"analysis_prompt_business_model":"...","analysis_prompt_key_variables":"...","analysis_prompt_scenarios":"..."}}` -> saves custom prompt templates (each validated for required variables).
+- `POST /api/configuration/prompts/preview` with body `{"symbol":"MSFT"}` -> previews rendered template with runtime substitutions.
+- `POST /api/configuration/prompts/reset` -> resets stored template back to built-in default.
 
 ### Database
 
@@ -56,3 +56,4 @@ Local web UI for IBKR positions + AI-powered analysis using standard-library `ht
 - `analysis_symbols(id INTEGER PK, symbol UNIQUE, current_price, expected_price, upside, overall_confidence, assumptions_text, raw_ai_response, timestamps)`
 - `analysis_scenarios(id INTEGER PK, analysis_symbol_id FK, scenario_name, price/cagr ranges, probability, timestamps)`
 - `analysis_key_variables(id INTEGER PK, analysis_symbol_id FK, variable_text, variable_type, confidence, importance, timestamps)`
+- `app_settings(key TEXT PK, value TEXT, updated_at TEXT)`

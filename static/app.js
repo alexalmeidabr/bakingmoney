@@ -25,7 +25,9 @@ const analysisScenariosBody = document.querySelector('#analysis-scenarios-table 
 const analysisVariablesBody = document.querySelector('#analysis-variables-table tbody');
 
 const configurationStatusEl = document.getElementById('configuration-status');
-const configPromptTemplateEl = document.getElementById('config-prompt-template');
+const configPromptBusinessModelEl = document.getElementById('config-prompt-business-model');
+const configPromptKeyVariablesEl = document.getElementById('config-prompt-key-variables');
+const configPromptScenariosEl = document.getElementById('config-prompt-scenarios');
 const configSaveBtn = document.getElementById('config-save-btn');
 const configResetBtn = document.getElementById('config-reset-btn');
 const configPreviewSymbolInput = document.getElementById('config-preview-symbol-input');
@@ -294,6 +296,8 @@ async function loadAnalysisDetail(symbol) {
         <div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div>
         <div class="summary-item"><div class="label">Confidence Level</div><div class="value">${formatNumber(item.overall_confidence, 2)}</div></div>
       </div>
+      <p><strong>Business Model:</strong> ${item.business_model || 'N/A'}</p>
+      <p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p>
       <p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>
     `;
     analysisSummary.classList.remove('hidden');
@@ -351,12 +355,16 @@ async function loadConfiguration() {
   configurationStatusEl.className = 'status';
 
   try {
-    const response = await fetch('/api/configuration/analysis-prompt');
+    const response = await fetch('/api/configuration/prompts');
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load configuration'));
 
-    configPromptTemplateEl.value = payload.template || '';
-    configurationStatusEl.textContent = `Loaded prompt template (${payload.source || 'default'}).`;
+    const templates = payload.templates || {};
+    const sources = payload.sources || {};
+    configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
+    configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
+    configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    configurationStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
   } catch (error) {
     configurationStatusEl.textContent = `Error: ${error.message}`;
     configurationStatusEl.className = 'status error';
@@ -368,10 +376,14 @@ async function saveConfiguration() {
   configurationStatusEl.className = 'status';
 
   try {
-    const response = await fetch('/api/configuration/analysis-prompt', {
+    const response = await fetch('/api/configuration/prompts', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ template: configPromptTemplateEl.value }),
+      body: JSON.stringify({ templates: {
+        analysis_prompt_business_model: configPromptBusinessModelEl.value,
+        analysis_prompt_key_variables: configPromptKeyVariablesEl.value,
+        analysis_prompt_scenarios: configPromptScenariosEl.value,
+      } }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration'));
@@ -388,12 +400,15 @@ async function resetConfiguration() {
   configurationStatusEl.className = 'status';
 
   try {
-    const response = await fetch('/api/configuration/analysis-prompt/reset', { method: 'POST' });
+    const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset configuration'));
 
-    configPromptTemplateEl.value = payload.template || '';
-    configurationStatusEl.textContent = 'Prompt reset to default.';
+    const templates = payload.templates || {};
+    configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
+    configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
+    configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    configurationStatusEl.textContent = 'All prompts reset to defaults.';
   } catch (error) {
     configurationStatusEl.textContent = `Error: ${error.message}`;
     configurationStatusEl.className = 'status error';
@@ -410,7 +425,7 @@ async function previewConfiguration() {
   configPreviewOutput.textContent = 'Rendering preview…';
 
   try {
-    const response = await fetch('/api/configuration/analysis-prompt/preview', {
+    const response = await fetch('/api/configuration/prompts/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol }),
@@ -418,7 +433,8 @@ async function previewConfiguration() {
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to preview prompt'));
 
-    configPreviewOutput.textContent = `Symbol: ${payload.symbol}\nPrice: ${payload.price}\n\n${payload.rendered_prompt}`;
+    const rendered = payload.rendered_prompts || {};
+    configPreviewOutput.textContent = `Symbol: ${payload.symbol}\nPrice: ${payload.price}\n\n[Business Model Prompt]\n${rendered.analysis_prompt_business_model || ''}\n\n[Key Variables Prompt]\n${rendered.analysis_prompt_key_variables || ''}\n\n[Scenarios Prompt]\n${rendered.analysis_prompt_scenarios || ''}`;
   } catch (error) {
     configPreviewOutput.textContent = `Error: ${error.message}`;
   }

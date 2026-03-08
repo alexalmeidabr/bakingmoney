@@ -38,6 +38,58 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower() or "medium"
 OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
+ANALYSIS_PROMPT_SETTING_KEY = "analysis_prompt_template"
+DEFAULT_ANALYSIS_PROMPT_TEMPLATE = """You are an experienced equity research analyst building a 5-year scenario analysis for a publicly traded company.
+
+Company context:
+- Symbol: $Symbol
+- Current price: $Price USD
+
+Task:
+1. Infer what the company most likely does, its business model, and the economic engine that drives revenue, margins, and valuation.
+2. Identify the few company-specific factors that are most likely to materially drive the stock over the next 5 years.
+3. Build Bear, Base, and Bull stock price scenarios, for a 5 years horizon, based on those drivers.
+
+Guidance:
+- Focus on company-specific business drivers, not generic market commentary.
+- Prefer factors such as product adoption, demand growth, pricing power, margins, utilization, capacity expansion, technology advantage, customer concentration, contract pipeline, competitive position, capital intensity, execution risk, or dilution risk when relevant.
+- Avoid generic variables such as GDP growth, interest rates, regulation, legal risk, or valuation multiples unless they are clearly among the top drivers for this company.
+- Do not try to cover every possible factor. Focus on the few that matter most.
+
+Definitions:
+- A key variable is one of the most important company-specific factors that could materially push the stock price up or down over 5 years.
+- Confidence means how strong the current evidence is that the variable is acting in that direction now.
+- Importance means how much that variable could influence the stock price over the 5-year horizon.
+
+Return ONLY valid JSON using this exact structure:
+
+{
+  "symbol": "$Symbol",
+  "assumptions": "short explanation of the thesis behind the scenarios",
+  "scenarios": [
+    {"name": "Bear", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number},
+    {"name": "Base", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number},
+    {"name": "Bull", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}
+  ],
+  "key_variables": [
+    {"variable": "text", "type": "Bullish|Bearish", "confidence": integer_0_to_10, "importance": integer_0_to_10}
+  ]
+}
+
+Rules:
+- Exactly 3 scenarios in this order: Bear, Base, Bull
+- Probabilities must sum to 100
+- Provide 6 to 8 key variables
+- Most key variables should be company-specific business drivers
+- type must be exactly Bullish or Bearish
+- confidence must be an integer from 0 to 10
+- importance must be an integer from 0 to 10
+- assumptions should be concise and specific to the company
+- If current price is known, use it as an anchor, but do not force the Base case too close to the current price if the business profile justifies otherwise
+- Use realistic ranges
+- JSON only
+- No markdown
+- No commentary outside JSON"""
 
 _ib = None
 logger = logging.getLogger(__name__)
@@ -149,6 +201,62 @@ def get_db_connection():
     return conn
 
 
+def validate_analysis_prompt_template(template):
+    if not isinstance(template, str) or not template.strip():
+        raise ValueError("Prompt template cannot be empty")
+    if "$Symbol" not in template:
+        raise ValueError("Prompt template must include $Symbol")
+    if "$Price" not in template:
+        raise ValueError("Prompt template must include $Price")
+
+
+def get_analysis_prompt_template(conn):
+    row = conn.execute(
+        "SELECT value FROM app_settings WHERE key = ?",
+        (ANALYSIS_PROMPT_SETTING_KEY,),
+    ).fetchone()
+    if row and row["value"]:
+        logger.info("Using custom analysis prompt template")
+        return row["value"], "custom"
+
+    logger.info("Using default analysis prompt template")
+    return DEFAULT_ANALYSIS_PROMPT_TEMPLATE, "default"
+
+
+def save_analysis_prompt_template(conn, template):
+    validate_analysis_prompt_template(template)
+    conn.execute(
+        """
+        INSERT INTO app_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+        """,
+        (ANALYSIS_PROMPT_SETTING_KEY, template, utc_now_iso()),
+    )
+    conn.commit()
+
+
+def render_analysis_prompt(template, symbol, price):
+    symbol_value = symbol or "unknown"
+    if isinstance(price, (int, float)) and math.isfinite(price):
+        price_value = f"{price:.2f}"
+    else:
+        price_value = "unknown"
+
+    rendered = template.replace("$Symbol", symbol_value)
+    rendered = rendered.replace("$Price", price_value)
+
+    logger.info(
+        "Rendered prompt for symbol=%s with price=%s",
+        symbol_value,
+        price_value,
+    )
+    logger.debug("Rendered prompt body: %s", rendered)
+    return rendered, price_value
+
+
 def init_db():
     conn = get_db_connection()
     try:
@@ -198,6 +306,15 @@ def init_db():
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               FOREIGN KEY (analysis_symbol_id) REFERENCES analysis_symbols(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL,
+              updated_at TEXT NOT NULL
             )
             """
         )
@@ -299,61 +416,9 @@ def get_company_context(symbol):
     return context
 
 
-def build_analysis_prompt(symbol, current_price=None, company_context=None):
-    _company_context = company_context or {}
-    current_price_text = f"{current_price:.4f}" if current_price is not None else "unavailable"
-
-    return f"""You are an experienced equity research analyst building a 5-year scenario analysis for a publicly traded company.
-
-Company context:
-- Symbol: {symbol}
-- Current price: {current_price_text} USD
-
-Task:
-1. Infer what the company most likely does, its business model, and the economic engine that drives revenue, margins, and valuation.
-2. Identify the few company-specific factors that are most likely to materially drive the stock over the next 5 years.
-3. Build Bear, Base, and Bull stock price scenarios, for a 5 years horizon, based on those drivers.
-
-Guidance:
-- Focus on company-specific business drivers, not generic market commentary.
-- Prefer factors such as product adoption, demand growth, pricing power, margins, utilization, capacity expansion, technology advantage, customer concentration, contract pipeline, competitive position, capital intensity, execution risk, or dilution risk when relevant.
-- Avoid generic variables such as GDP growth, interest rates, regulation, legal risk, or valuation multiples unless they are clearly among the top drivers for this company.
-- Do not try to cover every possible factor. Focus on the few that matter most.
-
-Definitions:
-- A key variable is one of the most important company-specific factors that could materially push the stock price up or down over 5 years.
-- Confidence means how strong the current evidence is that the variable is acting in that direction now.
-- Importance means how much that variable could influence the stock price over the 5-year horizon.
-
-Return ONLY valid JSON using this exact structure:
-
-{{
-  "symbol": "{symbol}",
-  "assumptions": "short explanation of the thesis behind the scenarios",
-  "scenarios": [
-    {{"name": "Bear", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
-    {{"name": "Base", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}},
-    {{"name": "Bull", "price_low": number, "price_high": number, "cagr_low": number, "cagr_high": number, "probability": number}}
-  ],
-  "key_variables": [
-    {{"variable": "text", "type": "Bullish|Bearish", "confidence": integer_0_to_10, "importance": integer_0_to_10}}
-  ]
-}}
-
-Rules:
-- Exactly 3 scenarios in this order: Bear, Base, Bull
-- Probabilities must sum to 100
-- Provide 6 to 8 key variables
-- Most key variables should be company-specific business drivers
-- type must be exactly Bullish or Bearish
-- confidence must be an integer from 0 to 10
-- importance must be an integer from 0 to 10
-- assumptions should describe the assumption taken to build the bear, base and bull scenarios
-- If current price is known, use it as an anchor, but do not force the Base case too close to the current price if the business profile justifies otherwise
-- Use realistic ranges
-- JSON only
-- No markdown
-- No commentary outside JSON"""
+def build_analysis_prompt(symbol, current_price=None, template=None):
+    base_template = template if template is not None else DEFAULT_ANALYSIS_PROMPT_TEMPLATE
+    return render_analysis_prompt(base_template, symbol, current_price)[0]
 
 
 def request_ai_analysis(symbol, current_price=None):
@@ -425,18 +490,14 @@ def request_ai_analysis(symbol, current_price=None):
         },
     }
 
-    company_context = get_company_context(symbol)
-    logger.info(
-        "Company context for %s: name=%s industry=%s category=%s subcategory=%s",
-        symbol,
-        company_context.get("long_name") or "unknown",
-        company_context.get("industry") or "unknown",
-        company_context.get("category") or "unknown",
-        company_context.get("subcategory") or "unknown",
-    )
+    config_conn = get_db_connection()
+    try:
+        prompt_template, template_source = get_analysis_prompt_template(config_conn)
+    finally:
+        config_conn.close()
 
-    prompt_text = build_analysis_prompt(symbol, effective_price, company_context=company_context)
-    logger.info("OpenAI analysis prompt for %s: %s", symbol, prompt_text)
+    logger.info("Analysis prompt template source=%s", template_source)
+    prompt_text = build_analysis_prompt(symbol, effective_price, template=prompt_template)
 
     body = {
         "model": OPENAI_MODEL,
@@ -741,6 +802,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if not symbol:
                 return self._send_json({"error": "Invalid symbol"}, status=400)
             return self.handle_analysis_detail_get(symbol)
+        if path == "/api/configuration/analysis-prompt":
+            return self.handle_configuration_prompt_get()
 
         if path == "/":
             self.path = "/static/index.html"
@@ -758,6 +821,17 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_post()
         if path == "/api/analysis/import-from-positions":
             return self.handle_analysis_import_positions()
+        if path == "/api/configuration/analysis-prompt/preview":
+            return self.handle_configuration_prompt_preview()
+        if path == "/api/configuration/analysis-prompt/reset":
+            return self.handle_configuration_prompt_reset()
+
+        self.send_error(404, "Not Found")
+
+    def do_PUT(self):
+        path = urlparse(self.path).path
+        if path == "/api/configuration/analysis-prompt":
+            return self.handle_configuration_prompt_put()
 
         self.send_error(404, "Not Found")
 
@@ -945,6 +1019,73 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             )
         finally:
             conn.close()
+
+    def handle_configuration_prompt_get(self):
+        conn = get_db_connection()
+        try:
+            template, source = get_analysis_prompt_template(conn)
+            self._send_json({"template": template, "source": source})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to load analysis prompt configuration.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_configuration_prompt_put(self):
+        payload = self._read_json_body() or {}
+        template = payload.get("template")
+
+        conn = get_db_connection()
+        try:
+            save_analysis_prompt_template(conn, template)
+            self._send_json({"ok": True})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to save analysis prompt configuration.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_configuration_prompt_reset(self):
+        conn = get_db_connection()
+        try:
+            save_analysis_prompt_template(conn, DEFAULT_ANALYSIS_PROMPT_TEMPLATE)
+            self._send_json({"ok": True, "template": DEFAULT_ANALYSIS_PROMPT_TEMPLATE, "source": "default"})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to reset analysis prompt configuration.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_configuration_prompt_preview(self):
+        payload = self._read_json_body() or {}
+        symbol = normalize_symbol(payload.get("symbol"))
+        if not symbol:
+            return self._send_json({"error": "Symbol is required."}, status=400)
+
+        price = get_latest_price_for_symbol(symbol)
+
+        conn = get_db_connection()
+        try:
+            template, _source = get_analysis_prompt_template(conn)
+        finally:
+            conn.close()
+
+        rendered_prompt, rendered_price = render_analysis_prompt(template, symbol, price)
+        self._send_json(
+            {
+                "symbol": symbol,
+                "price": rendered_price,
+                "rendered_prompt": rendered_prompt,
+            }
+        )
 
 
 if __name__ == "__main__":

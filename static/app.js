@@ -24,6 +24,14 @@ const analysisSummary = document.getElementById('analysis-summary');
 const analysisScenariosBody = document.querySelector('#analysis-scenarios-table tbody');
 const analysisVariablesBody = document.querySelector('#analysis-variables-table tbody');
 
+const configurationStatusEl = document.getElementById('configuration-status');
+const configPromptTemplateEl = document.getElementById('config-prompt-template');
+const configSaveBtn = document.getElementById('config-save-btn');
+const configResetBtn = document.getElementById('config-reset-btn');
+const configPreviewSymbolInput = document.getElementById('config-preview-symbol-input');
+const configPreviewBtn = document.getElementById('config-preview-btn');
+const configPreviewOutput = document.getElementById('config-preview-output');
+
 let latestPositions = [];
 let positionSort = { key: 'symbol', direction: 'asc' };
 
@@ -156,6 +164,7 @@ function setView(targetView) {
     loadAnalysis();
   }
   if (targetView === 'positions') loadPositions();
+  if (targetView === 'configuration') loadConfiguration();
 }
 
 menuItems.forEach((item) => {
@@ -337,6 +346,84 @@ async function deleteAnalysis(symbol) {
   }
 }
 
+async function loadConfiguration() {
+  configurationStatusEl.textContent = 'Loading configuration…';
+  configurationStatusEl.className = 'status';
+
+  try {
+    const response = await fetch('/api/configuration/analysis-prompt');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load configuration'));
+
+    configPromptTemplateEl.value = payload.template || '';
+    configurationStatusEl.textContent = `Loaded prompt template (${payload.source || 'default'}).`;
+  } catch (error) {
+    configurationStatusEl.textContent = `Error: ${error.message}`;
+    configurationStatusEl.className = 'status error';
+  }
+}
+
+async function saveConfiguration() {
+  configurationStatusEl.textContent = 'Saving configuration…';
+  configurationStatusEl.className = 'status';
+
+  try {
+    const response = await fetch('/api/configuration/analysis-prompt', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template: configPromptTemplateEl.value }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration'));
+
+    configurationStatusEl.textContent = 'Configuration saved.';
+  } catch (error) {
+    configurationStatusEl.textContent = `Error: ${error.message}`;
+    configurationStatusEl.className = 'status error';
+  }
+}
+
+async function resetConfiguration() {
+  configurationStatusEl.textContent = 'Resetting to default prompt…';
+  configurationStatusEl.className = 'status';
+
+  try {
+    const response = await fetch('/api/configuration/analysis-prompt/reset', { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset configuration'));
+
+    configPromptTemplateEl.value = payload.template || '';
+    configurationStatusEl.textContent = 'Prompt reset to default.';
+  } catch (error) {
+    configurationStatusEl.textContent = `Error: ${error.message}`;
+    configurationStatusEl.className = 'status error';
+  }
+}
+
+async function previewConfiguration() {
+  const symbol = configPreviewSymbolInput.value.trim().toUpperCase();
+  if (!symbol) {
+    configPreviewOutput.textContent = 'Enter a symbol to preview.';
+    return;
+  }
+
+  configPreviewOutput.textContent = 'Rendering preview…';
+
+  try {
+    const response = await fetch('/api/configuration/analysis-prompt/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to preview prompt'));
+
+    configPreviewOutput.textContent = `Symbol: ${payload.symbol}\nPrice: ${payload.price}\n\n${payload.rendered_prompt}`;
+  } catch (error) {
+    configPreviewOutput.textContent = `Error: ${error.message}`;
+  }
+}
+
 positionSortHeaders.forEach((header) => {
   header.addEventListener('click', () => {
     const { sortKey } = header.dataset;
@@ -370,6 +457,12 @@ analysisSymbolInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') addAnalysisSymbol();
 });
 analysisBackBtn.addEventListener('click', showAnalysisList);
+configSaveBtn.addEventListener('click', saveConfiguration);
+configResetBtn.addEventListener('click', resetConfiguration);
+configPreviewBtn.addEventListener('click', previewConfiguration);
+configPreviewSymbolInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') previewConfiguration();
+});
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();

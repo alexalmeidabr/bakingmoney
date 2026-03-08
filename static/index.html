@@ -13,6 +13,7 @@
         <nav>
           <button class="menu-item active" data-view="analysis">Analysis</button>
           <button class="menu-item" data-view="positions">My Positions</button>
+          <button class="menu-item" data-view="configuration">Configuration</button>
         </nav>
       </aside>
 
@@ -95,6 +96,34 @@
               </section>
             </div>
           </div>
+        </section>
+
+
+        <section id="configuration" class="view">
+          <div class="view-header">
+            <h2>Configuration</h2>
+          </div>
+
+          <p id="configuration-status" class="status">Loading configuration…</p>
+
+          <section class="detail-card">
+            <h3>Analysis Prompt Template</h3>
+            <p class="status">Available variables: <strong>$Symbol</strong> = stock symbol, <strong>$Price</strong> = current price from TWS/IBKR.</p>
+            <textarea id="config-prompt-template" class="config-textarea" rows="18"></textarea>
+            <div class="table-actions config-actions">
+              <button id="config-save-btn">Save</button>
+              <button id="config-reset-btn">Reset to Default</button>
+            </div>
+          </section>
+
+          <section class="detail-card">
+            <h3>Preview</h3>
+            <div class="table-actions">
+              <input id="config-preview-symbol-input" type="text" placeholder="e.g. NBIS" maxlength="16" />
+              <button id="config-preview-btn">Preview Rendered Prompt</button>
+            </div>
+            <pre id="config-preview-output" class="config-preview"></pre>
+          </section>
         </section>
 
         <section id="positions" class="view">

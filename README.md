@@ -44,6 +44,10 @@ Local web UI for IBKR positions + AI-powered analysis using standard-library `ht
 - `POST /api/analysis` with body `{"symbol":"MSFT"}` -> generates analysis via ChatGPT Thinking Mode and stores normalized rows.
 - `POST /api/analysis/import-from-positions` -> imports symbols from current IBKR positions and generates analyses.
 - `DELETE /api/analysis/{symbol}` -> removes analysis symbol and all child rows.
+- `GET /api/configuration/analysis-prompt` -> gets saved/default prompt template used for analysis generation.
+- `PUT /api/configuration/analysis-prompt` with body `{"template":"..."}` -> saves custom prompt template (must include `$Symbol` and `$Price`).
+- `POST /api/configuration/analysis-prompt/preview` with body `{"symbol":"MSFT"}` -> previews rendered template with runtime substitutions.
+- `POST /api/configuration/analysis-prompt/reset` -> resets stored template back to built-in default.
 
 ### Database
 

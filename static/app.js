@@ -396,7 +396,7 @@ async function saveConfiguration() {
 }
 
 async function resetConfiguration() {
-  configurationStatusEl.textContent = 'Resetting to default prompt…';
+  configurationStatusEl.textContent = 'Restoring default prompts…';
   configurationStatusEl.className = 'status';
 
   try {
@@ -408,7 +408,7 @@ async function resetConfiguration() {
     configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
     configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
     configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
-    configurationStatusEl.textContent = 'All prompts reset to defaults.';
+    configurationStatusEl.textContent = 'Default prompts restored.';
   } catch (error) {
     configurationStatusEl.textContent = `Error: ${error.message}`;
     configurationStatusEl.className = 'status error';

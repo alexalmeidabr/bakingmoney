@@ -329,7 +329,10 @@ def save_prompt_template(conn, key, template):
 
 
 def reset_prompt_template(conn, key):
-    save_prompt_template(conn, key, get_default_prompt_template(key))
+    if key not in PROMPT_TEMPLATE_CONFIG:
+        raise ValueError(f"Unknown prompt template key: {key}")
+    conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+    conn.commit()
 
 
 def render_prompt_template(template, context):

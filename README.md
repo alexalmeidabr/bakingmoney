@@ -40,12 +40,12 @@ Local web UI for IBKR positions + AI-powered analysis using standard-library `ht
 - `GET /` -> serves the single-page UI.
 - `GET /api/positions` -> returns IBKR positions as JSON (`symbol`, `position`, `price`, `avgCost`, `changePercent`, `marketValue`, `unrealizedPnL`, `dailyPnL`, `currency`).
 - `GET /api/analysis` -> list analyzed symbols (`symbol`, `expected_price`, `upside`, `overall_confidence`).
-- `GET /api/analysis/{symbol}` -> detail for a symbol (`company_name`, `scenarios`, `key_variables`, assumptions + summary fields).
+- `GET /api/analysis/{symbol}` -> detail for a symbol (`company_name`, `scenarios`, `key_variables`, assumptions + summary fields). Company name is resolved from IBKR contract details.
 - `POST /api/analysis` with body `{"symbol":"MSFT"}` -> generates analysis via ChatGPT Thinking Mode and stores normalized rows.
 - `POST /api/analysis/import-from-positions` -> imports symbols from current IBKR positions and generates analyses.
 - `DELETE /api/analysis/{symbol}` -> removes analysis symbol and all child rows.
 - `GET /api/configuration/prompts` -> gets saved/default prompt template used for analysis generation.
-- `PUT /api/configuration/prompts` with body `{"templates":{"analysis_prompt_company_name":"...","analysis_prompt_business_model":"...","analysis_prompt_key_variables":"...","analysis_prompt_scenarios":"..."}}` -> saves custom prompt templates (each validated for required variables).
+- `PUT /api/configuration/prompts` with body `{"templates":{"analysis_prompt_business_model":"...","analysis_prompt_key_variables":"...","analysis_prompt_scenarios":"..."}}` -> saves custom prompt templates (each validated for required variables).
 - `POST /api/configuration/prompts/preview` with body `{"symbol":"MSFT"}` -> previews rendered template with runtime substitutions.
 - `POST /api/configuration/prompts/reset` -> resets stored template back to built-in default.
 

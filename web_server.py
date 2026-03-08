@@ -38,37 +38,9 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower() or "medium"
 OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
-ANALYSIS_PROMPT_SETTING_KEY_COMPANY_NAME = "analysis_prompt_company_name"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
 ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
-
-DEFAULT_PROMPT_COMPANY_NAME = """You are an equity analyst.
-
-Identify the most likely publicly traded company associated with the stock ticker below.
-
-Ticker:
-- Symbol: $Symbol
-
-Instructions:
-- Interpret the ticker as a stock ticker for a publicly traded company.
-- Return the primary company most commonly associated with this ticker.
-- Do not provide a business description here.
-- Return only the company name.
-- Keep the answer concise and practical.
-- Do not ask for more information.
-
-Return ONLY valid JSON in this exact structure:
-{
-  "symbol": "$Symbol",
-  "company_name": "company name"
-}
-
-Rules:
-- company_name must be a short company name only.
-- JSON only.
-- No markdown.
-- No commentary outside JSON."""
 
 DEFAULT_PROMPT_BUSINESS_MODEL = """You are an equity analyst.
 
@@ -184,10 +156,6 @@ Rules:
 - No commentary outside JSON."""
 
 PROMPT_TEMPLATE_CONFIG = {
-    ANALYSIS_PROMPT_SETTING_KEY_COMPANY_NAME: {
-        "default": DEFAULT_PROMPT_COMPANY_NAME,
-        "required_vars": ["$Symbol"],
-    },
     ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL: {
         "default": DEFAULT_PROMPT_BUSINESS_MODEL,
         "required_vars": ["$Symbol", "$CompanyName"],
@@ -551,13 +519,14 @@ def fetch_ib_prices(symbols):
     return prices, warnings
 
 
-def get_company_context(symbol):
-    """Best-effort company metadata from IBKR contract details."""
+def resolve_company_profile_from_tws(symbol):
+    """Resolve deterministic company identity from IBKR contract details."""
     ensure_event_loop()
     from ib_insync import Stock
 
-    context = {
-        "long_name": None,
+    profile = {
+        "symbol": symbol,
+        "company_name": None,
         "industry": None,
         "category": None,
         "subcategory": None,
@@ -568,21 +537,46 @@ def get_company_context(symbol):
         contract = Stock(symbol, "SMART", "USD")
         qualified = ib.qualifyContracts(contract)
         if not qualified:
-            return context
+            logger.info("Company resolution failed for %s (no qualified contract)", symbol)
+            return profile
 
+        # Use the first qualified primary match from IBKR.
         details = ib.reqContractDetails(qualified[0])
         if not details:
-            return context
+            logger.info("Company resolution failed for %s (no contract details)", symbol)
+            return profile
 
         detail = details[0]
-        context["long_name"] = getattr(detail, "longName", None)
-        context["industry"] = getattr(detail, "industry", None)
-        context["category"] = getattr(detail, "category", None)
-        context["subcategory"] = getattr(detail, "subcategory", None)
-    except Exception as exc:
-        logger.info("Company context unavailable for %s (%s)", symbol, exc)
+        company_name = (
+            getattr(detail, "longName", None)
+            or getattr(detail, "companyName", None)
+            or getattr(getattr(detail, "contract", None), "localSymbol", None)
+            or getattr(getattr(detail, "contract", None), "symbol", None)
+        )
 
-    return context
+        source = "longName" if getattr(detail, "longName", None) else (
+            "companyName" if getattr(detail, "companyName", None) else "contract fallback"
+        )
+
+        if company_name and isinstance(company_name, str):
+            profile["company_name"] = company_name.strip()
+        profile["industry"] = getattr(detail, "industry", None)
+        profile["category"] = getattr(detail, "category", None)
+        profile["subcategory"] = getattr(detail, "subcategory", None)
+
+        if profile["company_name"]:
+            logger.info(
+                "Resolved company profile for %s company_name=%s source=%s",
+                symbol,
+                profile["company_name"],
+                source,
+            )
+        else:
+            logger.info("Company resolution returned empty name for %s", symbol)
+    except Exception as exc:
+        logger.info("Company resolution unavailable for %s (%s)", symbol, exc)
+
+    return profile
 
 
 def build_analysis_prompt(symbol, current_price=None, template=None, company_name="", business_model="", key_variables=None):
@@ -677,25 +671,6 @@ def request_ai_step(step_name, prompt_text, json_schema):
     return payload
 
 
-def validate_step0_company_name(payload):
-    symbol = payload.get("symbol")
-    company_name = payload.get("company_name")
-
-    if not isinstance(symbol, str) or not symbol.strip():
-        raise AnalysisValidationError("step0.symbol is required")
-    if not isinstance(company_name, str) or not company_name.strip():
-        raise AnalysisValidationError("step0.company_name is required")
-
-    cleaned_name = company_name.strip()
-    if len(cleaned_name) > 120:
-        raise AnalysisValidationError("step0.company_name must be concise")
-
-    return {
-        "symbol": symbol.strip().upper(),
-        "company_name": cleaned_name,
-    }
-
-
 def validate_step1_business_model(payload):
     symbol = payload.get("symbol")
     company_name = payload.get("company_name")
@@ -704,8 +679,8 @@ def validate_step1_business_model(payload):
 
     if not isinstance(symbol, str) or not symbol.strip():
         raise AnalysisValidationError("step1.symbol is required")
-    if company_name is not None and (not isinstance(company_name, str) or not company_name.strip()):
-        raise AnalysisValidationError("step1.company_name must be non-empty when provided")
+    if not isinstance(company_name, str) or not company_name.strip():
+        raise AnalysisValidationError("step1.company_name is required")
     if not isinstance(business_model, str) or not business_model.strip():
         raise AnalysisValidationError("step1.business_model is required")
     if not isinstance(business_summary, str) or not business_summary.strip():
@@ -764,6 +739,15 @@ def request_ai_analysis(symbol, current_price=None):
         raise RuntimeError("OPENAI_API_KEY is required for analysis generation")
 
     effective_price = current_price if current_price is not None else get_latest_price_for_symbol(symbol)
+    if effective_price is None:
+        logger.info("Current price unavailable for %s; proceeding with unknown price context", symbol)
+    else:
+        logger.info("Resolved current price for %s: %.2f", symbol, effective_price)
+
+    company_profile = resolve_company_profile_from_tws(symbol)
+    company_name = company_profile.get("company_name")
+    if not company_name:
+        raise RuntimeError(f"Unable to resolve company name from TWS/IBKR for symbol {symbol}")
 
     conn = get_db_connection()
     try:
@@ -772,25 +756,12 @@ def request_ai_analysis(symbol, current_price=None):
         conn.close()
 
     logger.info(
-        "Prompt sources company_name=%s business_model=%s key_variables=%s scenarios=%s",
-        sources[ANALYSIS_PROMPT_SETTING_KEY_COMPANY_NAME],
+        "Prompt sources business_model=%s key_variables=%s scenarios=%s",
         sources[ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
         sources[ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES],
         sources[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
     )
 
-    schema_step0 = {
-        "name": "analysis_company_name",
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "symbol": {"type": "string"},
-                "company_name": {"type": "string"},
-            },
-            "required": ["symbol", "company_name"],
-        },
-    }
     schema_step1 = {
         "name": "analysis_business_model",
         "schema": {
@@ -863,41 +834,34 @@ def request_ai_analysis(symbol, current_price=None):
         },
     }
 
-    logger.info("Starting AI step=company_name symbol=%s", symbol)
-    prompt0 = build_analysis_prompt(
-        symbol,
-        effective_price,
-        template=templates[ANALYSIS_PROMPT_SETTING_KEY_COMPANY_NAME],
-    )
-    step0_raw = request_ai_step("company_name", prompt0, schema_step0)
-    step0 = validate_step0_company_name(step0_raw)
-    logger.info("AI step=company_name completed symbol=%s company_name=%s", symbol, step0["company_name"])
-
+    logger.info("Starting AI step=business_model symbol=%s", symbol)
     prompt1 = build_analysis_prompt(
         symbol,
         effective_price,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
-        company_name=step0["company_name"],
+        company_name=company_name,
     )
     step1_raw = request_ai_step("business_model", prompt1, schema_step1)
     step1 = validate_step1_business_model(step1_raw)
 
+    logger.info("Starting AI step=key_variables symbol=%s", symbol)
     business_for_prompt = f"{step1['business_model']}\nSummary: {step1['business_summary']}"
     prompt2 = build_analysis_prompt(
         symbol,
         effective_price,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES],
-        company_name=step0["company_name"],
+        company_name=company_name,
         business_model=business_for_prompt,
     )
     step2_raw = request_ai_step("key_variables", prompt2, schema_step2)
     step2 = validate_step2_key_variables(step2_raw)
 
+    logger.info("Starting AI step=scenarios symbol=%s", symbol)
     prompt3 = build_analysis_prompt(
         symbol,
         effective_price,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
-        company_name=step0["company_name"],
+        company_name=company_name,
         business_model=business_for_prompt,
         key_variables=step2["key_variables"],
     )
@@ -906,12 +870,12 @@ def request_ai_analysis(symbol, current_price=None):
 
     return {
         "effective_price": effective_price,
-        "company_name": step0["company_name"],
+        "company_name": company_name,
+        "company_profile": company_profile,
         "business_model": step1,
         "key_variables": step2["key_variables"],
         "parsed": parsed,
         "raw": {
-            "step0": step0_raw,
             "step1": step1_raw,
             "step2": step2_raw,
             "step3": step3_raw,
@@ -1450,7 +1414,12 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-        context = build_prompt_context(symbol=symbol, price=price, company_name="resolved company name")
+        profile = resolve_company_profile_from_tws(symbol)
+        company_name = profile.get("company_name")
+        if not company_name:
+            return self._send_json({"error": f"Unable to resolve company name from TWS/IBKR for symbol {symbol}"}, status=400)
+
+        context = build_prompt_context(symbol=symbol, price=price, company_name=company_name)
         preview = {
             key: render_prompt_template(template, context)
             for key, template in templates.items()

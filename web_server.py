@@ -37,6 +37,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower() or "medium"
 OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
+OPENAI_WEB_SEARCH_TOOL_CANDIDATES = ("web_search", "web_search_preview")
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
@@ -603,19 +604,12 @@ def _extract_output_text(raw):
     return None
 
 
-def request_ai_step(step_name, prompt_text, json_schema):
-    temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
-    reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
-    supports_temperature = model_supports_temperature(OPENAI_MODEL)
+def build_openai_tools(tool_type=None):
+    selected_tool_type = tool_type or OPENAI_WEB_SEARCH_TOOL_CANDIDATES[0]
+    return [{"type": selected_tool_type}]
 
-    logger.info(
-        "Starting AI step=%s model=%s temp=%s reasoning=%s",
-        step_name,
-        OPENAI_MODEL,
-        f"{temperature:.2f}" if supports_temperature else "omitted",
-        reasoning_effort,
-    )
 
+def build_openai_request_body(prompt_text, json_schema, reasoning_effort, supports_temperature, temperature, tool_type=None):
     body = {
         "model": OPENAI_MODEL,
         "input": [
@@ -635,40 +629,97 @@ def request_ai_step(step_name, prompt_text, json_schema):
         ],
         "reasoning": {"effort": reasoning_effort},
         "text": {"format": {"type": "json_schema", "name": json_schema["name"], "schema": json_schema["schema"], "strict": True}},
+        "tools": build_openai_tools(tool_type),
     }
     if supports_temperature:
         body["temperature"] = temperature
+    return body
 
-    request = Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+
+def _looks_like_unsupported_web_tool_error(response_text):
+    if not response_text:
+        return False
+    lower = response_text.lower()
+    return "tool" in lower and ("unsupported" in lower or "unknown" in lower or "invalid" in lower) and "web_search" in lower
+
+
+def request_ai_step(step_name, prompt_text, json_schema):
+    temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
+    reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
+    supports_temperature = model_supports_temperature(OPENAI_MODEL)
+
+    logger.info(
+        "Starting AI step=%s model=%s temp=%s reasoning=%s",
+        step_name,
+        OPENAI_MODEL,
+        f"{temperature:.2f}" if supports_temperature else "omitted",
+        reasoning_effort,
     )
 
-    try:
-        with urlopen(request, timeout=60) as response:
-            raw = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        response_text = ""
+    tool_candidates = list(OPENAI_WEB_SEARCH_TOOL_CANDIDATES)
+    last_exc = None
+
+    for idx, tool_type in enumerate(tool_candidates):
+        body = build_openai_request_body(
+            prompt_text,
+            json_schema,
+            reasoning_effort,
+            supports_temperature,
+            temperature,
+            tool_type=tool_type,
+        )
+        logger.info("OpenAI Analysis request includes web search tool")
+        logger.info("OpenAI web search tool type: %s", tool_type)
+
+        request = Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
         try:
-            response_text = exc.read().decode("utf-8")
-        except Exception:
+            with urlopen(request, timeout=60) as response:
+                raw = json.loads(response.read().decode("utf-8"))
+            output_text = _extract_output_text(raw)
+            if not output_text:
+                raise RuntimeError(f"AI step {step_name} response did not contain output text")
+
+            payload = extract_json_payload(output_text)
+            logger.info("AI step=%s completed", step_name)
+            return payload
+        except HTTPError as exc:
             response_text = ""
-        raise RuntimeError(
-            f"OpenAI request failed on step {step_name} with status {getattr(exc, 'code', 'unknown')}: {response_text[:400]}"
-        ) from exc
+            try:
+                response_text = exc.read().decode("utf-8")
+            except Exception:
+                response_text = ""
 
-    output_text = _extract_output_text(raw)
-    if not output_text:
-        raise RuntimeError(f"AI step {step_name} response did not contain output text")
+            last_exc = RuntimeError(
+                f"OpenAI request failed on step {step_name} with status {getattr(exc, 'code', 'unknown')}: {response_text[:400]}"
+            )
 
-    payload = extract_json_payload(output_text)
-    logger.info("AI step=%s completed", step_name)
-    return payload
+            can_retry = idx < len(tool_candidates) - 1 and _looks_like_unsupported_web_tool_error(response_text)
+            if can_retry:
+                logger.warning(
+                    "OpenAI web-search tool type unsupported (%s). Retrying with %s",
+                    tool_type,
+                    tool_candidates[idx + 1],
+                )
+                continue
+
+            if _looks_like_unsupported_web_tool_error(response_text):
+                logger.error("OpenAI web-search tool type appears unsupported: %s", tool_type)
+            raise last_exc from exc
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"OpenAI request failed on step {step_name} for unknown reasons")
+
+
 
 
 def validate_step1_business_model(payload):

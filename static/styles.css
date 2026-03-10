@@ -105,6 +105,11 @@ button:hover {
   border-color: var(--accent);
 }
 
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .status {
   color: var(--muted);
   margin: 0 0 12px;

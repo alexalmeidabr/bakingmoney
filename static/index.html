@@ -56,11 +56,23 @@
 
             <p id="analysis-detail-status" class="status">Loading analysis detail…</p>
 
+            <div id="analysis-version-bar" class="detail-card hidden">
+              <div class="table-actions">
+                <button id="analysis-version-prev-btn">Previous Version</button>
+                <button id="analysis-version-next-btn">Next Version</button>
+                <select id="analysis-version-select"></select>
+              </div>
+              <p id="analysis-version-meta" class="status"></p>
+            </div>
+
             <div id="analysis-summary" class="detail-card hidden"></div>
 
             <div class="detail-panels">
               <section class="detail-card">
-                <h3>Scenarios</h3>
+                <div class="view-header">
+                  <h3>Scenarios</h3>
+                  <button id="analysis-rerun-btn" disabled>Re-run Scenarios</button>
+                </div>
                 <div class="table-wrap">
                   <table id="analysis-scenarios-table">
                     <thead>
@@ -79,7 +91,14 @@
               </section>
 
               <section class="detail-card">
-                <h3>Key Variables</h3>
+                <div class="view-header">
+                  <h3>Key Variables</h3>
+                  <div class="table-actions">
+                    <button id="analysis-edit-variables-btn">Edit Key Variables</button>
+                    <button id="analysis-save-variables-btn" class="hidden">Save Key Variables</button>
+                    <button id="analysis-cancel-variables-btn" class="hidden">Cancel</button>
+                  </div>
+                </div>
                 <div class="table-wrap">
                   <table id="analysis-variables-table">
                     <thead>

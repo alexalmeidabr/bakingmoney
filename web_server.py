@@ -446,6 +446,82 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS analysis_roots (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              symbol TEXT NOT NULL UNIQUE,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_versions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_root_id INTEGER NOT NULL,
+              version_number INTEGER NOT NULL,
+              symbol TEXT NOT NULL,
+              company_name TEXT,
+              current_price REAL,
+              expected_price REAL NOT NULL,
+              upside REAL,
+              confidence_level REAL,
+              assumptions_text TEXT,
+              business_model_text TEXT,
+              business_summary_text TEXT,
+              raw_ai_response TEXT,
+              source_trigger TEXT,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_root_id) REFERENCES analysis_roots(id) ON DELETE CASCADE,
+              UNIQUE(analysis_root_id, version_number)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_version_scenarios (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_version_id INTEGER NOT NULL,
+              scenario_name TEXT NOT NULL,
+              price_low REAL NOT NULL,
+              price_high REAL NOT NULL,
+              cagr_low REAL NOT NULL,
+              cagr_high REAL NOT NULL,
+              probability REAL NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE,
+              UNIQUE(analysis_version_id, scenario_name)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_version_key_variables (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_version_id INTEGER NOT NULL,
+              variable_text TEXT NOT NULL,
+              variable_type TEXT NOT NULL,
+              confidence REAL NOT NULL,
+              importance REAL NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_key_variable_edits (
+              analysis_root_id INTEGER PRIMARY KEY,
+              based_on_version_id INTEGER NOT NULL,
+              key_variables_json TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_root_id) REFERENCES analysis_roots(id) ON DELETE CASCADE,
+              FOREIGN KEY (based_on_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS app_settings (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL,
@@ -456,6 +532,110 @@ def init_db():
         ensure_column_exists(conn, "analysis_symbols", "company_name", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_model_text", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_summary_text", "TEXT")
+
+        has_roots = conn.execute("SELECT 1 FROM analysis_roots LIMIT 1").fetchone()
+        if not has_roots:
+            legacy_rows = conn.execute(
+                """
+                SELECT id, symbol, company_name, current_price, expected_price, upside, overall_confidence,
+                       assumptions_text, business_model_text, business_summary_text, raw_ai_response,
+                       created_at, updated_at
+                FROM analysis_symbols
+                ORDER BY symbol ASC
+                """
+            ).fetchall()
+
+            for row in legacy_rows:
+                root_created_at = row["created_at"] or utc_now_iso()
+                root_updated_at = row["updated_at"] or root_created_at
+                conn.execute(
+                    "INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)",
+                    (row["symbol"], root_created_at, root_updated_at),
+                )
+                root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (row["symbol"],)).fetchone()["id"]
+                conn.execute(
+                    """
+                    INSERT INTO analysis_versions (
+                        analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                        upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
+                        raw_ai_response, source_trigger, created_at
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'legacy_migration', ?)
+                    """,
+                    (
+                        root_id,
+                        row["symbol"],
+                        row["company_name"],
+                        row["current_price"],
+                        row["expected_price"],
+                        row["upside"],
+                        row["overall_confidence"],
+                        row["assumptions_text"],
+                        row["business_model_text"],
+                        row["business_summary_text"],
+                        row["raw_ai_response"],
+                        root_created_at,
+                    ),
+                )
+                version_id = conn.execute(
+                    "SELECT id FROM analysis_versions WHERE analysis_root_id = ? AND version_number = 1",
+                    (root_id,),
+                ).fetchone()["id"]
+
+                legacy_scenarios = conn.execute(
+                    """
+                    SELECT scenario_name, price_low, price_high, cagr_low, cagr_high, probability, created_at
+                    FROM analysis_scenarios
+                    WHERE analysis_symbol_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (row["id"],),
+                ).fetchall()
+                for scenario in legacy_scenarios:
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_version_scenarios (
+                            analysis_version_id, scenario_name, price_low, price_high, cagr_low,
+                            cagr_high, probability, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            version_id,
+                            scenario["scenario_name"],
+                            scenario["price_low"],
+                            scenario["price_high"],
+                            scenario["cagr_low"],
+                            scenario["cagr_high"],
+                            scenario["probability"],
+                            scenario["created_at"] or root_created_at,
+                        ),
+                    )
+
+                legacy_variables = conn.execute(
+                    """
+                    SELECT variable_text, variable_type, confidence, importance, created_at
+                    FROM analysis_key_variables
+                    WHERE analysis_symbol_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (row["id"],),
+                ).fetchall()
+                for variable in legacy_variables:
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_version_key_variables (
+                            analysis_version_id, variable_text, variable_type, confidence,
+                            importance, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            version_id,
+                            variable["variable_text"],
+                            variable["variable_type"],
+                            variable["confidence"],
+                            variable["importance"],
+                            variable["created_at"] or root_created_at,
+                        ),
+                    )
         conn.commit()
     finally:
         conn.close()
@@ -934,100 +1114,279 @@ def request_ai_analysis(symbol, current_price=None):
     }
 
 
-def refresh_analysis_market_prices(conn):
-    rows = conn.execute(
-        """
-        SELECT id, symbol, current_price, expected_price
-        FROM analysis_symbols
-        ORDER BY symbol ASC
-        """
-    ).fetchall()
-
-    symbols = [row["symbol"] for row in rows]
-    if not symbols:
-        return
-
-    prices, _warnings = fetch_ib_prices(symbols)
-    now = utc_now_iso()
-
-    for row in rows:
-        symbol = row["symbol"]
-        latest_price = prices.get(symbol)
-        if latest_price is None:
-            continue
-
-        new_upside = calculate_upside(row["expected_price"], latest_price)
-        conn.execute(
-            """
-            UPDATE analysis_symbols
-            SET current_price = ?, upside = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (latest_price, new_upside, now, row["id"]),
-        )
-
-    conn.commit()
+def _build_scenarios_schema():
+    return {
+        "name": "analysis_scenarios",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "assumptions": {"type": "string"},
+                "scenarios": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string", "enum": ["Bear", "Base", "Bull"]},
+                            "price_low": {"type": "number"},
+                            "price_high": {"type": "number"},
+                            "cagr_low": {"type": "number"},
+                            "cagr_high": {"type": "number"},
+                            "probability": {"type": "number"},
+                        },
+                        "required": ["name", "price_low", "price_high", "cagr_low", "cagr_high", "probability"],
+                    },
+                },
+            },
+            "required": ["symbol", "assumptions", "scenarios"],
+        },
+    }
 
 
 def list_analysis_symbols(conn):
     rows = conn.execute(
         """
-        SELECT symbol, current_price, expected_price, upside, overall_confidence, updated_at
-        FROM analysis_symbols
-        ORDER BY symbol ASC
+        SELECT r.symbol, v.current_price, v.expected_price, v.upside, v.confidence_level AS overall_confidence,
+               v.created_at AS updated_at
+        FROM analysis_roots r
+        JOIN analysis_versions v ON v.analysis_root_id = r.id
+        WHERE v.id = (
+            SELECT id FROM analysis_versions latest
+            WHERE latest.analysis_root_id = r.id
+            ORDER BY version_number DESC
+            LIMIT 1
+        )
+        ORDER BY r.symbol ASC
         """
     ).fetchall()
     return [dict(row) for row in rows]
 
 
-def get_analysis_detail(conn, symbol):
-    row = conn.execute(
-        """
-        SELECT id, symbol, company_name, current_price, expected_price, upside, overall_confidence, assumptions_text,
-               business_model_text, business_summary_text, created_at, updated_at
-        FROM analysis_symbols
-        WHERE symbol = ?
-        """,
-        (symbol,),
-    ).fetchone()
-    if not row:
-        return None
+def _normalize_manual_key_variables(raw_key_variables):
+    if not isinstance(raw_key_variables, list) or not raw_key_variables:
+        raise AnalysisValidationError("key_variables must be a non-empty array")
 
+    normalized = []
+    for index, item in enumerate(raw_key_variables):
+        if not isinstance(item, dict):
+            raise AnalysisValidationError(f"key_variables[{index}] must be an object")
+
+        variable_text = (item.get("variable_text") or item.get("variable") or "").strip()
+        if not variable_text:
+            raise AnalysisValidationError(f"key_variables[{index}].variable_text is required")
+
+        variable_type = item.get("variable_type") or item.get("type")
+        if variable_type not in {"Bullish", "Bearish"}:
+            raise AnalysisValidationError(f"key_variables[{index}].variable_type must be Bullish or Bearish")
+
+        try:
+            confidence = int(round(float(item.get("confidence"))))
+            importance = int(round(float(item.get("importance"))))
+        except (TypeError, ValueError):
+            raise AnalysisValidationError(f"key_variables[{index}] confidence/importance must be numeric")
+
+        if confidence < 0 or confidence > 10:
+            raise AnalysisValidationError(f"key_variables[{index}].confidence must be in [0, 10]")
+        if importance < 0 or importance > 10:
+            raise AnalysisValidationError(f"key_variables[{index}].importance must be in [0, 10]")
+
+        normalized.append(
+            {
+                "variable_text": variable_text,
+                "variable_type": variable_type,
+                "confidence": confidence,
+                "importance": importance,
+            }
+        )
+
+    return normalized
+
+
+def _version_payload(conn, version_row):
     scenarios = conn.execute(
         """
         SELECT scenario_name, price_low, price_high, cagr_low, cagr_high, probability
-        FROM analysis_scenarios
-        WHERE analysis_symbol_id = ?
+        FROM analysis_version_scenarios
+        WHERE analysis_version_id = ?
         ORDER BY CASE scenario_name WHEN 'Bear' THEN 1 WHEN 'Base' THEN 2 WHEN 'Bull' THEN 3 ELSE 99 END
         """,
-        (row["id"],),
+        (version_row["id"],),
     ).fetchall()
 
     key_variables = conn.execute(
         """
         SELECT variable_text, variable_type, confidence, importance
-        FROM analysis_key_variables
-        WHERE analysis_symbol_id = ?
+        FROM analysis_version_key_variables
+        WHERE analysis_version_id = ?
         ORDER BY id ASC
         """,
-        (row["id"],),
+        (version_row["id"],),
     ).fetchall()
 
     return {
-        "symbol": row["symbol"],
-        "company_name": row["company_name"],
-        "current_price": row["current_price"],
-        "expected_price": row["expected_price"],
-        "upside": row["upside"],
-        "overall_confidence": row["overall_confidence"],
-        "assumptions": row["assumptions_text"],
-        "business_model": row["business_model_text"],
-        "business_summary": row["business_summary_text"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
+        "id": version_row["id"],
+        "version_number": version_row["version_number"],
+        "symbol": version_row["symbol"],
+        "company_name": version_row["company_name"],
+        "current_price": version_row["current_price"],
+        "expected_price": version_row["expected_price"],
+        "upside": version_row["upside"],
+        "overall_confidence": version_row["confidence_level"],
+        "assumptions": version_row["assumptions_text"],
+        "business_model": version_row["business_model_text"],
+        "business_summary": version_row["business_summary_text"],
+        "created_at": version_row["created_at"],
+        "source_trigger": version_row["source_trigger"],
         "scenarios": [dict(s) for s in scenarios],
         "key_variables": [dict(v) for v in key_variables],
     }
+
+
+def get_analysis_detail(conn, symbol, version_id=None):
+    root = conn.execute("SELECT id, symbol FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
+    if not root:
+        return None
+
+    versions = conn.execute(
+        """
+        SELECT id, version_number, created_at, source_trigger
+        FROM analysis_versions
+        WHERE analysis_root_id = ?
+        ORDER BY version_number ASC
+        """,
+        (root["id"],),
+    ).fetchall()
+    if not versions:
+        return None
+
+    selected_id = int(version_id) if version_id is not None else versions[-1]["id"]
+    selected = conn.execute(
+        "SELECT * FROM analysis_versions WHERE id = ? AND analysis_root_id = ?",
+        (selected_id, root["id"]),
+    ).fetchone()
+    if not selected:
+        selected = conn.execute(
+            "SELECT * FROM analysis_versions WHERE analysis_root_id = ? ORDER BY version_number DESC LIMIT 1",
+            (root["id"],),
+        ).fetchone()
+
+    draft = conn.execute(
+        "SELECT based_on_version_id, key_variables_json, updated_at FROM analysis_key_variable_edits WHERE analysis_root_id = ?",
+        (root["id"],),
+    ).fetchone()
+
+    return {
+        "symbol": root["symbol"],
+        "root_id": root["id"],
+        "selected_version_id": selected["id"],
+        "versions": [dict(v) for v in versions],
+        "version": _version_payload(conn, selected),
+        "saved_key_variable_edits": {
+            "based_on_version_id": draft["based_on_version_id"],
+            "updated_at": draft["updated_at"],
+            "key_variables": json.loads(draft["key_variables_json"]),
+        } if draft else None,
+    }
+
+
+def _insert_analysis_version(
+    conn,
+    root_id,
+    symbol,
+    company_name,
+    current_price,
+    business_model,
+    business_summary,
+    assumptions,
+    scenarios,
+    key_variables,
+    raw_ai_response,
+    source_trigger,
+):
+    latest = conn.execute(
+        "SELECT COALESCE(MAX(version_number), 0) AS latest FROM analysis_versions WHERE analysis_root_id = ?",
+        (root_id,),
+    ).fetchone()["latest"]
+    version_number = latest + 1
+    now = utc_now_iso()
+
+    expected_price = calculate_expected_price(scenarios)
+    upside = calculate_upside(expected_price, current_price)
+    confidence = calculate_overall_confidence(key_variables)
+
+    conn.execute(
+        """
+        INSERT INTO analysis_versions (
+            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+            upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
+            raw_ai_response, source_trigger, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            root_id,
+            version_number,
+            symbol,
+            company_name,
+            current_price,
+            expected_price,
+            upside,
+            confidence,
+            assumptions,
+            business_model,
+            business_summary,
+            raw_ai_response,
+            source_trigger,
+            now,
+        ),
+    )
+    version_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+    for scenario in scenarios:
+        conn.execute(
+            """
+            INSERT INTO analysis_version_scenarios (
+                analysis_version_id, scenario_name, price_low, price_high, cagr_low,
+                cagr_high, probability, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                scenario["scenario_name"],
+                scenario["price_low"],
+                scenario["price_high"],
+                scenario["cagr_low"],
+                scenario["cagr_high"],
+                scenario["probability"],
+                now,
+            ),
+        )
+
+    for variable in key_variables:
+        conn.execute(
+            """
+            INSERT INTO analysis_version_key_variables (
+                analysis_version_id, variable_text, variable_type, confidence, importance, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                variable["variable_text"],
+                variable["variable_type"],
+                variable["confidence"],
+                variable["importance"],
+                now,
+            ),
+        )
+
+    conn.execute(
+        "UPDATE analysis_roots SET updated_at = ? WHERE id = ?",
+        (now, root_id),
+    )
+    return version_id
 
 
 def upsert_analysis(conn, symbol, current_price=None):
@@ -1037,103 +1396,132 @@ def upsert_analysis(conn, symbol, current_price=None):
     if parsed["symbol"] != symbol:
         parsed["symbol"] = symbol
 
-    expected_price = calculate_expected_price(parsed["scenarios"])
-    upside = calculate_upside(expected_price, ai_result["effective_price"])
-    overall_confidence = calculate_overall_confidence(parsed["key_variables"])
     now = utc_now_iso()
-
     conn.execute("BEGIN")
     try:
         conn.execute(
             """
-            INSERT INTO analysis_symbols (
-                symbol, company_name, current_price, expected_price, upside, overall_confidence,
-                assumptions_text, business_model_text, business_summary_text,
-                raw_ai_response, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(symbol) DO UPDATE SET
-                company_name = excluded.company_name,
-                current_price = excluded.current_price,
-                expected_price = excluded.expected_price,
-                upside = excluded.upside,
-                overall_confidence = excluded.overall_confidence,
-                assumptions_text = excluded.assumptions_text,
-                business_model_text = excluded.business_model_text,
-                business_summary_text = excluded.business_summary_text,
-                raw_ai_response = excluded.raw_ai_response,
-                updated_at = excluded.updated_at
+            INSERT INTO analysis_roots (symbol, created_at, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(symbol) DO NOTHING
             """,
-            (
-                symbol,
-                ai_result["company_name"],
-                ai_result["effective_price"],
-                expected_price,
-                upside,
-                overall_confidence,
-                parsed["assumptions"],
-                ai_result["business_model"]["business_model"],
-                ai_result["business_model"]["business_summary"],
-                json.dumps(ai_result["raw"]),
-                now,
-                now,
-            ),
+            (symbol, now, now),
+        )
+        root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()["id"]
+
+        _insert_analysis_version(
+            conn=conn,
+            root_id=root_id,
+            symbol=symbol,
+            company_name=ai_result["company_name"],
+            current_price=ai_result["effective_price"],
+            business_model=ai_result["business_model"]["business_model"],
+            business_summary=ai_result["business_model"]["business_summary"],
+            assumptions=parsed["assumptions"],
+            scenarios=parsed["scenarios"],
+            key_variables=parsed["key_variables"],
+            raw_ai_response=json.dumps(ai_result["raw"]),
+            source_trigger="initial_generation",
         )
 
-        analysis_row = conn.execute(
-            "SELECT id FROM analysis_symbols WHERE symbol = ?",
-            (symbol,),
-        ).fetchone()
-        analysis_symbol_id = analysis_row["id"]
-
-        conn.execute("DELETE FROM analysis_scenarios WHERE analysis_symbol_id = ?", (analysis_symbol_id,))
-        conn.execute("DELETE FROM analysis_key_variables WHERE analysis_symbol_id = ?", (analysis_symbol_id,))
-
-        for scenario in parsed["scenarios"]:
-            conn.execute(
-                """
-                INSERT INTO analysis_scenarios (
-                    analysis_symbol_id, scenario_name, price_low, price_high,
-                    cagr_low, cagr_high, probability, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    analysis_symbol_id,
-                    scenario["scenario_name"],
-                    scenario["price_low"],
-                    scenario["price_high"],
-                    scenario["cagr_low"],
-                    scenario["cagr_high"],
-                    scenario["probability"],
-                    now,
-                    now,
-                ),
-            )
-
-        for variable in parsed["key_variables"]:
-            conn.execute(
-                """
-                INSERT INTO analysis_key_variables (
-                    analysis_symbol_id, variable_text, variable_type,
-                    confidence, importance, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    analysis_symbol_id,
-                    variable["variable_text"],
-                    variable["variable_type"],
-                    variable["confidence"],
-                    variable["importance"],
-                    now,
-                    now,
-                ),
-            )
-
+        conn.execute("DELETE FROM analysis_key_variable_edits WHERE analysis_root_id = ?", (root_id,))
         conn.commit()
     except Exception:
         conn.rollback()
         raise
 
     return get_analysis_detail(conn, symbol)
+
+
+def save_key_variable_edits(conn, symbol, version_id, key_variables):
+    normalized = _normalize_manual_key_variables(key_variables)
+    root = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
+    if not root:
+        raise ValueError("Analysis symbol not found")
+
+    base = conn.execute(
+        "SELECT id FROM analysis_versions WHERE id = ? AND analysis_root_id = ?",
+        (version_id, root["id"]),
+    ).fetchone()
+    if not base:
+        raise ValueError("Base version not found")
+
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO analysis_key_variable_edits (analysis_root_id, based_on_version_id, key_variables_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(analysis_root_id) DO UPDATE SET
+          based_on_version_id = excluded.based_on_version_id,
+          key_variables_json = excluded.key_variables_json,
+          updated_at = excluded.updated_at
+        """,
+        (root["id"], version_id, json.dumps(normalized), now),
+    )
+    conn.commit()
+    return get_analysis_detail(conn, symbol, version_id=version_id)
+
+
+def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
+    root = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
+    if not root:
+        raise ValueError("Analysis symbol not found")
+
+    draft = conn.execute(
+        "SELECT based_on_version_id, key_variables_json FROM analysis_key_variable_edits WHERE analysis_root_id = ?",
+        (root["id"],),
+    ).fetchone()
+    if not draft:
+        raise ValueError("No saved key variable edits found")
+    if int(draft["based_on_version_id"]) != int(base_version_id):
+        raise ValueError("Saved key variable edits must match the selected version")
+
+    base_version = conn.execute(
+        "SELECT * FROM analysis_versions WHERE id = ? AND analysis_root_id = ?",
+        (base_version_id, root["id"]),
+    ).fetchone()
+    if not base_version:
+        raise ValueError("Base version not found")
+
+    key_variables = json.loads(draft["key_variables_json"])
+
+    templates, _sources = get_all_prompt_templates(conn)
+    business_for_prompt = f"{base_version['business_model_text'] or ''}\nSummary: {base_version['business_summary_text'] or ''}"
+    prompt = build_analysis_prompt(
+        symbol,
+        base_version["current_price"],
+        template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
+        company_name=base_version["company_name"] or "",
+        business_model=business_for_prompt,
+        key_variables=key_variables,
+    )
+    step3_raw = request_ai_step("scenarios_rerun", prompt, _build_scenarios_schema())
+    parsed = validate_step3_scenarios(step3_raw, symbol, key_variables)
+
+    conn.execute("BEGIN")
+    try:
+        new_version_id = _insert_analysis_version(
+            conn=conn,
+            root_id=root["id"],
+            symbol=symbol,
+            company_name=base_version["company_name"],
+            current_price=base_version["current_price"],
+            business_model=base_version["business_model_text"],
+            business_summary=base_version["business_summary_text"],
+            assumptions=parsed["assumptions"],
+            scenarios=parsed["scenarios"],
+            key_variables=key_variables,
+            raw_ai_response=json.dumps({"step3": step3_raw}),
+            source_trigger="rerun_from_key_variable_edit",
+        )
+        conn.execute("DELETE FROM analysis_key_variable_edits WHERE analysis_root_id = ?", (root["id"],))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    return get_analysis_detail(conn, symbol, version_id=new_version_id)
+
 
 
 def get_positions_with_prices():
@@ -1183,7 +1571,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             symbol = normalize_symbol(path[len("/api/analysis/") :])
             if not symbol:
                 return self._send_json({"error": "Invalid symbol"}, status=400)
-            return self.handle_analysis_detail_get(symbol)
+            version_id = None
+            if parsed_url.query:
+                params = dict(item.split("=", 1) for item in parsed_url.query.split("&") if "=" in item)
+                version_id = params.get("version_id")
+            return self.handle_analysis_detail_get(symbol, version_id=version_id)
         if path == "/api/configuration/prompts":
             return self.handle_configuration_prompts_get()
 
@@ -1201,6 +1593,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/analysis":
             return self.handle_analysis_post()
+        if path.startswith("/api/analysis/") and path.endswith("/key-variables"):
+            symbol = normalize_symbol(path[len("/api/analysis/") : -len("/key-variables")])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_analysis_key_variables_save(symbol)
+        if path.startswith("/api/analysis/") and path.endswith("/rerun-scenarios"):
+            symbol = normalize_symbol(path[len("/api/analysis/") : -len("/rerun-scenarios")])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_analysis_rerun_scenarios(symbol)
         if path == "/api/analysis/import-from-positions":
             return self.handle_analysis_import_positions()
         if path == "/api/configuration/prompts/preview":
@@ -1299,7 +1701,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def handle_analysis_get(self):
         conn = get_db_connection()
         try:
-            refresh_analysis_market_prices(conn)
             self._send_json({"analysis": list_analysis_symbols(conn)})
         except Exception as exc:
             self._send_json(
@@ -1309,10 +1710,10 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_analysis_detail_get(self, symbol):
+    def handle_analysis_detail_get(self, symbol, version_id=None):
         conn = get_db_connection()
         try:
-            detail = get_analysis_detail(conn, symbol)
+            detail = get_analysis_detail(conn, symbol, version_id=version_id)
             if not detail:
                 return self._send_json({"error": "Analysis symbol not found"}, status=404)
             self._send_json({"analysis": detail})
@@ -1388,9 +1789,50 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
+    def handle_analysis_key_variables_save(self, symbol):
+        payload = self._read_json_body() or {}
+        version_id = payload.get("version_id")
+        if version_id is None:
+            return self._send_json({"error": "version_id is required"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            detail = save_key_variable_edits(conn, symbol, int(version_id), payload.get("key_variables"))
+            self._send_json({"ok": True, "analysis": detail})
+        except AnalysisValidationError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            logger.exception("Unable to save key variable edits for symbol %s", symbol)
+            self._send_json({"error": "Unable to save key variables.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_analysis_rerun_scenarios(self, symbol):
+        payload = self._read_json_body() or {}
+        version_id = payload.get("version_id")
+        if version_id is None:
+            return self._send_json({"error": "version_id is required"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            detail = rerun_scenarios_from_saved_edits(conn, symbol, int(version_id))
+            self._send_json({"ok": True, "analysis": detail}, status=201)
+        except AnalysisValidationError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to rerun scenarios for symbol %s", symbol)
+            self._send_json({"error": "Unable to re-run scenarios.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
     def handle_analysis_delete(self, symbol):
         conn = get_db_connection()
         try:
+            conn.execute("DELETE FROM analysis_roots WHERE symbol = ?", (symbol,))
             conn.execute("DELETE FROM analysis_symbols WHERE symbol = ?", (symbol,))
             conn.commit()
             self._send_json({"ok": True, "symbol": symbol})

@@ -1762,9 +1762,23 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         try:
             symbols, prices = get_positions_with_prices()
             imported = []
+            skipped = []
             failures = []
 
+            existing_symbols = {
+                row["symbol"]
+                for row in conn.execute("SELECT symbol FROM analysis_roots").fetchall()
+            }
+            # Legacy fallback (if any rows still only exist in the old table).
+            existing_symbols.update(
+                row["symbol"]
+                for row in conn.execute("SELECT symbol FROM analysis_symbols").fetchall()
+            )
+
             for symbol in symbols:
+                if symbol in existing_symbols:
+                    skipped.append(symbol)
+                    continue
                 try:
                     upsert_analysis(conn, symbol, current_price=prices.get(symbol))
                     imported.append(symbol)
@@ -1776,6 +1790,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 {
                     "ok": len(failures) == 0,
                     "importedSymbols": imported,
+                    "skippedSymbols": skipped,
                     "failures": failures,
                 },
                 status=207 if failures else 200,

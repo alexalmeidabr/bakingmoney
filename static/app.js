@@ -290,7 +290,17 @@ async function importAnalysisFromPositions() {
   analysisStatusEl.textContent = 'Importing from positions…'; analysisStatusEl.className = 'status';
   try { const response = await fetch('/api/analysis/import-from-positions', { method: 'POST' }); const payload = await response.json();
     if (!response.ok && response.status !== 207) throw new Error(extractErrorMessage(payload, 'Unable to import analysis'));
-    await loadAnalysis(); if (payload.failures?.length) { analysisStatusEl.textContent = `Imported ${payload.importedSymbols.length} symbol(s), ${payload.failures.length} failed.`; analysisStatusEl.className = 'status error'; }
+    await loadAnalysis();
+    const importedCount = payload.importedSymbols?.length || 0;
+    const skippedCount = payload.skippedSymbols?.length || 0;
+    const failedCount = payload.failures?.length || 0;
+    if (failedCount) {
+      analysisStatusEl.textContent = `Imported ${importedCount} symbol(s), skipped ${skippedCount} existing, ${failedCount} failed.`;
+      analysisStatusEl.className = 'status error';
+    } else {
+      analysisStatusEl.textContent = `Imported ${importedCount} symbol(s), skipped ${skippedCount} existing.`;
+      analysisStatusEl.className = 'status';
+    }
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 

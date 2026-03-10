@@ -1,0 +1,265 @@
+:root {
+  --bg: #f5f7fb;
+  --surface: #ffffff;
+  --sidebar: #101828;
+  --sidebar-text: #e4e7ec;
+  --accent: #2e90fa;
+  --text: #101828;
+  --muted: #667085;
+  --border: #eaecf0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: var(--sidebar);
+  color: var(--sidebar-text);
+  padding: 24px;
+}
+
+.sidebar h1 {
+  margin: 0 0 28px;
+  font-size: 1.4rem;
+}
+
+.menu-item {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-text);
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.menu-item.active {
+  background: rgba(46, 144, 250, 0.2);
+  color: #ffffff;
+}
+
+.content {
+  padding: 28px;
+}
+
+.view {
+  display: none;
+}
+
+.view.active {
+  display: block;
+}
+
+.view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.table-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.table-actions input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 160px;
+}
+
+button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+.status {
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+.status.error {
+  color: #b42318;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+th,
+td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+thead {
+  background: #f9fafb;
+}
+
+tbody tr:nth-child(even) {
+  background: #fcfcfd;
+}
+
+tbody tr:hover {
+  background: #eef4ff;
+}
+
+.remove-btn {
+  color: #b42318;
+}
+
+.hidden {
+  display: none;
+}
+
+
+.pnl-positive {
+  color: #067647;
+  font-weight: 600;
+}
+
+.pnl-negative {
+  color: #b42318;
+  font-weight: 600;
+}
+
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.sortable::after {
+  content: ' ↕';
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+th.sortable[data-sort-direction='asc']::after {
+  content: ' ↑';
+  color: var(--accent);
+}
+
+th.sortable[data-sort-direction='desc']::after {
+  content: ' ↓';
+  color: var(--accent);
+}
+
+.symbol-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.analysis-screen.hidden {
+  display: none;
+}
+
+.detail-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.detail-card h3 {
+  margin-top: 0;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.summary-item {
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.summary-item .label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.summary-item .value {
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.config-textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  min-height: 320px;
+  background: #fff;
+}
+
+.config-actions {
+  margin-top: 10px;
+}
+
+.config-preview {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow: auto;
+}

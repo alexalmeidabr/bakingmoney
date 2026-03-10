@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BakingMoney Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h1>BakingMoney</h1>
+        <nav>
+          <button class="menu-item active" data-view="analysis">Analysis</button>
+          <button class="menu-item" data-view="positions">My Positions</button>
+          <button class="menu-item" data-view="configuration">Configuration</button>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <section id="analysis" class="view active">
+          <div id="analysis-list-view" class="analysis-screen">
+            <div class="view-header">
+              <h2>Analysis</h2>
+              <div class="table-actions">
+                <input id="analysis-symbol-input" type="text" placeholder="e.g. NVDA" maxlength="16" />
+                <button id="analysis-add-btn">Add Symbol</button>
+                <button id="analysis-import-btn">Import from My Positions</button>
+              </div>
+            </div>
+
+            <p id="analysis-status" class="status">Loading analysis…</p>
+
+            <div class="table-wrap">
+              <table id="analysis-table" class="hidden">
+                <thead>
+                  <tr>
+                    <th data-sort-key="symbol" class="sortable">Symbol</th>
+                    <th data-sort-key="current_price" class="sortable">Current Price</th>
+                    <th data-sort-key="expected_price" class="sortable">Expected Price</th>
+                    <th data-sort-key="upside" class="sortable">Upside</th>
+                    <th data-sort-key="overall_confidence" class="sortable">Confidence Level</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="analysis-detail-view" class="analysis-screen hidden">
+            <div class="view-header">
+              <button id="analysis-back-btn">← Back to Analysis</button>
+              <h2 id="analysis-detail-title">Analysis Detail</h2>
+            </div>
+
+            <p id="analysis-detail-status" class="status">Loading analysis detail…</p>
+
+            <div id="analysis-summary" class="detail-card hidden"></div>
+
+            <div class="detail-panels">
+              <section class="detail-card">
+                <h3>Scenarios</h3>
+                <div class="table-wrap">
+                  <table id="analysis-scenarios-table">
+                    <thead>
+                      <tr>
+                        <th>Scenario</th>
+                        <th>Price Low</th>
+                        <th>Price High</th>
+                        <th>CAGR Low</th>
+                        <th>CAGR High</th>
+                        <th>Probability</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="detail-card">
+                <h3>Key Variables</h3>
+                <div class="table-wrap">
+                  <table id="analysis-variables-table">
+                    <thead>
+                      <tr>
+                        <th>Variable</th>
+                        <th>Type</th>
+                        <th>Confidence</th>
+                        <th>Importance</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+
+        <section id="configuration" class="view">
+          <div class="view-header">
+            <h2>Configuration</h2>
+          </div>
+
+          <p id="configuration-status" class="status">Loading configuration…</p>
+
+          <section class="detail-card">
+            <h3>Identify Business Model Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional)</p>
+            <textarea id="config-prompt-business-model" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Identify Key Variables Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong></p>
+            <textarea id="config-prompt-key-variables" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Build Scenarios Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
+            <textarea id="config-prompt-scenarios" class="config-textarea" rows="14"></textarea>
+            <div class="table-actions config-actions">
+              <button id="config-save-btn">Save All</button>
+              <button id="config-reset-btn">Restore Default Prompts</button>
+            </div>
+          </section>
+
+          <section class="detail-card">
+            <h3>Preview</h3>
+            <div class="table-actions">
+              <input id="config-preview-symbol-input" type="text" placeholder="e.g. NBIS" maxlength="16" />
+              <button id="config-preview-btn">Preview Rendered Prompts</button>
+            </div>
+            <pre id="config-preview-output" class="config-preview"></pre>
+          </section>
+        </section>
+
+        <section id="positions" class="view">
+          <div class="view-header">
+            <h2>My Positions</h2>
+            <button id="refresh-btn">Refresh</button>
+          </div>
+
+          <p id="status" class="status">Loading positions…</p>
+
+          <div class="table-wrap">
+            <table id="positions-table" class="hidden">
+              <thead>
+                <tr>
+                  <th data-sort-key="symbol" class="sortable">Symbol</th>
+                  <th data-sort-key="position" class="sortable">Position</th>
+                  <th data-sort-key="price" class="sortable">Price</th>
+                  <th data-sort-key="avgCost" class="sortable">Avg Cost</th>
+                  <th data-sort-key="changePercent" class="sortable">Change %</th>
+                  <th data-sort-key="marketValue" class="sortable">Market Value</th>
+                  <th data-sort-key="unrealizedPnL" class="sortable">Unrealized P&amp;L</th>
+                  <th data-sort-key="dailyPnL" class="sortable">Daily P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

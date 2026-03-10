@@ -29,6 +29,7 @@ const analysisVersionPrevBtn = document.getElementById('analysis-version-prev-bt
 const analysisVersionNextBtn = document.getElementById('analysis-version-next-btn');
 const analysisVersionSelect = document.getElementById('analysis-version-select');
 const analysisEditVariablesBtn = document.getElementById('analysis-edit-variables-btn');
+const analysisAddVariableBtn = document.getElementById('analysis-add-variable-btn');
 const analysisSaveVariablesBtn = document.getElementById('analysis-save-variables-btn');
 const analysisCancelVariablesBtn = document.getElementById('analysis-cancel-variables-btn');
 const analysisRerunBtn = document.getElementById('analysis-rerun-btn');
@@ -164,13 +165,24 @@ function renderVariablesTable() {
   analysisVariablesBody.innerHTML = '';
   variables.forEach((variable) => {
     const row = document.createElement('tr');
+    const variableType = variable.variable_type || 'Bullish';
+    row.dataset.variableType = variableType;
     row.innerHTML = isEditingVariables
-      ? `<td><input class="var-text" type="text" value="${variable.variable_text || ''}"></td><td>${variable.variable_type}</td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="${variable.confidence}"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="${variable.importance}"></td>`
-      : `<td>${variable.variable_text}</td><td>${variable.variable_type}</td><td>${formatNumber(variable.confidence, 2)}</td><td>${formatNumber(variable.importance, 2)}</td>`;
+      ? `<td><input class="var-text var-text-input" type="text" value="${variable.variable_text || ''}"></td><td>${variableType}</td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="${variable.confidence}"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="${variable.importance}"></td><td><button class="var-delete-btn">Delete</button></td>`
+      : `<td>${variable.variable_text}</td><td>${variableType}</td><td>${formatNumber(variable.confidence, 2)}</td><td>${formatNumber(variable.importance, 2)}</td><td>—</td>`;
     analysisVariablesBody.appendChild(row);
   });
 
+  if (isEditingVariables) {
+    analysisVariablesBody.querySelectorAll('.var-delete-btn').forEach((button) => {
+      button.addEventListener('click', () => {
+        button.closest('tr')?.remove();
+      });
+    });
+  }
+
   analysisEditVariablesBtn.classList.toggle('hidden', isEditingVariables);
+  analysisAddVariableBtn.classList.toggle('hidden', !isEditingVariables);
   analysisSaveVariablesBtn.classList.toggle('hidden', !isEditingVariables);
   analysisCancelVariablesBtn.classList.toggle('hidden', !isEditingVariables);
 }
@@ -200,7 +212,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
 function collectEditedVariables() {
   return [...analysisVariablesBody.querySelectorAll('tr')].map((row, idx) => ({
     variable_text: row.querySelector('.var-text')?.value?.trim() || '',
-    variable_type: analysisDetailState.version.key_variables[idx]?.variable_type || 'Bullish',
+    variable_type: row.dataset.variableType || analysisDetailState.version.key_variables[idx]?.variable_type || 'Bullish',
     confidence: Number(row.querySelector('.var-confidence')?.value),
     importance: Number(row.querySelector('.var-importance')?.value),
   }));
@@ -342,6 +354,15 @@ analysisImportBtn.addEventListener('click', importAnalysisFromPositions);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', showAnalysisList);
 analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderVariablesTable(); });
+analysisAddVariableBtn.addEventListener('click', () => {
+  if (!isEditingVariables) return;
+  const row = document.createElement('tr');
+  row.dataset.variableType = 'Bullish';
+  row.innerHTML = '<td><input class="var-text var-text-input" type="text" value=""></td><td>Bullish</td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="5"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="5"></td><td><button class="var-delete-btn">Delete</button></td>';
+  analysisVariablesBody.appendChild(row);
+  row.querySelector('.var-delete-btn')?.addEventListener('click', () => row.remove());
+  row.querySelector('.var-text')?.focus();
+});
 analysisCancelVariablesBtn.addEventListener('click', () => { isEditingVariables = false; renderVariablesTable(); });
 analysisSaveVariablesBtn.addEventListener('click', saveEditedVariables);
 analysisRerunBtn.addEventListener('click', rerunScenarios);

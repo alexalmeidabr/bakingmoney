@@ -268,3 +268,8 @@ th.sortable[data-sort-direction='desc']::after {
   max-height: 360px;
   overflow: auto;
 }
+
+.var-text-input {
+  min-width: 420px;
+  width: 100%;
+}

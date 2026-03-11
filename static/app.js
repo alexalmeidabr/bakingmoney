@@ -57,7 +57,7 @@ const configPreviewOutput = document.getElementById('config-preview-output');
 let latestPositions = [];
 let positionSort = { key: 'symbol', direction: 'asc' };
 let latestAnalysis = [];
-let analysisSort = { key: 'symbol', direction: 'asc' };
+let analysisSort = { key: 'upside', direction: 'desc' };
 let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
@@ -318,19 +318,35 @@ async function rerunSelectedSymbolsScenarios() {
     return;
   }
 
-  analysisStatusEl.textContent = `Re-running scenarios for ${symbols.length} symbol(s)…`;
+  analysisStatusEl.textContent = `Preparing scenario rerun for ${symbols.length} symbol(s)…`;
   analysisStatusEl.className = 'status';
   try {
-    const response = await fetch('/api/analysis/rerun-scenarios', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbols }),
-    });
-    const payload = await response.json();
-    if (!response.ok && response.status !== 207) throw new Error(extractErrorMessage(payload, 'Unable to re-run selected scenarios'));
+    let okCount = 0;
+    let failCount = 0;
+    for (const symbol of symbols) {
+      analysisStatusEl.textContent = `Building scenarios pass 1 for ${symbol}…`;
+      try {
+        const detailResponse = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`);
+        const detailPayload = await detailResponse.json();
+        if (!detailResponse.ok) throw new Error(extractErrorMessage(detailPayload, 'Unable to load symbol detail'));
+        const versionId = detailPayload.analysis?.selected_version_id;
+        if (!versionId) throw new Error('Missing version id');
+
+        const rerunResponse = await fetch(`/api/analysis/${encodeURIComponent(symbol)}/rerun-scenarios`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version_id: versionId }),
+        });
+        const rerunPayload = await rerunResponse.json();
+        if (!rerunResponse.ok) throw new Error(extractErrorMessage(rerunPayload, 'Unable to re-run scenarios'));
+        okCount += 1;
+      } catch (error) {
+        console.error(`Failed rerun for ${symbol}:`, error);
+        failCount += 1;
+      }
+    }
+
     await loadAnalysis();
-    const okCount = payload.rerunSymbols?.length || 0;
-    const failCount = payload.failures?.length || 0;
     analysisStatusEl.textContent = failCount ? `Re-ran ${okCount} symbol(s), ${failCount} failed.` : `Re-ran scenarios for ${okCount} symbol(s).`;
     analysisStatusEl.className = failCount ? 'status error' : 'status';
   } catch (error) {
@@ -341,11 +357,24 @@ async function rerunSelectedSymbolsScenarios() {
 
 async function addAnalysisSymbol() {
   const symbol = analysisSymbolInput.value.trim().toUpperCase(); if (!symbol) return;
-  analysisStatusEl.textContent = `Analyzing ${symbol}…`; analysisStatusEl.className = 'status';
+  analysisStatusEl.className = 'status';
+  const steps = [
+    `Determining Business Model for ${symbol}…`,
+    `Determining Key Variables for ${symbol}…`,
+    `Building scenarios pass 1 for ${symbol}…`,
+  ];
+  let stepIndex = 0;
+  analysisStatusEl.textContent = steps[stepIndex];
+  const timer = setInterval(() => {
+    stepIndex = (stepIndex + 1) % steps.length;
+    analysisStatusEl.textContent = steps[stepIndex];
+  }, 1800);
   try { const response = await fetch('/api/analysis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to add analysis'));
+    clearInterval(timer);
     analysisSymbolInput.value = ''; await loadAnalysis();
-  } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
+    analysisStatusEl.textContent = `Analysis completed for ${symbol}.`;
+  } catch (error) { clearInterval(timer); analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
 async function importAnalysisFromPositions() {

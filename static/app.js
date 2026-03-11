@@ -62,6 +62,41 @@ let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
 
+async function getScenarioPassCountForStatus() {
+  try {
+    const response = await fetch('/api/configuration/prompts');
+    const payload = await response.json();
+    if (!response.ok) return 1;
+    const settings = payload.scenario_settings || {};
+    if (!settings.scenario_multi_pass_enabled) return 1;
+    const count = Number(settings.scenario_pass_count || 1);
+    return Number.isFinite(count) && count > 1 ? Math.floor(count) : 1;
+  } catch (_error) {
+    return 1;
+  }
+}
+
+function buildAnalysisProgressSteps(symbol, passCount) {
+  const steps = [
+    `Determining Business Model for ${symbol}…`,
+    `Determining Key Variables for ${symbol}…`,
+  ];
+  for (let pass = 1; pass <= passCount; pass += 1) {
+    steps.push(`Building scenarios pass ${pass} for ${symbol}…`);
+  }
+  return steps;
+}
+
+function startProgressTicker(messages, setStatus, intervalMs = 1800) {
+  let index = 0;
+  setStatus(messages[index]);
+  const timer = setInterval(() => {
+    index = (index + 1) % messages.length;
+    setStatus(messages[index]);
+  }, intervalMs);
+  return () => clearInterval(timer);
+}
+
 function extractErrorMessage(payload, fallback) {
   if (!payload || typeof payload !== 'object') return fallback;
   return [payload.error, payload.details, payload.debugHint].filter(Boolean).join(' ') || fallback;
@@ -321,10 +356,13 @@ async function rerunSelectedSymbolsScenarios() {
   analysisStatusEl.textContent = `Preparing scenario rerun for ${symbols.length} symbol(s)…`;
   analysisStatusEl.className = 'status';
   try {
+    const scenarioPassCount = await getScenarioPassCountForStatus();
     let okCount = 0;
     let failCount = 0;
     for (const symbol of symbols) {
-      analysisStatusEl.textContent = `Building scenarios pass 1 for ${symbol}…`;
+      const passMessages = [];
+      for (let pass = 1; pass <= scenarioPassCount; pass += 1) passMessages.push(`Building scenarios pass ${pass} for ${symbol}…`);
+      const stopTicker = startProgressTicker(passMessages, (msg) => { analysisStatusEl.textContent = msg; }, 1200);
       try {
         const detailResponse = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`);
         const detailPayload = await detailResponse.json();
@@ -343,6 +381,8 @@ async function rerunSelectedSymbolsScenarios() {
       } catch (error) {
         console.error(`Failed rerun for ${symbol}:`, error);
         failCount += 1;
+      } finally {
+        stopTicker();
       }
     }
 
@@ -358,23 +398,17 @@ async function rerunSelectedSymbolsScenarios() {
 async function addAnalysisSymbol() {
   const symbol = analysisSymbolInput.value.trim().toUpperCase(); if (!symbol) return;
   analysisStatusEl.className = 'status';
-  const steps = [
-    `Determining Business Model for ${symbol}…`,
-    `Determining Key Variables for ${symbol}…`,
-    `Building scenarios pass 1 for ${symbol}…`,
-  ];
-  let stepIndex = 0;
-  analysisStatusEl.textContent = steps[stepIndex];
-  const timer = setInterval(() => {
-    stepIndex = (stepIndex + 1) % steps.length;
-    analysisStatusEl.textContent = steps[stepIndex];
-  }, 1800);
+  const scenarioPassCount = await getScenarioPassCountForStatus();
+  const stopTicker = startProgressTicker(
+    buildAnalysisProgressSteps(symbol, scenarioPassCount),
+    (msg) => { analysisStatusEl.textContent = msg; },
+  );
   try { const response = await fetch('/api/analysis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to add analysis'));
-    clearInterval(timer);
+    stopTicker();
     analysisSymbolInput.value = ''; await loadAnalysis();
     analysisStatusEl.textContent = `Analysis completed for ${symbol}.`;
-  } catch (error) { clearInterval(timer); analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
+  } catch (error) { stopTicker(); analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
 async function importAnalysisFromPositions() {

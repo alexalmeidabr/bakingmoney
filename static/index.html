@@ -42,7 +42,7 @@
                     <th data-sort-key="current_price" class="sortable">Current Price</th>
                     <th data-sort-key="expected_price" class="sortable">Expected Price</th>
                     <th data-sort-key="upside" class="sortable">Upside</th>
-                    <th data-sort-key="overall_confidence" class="sortable">Confidence Level</th>
+                    <th>Confidence</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
@@ -73,7 +73,7 @@
             <div class="detail-panels">
               <section class="detail-card">
                 <div class="view-header">
-                  <h3>Scenarios</h3>
+                  <h3>Scenarios <button id="analysis-scenario-info-btn" title="Scenario generation info">i</button></h3>
                   <button id="analysis-rerun-btn" disabled>Re-run Scenarios</button>
                 </div>
                 <div class="table-wrap">
@@ -118,6 +118,14 @@
                   </table>
                 </div>
               </section>
+            </div>
+
+            <div id="analysis-scenario-info-modal" class="detail-card hidden">
+              <div class="view-header">
+                <h3>Scenario Generation Info</h3>
+                <button id="analysis-scenario-info-close-btn">Close</button>
+              </div>
+              <pre id="analysis-scenario-info-text" class="config-preview"></pre>
             </div>
           </div>
         </section>

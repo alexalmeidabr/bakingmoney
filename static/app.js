@@ -36,6 +36,10 @@ const analysisAddVariableBtn = document.getElementById('analysis-add-variable-bt
 const analysisSaveVariablesBtn = document.getElementById('analysis-save-variables-btn');
 const analysisCancelVariablesBtn = document.getElementById('analysis-cancel-variables-btn');
 const analysisRerunBtn = document.getElementById('analysis-rerun-btn');
+const analysisScenarioInfoBtn = document.getElementById('analysis-scenario-info-btn');
+const analysisScenarioInfoModal = document.getElementById('analysis-scenario-info-modal');
+const analysisScenarioInfoText = document.getElementById('analysis-scenario-info-text');
+const analysisScenarioInfoCloseBtn = document.getElementById('analysis-scenario-info-close-btn');
 
 const configurationStatusEl = document.getElementById('configuration-status');
 const configPromptBusinessModelEl = document.getElementById('config-prompt-business-model');
@@ -69,6 +73,7 @@ const formatCurrencyValue = (value, currency, digits = 2) => {
 };
 const formatPercent = (value) => (typeof value !== 'number' || Number.isNaN(value) ? 'N/A' : `${value.toFixed(2)}%`);
 const valueClass = (value) => (typeof value !== 'number' || Number.isNaN(value) || value === 0 ? '' : value > 0 ? 'pnl-positive' : 'pnl-negative');
+const formatConfidencePair = (bullish, bearish) => `${formatNumber(bullish, 2)} / ${formatNumber(bearish, 2)}`;
 const formatDateTime = (v) => {
   if (!v) return 'N/A';
   const d = new Date(v);
@@ -101,7 +106,7 @@ function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
   sortAnalysis(latestAnalysis).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatNumber(item.overall_confidence, 2)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
@@ -163,7 +168,7 @@ function renderVersionControls() {
 function renderAnalysisDetail() {
   const item = analysisDetailState.version;
   analysisDetailTitle.textContent = `Analysis: ${analysisDetailState.symbol}`;
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence Level</div><div class="value">${formatNumber(item.overall_confidence, 2)}</div></div></div><p><strong>Business Model:</strong> ${item.business_model || 'N/A'}</p><p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p><p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</div></div></div><p><strong>Business Model:</strong> ${item.business_model || 'N/A'}</p><p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p><p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   analysisScenariosBody.innerHTML = '';
@@ -176,6 +181,10 @@ function renderAnalysisDetail() {
   renderVariablesTable();
   renderVersionControls();
   analysisRerunBtn.disabled = false;
+
+  const passes = item.scenario_passes || [];
+  const passLines = passes.map((p) => `Pass ${p.pass_index}: status=${p.validation_status}${p.is_outlier ? ' outlier=true' : ''}${p.rejection_reason ? ` reason=${p.rejection_reason}` : ''}${typeof p.quality_score === 'number' ? ` score=${p.quality_score.toFixed(2)}` : ''}`);
+  analysisScenarioInfoText.textContent = `Prompt used to build scenarios:\n${item.scenario_prompt || 'N/A'}\n\nScenario build passes:\n${passLines.length ? passLines.join('\n') : 'No pass details available.'}`;
 }
 
 function renderVariablesTable() {
@@ -447,6 +456,8 @@ analysisRefreshPricesBtn.addEventListener('click', refreshAnalysisPrices);
 analysisRerunSelectedBtn.addEventListener('click', rerunSelectedSymbolsScenarios);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', showAnalysisList);
+analysisScenarioInfoBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.remove('hidden'));
+analysisScenarioInfoCloseBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.add('hidden'));
 analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderVariablesTable(); });
 analysisAddVariableBtn.addEventListener('click', () => {
   if (!isEditingVariables) return;

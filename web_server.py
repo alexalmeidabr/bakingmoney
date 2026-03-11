@@ -1240,6 +1240,7 @@ def request_ai_analysis(symbol, current_price=None):
         "raw": {
             "step1": step1_raw,
             "step2": step2_raw,
+            "step3_prompt": prompt3,
             "step3_runs": [
                 {
                     "pass_index": run["pass_index"],
@@ -1530,6 +1531,20 @@ def list_analysis_symbols(conn):
     rows = conn.execute(
         """
         SELECT r.symbol, v.current_price, v.expected_price, v.upside, v.confidence_level AS overall_confidence,
+               (
+                   SELECT CASE WHEN SUM(kv.importance) > 0
+                     THEN SUM(kv.confidence * kv.importance) / SUM(kv.importance)
+                     ELSE NULL END
+                   FROM analysis_version_key_variables kv
+                   WHERE kv.analysis_version_id = v.id AND kv.variable_type = 'Bullish'
+               ) AS bullish_confidence,
+               (
+                   SELECT CASE WHEN SUM(kv.importance) > 0
+                     THEN SUM(kv.confidence * kv.importance) / SUM(kv.importance)
+                     ELSE NULL END
+                   FROM analysis_version_key_variables kv
+                   WHERE kv.analysis_version_id = v.id AND kv.variable_type = 'Bearish'
+               ) AS bearish_confidence,
                v.created_at AS updated_at
         FROM analysis_roots r
         JOIN analysis_versions v ON v.analysis_root_id = r.id
@@ -1664,6 +1679,35 @@ def _version_payload(conn, version_row):
         (version_row["id"],),
     ).fetchall()
 
+    bullish_confidence = calculate_overall_confidence(
+        [item for item in [dict(v) for v in key_variables] if item["variable_type"] == "Bullish"]
+    )
+    bearish_confidence = calculate_overall_confidence(
+        [item for item in [dict(v) for v in key_variables] if item["variable_type"] == "Bearish"]
+    )
+
+    raw_payload = {}
+    try:
+        raw_payload = json.loads(version_row["raw_ai_response"] or "{}")
+    except Exception:
+        raw_payload = {}
+
+    prompt_text = raw_payload.get("step3_prompt")
+    if not scenario_passes and isinstance(raw_payload.get("step3_runs"), list):
+        scenario_passes = [
+            {
+                "pass_index": row.get("pass_index"),
+                "raw_response_text": row.get("raw_response_text"),
+                "parsed_json": json.dumps(row.get("parsed_json")) if isinstance(row.get("parsed_json"), (dict, list)) else row.get("parsed_json"),
+                "validation_status": row.get("validation_status", "unknown"),
+                "rejection_reason": row.get("rejection_reason"),
+                "quality_score": row.get("quality_score"),
+                "is_outlier": 1 if row.get("is_outlier") else 0,
+                "created_at": row.get("created_at"),
+            }
+            for row in raw_payload.get("step3_runs", [])
+        ]
+
     return {
         "id": version_row["id"],
         "version_number": version_row["version_number"],
@@ -1673,11 +1717,14 @@ def _version_payload(conn, version_row):
         "expected_price": version_row["expected_price"],
         "upside": version_row["upside"],
         "overall_confidence": version_row["confidence_level"],
+        "bullish_confidence": bullish_confidence,
+        "bearish_confidence": bearish_confidence,
         "assumptions": version_row["assumptions_text"],
         "business_model": version_row["business_model_text"],
         "business_summary": version_row["business_summary_text"],
         "created_at": version_row["created_at"],
         "source_trigger": version_row["source_trigger"],
+        "scenario_prompt": prompt_text,
         "scenarios": [dict(s) for s in scenarios],
         "key_variables": [dict(v) for v in key_variables],
         "scenario_passes": [
@@ -2010,7 +2057,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
-            raw_ai_response=json.dumps({"step3_runs": scenario_runs}),
+            raw_ai_response=json.dumps({"step3_prompt": prompt, "step3_runs": scenario_runs}),
             source_trigger="rerun_from_key_variable_edit",
             scenario_passes=scenario_runs,
         )
@@ -2102,7 +2149,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
-            raw_ai_response=json.dumps({"step3_runs": scenario_runs}),
+            raw_ai_response=json.dumps({"step3_prompt": prompt, "step3_runs": scenario_runs}),
             source_trigger="rerun_from_analysis_list",
             scenario_passes=scenario_runs,
         )

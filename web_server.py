@@ -1531,6 +1531,15 @@ def list_analysis_symbols(conn):
     rows = conn.execute(
         """
         SELECT r.symbol, v.current_price, v.expected_price, v.upside, v.confidence_level AS overall_confidence,
+               v.version_number AS analysis_version,
+               COALESCE(
+                   (
+                       SELECT COUNT(*)
+                       FROM analysis_version_scenario_passes sp
+                       WHERE sp.analysis_version_id = v.id
+                   ),
+                   0
+               ) AS scenario_pass_count,
                (
                    SELECT CASE WHEN SUM(kv.importance) > 0
                      THEN SUM(kv.confidence * kv.importance) / SUM(kv.importance)
@@ -1557,7 +1566,13 @@ def list_analysis_symbols(conn):
         ORDER BY r.symbol ASC
         """
     ).fetchall()
-    return [dict(row) for row in rows]
+    output = []
+    for row in rows:
+        item = dict(row)
+        if (item.get("scenario_pass_count") or 0) <= 0:
+            item["scenario_pass_count"] = 1
+        output.append(item)
+    return output
 
 
 def refresh_latest_analysis_market_prices(conn):
@@ -2488,7 +2503,18 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
         conn = get_db_connection()
         try:
-            detail = rerun_scenarios_from_saved_edits(conn, symbol, int(version_id))
+            root = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
+            draft = None
+            if root:
+                draft = conn.execute(
+                    "SELECT based_on_version_id FROM analysis_key_variable_edits WHERE analysis_root_id = ?",
+                    (root["id"],),
+                ).fetchone()
+
+            if draft and int(draft["based_on_version_id"]) == int(version_id):
+                detail = rerun_scenarios_from_saved_edits(conn, symbol, int(version_id))
+            else:
+                detail = rerun_scenarios_from_existing_version(conn, symbol, int(version_id))
             self._send_json({"ok": True, "analysis": detail}, status=201)
         except AnalysisValidationError as exc:
             self._send_json({"error": str(exc)}, status=400)

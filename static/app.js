@@ -39,6 +39,9 @@ const configurationStatusEl = document.getElementById('configuration-status');
 const configPromptBusinessModelEl = document.getElementById('config-prompt-business-model');
 const configPromptKeyVariablesEl = document.getElementById('config-prompt-key-variables');
 const configPromptScenariosEl = document.getElementById('config-prompt-scenarios');
+const configScenarioMultiPassEnabledEl = document.getElementById('config-scenario-multi-pass-enabled');
+const configScenarioPassCountEl = document.getElementById('config-scenario-pass-count');
+const configScenarioOutlierFilterEnabledEl = document.getElementById('config-scenario-outlier-filter-enabled');
 const configSaveBtn = document.getElementById('config-save-btn');
 const configResetBtn = document.getElementById('config-reset-btn');
 const configPreviewSymbolInput = document.getElementById('config-preview-symbol-input');
@@ -335,13 +338,17 @@ async function loadConfiguration() { /* unchanged */
     configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
     configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
     configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    const scenarioSettings = payload.scenario_settings || {};
+    configScenarioMultiPassEnabledEl.checked = Boolean(scenarioSettings.scenario_multi_pass_enabled);
+    configScenarioPassCountEl.value = scenarioSettings.scenario_pass_count || 1;
+    configScenarioOutlierFilterEnabledEl.checked = scenarioSettings.scenario_outlier_filter_enabled !== false;
     configurationStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }
 
 async function saveConfiguration() { /* unchanged */
   configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: configPromptBusinessModelEl.value, analysis_prompt_key_variables: configPromptKeyVariablesEl.value, analysis_prompt_scenarios: configPromptScenariosEl.value } }) });
+  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: configPromptBusinessModelEl.value, analysis_prompt_key_variables: configPromptKeyVariablesEl.value, analysis_prompt_scenarios: configPromptScenariosEl.value }, scenario_settings: { scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: Number(configScenarioPassCountEl.value || 1), scenario_outlier_filter_enabled: configScenarioOutlierFilterEnabledEl.checked } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); configurationStatusEl.textContent = 'Configuration saved.';
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }
@@ -350,6 +357,10 @@ async function resetConfiguration() {
   configurationStatusEl.textContent = 'Restoring default prompts…'; configurationStatusEl.className = 'status';
   try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset configuration'));
     const templates = payload.templates || {}; configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    const scenarioSettings = payload.scenario_settings || {};
+    configScenarioMultiPassEnabledEl.checked = Boolean(scenarioSettings.scenario_multi_pass_enabled);
+    configScenarioPassCountEl.value = scenarioSettings.scenario_pass_count || 1;
+    configScenarioOutlierFilterEnabledEl.checked = scenarioSettings.scenario_outlier_filter_enabled !== false;
     configurationStatusEl.textContent = 'Default prompts restored.';
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }

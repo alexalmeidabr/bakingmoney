@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import sqlite3
+import statistics
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -42,6 +43,16 @@ NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
 ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
+ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
+ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
+ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
+
+DEFAULT_SCENARIO_MULTI_PASS_ENABLED = False
+DEFAULT_SCENARIO_PASS_COUNT = 1
+DEFAULT_SCENARIO_OUTLIER_FILTER_ENABLED = True
+
+SCENARIO_MAX_BASE_DEVIATION = 0.40
+SCENARIO_MAX_AVG_DEVIATION = 0.30
 
 DEFAULT_PROMPT_BUSINESS_MODEL = """You are an equity analyst.
 
@@ -329,6 +340,83 @@ def get_all_prompt_templates(conn):
     return templates, sources
 
 
+def _get_setting_value(conn, key):
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def get_bool_setting(conn, key, default):
+    raw = _get_setting_value(conn, key)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_int_setting(conn, key, default, minimum=1, maximum=10):
+    raw = _get_setting_value(conn, key)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def get_scenario_generation_config(conn):
+    return {
+        "scenario_multi_pass_enabled": get_bool_setting(
+            conn,
+            ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED,
+            DEFAULT_SCENARIO_MULTI_PASS_ENABLED,
+        ),
+        "scenario_pass_count": get_int_setting(
+            conn,
+            ANALYSIS_SETTING_SCENARIO_PASS_COUNT,
+            DEFAULT_SCENARIO_PASS_COUNT,
+            minimum=1,
+            maximum=8,
+        ),
+        "scenario_outlier_filter_enabled": get_bool_setting(
+            conn,
+            ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED,
+            DEFAULT_SCENARIO_OUTLIER_FILTER_ENABLED,
+        ),
+    }
+
+
+def save_scenario_generation_config(conn, settings):
+    known = {
+        ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED,
+        ANALYSIS_SETTING_SCENARIO_PASS_COUNT,
+        ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED,
+    }
+    for key, value in settings.items():
+        if key not in known:
+            raise ValueError(f"Unknown scenario setting: {key}")
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            (key, str(value), utc_now_iso()),
+        )
+    conn.commit()
+
+
+def reset_scenario_generation_config(conn):
+    for key in (
+        ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED,
+        ANALYSIS_SETTING_SCENARIO_PASS_COUNT,
+        ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED,
+    ):
+        conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+    conn.commit()
+
+
 def save_prompt_template(conn, key, template):
     validate_prompt_template(key, template)
     conn.execute(
@@ -503,6 +591,23 @@ def init_db():
               variable_type TEXT NOT NULL,
               confidence REAL NOT NULL,
               importance REAL NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_version_scenario_passes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_version_id INTEGER NOT NULL,
+              pass_index INTEGER NOT NULL,
+              raw_response_text TEXT,
+              parsed_json TEXT,
+              validation_status TEXT NOT NULL,
+              rejection_reason TEXT,
+              quality_score REAL,
+              is_outlier INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL,
               FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
             )
@@ -983,6 +1088,7 @@ def request_ai_analysis(symbol, current_price=None):
     conn = get_db_connection()
     try:
         templates, sources = get_all_prompt_templates(conn)
+        scenario_settings = get_scenario_generation_config(conn)
     finally:
         conn.close()
 
@@ -1096,8 +1202,33 @@ def request_ai_analysis(symbol, current_price=None):
         business_model=business_for_prompt,
         key_variables=step2["key_variables"],
     )
-    step3_raw = request_ai_step("scenarios", prompt3, schema_step3)
-    parsed = validate_step3_scenarios(step3_raw, symbol, step2["key_variables"])
+    pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
+    scenario_parsed, scenario_runs = generate_scenarios_multi_pass(
+        symbol=symbol,
+        key_variables=step2["key_variables"],
+        prompt_text=prompt3,
+        pass_count=pass_count,
+        outlier_filter_enabled=scenario_settings["scenario_outlier_filter_enabled"],
+    )
+    parsed = validate_step3_scenarios(
+        {
+            "symbol": symbol,
+            "assumptions": scenario_parsed["assumptions"],
+            "scenarios": [
+                {
+                    "name": s["scenario_name"],
+                    "price_low": s["price_low"],
+                    "price_high": s["price_high"],
+                    "cagr_low": s["cagr_low"],
+                    "cagr_high": s["cagr_high"],
+                    "probability": s["probability"],
+                }
+                for s in scenario_parsed["scenarios"]
+            ],
+        },
+        symbol,
+        step2["key_variables"],
+    )
 
     return {
         "effective_price": effective_price,
@@ -1109,7 +1240,19 @@ def request_ai_analysis(symbol, current_price=None):
         "raw": {
             "step1": step1_raw,
             "step2": step2_raw,
-            "step3": step3_raw,
+            "step3_runs": [
+                {
+                    "pass_index": run["pass_index"],
+                    "raw_response_text": run["raw_response_text"],
+                    "parsed_json": run.get("parsed_json"),
+                    "validation_status": run["validation_status"],
+                    "rejection_reason": run.get("rejection_reason"),
+                    "quality_score": run.get("quality_score"),
+                    "is_outlier": run.get("is_outlier", False),
+                    "created_at": run["created_at"],
+                }
+                for run in scenario_runs
+            ],
         },
     }
 
@@ -1145,6 +1288,242 @@ def _build_scenarios_schema():
             "required": ["symbol", "assumptions", "scenarios"],
         },
     }
+
+
+def compute_scenario_midpoints(scenarios):
+    midpoint_by_name = {}
+    for item in scenarios:
+        midpoint_by_name[item["scenario_name"]] = (item["price_low"] + item["price_high"]) / 2.0
+    return midpoint_by_name
+
+
+def _normalize_probabilities(scenarios):
+    total = sum(float(item["probability"]) for item in scenarios)
+    if total <= 0:
+        raise AnalysisValidationError("Scenario probabilities must sum to a positive value")
+    normalized = []
+    for item in scenarios:
+        cloned = dict(item)
+        cloned["probability"] = float(item["probability"]) / total
+        normalized.append(cloned)
+    return normalized
+
+
+def validate_scenario_output(payload, symbol):
+    """Validation pipeline specifically for scenario-generation pass outputs."""
+    if not isinstance(payload, dict):
+        return {"ok": False, "reason": "payload_not_json", "parsed": None}
+
+    assumptions = payload.get("assumptions")
+    if not isinstance(assumptions, str) or not assumptions.strip():
+        return {"ok": False, "reason": "missing_assumptions", "parsed": None}
+
+    scenarios = payload.get("scenarios")
+    if not isinstance(scenarios, list) or len(scenarios) != 3:
+        return {"ok": False, "reason": "invalid_scenarios_shape", "parsed": None}
+
+    seen = set()
+    normalized = []
+    prob_sum_pct = 0.0
+    for item in scenarios:
+        if not isinstance(item, dict):
+            return {"ok": False, "reason": "invalid_scenario_item", "parsed": None}
+
+        name = item.get("name")
+        if name not in {"Bear", "Base", "Bull"} or name in seen:
+            return {"ok": False, "reason": "invalid_scenario_names", "parsed": None}
+
+        try:
+            price_low = float(item.get("price_low"))
+            price_high = float(item.get("price_high"))
+            cagr_low = float(item.get("cagr_low"))
+            cagr_high = float(item.get("cagr_high"))
+            probability = float(item.get("probability"))
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "invalid_numeric_field", "parsed": None}
+
+        if not all(math.isfinite(v) for v in [price_low, price_high, cagr_low, cagr_high, probability]):
+            return {"ok": False, "reason": "non_finite_numeric_field", "parsed": None}
+        if price_low <= 0 or price_high <= 0:
+            return {"ok": False, "reason": "non_positive_price", "parsed": None}
+        if probability < 0 or probability > 100:
+            return {"ok": False, "reason": "invalid_probability_range", "parsed": None}
+        if price_low > price_high:
+            return {"ok": False, "reason": "price_low_gt_price_high", "parsed": None}
+        if cagr_low > cagr_high:
+            return {"ok": False, "reason": "cagr_low_gt_cagr_high", "parsed": None}
+
+        seen.add(name)
+        prob_sum_pct += probability
+        normalized.append(
+            {
+                "scenario_name": name,
+                "price_low": price_low,
+                "price_high": price_high,
+                "cagr_low": cagr_low,
+                "cagr_high": cagr_high,
+                "probability": probability,
+            }
+        )
+
+    if seen != {"Bear", "Base", "Bull"}:
+        return {"ok": False, "reason": "missing_required_scenarios", "parsed": None}
+    if prob_sum_pct < 90 or prob_sum_pct > 110:
+        return {"ok": False, "reason": "probability_total_out_of_range", "parsed": None}
+
+    normalized = sorted(normalized, key=lambda s: ["Bear", "Base", "Bull"].index(s["scenario_name"]))
+    mids = compute_scenario_midpoints(normalized)
+    if not (mids["Bear"] <= mids["Base"] <= mids["Bull"]):
+        return {"ok": False, "reason": "scenario_midpoint_order_invalid", "parsed": None}
+
+    parsed = {
+        "symbol": symbol,
+        "assumptions": assumptions.strip(),
+        "scenarios": _normalize_probabilities(normalized),
+    }
+    return {"ok": True, "reason": None, "parsed": parsed}
+
+
+def score_scenario_run(run, medians=None):
+    score = 0.0
+    if run.get("validation_status") == "valid":
+        score += 5.0
+    prob_sum = run.get("probability_total_pct")
+    if prob_sum is not None:
+        score += max(0.0, 2.0 - abs(prob_sum - 100.0) / 10.0)
+    if medians and run.get("midpoints"):
+        avg_dev = run.get("avg_relative_deviation")
+        if avg_dev is not None:
+            score += max(0.0, 2.0 - avg_dev * 5.0)
+    if not run.get("is_outlier"):
+        score += 1.0
+    return score
+
+
+def filter_outlier_runs(valid_runs, enabled=True):
+    if not enabled or len(valid_runs) < 3:
+        for run in valid_runs:
+            run["is_outlier"] = False
+            run["avg_relative_deviation"] = 0.0
+        return valid_runs
+
+    bear_medians = statistics.median([r["midpoints"]["Bear"] for r in valid_runs])
+    base_medians = statistics.median([r["midpoints"]["Base"] for r in valid_runs])
+    bull_medians = statistics.median([r["midpoints"]["Bull"] for r in valid_runs])
+
+    retained = []
+    for run in valid_runs:
+        bear_dev = abs(run["midpoints"]["Bear"] - bear_medians) / max(abs(bear_medians), 1e-9)
+        base_dev = abs(run["midpoints"]["Base"] - base_medians) / max(abs(base_medians), 1e-9)
+        bull_dev = abs(run["midpoints"]["Bull"] - bull_medians) / max(abs(bull_medians), 1e-9)
+        avg_dev = (bear_dev + base_dev + bull_dev) / 3.0
+        run["avg_relative_deviation"] = avg_dev
+        run["is_outlier"] = base_dev > SCENARIO_MAX_BASE_DEVIATION or avg_dev > SCENARIO_MAX_AVG_DEVIATION
+        if not run["is_outlier"]:
+            retained.append(run)
+
+    return retained if retained else valid_runs
+
+
+def aggregate_scenario_runs(runs, symbol):
+    if not runs:
+        raise AnalysisValidationError("No scenario runs available for aggregation")
+    if len(runs) == 1:
+        final = dict(runs[0]["parsed"])
+        final["scenarios"] = _normalize_probabilities(final["scenarios"])
+        return final
+
+    final_scenarios = []
+    for scenario_name in ["Bear", "Base", "Bull"]:
+        scenario_values = []
+        for run in runs:
+            scenario = next(item for item in run["parsed"]["scenarios"] if item["scenario_name"] == scenario_name)
+            scenario_values.append(scenario)
+
+        final_scenarios.append(
+            {
+                "scenario_name": scenario_name,
+                "price_low": statistics.median([v["price_low"] for v in scenario_values]),
+                "price_high": statistics.median([v["price_high"] for v in scenario_values]),
+                "cagr_low": statistics.median([v["cagr_low"] for v in scenario_values]),
+                "cagr_high": statistics.median([v["cagr_high"] for v in scenario_values]),
+                "probability": sum(v["probability"] for v in scenario_values) / len(scenario_values),
+            }
+        )
+
+    final_scenarios = _normalize_probabilities(final_scenarios)
+    best = max(runs, key=lambda r: r.get("quality_score", 0.0))
+    return {
+        "symbol": symbol,
+        # Keep assumptions from highest-quality retained run.
+        "assumptions": best["parsed"]["assumptions"],
+        "scenarios": final_scenarios,
+    }
+
+
+def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count, outlier_filter_enabled):
+    runs = []
+    for idx in range(pass_count):
+        run = {
+            "pass_index": idx + 1,
+            "raw_response_text": None,
+            "parsed_json": None,
+            "validation_status": "rejected",
+            "rejection_reason": None,
+            "created_at": utc_now_iso(),
+            "quality_score": 0.0,
+            "is_outlier": False,
+        }
+        try:
+            payload = request_ai_step(f"scenarios_pass_{idx + 1}", prompt_text, _build_scenarios_schema())
+            run["raw_response_text"] = json.dumps(payload, ensure_ascii=False)
+            run["parsed_json"] = payload
+            validation = validate_scenario_output(payload, symbol)
+            if validation["ok"]:
+                run["validation_status"] = "valid"
+                run["parsed"] = validation["parsed"]
+                run["midpoints"] = compute_scenario_midpoints(validation["parsed"]["scenarios"])
+                run["probability_total_pct"] = sum(s["probability"] for s in validation["parsed"]["scenarios"]) * 100.0
+            else:
+                run["rejection_reason"] = validation["reason"]
+        except Exception as exc:
+            run["rejection_reason"] = f"request_failed:{exc}"
+        runs.append(run)
+
+    valid_runs = [r for r in runs if r["validation_status"] == "valid"]
+    retained_runs = filter_outlier_runs(valid_runs, enabled=outlier_filter_enabled)
+    retained_ids = {id(r) for r in retained_runs}
+    for run in runs:
+        if run["validation_status"] == "valid" and id(run) not in retained_ids:
+            run["is_outlier"] = True
+            run["rejection_reason"] = "outlier"
+
+    if not retained_runs:
+        # Fallback: if there's at least one parsed run that can be normalized, keep first parsed one.
+        partially_usable = [r for r in runs if isinstance(r.get("parsed_json"), dict)]
+        if partially_usable:
+            fallback = partially_usable[0]
+            validation = validate_scenario_output(fallback["parsed_json"], symbol)
+            if validation["ok"]:
+                fallback["validation_status"] = "valid"
+                fallback["parsed"] = validation["parsed"]
+                fallback["midpoints"] = compute_scenario_midpoints(validation["parsed"]["scenarios"])
+                retained_runs = [fallback]
+            else:
+                raise AnalysisValidationError("All scenario passes failed validation")
+        else:
+            raise AnalysisValidationError("All scenario passes failed validation")
+
+    medians = {
+        "Bear": statistics.median([r["midpoints"]["Bear"] for r in retained_runs]),
+        "Base": statistics.median([r["midpoints"]["Base"] for r in retained_runs]),
+        "Bull": statistics.median([r["midpoints"]["Bull"] for r in retained_runs]),
+    }
+    for run in runs:
+        run["quality_score"] = score_scenario_run(run, medians=medians)
+
+    aggregated = aggregate_scenario_runs(retained_runs, symbol=symbol)
+    return aggregated, runs
 
 
 def list_analysis_symbols(conn):
@@ -1274,6 +1653,17 @@ def _version_payload(conn, version_row):
         (version_row["id"],),
     ).fetchall()
 
+    scenario_passes = conn.execute(
+        """
+        SELECT pass_index, raw_response_text, parsed_json, validation_status,
+               rejection_reason, quality_score, is_outlier, created_at
+        FROM analysis_version_scenario_passes
+        WHERE analysis_version_id = ?
+        ORDER BY pass_index ASC
+        """,
+        (version_row["id"],),
+    ).fetchall()
+
     return {
         "id": version_row["id"],
         "version_number": version_row["version_number"],
@@ -1290,6 +1680,19 @@ def _version_payload(conn, version_row):
         "source_trigger": version_row["source_trigger"],
         "scenarios": [dict(s) for s in scenarios],
         "key_variables": [dict(v) for v in key_variables],
+        "scenario_passes": [
+            {
+                "pass_index": row["pass_index"],
+                "raw_response_text": row["raw_response_text"],
+                "parsed_json": json.loads(row["parsed_json"]) if row["parsed_json"] else None,
+                "validation_status": row["validation_status"],
+                "rejection_reason": row["rejection_reason"],
+                "quality_score": row["quality_score"],
+                "is_outlier": bool(row["is_outlier"]),
+                "created_at": row["created_at"],
+            }
+            for row in scenario_passes
+        ],
     }
 
 
@@ -1353,6 +1756,7 @@ def _insert_analysis_version(
     key_variables,
     raw_ai_response,
     source_trigger,
+    scenario_passes=None,
 ):
     latest = conn.execute(
         "SELECT COALESCE(MAX(version_number), 0) AS latest FROM analysis_versions WHERE analysis_root_id = ?",
@@ -1429,6 +1833,27 @@ def _insert_analysis_version(
             ),
         )
 
+    for scenario_pass in scenario_passes or []:
+        conn.execute(
+            """
+            INSERT INTO analysis_version_scenario_passes (
+                analysis_version_id, pass_index, raw_response_text, parsed_json,
+                validation_status, rejection_reason, quality_score, is_outlier, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                scenario_pass.get("pass_index"),
+                scenario_pass.get("raw_response_text"),
+                json.dumps(scenario_pass.get("parsed_json")) if scenario_pass.get("parsed_json") is not None else None,
+                scenario_pass.get("validation_status", "unknown"),
+                scenario_pass.get("rejection_reason"),
+                scenario_pass.get("quality_score"),
+                1 if scenario_pass.get("is_outlier") else 0,
+                scenario_pass.get("created_at", now),
+            ),
+        )
+
     conn.execute(
         "UPDATE analysis_roots SET updated_at = ? WHERE id = ?",
         (now, root_id),
@@ -1469,6 +1894,7 @@ def upsert_analysis(conn, symbol, current_price=None):
             key_variables=parsed["key_variables"],
             raw_ai_response=json.dumps(ai_result["raw"]),
             source_trigger="initial_generation",
+            scenario_passes=ai_result["raw"].get("step3_runs", []),
         )
 
         conn.execute("DELETE FROM analysis_key_variable_edits WHERE analysis_root_id = ?", (root_id,))
@@ -1533,6 +1959,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     key_variables = json.loads(draft["key_variables_json"])
 
     templates, _sources = get_all_prompt_templates(conn)
+    scenario_settings = get_scenario_generation_config(conn)
     business_for_prompt = f"{base_version['business_model_text'] or ''}\nSummary: {base_version['business_summary_text'] or ''}"
     prompt = build_analysis_prompt(
         symbol,
@@ -1542,8 +1969,33 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
         business_model=business_for_prompt,
         key_variables=key_variables,
     )
-    step3_raw = request_ai_step("scenarios_rerun", prompt, _build_scenarios_schema())
-    parsed = validate_step3_scenarios(step3_raw, symbol, key_variables)
+    pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
+    scenario_parsed, scenario_runs = generate_scenarios_multi_pass(
+        symbol=symbol,
+        key_variables=key_variables,
+        prompt_text=prompt,
+        pass_count=pass_count,
+        outlier_filter_enabled=scenario_settings["scenario_outlier_filter_enabled"],
+    )
+    parsed = validate_step3_scenarios(
+        {
+            "symbol": symbol,
+            "assumptions": scenario_parsed["assumptions"],
+            "scenarios": [
+                {
+                    "name": s["scenario_name"],
+                    "price_low": s["price_low"],
+                    "price_high": s["price_high"],
+                    "cagr_low": s["cagr_low"],
+                    "cagr_high": s["cagr_high"],
+                    "probability": s["probability"],
+                }
+                for s in scenario_parsed["scenarios"]
+            ],
+        },
+        symbol,
+        key_variables,
+    )
 
     conn.execute("BEGIN")
     try:
@@ -1558,8 +2010,9 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
-            raw_ai_response=json.dumps({"step3": step3_raw}),
+            raw_ai_response=json.dumps({"step3_runs": scenario_runs}),
             source_trigger="rerun_from_key_variable_edit",
+            scenario_passes=scenario_runs,
         )
         conn.execute("DELETE FROM analysis_key_variable_edits WHERE analysis_root_id = ?", (root["id"],))
         conn.commit()
@@ -1926,7 +2379,13 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         conn = get_db_connection()
         try:
             templates, sources = get_all_prompt_templates(conn)
-            self._send_json({"templates": templates, "sources": sources})
+            self._send_json(
+                {
+                    "templates": templates,
+                    "sources": sources,
+                    "scenario_settings": get_scenario_generation_config(conn),
+                }
+            )
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to load prompt configuration.", "details": str(exc)},
@@ -1937,14 +2396,19 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def handle_configuration_prompts_put(self):
         payload = self._read_json_body() or {}
-        templates = payload.get("templates")
+        templates = payload.get("templates", {})
+        scenario_settings = payload.get("scenario_settings", {})
         if not isinstance(templates, dict):
-            return self._send_json({"error": "templates object is required"}, status=400)
+            return self._send_json({"error": "templates must be an object"}, status=400)
+        if not isinstance(scenario_settings, dict):
+            return self._send_json({"error": "scenario_settings must be an object"}, status=400)
 
         conn = get_db_connection()
         try:
             for key, value in templates.items():
                 save_prompt_template(conn, key, value)
+            if scenario_settings:
+                save_scenario_generation_config(conn, scenario_settings)
             self._send_json({"ok": True})
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=400)
@@ -1961,8 +2425,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         try:
             for key in PROMPT_TEMPLATE_CONFIG.keys():
                 reset_prompt_template(conn, key)
+            reset_scenario_generation_config(conn)
             templates, sources = get_all_prompt_templates(conn)
-            self._send_json({"ok": True, "templates": templates, "sources": sources})
+            self._send_json(
+                {
+                    "ok": True,
+                    "templates": templates,
+                    "sources": sources,
+                    "scenario_settings": get_scenario_generation_config(conn),
+                }
+            )
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to reset prompt configuration.", "details": str(exc)},

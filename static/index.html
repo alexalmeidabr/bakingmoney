@@ -145,6 +145,11 @@
             <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
             <textarea id="config-prompt-scenarios" class="config-textarea" rows="14"></textarea>
             <div class="table-actions config-actions">
+              <label><input id="config-scenario-multi-pass-enabled" type="checkbox" /> Enable scenario multi-pass consensus</label>
+              <label>Pass count <input id="config-scenario-pass-count" type="number" min="1" max="8" value="1" /></label>
+              <label><input id="config-scenario-outlier-filter-enabled" type="checkbox" checked /> Outlier filter enabled</label>
+            </div>
+            <div class="table-actions config-actions">
               <button id="config-save-btn">Save All</button>
               <button id="config-reset-btn">Restore Default Prompts</button>
             </div>

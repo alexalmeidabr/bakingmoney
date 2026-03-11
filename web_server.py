@@ -2023,6 +2023,97 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     return get_analysis_detail(conn, symbol, version_id=new_version_id)
 
 
+def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
+    root = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
+    if not root:
+        raise ValueError("Analysis symbol not found")
+
+    base_version = conn.execute(
+        "SELECT * FROM analysis_versions WHERE id = ? AND analysis_root_id = ?",
+        (base_version_id, root["id"]),
+    ).fetchone()
+    if not base_version:
+        raise ValueError("Base version not found")
+
+    key_variables = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT variable_text, variable_type, confidence, importance
+            FROM analysis_version_key_variables
+            WHERE analysis_version_id = ?
+            ORDER BY id ASC
+            """,
+            (base_version_id,),
+        ).fetchall()
+    ]
+    if not key_variables:
+        raise ValueError("No key variables found for base version")
+
+    templates, _sources = get_all_prompt_templates(conn)
+    scenario_settings = get_scenario_generation_config(conn)
+    business_for_prompt = f"{base_version['business_model_text'] or ''}\nSummary: {base_version['business_summary_text'] or ''}"
+    prompt = build_analysis_prompt(
+        symbol,
+        base_version["current_price"],
+        template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
+        company_name=base_version["company_name"] or "",
+        business_model=business_for_prompt,
+        key_variables=key_variables,
+    )
+    pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
+    scenario_parsed, scenario_runs = generate_scenarios_multi_pass(
+        symbol=symbol,
+        key_variables=key_variables,
+        prompt_text=prompt,
+        pass_count=pass_count,
+        outlier_filter_enabled=scenario_settings["scenario_outlier_filter_enabled"],
+    )
+    parsed = validate_step3_scenarios(
+        {
+            "symbol": symbol,
+            "assumptions": scenario_parsed["assumptions"],
+            "scenarios": [
+                {
+                    "name": s["scenario_name"],
+                    "price_low": s["price_low"],
+                    "price_high": s["price_high"],
+                    "cagr_low": s["cagr_low"],
+                    "cagr_high": s["cagr_high"],
+                    "probability": s["probability"],
+                }
+                for s in scenario_parsed["scenarios"]
+            ],
+        },
+        symbol,
+        key_variables,
+    )
+
+    conn.execute("BEGIN")
+    try:
+        new_version_id = _insert_analysis_version(
+            conn=conn,
+            root_id=root["id"],
+            symbol=symbol,
+            company_name=base_version["company_name"],
+            current_price=base_version["current_price"],
+            business_model=base_version["business_model_text"],
+            business_summary=base_version["business_summary_text"],
+            assumptions=parsed["assumptions"],
+            scenarios=parsed["scenarios"],
+            key_variables=key_variables,
+            raw_ai_response=json.dumps({"step3_runs": scenario_runs}),
+            source_trigger="rerun_from_analysis_list",
+            scenario_passes=scenario_runs,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    return get_analysis_detail(conn, symbol, version_id=new_version_id)
+
+
 
 def get_positions_with_prices():
     ensure_event_loop()
@@ -2093,6 +2184,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/analysis":
             return self.handle_analysis_post()
+        if path == "/api/analysis/rerun-scenarios":
+            return self.handle_analysis_rerun_scenarios_batch()
         if path == "/api/analysis/refresh-prices":
             return self.handle_analysis_refresh_prices()
         if path.startswith("/api/analysis/") and path.endswith("/key-variables"):
@@ -2357,6 +2450,56 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             logger.exception("Unable to rerun scenarios for symbol %s", symbol)
             self._send_json({"error": "Unable to re-run scenarios.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_analysis_rerun_scenarios_batch(self):
+        payload = self._read_json_body() or {}
+        symbols = payload.get("symbols")
+        if not isinstance(symbols, list) or not symbols:
+            return self._send_json({"error": "symbols array is required"}, status=400)
+
+        normalized_symbols = []
+        for item in symbols:
+            symbol = normalize_symbol(item)
+            if symbol:
+                normalized_symbols.append(symbol)
+        if not normalized_symbols:
+            return self._send_json({"error": "No valid symbols provided"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            rerun = []
+            failures = []
+            for symbol in normalized_symbols:
+                try:
+                    latest = conn.execute(
+                        """
+                        SELECT v.id
+                        FROM analysis_roots r
+                        JOIN analysis_versions v ON v.analysis_root_id = r.id
+                        WHERE r.symbol = ?
+                        ORDER BY v.version_number DESC
+                        LIMIT 1
+                        """,
+                        (symbol,),
+                    ).fetchone()
+                    if not latest:
+                        raise ValueError("Analysis symbol not found")
+                    rerun_scenarios_from_existing_version(conn, symbol, latest["id"])
+                    rerun.append(symbol)
+                except Exception as exc:
+                    logger.exception("Unable to rerun scenarios from list for symbol %s", symbol)
+                    failures.append({"symbol": symbol, "error": str(exc)})
+
+            self._send_json(
+                {
+                    "ok": len(failures) == 0,
+                    "rerunSymbols": rerun,
+                    "failures": failures,
+                },
+                status=207 if failures else 200,
+            )
         finally:
             conn.close()
 

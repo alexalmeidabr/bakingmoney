@@ -11,10 +11,12 @@ const analysisStatusEl = document.getElementById('analysis-status');
 const analysisTable = document.getElementById('analysis-table');
 const analysisTableBody = analysisTable.querySelector('tbody');
 const analysisSortHeaders = document.querySelectorAll('#analysis-table th.sortable');
+const analysisSelectAllEl = document.getElementById('analysis-select-all');
 const analysisSymbolInput = document.getElementById('analysis-symbol-input');
 const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
 const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
+const analysisRerunSelectedBtn = document.getElementById('analysis-rerun-selected-btn');
 
 const analysisListView = document.getElementById('analysis-list-view');
 const analysisDetailView = document.getElementById('analysis-detail-view');
@@ -52,6 +54,7 @@ let latestPositions = [];
 let positionSort = { key: 'symbol', direction: 'asc' };
 let latestAnalysis = [];
 let analysisSort = { key: 'symbol', direction: 'asc' };
+let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
 
@@ -98,11 +101,29 @@ function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
   sortAnalysis(latestAnalysis).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatNumber(item.overall_confidence, 2)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatNumber(item.overall_confidence, 2)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
   analysisTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => loadAnalysisDetail(btn.dataset.symbol)));
+  analysisTableBody.querySelectorAll('.analysis-row-select').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      const symbol = checkbox.dataset.symbol;
+      if (checkbox.checked) selectedAnalysisSymbols.add(symbol);
+      else selectedAnalysisSymbols.delete(symbol);
+      syncSelectAllCheckbox();
+    });
+  });
+  syncSelectAllCheckbox();
+}
+
+function syncSelectAllCheckbox() {
+  const selectable = latestAnalysis.map((item) => item.symbol);
+  if (!selectable.length) {
+    analysisSelectAllEl.checked = false;
+    return;
+  }
+  analysisSelectAllEl.checked = selectable.every((symbol) => selectedAnalysisSymbols.has(symbol));
 }
 
 function showAnalysisList() { analysisListView.classList.remove('hidden'); analysisDetailView.classList.add('hidden'); }
@@ -154,9 +175,7 @@ function renderAnalysisDetail() {
 
   renderVariablesTable();
   renderVersionControls();
-  const edits = analysisDetailState.saved_key_variable_edits;
-  const canRerun = edits && Number(edits.based_on_version_id) === Number(item.id);
-  analysisRerunBtn.disabled = !canRerun;
+  analysisRerunBtn.disabled = false;
 }
 
 function renderVariablesTable() {
@@ -275,9 +294,40 @@ async function loadPositions() { /* unchanged */
 async function loadAnalysis() {
   analysisStatusEl.textContent = 'Loading analysis…'; analysisStatusEl.className = 'status'; analysisTable.classList.add('hidden');
   try { const response = await fetch('/api/analysis'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
-    latestAnalysis = payload.analysis || []; analysisTableBody.innerHTML = ''; if (!latestAnalysis.length) { analysisStatusEl.textContent = 'Analysis is empty.'; return; }
+    latestAnalysis = payload.analysis || []; analysisTableBody.innerHTML = '';
+    selectedAnalysisSymbols = new Set([...selectedAnalysisSymbols].filter((symbol) => latestAnalysis.some((item) => item.symbol === symbol)));
+    if (!latestAnalysis.length) { analysisStatusEl.textContent = 'Analysis is empty.'; syncSelectAllCheckbox(); return; }
     updateAnalysisSortHeaderState(); renderAnalysisList(); analysisStatusEl.textContent = `Loaded ${latestAnalysis.length} analysis symbol(s).`; analysisTable.classList.remove('hidden');
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
+}
+
+async function rerunSelectedSymbolsScenarios() {
+  const symbols = [...selectedAnalysisSymbols];
+  if (!symbols.length) {
+    analysisStatusEl.textContent = 'Select at least one symbol first.';
+    analysisStatusEl.className = 'status error';
+    return;
+  }
+
+  analysisStatusEl.textContent = `Re-running scenarios for ${symbols.length} symbol(s)…`;
+  analysisStatusEl.className = 'status';
+  try {
+    const response = await fetch('/api/analysis/rerun-scenarios', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols }),
+    });
+    const payload = await response.json();
+    if (!response.ok && response.status !== 207) throw new Error(extractErrorMessage(payload, 'Unable to re-run selected scenarios'));
+    await loadAnalysis();
+    const okCount = payload.rerunSymbols?.length || 0;
+    const failCount = payload.failures?.length || 0;
+    analysisStatusEl.textContent = failCount ? `Re-ran ${okCount} symbol(s), ${failCount} failed.` : `Re-ran scenarios for ${okCount} symbol(s).`;
+    analysisStatusEl.className = failCount ? 'status error' : 'status';
+  } catch (error) {
+    analysisStatusEl.textContent = `Error: ${error.message}`;
+    analysisStatusEl.className = 'status error';
+  }
 }
 
 async function addAnalysisSymbol() {
@@ -384,11 +434,17 @@ analysisSortHeaders.forEach((header) => header.addEventListener('click', () => {
   if (analysisSort.key === sortKey) analysisSort.direction = analysisSort.direction === 'asc' ? 'desc' : 'asc'; else analysisSort = { key: sortKey, direction: 'asc' };
   updateAnalysisSortHeaderState(); renderAnalysisList();
 }));
+analysisSelectAllEl.addEventListener('change', () => {
+  if (analysisSelectAllEl.checked) latestAnalysis.forEach((item) => selectedAnalysisSymbols.add(item.symbol));
+  else selectedAnalysisSymbols.clear();
+  renderAnalysisList();
+});
 
 refreshBtn.addEventListener('click', loadPositions);
 analysisAddBtn.addEventListener('click', addAnalysisSymbol);
 analysisImportBtn.addEventListener('click', importAnalysisFromPositions);
 analysisRefreshPricesBtn.addEventListener('click', refreshAnalysisPrices);
+analysisRerunSelectedBtn.addEventListener('click', rerunSelectedSymbolsScenarios);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', showAnalysisList);
 analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderVariablesTable(); });

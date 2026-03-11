@@ -27,6 +27,7 @@
                 <button id="analysis-add-btn">Add Symbol</button>
                 <button id="analysis-import-btn">Import from My Positions</button>
                 <button id="analysis-refresh-prices-btn">Update Current Prices</button>
+                <button id="analysis-rerun-selected-btn">Re-run Scenarios for Selected</button>
               </div>
             </div>
 
@@ -36,6 +37,7 @@
               <table id="analysis-table" class="hidden">
                 <thead>
                   <tr>
+                    <th><input id="analysis-select-all" type="checkbox" /></th>
                     <th data-sort-key="symbol" class="sortable">Symbol</th>
                     <th data-sort-key="current_price" class="sortable">Current Price</th>
                     <th data-sort-key="expected_price" class="sortable">Expected Price</th>

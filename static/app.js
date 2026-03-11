@@ -14,6 +14,7 @@ const analysisSortHeaders = document.querySelectorAll('#analysis-table th.sortab
 const analysisSymbolInput = document.getElementById('analysis-symbol-input');
 const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
+const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
 
 const analysisListView = document.getElementById('analysis-list-view');
 const analysisDetailView = document.getElementById('analysis-detail-view');
@@ -156,10 +157,9 @@ function renderAnalysisDetail() {
 }
 
 function renderVariablesTable() {
-  const variables = isEditingVariables
-    ? (analysisDetailState.saved_key_variable_edits?.based_on_version_id === analysisDetailState.version.id
-      ? analysisDetailState.saved_key_variable_edits.key_variables
-      : analysisDetailState.version.key_variables)
+  const hasSavedEditsForVersion = analysisDetailState.saved_key_variable_edits?.based_on_version_id === analysisDetailState.version.id;
+  const variables = hasSavedEditsForVersion
+    ? analysisDetailState.saved_key_variable_edits.key_variables
     : analysisDetailState.version.key_variables;
 
   analysisVariablesBody.innerHTML = '';
@@ -304,6 +304,23 @@ async function importAnalysisFromPositions() {
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
+async function refreshAnalysisPrices() {
+  analysisStatusEl.textContent = 'Updating current prices…'; analysisStatusEl.className = 'status';
+  try {
+    const response = await fetch('/api/analysis/refresh-prices', { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to refresh analysis prices'));
+    latestAnalysis = payload.analysis || [];
+    updateAnalysisSortHeaderState();
+    renderAnalysisList();
+    analysisTable.classList.toggle('hidden', latestAnalysis.length === 0);
+    analysisStatusEl.textContent = `Updated ${payload.updated || 0} symbol(s), skipped ${payload.skipped || 0}.`;
+  } catch (error) {
+    analysisStatusEl.textContent = `Error: ${error.message}`;
+    analysisStatusEl.className = 'status error';
+  }
+}
+
 async function deleteAnalysis(symbol) {
   analysisStatusEl.textContent = `Deleting ${symbol}…`; analysisStatusEl.className = 'status';
   try { const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`, { method: 'DELETE' }); const payload = await response.json();
@@ -360,6 +377,7 @@ analysisSortHeaders.forEach((header) => header.addEventListener('click', () => {
 refreshBtn.addEventListener('click', loadPositions);
 analysisAddBtn.addEventListener('click', addAnalysisSymbol);
 analysisImportBtn.addEventListener('click', importAnalysisFromPositions);
+analysisRefreshPricesBtn.addEventListener('click', refreshAnalysisPrices);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', showAnalysisList);
 analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderVariablesTable(); });

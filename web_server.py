@@ -1166,6 +1166,53 @@ def list_analysis_symbols(conn):
     return [dict(row) for row in rows]
 
 
+def refresh_latest_analysis_market_prices(conn):
+    rows = conn.execute(
+        """
+        SELECT r.symbol, v.id AS version_id, v.expected_price
+        FROM analysis_roots r
+        JOIN analysis_versions v ON v.analysis_root_id = r.id
+        WHERE v.id = (
+            SELECT id FROM analysis_versions latest
+            WHERE latest.analysis_root_id = r.id
+            ORDER BY version_number DESC
+            LIMIT 1
+        )
+        ORDER BY r.symbol ASC
+        """
+    ).fetchall()
+
+    symbols = [row["symbol"] for row in rows]
+    if not symbols:
+        return {"updated": 0, "skipped": 0}
+
+    prices, _warnings = fetch_ib_prices(symbols)
+    now = utc_now_iso()
+    updated = 0
+    skipped = 0
+
+    for row in rows:
+        latest_price = prices.get(row["symbol"])
+        if latest_price is None:
+            skipped += 1
+            continue
+        new_upside = calculate_upside(row["expected_price"], latest_price)
+        conn.execute(
+            """
+            UPDATE analysis_versions
+            SET current_price = ?, upside = ?
+            WHERE id = ?
+            """,
+            (latest_price, new_upside, row["version_id"]),
+        )
+        updated += 1
+
+    if updated:
+        conn.execute("UPDATE analysis_roots SET updated_at = ?", (now,))
+    conn.commit()
+    return {"updated": updated, "skipped": skipped}
+
+
 def _normalize_manual_key_variables(raw_key_variables):
     if not isinstance(raw_key_variables, list) or not raw_key_variables:
         raise AnalysisValidationError("key_variables must be a non-empty array")
@@ -1593,6 +1640,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/analysis":
             return self.handle_analysis_post()
+        if path == "/api/analysis/refresh-prices":
+            return self.handle_analysis_refresh_prices()
         if path.startswith("/api/analysis/") and path.endswith("/key-variables"):
             symbol = normalize_symbol(path[len("/api/analysis/") : -len("/key-variables")])
             if not symbol:
@@ -1701,10 +1750,24 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def handle_analysis_get(self):
         conn = get_db_connection()
         try:
+            refresh_latest_analysis_market_prices(conn)
             self._send_json({"analysis": list_analysis_symbols(conn)})
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to fetch analysis list.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_analysis_refresh_prices(self):
+        conn = get_db_connection()
+        try:
+            result = refresh_latest_analysis_market_prices(conn)
+            self._send_json({"ok": True, **result, "analysis": list_analysis_symbols(conn)})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to refresh analysis prices.", "details": str(exc)},
                 status=500,
             )
         finally:

@@ -76,25 +76,9 @@ async function getScenarioPassCountForStatus() {
   }
 }
 
-function buildAnalysisProgressSteps(symbol, passCount) {
-  const steps = [
-    `Determining Business Model for ${symbol}…`,
-    `Determining Key Variables for ${symbol}…`,
-  ];
-  for (let pass = 1; pass <= passCount; pass += 1) {
-    steps.push(`Building scenarios pass ${pass} for ${symbol}…`);
-  }
-  return steps;
-}
-
-function startProgressTicker(messages, setStatus, intervalMs = 1800) {
-  let index = 0;
-  setStatus(messages[index]);
-  const timer = setInterval(() => {
-    index = (index + 1) % messages.length;
-    setStatus(messages[index]);
-  }, intervalMs);
-  return () => clearInterval(timer);
+function buildScenarioStatusMessage(symbol, passCount) {
+  const suffix = passCount > 1 ? ` (multi-pass: ${passCount})` : '';
+  return `Building scenarios for ${symbol}${suffix}…`;
 }
 
 function extractErrorMessage(payload, fallback) {
@@ -360,9 +344,7 @@ async function rerunSelectedSymbolsScenarios() {
     let okCount = 0;
     let failCount = 0;
     for (const symbol of symbols) {
-      const passMessages = [];
-      for (let pass = 1; pass <= scenarioPassCount; pass += 1) passMessages.push(`Building scenarios pass ${pass} for ${symbol}…`);
-      const stopTicker = startProgressTicker(passMessages, (msg) => { analysisStatusEl.textContent = msg; }, 1200);
+      analysisStatusEl.textContent = buildScenarioStatusMessage(symbol, scenarioPassCount);
       try {
         const detailResponse = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`);
         const detailPayload = await detailResponse.json();
@@ -381,8 +363,6 @@ async function rerunSelectedSymbolsScenarios() {
       } catch (error) {
         console.error(`Failed rerun for ${symbol}:`, error);
         failCount += 1;
-      } finally {
-        stopTicker();
       }
     }
 
@@ -399,16 +379,12 @@ async function addAnalysisSymbol() {
   const symbol = analysisSymbolInput.value.trim().toUpperCase(); if (!symbol) return;
   analysisStatusEl.className = 'status';
   const scenarioPassCount = await getScenarioPassCountForStatus();
-  const stopTicker = startProgressTicker(
-    buildAnalysisProgressSteps(symbol, scenarioPassCount),
-    (msg) => { analysisStatusEl.textContent = msg; },
-  );
+  analysisStatusEl.textContent = buildScenarioStatusMessage(symbol, scenarioPassCount);
   try { const response = await fetch('/api/analysis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to add analysis'));
-    stopTicker();
     analysisSymbolInput.value = ''; await loadAnalysis();
     analysisStatusEl.textContent = `Analysis completed for ${symbol}.`;
-  } catch (error) { stopTicker(); analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
+  } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
 async function importAnalysisFromPositions() {

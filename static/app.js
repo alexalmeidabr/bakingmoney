@@ -13,6 +13,7 @@ const analysisTableBody = analysisTable.querySelector('tbody');
 const analysisSortHeaders = document.querySelectorAll('#analysis-table th.sortable');
 const analysisSelectAllEl = document.getElementById('analysis-select-all');
 const analysisSymbolInput = document.getElementById('analysis-symbol-input');
+const analysisPortfolioFilterEl = document.getElementById('analysis-portfolio-filter');
 const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
 const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
@@ -58,6 +59,7 @@ let latestPositions = [];
 let positionSort = { key: 'symbol', direction: 'asc' };
 let latestAnalysis = [];
 let analysisSort = { key: 'upside', direction: 'desc' };
+let portfolioFilter = 'all';
 let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
@@ -122,11 +124,34 @@ function renderPositions() {
   });
 }
 
+function getPortfolioSymbols() {
+  return new Set(
+    latestPositions
+      .filter((position) => Number(position?.position) > 0)
+      .map((position) => String(position.symbol || '').toUpperCase())
+      .filter(Boolean),
+  );
+}
+
+function enrichAnalysisWithPortfolioStatus(items) {
+  const portfolioSymbols = getPortfolioSymbols();
+  return items.map((item) => ({
+    ...item,
+    inPortfolio: portfolioSymbols.has(String(item.symbol || '').toUpperCase()),
+  }));
+}
+
+function getFilteredAnalysisItems() {
+  if (portfolioFilter === 'in_portfolio') return latestAnalysis.filter((item) => item.inPortfolio === true);
+  if (portfolioFilter === 'not_in_portfolio') return latestAnalysis.filter((item) => item.inPortfolio === false);
+  return latestAnalysis;
+}
+
 function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
-  sortAnalysis(latestAnalysis).forEach((item) => {
+  sortAnalysis(getFilteredAnalysisItems()).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
@@ -143,7 +168,7 @@ function renderAnalysisList() {
 }
 
 function syncSelectAllCheckbox() {
-  const selectable = latestAnalysis.map((item) => item.symbol);
+  const selectable = getFilteredAnalysisItems().map((item) => item.symbol);
   if (!selectable.length) {
     analysisSelectAllEl.checked = false;
     return;
@@ -373,11 +398,24 @@ async function loadPositions() { /* unchanged */
 
 async function loadAnalysis() {
   analysisStatusEl.textContent = 'Loading analysis…'; analysisStatusEl.className = 'status'; analysisTable.classList.add('hidden');
-  try { const response = await fetch('/api/analysis'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
-    latestAnalysis = payload.analysis || []; analysisTableBody.innerHTML = '';
+  try {
+    const [analysisResponse, positionsResponse] = await Promise.all([
+      fetch('/api/analysis'),
+      fetch('/api/positions'),
+    ]);
+    const analysisPayload = await analysisResponse.json();
+    const positionsPayload = await positionsResponse.json();
+    if (!analysisResponse.ok) throw new Error(extractErrorMessage(analysisPayload, 'Request failed'));
+    latestPositions = positionsResponse.ok ? (positionsPayload.positions || []) : [];
+
+    latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
+    analysisTableBody.innerHTML = '';
     selectedAnalysisSymbols = new Set([...selectedAnalysisSymbols].filter((symbol) => latestAnalysis.some((item) => item.symbol === symbol)));
     if (!latestAnalysis.length) { analysisStatusEl.textContent = 'Analysis is empty.'; syncSelectAllCheckbox(); return; }
-    updateAnalysisSortHeaderState(); renderAnalysisList(); analysisStatusEl.textContent = `Loaded ${latestAnalysis.length} analysis symbol(s).`; analysisTable.classList.remove('hidden');
+    updateAnalysisSortHeaderState();
+    renderAnalysisList();
+    analysisStatusEl.textContent = `Loaded ${latestAnalysis.length} analysis symbol(s).`;
+    analysisTable.classList.remove('hidden');
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
@@ -463,7 +501,7 @@ async function refreshAnalysisPrices() {
     const response = await fetch('/api/analysis/refresh-prices', { method: 'POST' });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to refresh analysis prices'));
-    latestAnalysis = payload.analysis || [];
+    latestAnalysis = enrichAnalysisWithPortfolioStatus(payload.analysis || []);
     updateAnalysisSortHeaderState();
     renderAnalysisList();
     analysisTable.classList.toggle('hidden', latestAnalysis.length === 0);
@@ -534,9 +572,14 @@ analysisSortHeaders.forEach((header) => header.addEventListener('click', () => {
   if (analysisSort.key === sortKey) analysisSort.direction = analysisSort.direction === 'asc' ? 'desc' : 'asc'; else analysisSort = { key: sortKey, direction: 'asc' };
   updateAnalysisSortHeaderState(); renderAnalysisList();
 }));
+analysisPortfolioFilterEl.addEventListener('change', () => {
+  portfolioFilter = analysisPortfolioFilterEl.value || 'all';
+  renderAnalysisList();
+});
 analysisSelectAllEl.addEventListener('change', () => {
-  if (analysisSelectAllEl.checked) latestAnalysis.forEach((item) => selectedAnalysisSymbols.add(item.symbol));
-  else selectedAnalysisSymbols.clear();
+  const visibleItems = getFilteredAnalysisItems();
+  if (analysisSelectAllEl.checked) visibleItems.forEach((item) => selectedAnalysisSymbols.add(item.symbol));
+  else visibleItems.forEach((item) => selectedAnalysisSymbols.delete(item.symbol));
   renderAnalysisList();
 });
 

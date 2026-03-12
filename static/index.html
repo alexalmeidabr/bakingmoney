@@ -24,6 +24,12 @@
               <h2>Analysis</h2>
               <div class="table-actions">
                 <input id="analysis-symbol-input" type="text" placeholder="e.g. NVDA" maxlength="16" />
+                <label for="analysis-portfolio-filter" class="inline-control-label">Portfolio Filter</label>
+                <select id="analysis-portfolio-filter">
+                  <option value="all">All</option>
+                  <option value="in_portfolio">In Portfolio</option>
+                  <option value="not_in_portfolio">Not in Portfolio</option>
+                </select>
                 <button id="analysis-add-btn">Add Symbol</button>
                 <button id="analysis-import-btn">Import from My Positions</button>
                 <button id="analysis-refresh-prices-btn">Update Current Prices</button>
@@ -43,6 +49,7 @@
                     <th data-sort-key="current_price" class="sortable">Current Price</th>
                     <th data-sort-key="expected_price" class="sortable">Expected Price</th>
                     <th data-sort-key="upside" class="sortable">Upside</th>
+                    <th>Portfolio</th>
                     <th>Confidence</th>
                     <th>Actions</th>
                   </tr>

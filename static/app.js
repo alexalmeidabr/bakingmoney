@@ -61,6 +61,7 @@ let analysisSort = { key: 'upside', direction: 'desc' };
 let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
+let isEditingBusinessModel = false;
 
 async function getScenarioPassCountForStatus() {
   try {
@@ -160,26 +161,18 @@ function setView(targetView) {
 }
 menuItems.forEach((item) => item.addEventListener('click', () => setView(item.dataset.view)));
 
+
+function getEffectiveBusinessModel() {
+  const businessModelEdit = analysisDetailState?.saved_business_model_edit;
+  if (businessModelEdit && Number(businessModelEdit.based_on_version_id) === Number(analysisDetailState.version.id)) {
+    return businessModelEdit.business_model || '';
+  }
+  return analysisDetailState?.version?.business_model || '';
+}
+
 function selectedVersionIndex() {
   if (!analysisDetailState) return -1;
   return (analysisDetailState.versions || []).findIndex((v) => Number(v.id) === Number(analysisDetailState.selected_version_id));
-}
-
-
-function getEffectiveManualInputs() {
-  const hasSavedEditsForVersion = analysisDetailState.saved_key_variable_edits?.based_on_version_id === analysisDetailState.version.id;
-  if (!hasSavedEditsForVersion) {
-    return {
-      businessModel: analysisDetailState.version.business_model || '',
-      businessSummary: analysisDetailState.version.business_summary || '',
-      keyVariables: analysisDetailState.version.key_variables,
-    };
-  }
-  return {
-    businessModel: analysisDetailState.saved_key_variable_edits.business_model ?? analysisDetailState.version.business_model ?? '',
-    businessSummary: analysisDetailState.saved_key_variable_edits.business_summary ?? analysisDetailState.version.business_summary ?? '',
-    keyVariables: analysisDetailState.saved_key_variable_edits.key_variables,
-  };
 }
 
 function renderVersionControls() {
@@ -204,14 +197,11 @@ function renderVersionControls() {
 function renderAnalysisDetail() {
   const item = analysisDetailState.version;
   analysisDetailTitle.textContent = `Analysis: ${analysisDetailState.symbol}`;
-  const manualInputs = getEffectiveManualInputs();
-  const businessModelDisplay = isEditingVariables
-    ? `<label><strong>Business Model:</strong></label><textarea id="analysis-business-model-input" class="analysis-business-model-input" rows="5">${manualInputs.businessModel || ''}</textarea>`
-    : `<p><strong>Business Model:</strong> ${manualInputs.businessModel || 'N/A'}</p>`;
-  const businessSummaryDisplay = isEditingVariables
-    ? `<label><strong>Business Summary:</strong></label><textarea id="analysis-business-summary-input" class="analysis-business-model-input" rows="3">${manualInputs.businessSummary || ''}</textarea>`
-    : `<p><strong>Business Summary:</strong> ${manualInputs.businessSummary || 'N/A'}</p>`;
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</div></div></div>${businessModelDisplay}${businessSummaryDisplay}<p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
+    const effectiveBusinessModel = getEffectiveBusinessModel();
+  const businessModelSection = isEditingBusinessModel
+    ? `<div class="business-model-editor"><label><strong>Business Model:</strong></label><textarea id="analysis-business-model-input" class="analysis-business-model-input" rows="5">${effectiveBusinessModel}</textarea><div class="table-actions"><button id="analysis-business-model-save-btn">Save</button><button id="analysis-business-model-cancel-btn">Cancel</button></div></div>`
+    : `<div class="business-model-editor"><p><strong>Business Model:</strong> ${effectiveBusinessModel || 'N/A'}</p><button id="analysis-business-model-edit-btn">Edit Business Model</button></div>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</div></div></div>${businessModelSection}<p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p><p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   analysisScenariosBody.innerHTML = '';
@@ -231,7 +221,10 @@ function renderAnalysisDetail() {
 }
 
 function renderVariablesTable() {
-  const variables = getEffectiveManualInputs().keyVariables;
+  const hasSavedEditsForVersion = analysisDetailState.saved_key_variable_edits?.based_on_version_id === analysisDetailState.version.id;
+  const variables = hasSavedEditsForVersion
+    ? analysisDetailState.saved_key_variable_edits.key_variables
+    : analysisDetailState.version.key_variables;
 
   analysisVariablesBody.innerHTML = '';
   variables.forEach((variable) => {
@@ -264,6 +257,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   analysisListView.classList.add('hidden');
   analysisDetailView.classList.remove('hidden');
   isEditingVariables = false;
+  isEditingBusinessModel = false;
 
   try {
     const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : '';
@@ -288,31 +282,58 @@ function collectEditedVariables() {
   }));
 }
 
+async function saveEditedBusinessModel() {
+  const symbol = analysisDetailState.symbol;
+  const versionId = analysisDetailState.version.id;
+  const businessModel = document.getElementById('analysis-business-model-input')?.value?.trim() || '';
+  if (!businessModel) {
+    analysisDetailStatus.textContent = 'Business model cannot be empty.';
+    analysisDetailStatus.className = 'status error';
+    return;
+  }
 
-function collectEditedBusinessInputs() {
-  return {
-    business_model: document.getElementById('analysis-business-model-input')?.value ?? analysisDetailState.version.business_model,
-    business_summary: document.getElementById('analysis-business-summary-input')?.value ?? analysisDetailState.version.business_summary,
-  };
+  analysisDetailStatus.textContent = 'Saving business model edit…';
+  analysisDetailStatus.className = 'status';
+  try {
+    const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}/business-model`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: versionId, business_model: businessModel }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save business model'));
+    analysisDetailState = payload.analysis;
+    isEditingBusinessModel = false;
+    renderAnalysisDetail();
+    analysisDetailStatus.textContent = 'Business model edit saved.';
+  } catch (error) {
+    analysisDetailStatus.textContent = `Error: ${error.message}`;
+    analysisDetailStatus.className = 'status error';
+  }
+}
+
+function cancelEditedBusinessModel() {
+  isEditingBusinessModel = false;
+  renderAnalysisDetail();
+  analysisDetailStatus.textContent = 'Business model editing canceled.';
+  analysisDetailStatus.className = 'status';
 }
 
 async function saveEditedVariables() {
   const variables = collectEditedVariables();
-  const businessInputs = collectEditedBusinessInputs();
   const symbol = analysisDetailState.symbol;
   const versionId = analysisDetailState.version.id;
-  analysisDetailStatus.textContent = 'Saving analysis input edits…';
+  analysisDetailStatus.textContent = 'Saving key variable edits…';
 
   try {
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}/key-variables`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: versionId, key_variables: variables, ...businessInputs }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: versionId, key_variables: variables }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save key variables'));
     analysisDetailState = payload.analysis;
     isEditingVariables = false;
+    isEditingBusinessModel = false;
     renderAnalysisDetail();
-    analysisDetailStatus.textContent = 'Input edits saved.';
+    analysisDetailStatus.textContent = 'Key variable edits saved.';
   } catch (error) {
     analysisDetailStatus.textContent = `Error: ${error.message}`;
     analysisDetailStatus.className = 'status error';
@@ -332,6 +353,7 @@ async function rerunScenarios() {
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to re-run scenarios'));
     analysisDetailState = payload.analysis;
     isEditingVariables = false;
+    isEditingBusinessModel = false;
     renderAnalysisDetail();
     loadAnalysis();
     analysisDetailStatus.textContent = 'Scenarios re-run and new version created.';
@@ -527,7 +549,23 @@ analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') 
 analysisBackBtn.addEventListener('click', showAnalysisList);
 analysisScenarioInfoBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.remove('hidden'));
 analysisScenarioInfoCloseBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.add('hidden'));
-analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderAnalysisDetail(); });
+analysisSummary.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (target.id === 'analysis-business-model-edit-btn') {
+    isEditingBusinessModel = true;
+    renderAnalysisDetail();
+    return;
+  }
+  if (target.id === 'analysis-business-model-save-btn') {
+    saveEditedBusinessModel();
+    return;
+  }
+  if (target.id === 'analysis-business-model-cancel-btn') {
+    cancelEditedBusinessModel();
+  }
+});
+analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderVariablesTable(); });
 analysisAddVariableBtn.addEventListener('click', () => {
   if (!isEditingVariables) return;
   const row = document.createElement('tr');
@@ -536,7 +574,7 @@ analysisAddVariableBtn.addEventListener('click', () => {
   row.querySelector('.var-delete-btn')?.addEventListener('click', () => row.remove());
   row.querySelector('.var-text')?.focus();
 });
-analysisCancelVariablesBtn.addEventListener('click', () => { isEditingVariables = false; renderAnalysisDetail(); });
+analysisCancelVariablesBtn.addEventListener('click', () => { isEditingVariables = false; renderVariablesTable(); });
 analysisSaveVariablesBtn.addEventListener('click', saveEditedVariables);
 analysisRerunBtn.addEventListener('click', rerunScenarios);
 analysisVersionPrevBtn.addEventListener('click', () => {

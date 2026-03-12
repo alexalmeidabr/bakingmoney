@@ -283,11 +283,16 @@ th.sortable[data-sort-direction='desc']::after {
   font-weight: 700;
 }
 
+.business-model-editor {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .analysis-business-model-input {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px;
   font: inherit;
-  margin: 6px 0 12px;
 }

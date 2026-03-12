@@ -165,6 +165,23 @@ function selectedVersionIndex() {
   return (analysisDetailState.versions || []).findIndex((v) => Number(v.id) === Number(analysisDetailState.selected_version_id));
 }
 
+
+function getEffectiveManualInputs() {
+  const hasSavedEditsForVersion = analysisDetailState.saved_key_variable_edits?.based_on_version_id === analysisDetailState.version.id;
+  if (!hasSavedEditsForVersion) {
+    return {
+      businessModel: analysisDetailState.version.business_model || '',
+      businessSummary: analysisDetailState.version.business_summary || '',
+      keyVariables: analysisDetailState.version.key_variables,
+    };
+  }
+  return {
+    businessModel: analysisDetailState.saved_key_variable_edits.business_model ?? analysisDetailState.version.business_model ?? '',
+    businessSummary: analysisDetailState.saved_key_variable_edits.business_summary ?? analysisDetailState.version.business_summary ?? '',
+    keyVariables: analysisDetailState.saved_key_variable_edits.key_variables,
+  };
+}
+
 function renderVersionControls() {
   if (!analysisDetailState) return;
   const versions = analysisDetailState.versions || [];
@@ -187,7 +204,14 @@ function renderVersionControls() {
 function renderAnalysisDetail() {
   const item = analysisDetailState.version;
   analysisDetailTitle.textContent = `Analysis: ${analysisDetailState.symbol}`;
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</div></div></div><p><strong>Business Model:</strong> ${item.business_model || 'N/A'}</p><p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p><p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
+  const manualInputs = getEffectiveManualInputs();
+  const businessModelDisplay = isEditingVariables
+    ? `<label><strong>Business Model:</strong></label><textarea id="analysis-business-model-input" class="analysis-business-model-input" rows="5">${manualInputs.businessModel || ''}</textarea>`
+    : `<p><strong>Business Model:</strong> ${manualInputs.businessModel || 'N/A'}</p>`;
+  const businessSummaryDisplay = isEditingVariables
+    ? `<label><strong>Business Summary:</strong></label><textarea id="analysis-business-summary-input" class="analysis-business-model-input" rows="3">${manualInputs.businessSummary || ''}</textarea>`
+    : `<p><strong>Business Summary:</strong> ${manualInputs.businessSummary || 'N/A'}</p>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</div></div></div>${businessModelDisplay}${businessSummaryDisplay}<p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   analysisScenariosBody.innerHTML = '';
@@ -207,10 +231,7 @@ function renderAnalysisDetail() {
 }
 
 function renderVariablesTable() {
-  const hasSavedEditsForVersion = analysisDetailState.saved_key_variable_edits?.based_on_version_id === analysisDetailState.version.id;
-  const variables = hasSavedEditsForVersion
-    ? analysisDetailState.saved_key_variable_edits.key_variables
-    : analysisDetailState.version.key_variables;
+  const variables = getEffectiveManualInputs().keyVariables;
 
   analysisVariablesBody.innerHTML = '';
   variables.forEach((variable) => {
@@ -267,22 +288,31 @@ function collectEditedVariables() {
   }));
 }
 
+
+function collectEditedBusinessInputs() {
+  return {
+    business_model: document.getElementById('analysis-business-model-input')?.value ?? analysisDetailState.version.business_model,
+    business_summary: document.getElementById('analysis-business-summary-input')?.value ?? analysisDetailState.version.business_summary,
+  };
+}
+
 async function saveEditedVariables() {
   const variables = collectEditedVariables();
+  const businessInputs = collectEditedBusinessInputs();
   const symbol = analysisDetailState.symbol;
   const versionId = analysisDetailState.version.id;
-  analysisDetailStatus.textContent = 'Saving key variable edits…';
+  analysisDetailStatus.textContent = 'Saving analysis input edits…';
 
   try {
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}/key-variables`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: versionId, key_variables: variables }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: versionId, key_variables: variables, ...businessInputs }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save key variables'));
     analysisDetailState = payload.analysis;
     isEditingVariables = false;
     renderAnalysisDetail();
-    analysisDetailStatus.textContent = 'Key variable edits saved.';
+    analysisDetailStatus.textContent = 'Input edits saved.';
   } catch (error) {
     analysisDetailStatus.textContent = `Error: ${error.message}`;
     analysisDetailStatus.className = 'status error';
@@ -497,7 +527,7 @@ analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') 
 analysisBackBtn.addEventListener('click', showAnalysisList);
 analysisScenarioInfoBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.remove('hidden'));
 analysisScenarioInfoCloseBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.add('hidden'));
-analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderVariablesTable(); });
+analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderAnalysisDetail(); });
 analysisAddVariableBtn.addEventListener('click', () => {
   if (!isEditingVariables) return;
   const row = document.createElement('tr');
@@ -506,7 +536,7 @@ analysisAddVariableBtn.addEventListener('click', () => {
   row.querySelector('.var-delete-btn')?.addEventListener('click', () => row.remove());
   row.querySelector('.var-text')?.focus();
 });
-analysisCancelVariablesBtn.addEventListener('click', () => { isEditingVariables = false; renderVariablesTable(); });
+analysisCancelVariablesBtn.addEventListener('click', () => { isEditingVariables = false; renderAnalysisDetail(); });
 analysisSaveVariablesBtn.addEventListener('click', saveEditedVariables);
 analysisRerunBtn.addEventListener('click', rerunScenarios);
 analysisVersionPrevBtn.addEventListener('click', () => {

@@ -619,6 +619,8 @@ def init_db():
               analysis_root_id INTEGER PRIMARY KEY,
               based_on_version_id INTEGER NOT NULL,
               key_variables_json TEXT NOT NULL,
+              business_model_text TEXT,
+              business_summary_text TEXT,
               updated_at TEXT NOT NULL,
               FOREIGN KEY (analysis_root_id) REFERENCES analysis_roots(id) ON DELETE CASCADE,
               FOREIGN KEY (based_on_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
@@ -637,6 +639,8 @@ def init_db():
         ensure_column_exists(conn, "analysis_symbols", "company_name", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_model_text", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_summary_text", "TEXT")
+        ensure_column_exists(conn, "analysis_key_variable_edits", "business_model_text", "TEXT")
+        ensure_column_exists(conn, "analysis_key_variable_edits", "business_summary_text", "TEXT")
 
         has_roots = conn.execute("SELECT 1 FROM analysis_roots LIMIT 1").fetchone()
         if not has_roots:
@@ -1786,7 +1790,7 @@ def get_analysis_detail(conn, symbol, version_id=None):
         ).fetchone()
 
     draft = conn.execute(
-        "SELECT based_on_version_id, key_variables_json, updated_at FROM analysis_key_variable_edits WHERE analysis_root_id = ?",
+        "SELECT based_on_version_id, key_variables_json, business_model_text, business_summary_text, updated_at FROM analysis_key_variable_edits WHERE analysis_root_id = ?",
         (root["id"],),
     ).fetchone()
 
@@ -1800,6 +1804,8 @@ def get_analysis_detail(conn, symbol, version_id=None):
             "based_on_version_id": draft["based_on_version_id"],
             "updated_at": draft["updated_at"],
             "key_variables": json.loads(draft["key_variables_json"]),
+            "business_model": draft["business_model_text"],
+            "business_summary": draft["business_summary_text"],
         } if draft else None,
     }
 
@@ -1967,30 +1973,52 @@ def upsert_analysis(conn, symbol, current_price=None):
     return get_analysis_detail(conn, symbol)
 
 
-def save_key_variable_edits(conn, symbol, version_id, key_variables):
+def save_key_variable_edits(conn, symbol, version_id, key_variables, business_model=None, business_summary=None):
     normalized = _normalize_manual_key_variables(key_variables)
     root = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
     if not root:
         raise ValueError("Analysis symbol not found")
 
     base = conn.execute(
-        "SELECT id FROM analysis_versions WHERE id = ? AND analysis_root_id = ?",
+        "SELECT id, business_model_text, business_summary_text FROM analysis_versions WHERE id = ? AND analysis_root_id = ?",
         (version_id, root["id"]),
     ).fetchone()
     if not base:
         raise ValueError("Base version not found")
 
+    effective_business_model = base["business_model_text"]
+    effective_business_summary = base["business_summary_text"]
+    if business_model is not None:
+        if not isinstance(business_model, str):
+            raise AnalysisValidationError("business_model must be text")
+        effective_business_model = business_model.strip()
+    if business_summary is not None:
+        if not isinstance(business_summary, str):
+            raise AnalysisValidationError("business_summary must be text")
+        effective_business_summary = business_summary.strip()
+
     now = utc_now_iso()
     conn.execute(
         """
-        INSERT INTO analysis_key_variable_edits (analysis_root_id, based_on_version_id, key_variables_json, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO analysis_key_variable_edits (
+            analysis_root_id, based_on_version_id, key_variables_json, business_model_text, business_summary_text, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(analysis_root_id) DO UPDATE SET
           based_on_version_id = excluded.based_on_version_id,
           key_variables_json = excluded.key_variables_json,
+          business_model_text = excluded.business_model_text,
+          business_summary_text = excluded.business_summary_text,
           updated_at = excluded.updated_at
         """,
-        (root["id"], version_id, json.dumps(normalized), now),
+        (
+            root["id"],
+            version_id,
+            json.dumps(normalized),
+            effective_business_model,
+            effective_business_summary,
+            now,
+        ),
     )
     conn.commit()
     return get_analysis_detail(conn, symbol, version_id=version_id)
@@ -2002,7 +2030,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
         raise ValueError("Analysis symbol not found")
 
     draft = conn.execute(
-        "SELECT based_on_version_id, key_variables_json FROM analysis_key_variable_edits WHERE analysis_root_id = ?",
+        "SELECT based_on_version_id, key_variables_json, business_model_text, business_summary_text FROM analysis_key_variable_edits WHERE analysis_root_id = ?",
         (root["id"],),
     ).fetchone()
     if not draft:
@@ -2021,7 +2049,9 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
 
     templates, _sources = get_all_prompt_templates(conn)
     scenario_settings = get_scenario_generation_config(conn)
-    business_for_prompt = f"{base_version['business_model_text'] or ''}\nSummary: {base_version['business_summary_text'] or ''}"
+    edited_business_model = draft["business_model_text"] if draft["business_model_text"] is not None else base_version["business_model_text"]
+    edited_business_summary = draft["business_summary_text"] if draft["business_summary_text"] is not None else base_version["business_summary_text"]
+    business_for_prompt = f"{edited_business_model or ''}\nSummary: {edited_business_summary or ''}"
     prompt = build_analysis_prompt(
         symbol,
         base_version["current_price"],
@@ -2066,8 +2096,8 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
             symbol=symbol,
             company_name=base_version["company_name"],
             current_price=base_version["current_price"],
-            business_model=base_version["business_model_text"],
-            business_summary=base_version["business_summary_text"],
+            business_model=edited_business_model,
+            business_summary=edited_business_summary,
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
@@ -2482,7 +2512,14 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
         conn = get_db_connection()
         try:
-            detail = save_key_variable_edits(conn, symbol, int(version_id), payload.get("key_variables"))
+            detail = save_key_variable_edits(
+                conn,
+                symbol,
+                int(version_id),
+                payload.get("key_variables"),
+                business_model=payload.get("business_model"),
+                business_summary=payload.get("business_summary"),
+            )
             self._send_json({"ok": True, "analysis": detail})
         except AnalysisValidationError as exc:
             self._send_json({"error": str(exc)}, status=400)

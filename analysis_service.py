@@ -6,7 +6,6 @@ SCENARIO_ORDER = ["Bear", "Base", "Bull"]
 SCENARIO_SET = set(SCENARIO_ORDER)
 VARIABLE_TYPES = {"Bullish", "Bearish"}
 MIN_KEY_VARIABLES = 6
-MAX_KEY_VARIABLES = 8
 
 
 class AnalysisValidationError(ValueError):
@@ -130,10 +129,8 @@ def parse_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     raw_variables = payload.get("key_variables")
     if not isinstance(raw_variables, list):
         raise AnalysisValidationError("key_variables must be an array")
-    if len(raw_variables) < MIN_KEY_VARIABLES or len(raw_variables) > MAX_KEY_VARIABLES:
-        raise AnalysisValidationError(
-            f"key_variables must contain between {MIN_KEY_VARIABLES} and {MAX_KEY_VARIABLES} items"
-        )
+    if len(raw_variables) < MIN_KEY_VARIABLES:
+        raise AnalysisValidationError(f"key_variables must contain at least {MIN_KEY_VARIABLES} items")
 
     key_variables = []
     for index, item in enumerate(raw_variables):

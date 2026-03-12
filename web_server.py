@@ -120,7 +120,7 @@ Return ONLY valid JSON in this exact structure:
 }
 
 Rules:
-- Return 6 to 8 key variables.
+- Return at least 6 key variables.
 - Most variables should be company-specific business drivers.
 - type must be exactly Bullish or Bearish.
 - confidence must be an integer from 0 to 10.
@@ -1123,7 +1123,6 @@ def request_ai_analysis(symbol, current_price=None):
                 "key_variables": {
                     "type": "array",
                     "minItems": 6,
-                    "maxItems": 8,
                     "items": {
                         "type": "object",
                         "additionalProperties": False,

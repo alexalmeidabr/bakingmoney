@@ -65,6 +65,16 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertAlmostEqual(calculate_overall_confidence(key_variables), (9 * 10 + 4 * 5) / 15)
         self.assertIsNone(calculate_overall_confidence([]))
 
+
+    def test_key_variables_more_than_previous_max_allowed(self):
+        payload = build_valid_payload()
+        payload["key_variables"].extend([
+            {"variable": "Execution", "type": "Bullish", "confidence": 7, "importance": 6},
+            {"variable": "Retention", "type": "Bullish", "confidence": 8, "importance": 7},
+            {"variable": "Supply chain", "type": "Bearish", "confidence": 5, "importance": 5},
+        ])
+        parsed = parse_analysis_payload(payload)
+        self.assertEqual(len(parsed["key_variables"]), 9)
     def test_key_variables_minimum_count_enforced(self):
         payload = build_valid_payload()
         payload["key_variables"] = payload["key_variables"][:5]

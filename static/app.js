@@ -65,6 +65,29 @@ let analysisDetailState = null;
 let isEditingVariables = false;
 let isEditingBusinessModel = false;
 
+const POSITIONS_CACHE_KEY = 'bakingmoney.latestPositions';
+
+function loadCachedPositions() {
+  try {
+    const raw = localStorage.getItem(POSITIONS_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function saveCachedPositions(positions) {
+  try {
+    localStorage.setItem(POSITIONS_CACHE_KEY, JSON.stringify(Array.isArray(positions) ? positions : []));
+  } catch (_error) {
+    // Ignore localStorage write failures.
+  }
+}
+
+latestPositions = loadCachedPositions();
+
 async function getScenarioPassCountForStatus() {
   try {
     const response = await fetch('/api/configuration/prompts');
@@ -388,12 +411,42 @@ async function rerunScenarios() {
   }
 }
 
-async function loadPositions() { /* unchanged */
-  positionsStatusEl.textContent = 'Loading positions…'; positionsStatusEl.className = 'status'; positionsTable.classList.add('hidden');
-  try { const response = await fetch('/api/positions'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
-    latestPositions = payload.positions || []; if (!latestPositions.length) { positionsTableBody.innerHTML = ''; positionsStatusEl.textContent = 'No positions found.'; return; }
-    updateSortHeaderState(); renderPositions(); positionsStatusEl.textContent = `Loaded ${latestPositions.length} position(s).`; positionsTable.classList.remove('hidden');
-  } catch (error) { positionsStatusEl.textContent = `Error: ${error.message}`; positionsStatusEl.className = 'status error'; }
+async function loadPositions() {
+  positionsStatusEl.textContent = 'Loading positions…';
+  positionsStatusEl.className = 'status';
+  positionsTable.classList.add('hidden');
+
+  try {
+    const response = await fetch('/api/positions');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
+
+    latestPositions = payload.positions || [];
+    saveCachedPositions(latestPositions);
+
+    if (!latestPositions.length) {
+      positionsTableBody.innerHTML = '';
+      positionsStatusEl.textContent = 'No positions found.';
+      return;
+    }
+
+    updateSortHeaderState();
+    renderPositions();
+    positionsStatusEl.textContent = `Loaded ${latestPositions.length} position(s).`;
+    positionsTable.classList.remove('hidden');
+  } catch (error) {
+    if (latestPositions.length) {
+      updateSortHeaderState();
+      renderPositions();
+      positionsTable.classList.remove('hidden');
+      positionsStatusEl.textContent = `Warning: ${error.message} Showing latest loaded positions.`;
+      positionsStatusEl.className = 'status error';
+      return;
+    }
+
+    positionsStatusEl.textContent = `Error: ${error.message}`;
+    positionsStatusEl.className = 'status error';
+  }
 }
 
 async function loadAnalysis() {
@@ -406,7 +459,8 @@ async function loadAnalysis() {
     const analysisPayload = await analysisResponse.json();
     const positionsPayload = await positionsResponse.json();
     if (!analysisResponse.ok) throw new Error(extractErrorMessage(analysisPayload, 'Request failed'));
-    latestPositions = positionsResponse.ok ? (positionsPayload.positions || []) : [];
+    latestPositions = positionsResponse.ok ? (positionsPayload.positions || []) : latestPositions;
+    if (positionsResponse.ok) saveCachedPositions(latestPositions);
 
     latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
     analysisTableBody.innerHTML = '';

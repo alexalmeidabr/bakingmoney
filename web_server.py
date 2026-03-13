@@ -46,10 +46,12 @@ ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
 ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
 ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
 ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
+ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS = "ib_price_wait_seconds"
 
 DEFAULT_SCENARIO_MULTI_PASS_ENABLED = False
 DEFAULT_SCENARIO_PASS_COUNT = 1
 DEFAULT_SCENARIO_OUTLIER_FILTER_ENABLED = True
+DEFAULT_IB_PRICE_WAIT_SECONDS = 5
 
 SCENARIO_MAX_BASE_DEVIATION = 0.40
 SCENARIO_MAX_AVG_DEVIATION = 0.30
@@ -363,6 +365,19 @@ def get_int_setting(conn, key, default, minimum=1, maximum=10):
     return max(minimum, min(maximum, value))
 
 
+def get_float_setting(conn, key, default, minimum=1.0, maximum=30.0):
+    raw = _get_setting_value(conn, key)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
+        return default
+    return max(minimum, min(maximum, value))
+
+
 def get_scenario_generation_config(conn):
     return {
         "scenario_multi_pass_enabled": get_bool_setting(
@@ -391,9 +406,22 @@ def save_scenario_generation_config(conn, settings):
         ANALYSIS_SETTING_SCENARIO_PASS_COUNT,
         ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED,
     }
+    normalized = {}
     for key, value in settings.items():
         if key not in known:
             raise ValueError(f"Unknown scenario setting: {key}")
+        if key == ANALYSIS_SETTING_SCENARIO_PASS_COUNT:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                raise ValueError("scenario_pass_count must be an integer")
+            if value < 1 or value > 10:
+                raise ValueError("scenario_pass_count must be between 1 and 10")
+        elif key in {ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED, ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED}:
+            value = bool(value)
+        normalized[key] = value
+
+    for key, value in normalized.items():
         conn.execute(
             """
             INSERT INTO app_settings (key, value, updated_at)
@@ -415,6 +443,77 @@ def reset_scenario_generation_config(conn):
     ):
         conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
     conn.commit()
+
+
+def get_general_configuration(conn):
+    scenario = get_scenario_generation_config(conn)
+    return {
+        "ib_price_wait_seconds": get_float_setting(
+            conn,
+            ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS,
+            DEFAULT_IB_PRICE_WAIT_SECONDS,
+            minimum=1.0,
+            maximum=30.0,
+        ),
+        "scenario_multi_pass_enabled": scenario["scenario_multi_pass_enabled"],
+        "scenario_pass_count": scenario["scenario_pass_count"],
+        "scenario_outlier_filter_enabled": scenario["scenario_outlier_filter_enabled"],
+    }
+
+
+def save_general_configuration(conn, settings):
+    if not isinstance(settings, dict):
+        raise ValueError("settings must be an object")
+
+    now = utc_now_iso()
+    if "ib_price_wait_seconds" in settings:
+        try:
+            wait_seconds = float(settings.get("ib_price_wait_seconds"))
+        except (TypeError, ValueError):
+            raise ValueError("ib_price_wait_seconds must be numeric")
+        if not math.isfinite(wait_seconds):
+            raise ValueError("ib_price_wait_seconds must be finite")
+        if wait_seconds < 1 or wait_seconds > 30:
+            raise ValueError("ib_price_wait_seconds must be between 1 and 30")
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            (ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS, str(wait_seconds), now),
+        )
+
+    scenario_payload = {}
+    if "scenario_multi_pass_enabled" in settings:
+        scenario_payload[ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED] = bool(settings["scenario_multi_pass_enabled"])
+    if "scenario_pass_count" in settings:
+        scenario_payload[ANALYSIS_SETTING_SCENARIO_PASS_COUNT] = int(settings["scenario_pass_count"])
+    if "scenario_outlier_filter_enabled" in settings:
+        scenario_payload[ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED] = bool(settings["scenario_outlier_filter_enabled"])
+    if scenario_payload:
+        save_scenario_generation_config(conn, scenario_payload)
+    else:
+        conn.commit()
+
+
+def get_ib_price_wait_seconds():
+    try:
+        conn = get_db_connection()
+        try:
+            return get_float_setting(
+                conn,
+                ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS,
+                DEFAULT_IB_PRICE_WAIT_SECONDS,
+                minimum=1.0,
+                maximum=30.0,
+            )
+        finally:
+            conn.close()
+    except Exception:
+        return DEFAULT_IB_PRICE_WAIT_SECONDS
 
 
 def save_prompt_template(conn, key, template):
@@ -792,7 +891,7 @@ def fetch_ib_prices(symbols):
 
         if qualified:
             tickers = ib.reqTickers(*qualified)
-            ib.sleep(1.0)
+            ib.sleep(get_ib_price_wait_seconds())
             for ticker in tickers:
                 contract = getattr(ticker, "contract", None)
                 conid = getattr(contract, "conId", None)
@@ -2296,6 +2395,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_detail_get(symbol, version_id=version_id)
         if path == "/api/configuration/prompts":
             return self.handle_configuration_prompts_get()
+        if path == "/api/configuration/general":
+            return self.handle_configuration_general_get()
 
         if path == "/":
             self.path = "/static/index.html"
@@ -2343,6 +2444,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/configuration/prompts":
             return self.handle_configuration_prompts_put()
+        if path == "/api/configuration/general":
+            return self.handle_configuration_general_put()
 
         self.send_error(404, "Not Found")
 
@@ -2369,7 +2472,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 qualified = ib.qualifyContracts(*contracts)
                 if qualified:
                     tickers = ib.reqTickers(*qualified)
-                    ib.sleep(1.0)
+                    ib.sleep(get_ib_price_wait_seconds())
                     tickers_by_conid = {
                         t.contract.conId: t for t in tickers if getattr(t, "contract", None)
                     }
@@ -2689,7 +2792,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 {
                     "templates": templates,
                     "sources": sources,
-                    "scenario_settings": get_scenario_generation_config(conn),
                 }
             )
         except Exception as exc:
@@ -2703,18 +2805,13 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def handle_configuration_prompts_put(self):
         payload = self._read_json_body() or {}
         templates = payload.get("templates", {})
-        scenario_settings = payload.get("scenario_settings", {})
         if not isinstance(templates, dict):
             return self._send_json({"error": "templates must be an object"}, status=400)
-        if not isinstance(scenario_settings, dict):
-            return self._send_json({"error": "scenario_settings must be an object"}, status=400)
 
         conn = get_db_connection()
         try:
             for key, value in templates.items():
                 save_prompt_template(conn, key, value)
-            if scenario_settings:
-                save_scenario_generation_config(conn, scenario_settings)
             self._send_json({"ok": True})
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=400)
@@ -2731,19 +2828,49 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         try:
             for key in PROMPT_TEMPLATE_CONFIG.keys():
                 reset_prompt_template(conn, key)
-            reset_scenario_generation_config(conn)
             templates, sources = get_all_prompt_templates(conn)
             self._send_json(
                 {
                     "ok": True,
                     "templates": templates,
                     "sources": sources,
-                    "scenario_settings": get_scenario_generation_config(conn),
                 }
             )
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to reset prompt configuration.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_configuration_general_get(self):
+        conn = get_db_connection()
+        try:
+            self._send_json({"settings": get_general_configuration(conn)})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to load general configuration.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_configuration_general_put(self):
+        payload = self._read_json_body() or {}
+        settings = payload.get("settings", {})
+        if not isinstance(settings, dict):
+            return self._send_json({"error": "settings must be an object"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            save_general_configuration(conn, settings)
+            self._send_json({"ok": True, "settings": get_general_configuration(conn)})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to save general configuration.", "details": str(exc)},
                 status=500,
             )
         finally:

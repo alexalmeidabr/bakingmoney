@@ -42,18 +42,21 @@ const analysisScenarioInfoModal = document.getElementById('analysis-scenario-inf
 const analysisScenarioInfoText = document.getElementById('analysis-scenario-info-text');
 const analysisScenarioInfoCloseBtn = document.getElementById('analysis-scenario-info-close-btn');
 
+const promptStatusEl = document.getElementById('prompt-status');
+const promptBusinessModelEl = document.getElementById('prompt-business-model');
+const promptKeyVariablesEl = document.getElementById('prompt-key-variables');
+const promptScenariosEl = document.getElementById('prompt-scenarios');
+const promptSaveBtn = document.getElementById('prompt-save-btn');
+const promptResetBtn = document.getElementById('prompt-reset-btn');
+const promptPreviewSymbolInput = document.getElementById('prompt-preview-symbol-input');
+const promptPreviewBtn = document.getElementById('prompt-preview-btn');
+const promptPreviewOutput = document.getElementById('prompt-preview-output');
+
 const configurationStatusEl = document.getElementById('configuration-status');
-const configPromptBusinessModelEl = document.getElementById('config-prompt-business-model');
-const configPromptKeyVariablesEl = document.getElementById('config-prompt-key-variables');
-const configPromptScenariosEl = document.getElementById('config-prompt-scenarios');
+const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait-seconds');
 const configScenarioMultiPassEnabledEl = document.getElementById('config-scenario-multi-pass-enabled');
 const configScenarioPassCountEl = document.getElementById('config-scenario-pass-count');
-const configScenarioOutlierFilterEnabledEl = document.getElementById('config-scenario-outlier-filter-enabled');
 const configSaveBtn = document.getElementById('config-save-btn');
-const configResetBtn = document.getElementById('config-reset-btn');
-const configPreviewSymbolInput = document.getElementById('config-preview-symbol-input');
-const configPreviewBtn = document.getElementById('config-preview-btn');
-const configPreviewOutput = document.getElementById('config-preview-output');
 
 let latestPositions = [];
 let positionSort = { key: 'symbol', direction: 'asc' };
@@ -90,10 +93,10 @@ latestPositions = loadCachedPositions();
 
 async function getScenarioPassCountForStatus() {
   try {
-    const response = await fetch('/api/configuration/prompts');
+    const response = await fetch('/api/configuration/general');
     const payload = await response.json();
     if (!response.ok) return 1;
-    const settings = payload.scenario_settings || {};
+    const settings = payload.settings || {};
     if (!settings.scenario_multi_pass_enabled) return 1;
     const count = Number(settings.scenario_pass_count || 1);
     return Number.isFinite(count) && count > 1 ? Math.floor(count) : 1;
@@ -205,7 +208,8 @@ function setView(targetView) {
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
   if (targetView === 'analysis') { showAnalysisList(); loadAnalysis(); }
   if (targetView === 'positions') loadPositions();
-  if (targetView === 'configuration') loadConfiguration();
+  if (targetView === 'prompt') loadPromptConfiguration();
+  if (targetView === 'configuration') loadGeneralConfiguration();
 }
 menuItems.forEach((item) => item.addEventListener('click', () => setView(item.dataset.view)));
 
@@ -573,47 +577,81 @@ async function deleteAnalysis(symbol) {
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
-async function loadConfiguration() { /* unchanged */
-  configurationStatusEl.textContent = 'Loading configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load configuration'));
+async function loadPromptConfiguration() {
+  promptStatusEl.textContent = 'Loading prompt configuration…';
+  promptStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/prompts'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load prompt configuration'));
     const templates = payload.templates || {}; const sources = payload.sources || {};
-    configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
-    configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
-    configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
-    const scenarioSettings = payload.scenario_settings || {};
-    configScenarioMultiPassEnabledEl.checked = Boolean(scenarioSettings.scenario_multi_pass_enabled);
-    configScenarioPassCountEl.value = scenarioSettings.scenario_pass_count || 1;
-    configScenarioOutlierFilterEnabledEl.checked = scenarioSettings.scenario_outlier_filter_enabled !== false;
-    configurationStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
-  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
+    promptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
+    promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
+    promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
+  } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
-async function saveConfiguration() { /* unchanged */
-  configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: configPromptBusinessModelEl.value, analysis_prompt_key_variables: configPromptKeyVariablesEl.value, analysis_prompt_scenarios: configPromptScenariosEl.value }, scenario_settings: { scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: Number(configScenarioPassCountEl.value || 1), scenario_outlier_filter_enabled: configScenarioOutlierFilterEnabledEl.checked } }) });
-    const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); configurationStatusEl.textContent = 'Configuration saved.';
-  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
+async function savePromptConfiguration() {
+  promptStatusEl.textContent = 'Saving prompts…'; promptStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value } }) });
+    const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save prompts')); promptStatusEl.textContent = 'Prompts saved.';
+  } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
-async function resetConfiguration() {
-  configurationStatusEl.textContent = 'Restoring default prompts…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset configuration'));
-    const templates = payload.templates || {}; configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
-    const scenarioSettings = payload.scenario_settings || {};
-    configScenarioMultiPassEnabledEl.checked = Boolean(scenarioSettings.scenario_multi_pass_enabled);
-    configScenarioPassCountEl.value = scenarioSettings.scenario_pass_count || 1;
-    configScenarioOutlierFilterEnabledEl.checked = scenarioSettings.scenario_outlier_filter_enabled !== false;
-    configurationStatusEl.textContent = 'Default prompts restored.';
-  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
+async function resetPromptConfiguration() {
+  promptStatusEl.textContent = 'Restoring default prompts…'; promptStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset prompts'));
+    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    promptStatusEl.textContent = 'Default prompts restored.';
+  } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
-async function previewConfiguration() {
-  const symbol = configPreviewSymbolInput.value.trim().toUpperCase(); if (!symbol) { configPreviewOutput.textContent = 'Enter a symbol to preview.'; return; }
-  configPreviewOutput.textContent = 'Rendering preview…';
+async function previewPromptConfiguration() {
+  const symbol = promptPreviewSymbolInput.value.trim().toUpperCase(); if (!symbol) { promptPreviewOutput.textContent = 'Enter a symbol to preview.'; return; }
+  promptPreviewOutput.textContent = 'Rendering preview…';
   try { const response = await fetch('/api/configuration/prompts/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to preview prompt'));
-    const rendered = payload.rendered_prompts || {}; configPreviewOutput.textContent = `Symbol: ${payload.symbol}\nPrice: ${payload.price}\n\n[Business Model Prompt]\n${rendered.analysis_prompt_business_model || ''}\n\n[Key Variables Prompt]\n${rendered.analysis_prompt_key_variables || ''}\n\n[Scenarios Prompt]\n${rendered.analysis_prompt_scenarios || ''}`;
-  } catch (error) { configPreviewOutput.textContent = `Error: ${error.message}`; }
+    const rendered = payload.rendered_prompts || {}; promptPreviewOutput.textContent = `Symbol: ${payload.symbol}
+Price: ${payload.price}
+
+[Business Model Prompt]
+${rendered.analysis_prompt_business_model || ''}
+
+[Key Variables Prompt]
+${rendered.analysis_prompt_key_variables || ''}
+
+[Scenarios Prompt]
+${rendered.analysis_prompt_scenarios || ''}`;
+  } catch (error) { promptPreviewOutput.textContent = `Error: ${error.message}`; }
+}
+
+async function loadGeneralConfiguration() {
+  configurationStatusEl.textContent = 'Loading configuration…'; configurationStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/general'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load configuration'));
+    const settings = payload.settings || {};
+    configIbPriceWaitSecondsEl.value = settings.ib_price_wait_seconds ?? 5;
+    configScenarioMultiPassEnabledEl.checked = Boolean(settings.scenario_multi_pass_enabled);
+    configScenarioPassCountEl.value = settings.scenario_pass_count || 1;
+    configurationStatusEl.textContent = 'Configuration loaded.';
+  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
+}
+
+async function saveGeneralConfiguration() {
+  const waitSeconds = Number(configIbPriceWaitSecondsEl.value);
+  const passCount = Number(configScenarioPassCountEl.value);
+  if (!Number.isFinite(waitSeconds) || waitSeconds < 1 || waitSeconds > 30) {
+    configurationStatusEl.textContent = 'Error: Price wait time must be between 1 and 30 seconds.';
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+  if (!Number.isInteger(passCount) || passCount < 1 || passCount > 10) {
+    configurationStatusEl.textContent = 'Error: Scenario pass count must be an integer between 1 and 10.';
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+
+  configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount } }) });
+    const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); configurationStatusEl.textContent = 'Configuration saved.';
+  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }
 
 positionSortHeaders.forEach((header) => header.addEventListener('click', () => {
@@ -682,10 +720,11 @@ analysisVersionNextBtn.addEventListener('click', () => {
 });
 analysisVersionSelect.addEventListener('change', () => loadAnalysisDetail(analysisDetailState.symbol, analysisVersionSelect.value));
 
-configSaveBtn.addEventListener('click', saveConfiguration);
-configResetBtn.addEventListener('click', resetConfiguration);
-configPreviewBtn.addEventListener('click', previewConfiguration);
-configPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') previewConfiguration(); });
+promptSaveBtn.addEventListener('click', savePromptConfiguration);
+promptResetBtn.addEventListener('click', resetPromptConfiguration);
+promptPreviewBtn.addEventListener('click', previewPromptConfiguration);
+promptPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') previewPromptConfiguration(); });
+configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();

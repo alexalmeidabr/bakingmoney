@@ -13,6 +13,7 @@
         <nav>
           <button class="menu-item active" data-view="analysis">Analysis</button>
           <button class="menu-item" data-view="positions">My Positions</button>
+          <button class="menu-item" data-view="prompt">Prompt</button>
           <button class="menu-item" data-view="configuration">Configuration</button>
         </nav>
       </aside>
@@ -139,6 +140,45 @@
         </section>
 
 
+        <section id="prompt" class="view">
+          <div class="view-header">
+            <h2>Prompt</h2>
+          </div>
+
+          <p id="prompt-status" class="status">Loading prompt configuration…</p>
+
+          <section class="detail-card">
+            <h3>Identify Business Model Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional)</p>
+            <textarea id="prompt-business-model" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Identify Key Variables Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong></p>
+            <textarea id="prompt-key-variables" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Build Scenarios Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
+            <textarea id="prompt-scenarios" class="config-textarea" rows="14"></textarea>
+            <div class="table-actions config-actions">
+              <button id="prompt-save-btn">Save Prompts</button>
+              <button id="prompt-reset-btn">Restore Default Prompts</button>
+            </div>
+          </section>
+
+          <section class="detail-card">
+            <h3>Preview</h3>
+            <div class="table-actions">
+              <input id="prompt-preview-symbol-input" type="text" placeholder="e.g. NBIS" maxlength="16" />
+              <button id="prompt-preview-btn">Preview Rendered Prompts</button>
+            </div>
+            <pre id="prompt-preview-output" class="config-preview"></pre>
+          </section>
+        </section>
+
         <section id="configuration" class="view">
           <div class="view-header">
             <h2>Configuration</h2>
@@ -147,43 +187,21 @@
           <p id="configuration-status" class="status">Loading configuration…</p>
 
           <section class="detail-card">
-            <h3>Identify Business Model Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional)</p>
-            <textarea id="config-prompt-business-model" class="config-textarea" rows="14"></textarea>
-          </section>
-
-          <section class="detail-card">
-            <h3>Identify Key Variables Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong></p>
-            <textarea id="config-prompt-key-variables" class="config-textarea" rows="14"></textarea>
-          </section>
-
-          <section class="detail-card">
-            <h3>Build Scenarios Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
-            <textarea id="config-prompt-scenarios" class="config-textarea" rows="14"></textarea>
-            <div class="table-actions config-actions">
+            <h3>Market Data / Analysis Settings</h3>
+            <div class="table-actions config-actions settings-grid">
+              <label>Price wait time for IB/TWS (seconds)
+                <input id="config-ib-price-wait-seconds" type="number" min="1" max="30" step="0.5" value="5" />
+              </label>
               <label><input id="config-scenario-multi-pass-enabled" type="checkbox" /> Enable scenario multi-pass consensus</label>
-              <label>Pass count <input id="config-scenario-pass-count" type="number" min="1" max="8" value="1" /></label>
-              <label><input id="config-scenario-outlier-filter-enabled" type="checkbox" checked /> Outlier filter enabled</label>
+              <label>Scenario pass count <input id="config-scenario-pass-count" type="number" min="1" max="10" value="1" /></label>
             </div>
             <div class="table-actions config-actions">
-              <button id="config-save-btn">Save All</button>
-              <button id="config-reset-btn">Restore Default Prompts</button>
+              <button id="config-save-btn">Save Settings</button>
             </div>
-          </section>
-
-          <section class="detail-card">
-            <h3>Preview</h3>
-            <div class="table-actions">
-              <input id="config-preview-symbol-input" type="text" placeholder="e.g. NBIS" maxlength="16" />
-              <button id="config-preview-btn">Preview Rendered Prompts</button>
-            </div>
-            <pre id="config-preview-output" class="config-preview"></pre>
           </section>
         </section>
 
-        <section id="positions" class="view">
+<section id="positions" class="view">
           <div class="view-header">
             <h2>My Positions</h2>
             <button id="refresh-btn">Refresh</button>

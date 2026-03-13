@@ -332,3 +332,19 @@ th.sortable[data-sort-direction='desc']::after {
   color: #667085;
   border: 1px solid #eaecf0;
 }
+
+.settings-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-grid label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-grid input[type="number"] {
+  width: 120px;
+}

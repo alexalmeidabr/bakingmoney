@@ -67,6 +67,20 @@ RATING_SETTING_SELL_MAX_UPSIDE = "sell_max_upside"
 RATING_SETTING_SELL_MAX_DIFF = "sell_max_diff"
 RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE = "sell_min_bearish_confidence"
 
+SCENARIO_PROBABILITY_SETTING_SOURCE_MODE = "scenario_probability_source_mode"
+SCENARIO_PROBABILITY_SETTING_HYBRID_AI_WEIGHT = "scenario_probability_hybrid_ai_weight"
+SCENARIO_PROBABILITY_SETTING_HYBRID_BACKEND_WEIGHT = "scenario_probability_hybrid_backend_weight"
+SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MAX = "scenario_probability_backend_base_max_probability"
+SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN = "scenario_probability_backend_base_min_probability"
+
+DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
+    SCENARIO_PROBABILITY_SETTING_SOURCE_MODE: "hybrid",
+    SCENARIO_PROBABILITY_SETTING_HYBRID_AI_WEIGHT: 0.70,
+    SCENARIO_PROBABILITY_SETTING_HYBRID_BACKEND_WEIGHT: 0.30,
+    SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MAX: 60.0,
+    SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN: 35.0,
+}
+
 DEFAULT_RATING_SETTINGS = {
     RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD: 5.0,
     RATING_SETTING_STRONG_BUY_MIN_UPSIDE: 50.0,
@@ -543,6 +557,134 @@ def get_rating_settings(conn):
     return settings
 
 
+def normalize_probabilities(probabilities_by_name):
+    required = ["Bear", "Base", "Bull"]
+    values = {name: max(0.0, float(probabilities_by_name.get(name, 0.0))) for name in required}
+    total = sum(values.values())
+    if total <= 0:
+        return {"Bear": 20.0, "Base": 60.0, "Bull": 20.0}
+
+    normalized = {name: (values[name] / total) * 100.0 for name in required}
+    rounded = {name: round(value, 2) for name, value in normalized.items()}
+    delta = round(100.0 - sum(rounded.values()), 2)
+    if abs(delta) > 1e-9:
+        target = max(rounded.keys(), key=lambda k: rounded[k])
+        rounded[target] = round(rounded[target] + delta, 2)
+    return rounded
+
+
+def scenario_probabilities_from_scenarios(scenarios):
+    mapping = {}
+    for item in scenarios or []:
+        name = item.get("scenario_name") or item.get("name")
+        if name in {"Bear", "Base", "Bull"}:
+            mapping[name] = float(item.get("probability", 0.0)) * 100.0
+    return normalize_probabilities(mapping)
+
+
+def compute_backend_probabilities(key_variables, base_max, base_min):
+    bull_score = 0.0
+    bear_score = 0.0
+    for item in key_variables or []:
+        try:
+            confidence = float(item.get("confidence", 0.0))
+            importance = float(item.get("importance", 0.0))
+        except (TypeError, ValueError):
+            continue
+        score = confidence * importance
+        if item.get("variable_type") == "Bullish":
+            bull_score += score
+        elif item.get("variable_type") == "Bearish":
+            bear_score += score
+
+    total = bull_score + bear_score
+    if total <= 0:
+        return {"Bear": 20.0, "Base": 60.0, "Bull": 20.0}
+
+    bull_share = bull_score / total
+    bear_share = bear_score / total
+    imbalance = abs(bull_share - bear_share)
+    base = float(base_max) - imbalance * (float(base_max) - float(base_min))
+    base = max(0.0, min(100.0, base))
+    remaining = max(0.0, 100.0 - base)
+    bull = remaining * bull_share
+    bear = remaining * bear_share
+    return normalize_probabilities({"Bear": bear, "Base": base, "Bull": bull})
+
+
+def blend_probabilities(ai_probs, backend_probs, ai_weight, backend_weight):
+    ai_w = max(0.0, float(ai_weight))
+    backend_w = max(0.0, float(backend_weight))
+    total_w = ai_w + backend_w
+    if total_w <= 0:
+        ai_w = 0.70
+        backend_w = 0.30
+        total_w = 1.0
+    ai_w /= total_w
+    backend_w /= total_w
+
+    blended = {}
+    for name in ["Bear", "Base", "Bull"]:
+        blended[name] = ai_w * float(ai_probs.get(name, 0.0)) + backend_w * float(backend_probs.get(name, 0.0))
+    return normalize_probabilities(blended)
+
+
+def get_scenario_probability_settings(conn):
+    mode = str(_get_setting_value(conn, SCENARIO_PROBABILITY_SETTING_SOURCE_MODE) or DEFAULT_SCENARIO_PROBABILITY_SETTINGS[SCENARIO_PROBABILITY_SETTING_SOURCE_MODE]).strip().lower()
+    if mode not in {"ai", "backend", "hybrid"}:
+        mode = "hybrid"
+
+    return {
+        "probability_source_mode": mode,
+        "hybrid_ai_weight": get_float_setting(conn, SCENARIO_PROBABILITY_SETTING_HYBRID_AI_WEIGHT, DEFAULT_SCENARIO_PROBABILITY_SETTINGS[SCENARIO_PROBABILITY_SETTING_HYBRID_AI_WEIGHT], minimum=0.0, maximum=100.0),
+        "hybrid_backend_weight": get_float_setting(conn, SCENARIO_PROBABILITY_SETTING_HYBRID_BACKEND_WEIGHT, DEFAULT_SCENARIO_PROBABILITY_SETTINGS[SCENARIO_PROBABILITY_SETTING_HYBRID_BACKEND_WEIGHT], minimum=0.0, maximum=100.0),
+        "backend_base_max_probability": get_float_setting(conn, SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MAX, DEFAULT_SCENARIO_PROBABILITY_SETTINGS[SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MAX], minimum=0.0, maximum=100.0),
+        "backend_base_min_probability": get_float_setting(conn, SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN, DEFAULT_SCENARIO_PROBABILITY_SETTINGS[SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN], minimum=0.0, maximum=100.0),
+    }
+
+
+def choose_final_probabilities(ai_probs, backend_probs, settings):
+    mode = settings.get("probability_source_mode", "hybrid")
+    mode_used = mode
+
+    if mode == "ai":
+        if ai_probs:
+            final_probs = normalize_probabilities(ai_probs)
+        elif backend_probs:
+            final_probs = normalize_probabilities(backend_probs)
+            mode_used = "backend_fallback_from_ai"
+        else:
+            final_probs = {"Bear": 20.0, "Base": 60.0, "Bull": 20.0}
+            mode_used = "default_fallback_from_ai"
+    elif mode == "backend":
+        final_probs = normalize_probabilities(backend_probs)
+    else:
+        final_probs = blend_probabilities(
+            ai_probs or {"Bear": 20.0, "Base": 60.0, "Bull": 20.0},
+            backend_probs or {"Bear": 20.0, "Base": 60.0, "Bull": 20.0},
+            settings.get("hybrid_ai_weight", 0.70),
+            settings.get("hybrid_backend_weight", 0.30),
+        )
+
+    return {
+        "ai_scenario_probabilities": normalize_probabilities(ai_probs) if ai_probs else None,
+        "backend_scenario_probabilities": normalize_probabilities(backend_probs) if backend_probs else None,
+        "final_scenario_probabilities": final_probs,
+        "probability_source_mode_used": mode_used,
+    }
+
+
+def apply_final_probabilities_to_scenarios(scenarios, final_probabilities):
+    normalized = []
+    for item in scenarios:
+        name = item.get("scenario_name")
+        updated = dict(item)
+        if name in final_probabilities:
+            updated["probability"] = float(final_probabilities[name]) / 100.0
+        normalized.append(updated)
+    return normalized
+
+
 def get_general_configuration(conn):
     scenario = get_scenario_generation_config(conn)
     return {
@@ -557,6 +699,7 @@ def get_general_configuration(conn):
         "scenario_pass_count": scenario["scenario_pass_count"],
         "scenario_outlier_filter_enabled": scenario["scenario_outlier_filter_enabled"],
         "rating_settings": get_rating_settings(conn),
+        "scenario_probability_settings": get_scenario_probability_settings(conn),
     }
 
 
@@ -592,6 +735,50 @@ def save_general_configuration(conn, settings):
         scenario_payload[ANALYSIS_SETTING_SCENARIO_PASS_COUNT] = int(settings["scenario_pass_count"])
     if "scenario_outlier_filter_enabled" in settings:
         scenario_payload[ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED] = bool(settings["scenario_outlier_filter_enabled"])
+    scenario_probability_settings = settings.get("scenario_probability_settings")
+    if scenario_probability_settings is not None:
+        if not isinstance(scenario_probability_settings, dict):
+            raise ValueError("scenario_probability_settings must be an object")
+
+        mode = str(scenario_probability_settings.get("probability_source_mode", "hybrid")).strip().lower()
+        if mode not in {"ai", "backend", "hybrid"}:
+            raise ValueError("probability_source_mode must be ai, backend, or hybrid")
+
+        def _save_setting(key, value):
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                  value = excluded.value,
+                  updated_at = excluded.updated_at
+                """,
+                (key, str(value), now),
+            )
+
+        _save_setting(SCENARIO_PROBABILITY_SETTING_SOURCE_MODE, mode)
+
+        for key in (
+            SCENARIO_PROBABILITY_SETTING_HYBRID_AI_WEIGHT,
+            SCENARIO_PROBABILITY_SETTING_HYBRID_BACKEND_WEIGHT,
+            SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MAX,
+            SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN,
+        ):
+            if key not in scenario_probability_settings:
+                continue
+            try:
+                value = float(scenario_probability_settings[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} must be numeric")
+            if not math.isfinite(value):
+                raise ValueError(f"{key} must be finite")
+            if key in (SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MAX, SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN):
+                if value < 0 or value > 100:
+                    raise ValueError(f"{key} must be between 0 and 100")
+            elif value < 0:
+                raise ValueError(f"{key} must be >= 0")
+            _save_setting(key, value)
+
     rating_settings_payload = settings.get("rating_settings")
     if rating_settings_payload is not None:
         if not isinstance(rating_settings_payload, dict):
@@ -1472,6 +1659,23 @@ def request_ai_analysis(symbol, current_price=None):
         step2["key_variables"],
     )
 
+    conn = get_db_connection()
+    try:
+        probability_settings = get_scenario_probability_settings(conn)
+    finally:
+        conn.close()
+    ai_probs = scenario_probabilities_from_scenarios(parsed["scenarios"])
+    backend_probs = compute_backend_probabilities(
+        step2["key_variables"],
+        probability_settings["backend_base_max_probability"],
+        probability_settings["backend_base_min_probability"],
+    )
+    probability_meta = choose_final_probabilities(ai_probs, backend_probs, probability_settings)
+    parsed["scenarios"] = apply_final_probabilities_to_scenarios(
+        parsed["scenarios"],
+        probability_meta["final_scenario_probabilities"],
+    )
+
     return {
         "effective_price": effective_price,
         "company_name": company_name,
@@ -1483,6 +1687,7 @@ def request_ai_analysis(symbol, current_price=None):
             "step1": step1_raw,
             "step2": step2_raw,
             "step3_prompt": prompt3,
+            "probability_meta": probability_meta,
             "step3_runs": [
                 {
                     "pass_index": run["pass_index"],
@@ -1977,6 +2182,8 @@ def _version_payload(conn, version_row):
     rating_settings = get_rating_settings(conn)
     rating, confidence_diff = calculate_rating(version_row["upside"], bullish_confidence, bearish_confidence, rating_settings)
 
+    probability_meta = raw_payload.get("probability_meta") if isinstance(raw_payload.get("probability_meta"), dict) else {}
+
     return {
         "id": version_row["id"],
         "version_number": version_row["version_number"],
@@ -1996,6 +2203,10 @@ def _version_payload(conn, version_row):
         "created_at": version_row["created_at"],
         "source_trigger": version_row["source_trigger"],
         "scenario_prompt": prompt_text,
+        "ai_scenario_probabilities": probability_meta.get("ai_scenario_probabilities"),
+        "backend_scenario_probabilities": probability_meta.get("backend_scenario_probabilities"),
+        "final_scenario_probabilities": probability_meta.get("final_scenario_probabilities"),
+        "probability_source_mode_used": probability_meta.get("probability_source_mode_used"),
         "scenarios": [dict(s) for s in scenarios],
         "key_variables": [dict(v) for v in key_variables],
         "scenario_passes": [
@@ -2365,6 +2576,19 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
         key_variables,
     )
 
+    probability_settings = get_scenario_probability_settings(conn)
+    ai_probs = scenario_probabilities_from_scenarios(parsed["scenarios"])
+    backend_probs = compute_backend_probabilities(
+        key_variables,
+        probability_settings["backend_base_max_probability"],
+        probability_settings["backend_base_min_probability"],
+    )
+    probability_meta = choose_final_probabilities(ai_probs, backend_probs, probability_settings)
+    parsed["scenarios"] = apply_final_probabilities_to_scenarios(
+        parsed["scenarios"],
+        probability_meta["final_scenario_probabilities"],
+    )
+
     conn.execute("BEGIN")
     try:
         new_version_id = _insert_analysis_version(
@@ -2378,7 +2602,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
-            raw_ai_response=json.dumps({"step3_prompt": prompt, "step3_runs": scenario_runs}),
+            raw_ai_response=json.dumps({"step3_prompt": prompt, "probability_meta": probability_meta, "step3_runs": scenario_runs}),
             source_trigger="rerun_from_key_variable_edit",
             scenario_passes=scenario_runs,
         )
@@ -2461,6 +2685,19 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
         key_variables,
     )
 
+    probability_settings = get_scenario_probability_settings(conn)
+    ai_probs = scenario_probabilities_from_scenarios(parsed["scenarios"])
+    backend_probs = compute_backend_probabilities(
+        key_variables,
+        probability_settings["backend_base_max_probability"],
+        probability_settings["backend_base_min_probability"],
+    )
+    probability_meta = choose_final_probabilities(ai_probs, backend_probs, probability_settings)
+    parsed["scenarios"] = apply_final_probabilities_to_scenarios(
+        parsed["scenarios"],
+        probability_meta["final_scenario_probabilities"],
+    )
+
     conn.execute("BEGIN")
     try:
         new_version_id = _insert_analysis_version(
@@ -2474,7 +2711,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
-            raw_ai_response=json.dumps({"step3_prompt": prompt, "step3_runs": scenario_runs}),
+            raw_ai_response=json.dumps({"step3_prompt": prompt, "probability_meta": probability_meta, "step3_runs": scenario_runs}),
             source_trigger="rerun_from_analysis_list",
             scenario_passes=scenario_runs,
         )

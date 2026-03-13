@@ -57,6 +57,11 @@ const configurationStatusEl = document.getElementById('configuration-status');
 const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait-seconds');
 const configScenarioMultiPassEnabledEl = document.getElementById('config-scenario-multi-pass-enabled');
 const configScenarioPassCountEl = document.getElementById('config-scenario-pass-count');
+const configScenarioProbabilitySourceModeEl = document.getElementById('config-scenario-probability-source-mode');
+const configScenarioProbabilityHybridAiWeightEl = document.getElementById('config-scenario-probability-hybrid-ai-weight');
+const configScenarioProbabilityHybridBackendWeightEl = document.getElementById('config-scenario-probability-hybrid-backend-weight');
+const configScenarioProbabilityBackendBaseMaxEl = document.getElementById('config-scenario-probability-backend-base-max');
+const configScenarioProbabilityBackendBaseMinEl = document.getElementById('config-scenario-probability-backend-base-min');
 const configSaveBtn = document.getElementById('config-save-btn');
 const configCancelBtn = document.getElementById('config-cancel-btn');
 const configRestoreDefaultsBtn = document.getElementById('config-restore-defaults-btn');
@@ -84,6 +89,14 @@ let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
 let isEditingBusinessModel = false;
+
+const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
+  probability_source_mode: 'hybrid',
+  hybrid_ai_weight: 0.70,
+  hybrid_backend_weight: 0.30,
+  backend_base_max_probability: 60.0,
+  backend_base_min_probability: 35.0,
+};
 
 const DEFAULT_RATING_SETTINGS = {
   min_conviction_hold_threshold: 5.0,
@@ -683,6 +696,44 @@ ${rendered.analysis_prompt_scenarios || ''}`;
   } catch (error) { promptPreviewOutput.textContent = `Error: ${error.message}`; }
 }
 
+function getScenarioProbabilitySettingsFromForm() {
+  return {
+    probability_source_mode: (configScenarioProbabilitySourceModeEl.value || 'hybrid').toLowerCase(),
+    hybrid_ai_weight: Number(configScenarioProbabilityHybridAiWeightEl.value),
+    hybrid_backend_weight: Number(configScenarioProbabilityHybridBackendWeightEl.value),
+    backend_base_max_probability: Number(configScenarioProbabilityBackendBaseMaxEl.value),
+    backend_base_min_probability: Number(configScenarioProbabilityBackendBaseMinEl.value),
+  };
+}
+
+function applyScenarioProbabilitySettingsToForm(settings) {
+  const effective = { ...DEFAULT_SCENARIO_PROBABILITY_SETTINGS, ...(settings || {}) };
+  configScenarioProbabilitySourceModeEl.value = String(effective.probability_source_mode || 'hybrid').toLowerCase();
+  configScenarioProbabilityHybridAiWeightEl.value = effective.hybrid_ai_weight;
+  configScenarioProbabilityHybridBackendWeightEl.value = effective.hybrid_backend_weight;
+  configScenarioProbabilityBackendBaseMaxEl.value = effective.backend_base_max_probability;
+  configScenarioProbabilityBackendBaseMinEl.value = effective.backend_base_min_probability;
+}
+
+function validateScenarioProbabilitySettings(settings) {
+  if (!['ai', 'backend', 'hybrid'].includes(settings.probability_source_mode)) {
+    return 'probability_source_mode must be AI, Backend, or Hybrid.';
+  }
+  if (!Number.isFinite(settings.hybrid_ai_weight) || settings.hybrid_ai_weight < 0) {
+    return 'hybrid_ai_weight must be numeric and >= 0.';
+  }
+  if (!Number.isFinite(settings.hybrid_backend_weight) || settings.hybrid_backend_weight < 0) {
+    return 'hybrid_backend_weight must be numeric and >= 0.';
+  }
+  if (!Number.isFinite(settings.backend_base_max_probability) || settings.backend_base_max_probability < 0 || settings.backend_base_max_probability > 100) {
+    return 'backend_base_max_probability must be between 0 and 100.';
+  }
+  if (!Number.isFinite(settings.backend_base_min_probability) || settings.backend_base_min_probability < 0 || settings.backend_base_min_probability > 100) {
+    return 'backend_base_min_probability must be between 0 and 100.';
+  }
+  return null;
+}
+
 function getRatingSettingsFromForm() {
   return {
     min_conviction_hold_threshold: Number(configRatingMinConvictionHoldThresholdEl.value),
@@ -738,14 +789,16 @@ function cancelGeneralConfigurationEdits() {
   configIbPriceWaitSecondsEl.value = savedGeneralSettings.ib_price_wait_seconds ?? 5;
   configScenarioMultiPassEnabledEl.checked = Boolean(savedGeneralSettings.scenario_multi_pass_enabled);
   configScenarioPassCountEl.value = savedGeneralSettings.scenario_pass_count || 1;
+  applyScenarioProbabilitySettingsToForm(savedGeneralSettings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
   applyRatingSettingsToForm(savedGeneralSettings.rating_settings || DEFAULT_RATING_SETTINGS);
   configurationStatusEl.textContent = 'Unsaved changes reverted.';
   configurationStatusEl.className = 'status';
 }
 
 function restoreDefaultRatingSettings() {
+  applyScenarioProbabilitySettingsToForm(DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
   applyRatingSettingsToForm(DEFAULT_RATING_SETTINGS);
-  configurationStatusEl.textContent = 'Default rating settings restored in form. Click Save to persist.';
+  configurationStatusEl.textContent = 'Default rating and scenario probability settings restored in form. Click Save to persist.';
   configurationStatusEl.className = 'status';
 }
 
@@ -757,6 +810,7 @@ async function loadGeneralConfiguration() {
     configIbPriceWaitSecondsEl.value = settings.ib_price_wait_seconds ?? 5;
     configScenarioMultiPassEnabledEl.checked = Boolean(settings.scenario_multi_pass_enabled);
     configScenarioPassCountEl.value = settings.scenario_pass_count || 1;
+    applyScenarioProbabilitySettingsToForm(settings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
     applyRatingSettingsToForm(settings.rating_settings || DEFAULT_RATING_SETTINGS);
     configurationStatusEl.textContent = 'Configuration loaded.';
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
@@ -776,6 +830,14 @@ async function saveGeneralConfiguration() {
     return;
   }
 
+  const scenarioProbabilitySettings = getScenarioProbabilitySettingsFromForm();
+  const scenarioProbabilityError = validateScenarioProbabilitySettings(scenarioProbabilitySettings);
+  if (scenarioProbabilityError) {
+    configurationStatusEl.textContent = `Error: ${scenarioProbabilityError}`;
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+
   const ratingSettings = getRatingSettingsFromForm();
   const ratingValidationError = validateRatingSettings(ratingSettings);
   if (ratingValidationError) {
@@ -785,7 +847,7 @@ async function saveGeneralConfiguration() {
   }
 
   configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, rating_settings: ratingSettings } }) });
+  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); savedGeneralSettings = payload.settings || null; configurationStatusEl.textContent = 'Configuration saved.';
     await loadAnalysis();
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }

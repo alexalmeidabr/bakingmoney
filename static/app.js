@@ -14,6 +14,7 @@ const analysisSortHeaders = document.querySelectorAll('#analysis-table th.sortab
 const analysisSelectAllEl = document.getElementById('analysis-select-all');
 const analysisSymbolInput = document.getElementById('analysis-symbol-input');
 const analysisPortfolioFilterEl = document.getElementById('analysis-portfolio-filter');
+const analysisRatingFilterEl = document.getElementById('analysis-rating-filter');
 const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
 const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
@@ -78,6 +79,7 @@ let positionSort = { key: 'symbol', direction: 'asc' };
 let latestAnalysis = [];
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
+let ratingFilter = 'all';
 let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
@@ -174,7 +176,13 @@ function compareValues(left, right, direction = 'asc') {
   return direction === 'asc' ? result : -result;
 }
 const sortPositions = (positions) => [...positions].sort((a, b) => compareValues(a[positionSort.key], b[positionSort.key], positionSort.direction));
-const sortAnalysis = (items) => [...items].sort((a, b) => compareValues(a[analysisSort.key], b[analysisSort.key], analysisSort.direction));
+const RATING_SORT_ORDER = { 'Strong Sell': 1, Sell: 2, Hold: 3, Buy: 4, 'Strong Buy': 5 };
+const sortAnalysis = (items) => [...items].sort((a, b) => {
+  if (analysisSort.key === 'rating') {
+    return compareValues(RATING_SORT_ORDER[a.rating] || 0, RATING_SORT_ORDER[b.rating] || 0, analysisSort.direction);
+  }
+  return compareValues(a[analysisSort.key], b[analysisSort.key], analysisSort.direction);
+});
 
 function updateSortHeaderState() { positionSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === positionSort.key ? positionSort.direction : ''; }); }
 function updateAnalysisSortHeaderState() { analysisSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === analysisSort.key ? analysisSort.direction : ''; }); }
@@ -206,16 +214,30 @@ function enrichAnalysisWithPortfolioStatus(items) {
 }
 
 function getFilteredAnalysisItems() {
-  if (portfolioFilter === 'in_portfolio') return latestAnalysis.filter((item) => item.inPortfolio === true);
-  if (portfolioFilter === 'not_in_portfolio') return latestAnalysis.filter((item) => item.inPortfolio === false);
-  return latestAnalysis;
+  let items = latestAnalysis;
+  if (portfolioFilter === 'in_portfolio') items = items.filter((item) => item.inPortfolio === true);
+  if (portfolioFilter === 'not_in_portfolio') items = items.filter((item) => item.inPortfolio === false);
+
+  if (ratingFilter !== 'all') {
+    const map = {
+      strong_buy: 'Strong Buy',
+      buy: 'Buy',
+      hold: 'Hold',
+      sell: 'Sell',
+      strong_sell: 'Strong Sell',
+    };
+    const expected = map[ratingFilter];
+    items = items.filter((item) => (item.rating || 'Hold') === expected);
+  }
+
+  return items;
 }
 
 function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
   sortAnalysis(getFilteredAnalysisItems()).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td><td>${item.rating || 'Hold'}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
@@ -781,6 +803,10 @@ analysisSortHeaders.forEach((header) => header.addEventListener('click', () => {
 }));
 analysisPortfolioFilterEl.addEventListener('change', () => {
   portfolioFilter = analysisPortfolioFilterEl.value || 'all';
+  renderAnalysisList();
+});
+analysisRatingFilterEl.addEventListener('change', () => {
+  ratingFilter = analysisRatingFilterEl.value || 'all';
   renderAnalysisList();
 });
 analysisSelectAllEl.addEventListener('change', () => {

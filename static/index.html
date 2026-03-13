@@ -31,6 +31,15 @@
                   <option value="in_portfolio">In Portfolio</option>
                   <option value="not_in_portfolio">Not in Portfolio</option>
                 </select>
+                <label for="analysis-rating-filter" class="inline-control-label">Rating Filter</label>
+                <select id="analysis-rating-filter">
+                  <option value="all">All</option>
+                  <option value="strong_buy">Strong Buy</option>
+                  <option value="buy">Buy</option>
+                  <option value="hold">Hold</option>
+                  <option value="sell">Sell</option>
+                  <option value="strong_sell">Strong Sell</option>
+                </select>
                 <button id="analysis-add-btn">Add Symbol</button>
                 <button id="analysis-import-btn">Import from My Positions</button>
                 <button id="analysis-refresh-prices-btn">Update Current Prices</button>
@@ -47,12 +56,12 @@
                     <th><input id="analysis-select-all" type="checkbox" /></th>
                     <th data-sort-key="symbol" class="sortable">Symbol</th>
                     <th>Version / Passes</th>
+                    <th data-sort-key="rating" class="sortable">Rating</th>
                     <th data-sort-key="current_price" class="sortable">Current Price</th>
                     <th data-sort-key="expected_price" class="sortable">Expected Price</th>
                     <th data-sort-key="upside" class="sortable">Upside</th>
                     <th>Portfolio</th>
                     <th>Confidence</th>
-                    <th>Rating</th>
                     <th>Actions</th>
                   </tr>
                 </thead>

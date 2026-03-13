@@ -53,6 +53,36 @@ DEFAULT_SCENARIO_PASS_COUNT = 1
 DEFAULT_SCENARIO_OUTLIER_FILTER_ENABLED = True
 DEFAULT_IB_PRICE_WAIT_SECONDS = 5
 
+RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD = "min_conviction_hold_threshold"
+RATING_SETTING_STRONG_BUY_MIN_UPSIDE = "strong_buy_min_upside"
+RATING_SETTING_STRONG_BUY_MIN_DIFF = "strong_buy_min_diff"
+RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE = "strong_buy_min_bullish_confidence"
+RATING_SETTING_BUY_MIN_UPSIDE = "buy_min_upside"
+RATING_SETTING_BUY_MIN_DIFF = "buy_min_diff"
+RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE = "buy_min_bullish_confidence"
+RATING_SETTING_STRONG_SELL_MAX_UPSIDE = "strong_sell_max_upside"
+RATING_SETTING_STRONG_SELL_MAX_DIFF = "strong_sell_max_diff"
+RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE = "strong_sell_min_bearish_confidence"
+RATING_SETTING_SELL_MAX_UPSIDE = "sell_max_upside"
+RATING_SETTING_SELL_MAX_DIFF = "sell_max_diff"
+RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE = "sell_min_bearish_confidence"
+
+DEFAULT_RATING_SETTINGS = {
+    RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD: 5.0,
+    RATING_SETTING_STRONG_BUY_MIN_UPSIDE: 50.0,
+    RATING_SETTING_STRONG_BUY_MIN_DIFF: 1.5,
+    RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE: 7.0,
+    RATING_SETTING_BUY_MIN_UPSIDE: 25.0,
+    RATING_SETTING_BUY_MIN_DIFF: 0.5,
+    RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE: 5.5,
+    RATING_SETTING_STRONG_SELL_MAX_UPSIDE: 0.0,
+    RATING_SETTING_STRONG_SELL_MAX_DIFF: -1.5,
+    RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE: 7.0,
+    RATING_SETTING_SELL_MAX_UPSIDE: 10.0,
+    RATING_SETTING_SELL_MAX_DIFF: -0.5,
+    RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE: 5.5,
+}
+
 SCENARIO_MAX_BASE_DEVIATION = 0.40
 SCENARIO_MAX_AVG_DEVIATION = 0.30
 
@@ -445,6 +475,74 @@ def reset_scenario_generation_config(conn):
     conn.commit()
 
 
+def _coerce_score(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    return number
+
+
+def calculate_rating(upside, bullish_confidence, bearish_confidence, rating_settings):
+    upside_value = _coerce_score(upside)
+    bullish_value = _coerce_score(bullish_confidence)
+    bearish_value = _coerce_score(bearish_confidence)
+    confidence_diff = bullish_value - bearish_value
+    max_confidence = max(bullish_value, bearish_value)
+
+    if max_confidence < rating_settings[RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD]:
+        return "Hold", confidence_diff
+
+    if (
+        upside_value >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_UPSIDE]
+        and confidence_diff >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_DIFF]
+        and bullish_value >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE]
+    ):
+        return "Strong Buy", confidence_diff
+
+    if (
+        upside_value >= rating_settings[RATING_SETTING_BUY_MIN_UPSIDE]
+        and confidence_diff >= rating_settings[RATING_SETTING_BUY_MIN_DIFF]
+        and bullish_value >= rating_settings[RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE]
+    ):
+        return "Buy", confidence_diff
+
+    if (
+        upside_value <= rating_settings[RATING_SETTING_STRONG_SELL_MAX_UPSIDE]
+        and confidence_diff <= rating_settings[RATING_SETTING_STRONG_SELL_MAX_DIFF]
+        and bearish_value >= rating_settings[RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE]
+    ):
+        return "Strong Sell", confidence_diff
+
+    if (
+        upside_value <= rating_settings[RATING_SETTING_SELL_MAX_UPSIDE]
+        and confidence_diff <= rating_settings[RATING_SETTING_SELL_MAX_DIFF]
+        and bearish_value >= rating_settings[RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE]
+    ):
+        return "Sell", confidence_diff
+
+    return "Hold", confidence_diff
+
+
+def get_rating_settings(conn):
+    settings = {}
+    for key, default in DEFAULT_RATING_SETTINGS.items():
+        settings[key] = get_float_setting(conn, key, default, minimum=-10000.0, maximum=10000.0)
+
+    for confidence_key in (
+        RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD,
+        RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE,
+        RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE,
+        RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE,
+        RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE,
+    ):
+        settings[confidence_key] = max(0.0, min(10.0, settings[confidence_key]))
+
+    return settings
+
+
 def get_general_configuration(conn):
     scenario = get_scenario_generation_config(conn)
     return {
@@ -458,6 +556,7 @@ def get_general_configuration(conn):
         "scenario_multi_pass_enabled": scenario["scenario_multi_pass_enabled"],
         "scenario_pass_count": scenario["scenario_pass_count"],
         "scenario_outlier_filter_enabled": scenario["scenario_outlier_filter_enabled"],
+        "rating_settings": get_rating_settings(conn),
     }
 
 
@@ -493,6 +592,39 @@ def save_general_configuration(conn, settings):
         scenario_payload[ANALYSIS_SETTING_SCENARIO_PASS_COUNT] = int(settings["scenario_pass_count"])
     if "scenario_outlier_filter_enabled" in settings:
         scenario_payload[ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED] = bool(settings["scenario_outlier_filter_enabled"])
+    rating_settings_payload = settings.get("rating_settings")
+    if rating_settings_payload is not None:
+        if not isinstance(rating_settings_payload, dict):
+            raise ValueError("rating_settings must be an object")
+
+        for key, default in DEFAULT_RATING_SETTINGS.items():
+            if key not in rating_settings_payload:
+                continue
+            try:
+                value = float(rating_settings_payload[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} must be numeric")
+            if not math.isfinite(value):
+                raise ValueError(f"{key} must be finite")
+            if key in {
+                RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD,
+                RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE,
+                RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE,
+                RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE,
+                RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE,
+            } and (value < 0 or value > 10):
+                raise ValueError(f"{key} must be between 0 and 10")
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                  value = excluded.value,
+                  updated_at = excluded.updated_at
+                """,
+                (key, str(value), now),
+            )
+
     if scenario_payload:
         save_scenario_generation_config(conn, scenario_payload)
     else:
@@ -1638,6 +1770,7 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
 
 
 def list_analysis_symbols(conn):
+    rating_settings = get_rating_settings(conn)
     rows = conn.execute(
         """
         SELECT r.symbol, v.current_price, v.expected_price, v.upside, v.confidence_level AS overall_confidence,
@@ -1681,6 +1814,14 @@ def list_analysis_symbols(conn):
         item = dict(row)
         if (item.get("scenario_pass_count") or 0) <= 0:
             item["scenario_pass_count"] = 1
+        rating, confidence_diff = calculate_rating(
+            item.get("upside"),
+            item.get("bullish_confidence"),
+            item.get("bearish_confidence"),
+            rating_settings,
+        )
+        item["confidence_diff"] = confidence_diff
+        item["rating"] = rating
         output.append(item)
     return output
 
@@ -1833,6 +1974,9 @@ def _version_payload(conn, version_row):
             for row in raw_payload.get("step3_runs", [])
         ]
 
+    rating_settings = get_rating_settings(conn)
+    rating, confidence_diff = calculate_rating(version_row["upside"], bullish_confidence, bearish_confidence, rating_settings)
+
     return {
         "id": version_row["id"],
         "version_number": version_row["version_number"],
@@ -1844,6 +1988,8 @@ def _version_payload(conn, version_row):
         "overall_confidence": version_row["confidence_level"],
         "bullish_confidence": bullish_confidence,
         "bearish_confidence": bearish_confidence,
+        "confidence_diff": confidence_diff,
+        "rating": rating,
         "assumptions": version_row["assumptions_text"],
         "business_model": version_row["business_model_text"],
         "business_summary": version_row["business_summary_text"],

@@ -57,6 +57,21 @@ const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait
 const configScenarioMultiPassEnabledEl = document.getElementById('config-scenario-multi-pass-enabled');
 const configScenarioPassCountEl = document.getElementById('config-scenario-pass-count');
 const configSaveBtn = document.getElementById('config-save-btn');
+const configCancelBtn = document.getElementById('config-cancel-btn');
+const configRestoreDefaultsBtn = document.getElementById('config-restore-defaults-btn');
+const configRatingMinConvictionHoldThresholdEl = document.getElementById('config-rating-min-conviction-hold-threshold');
+const configRatingStrongBuyMinUpsideEl = document.getElementById('config-rating-strong-buy-min-upside');
+const configRatingStrongBuyMinDiffEl = document.getElementById('config-rating-strong-buy-min-diff');
+const configRatingStrongBuyMinBullishConfidenceEl = document.getElementById('config-rating-strong-buy-min-bullish-confidence');
+const configRatingBuyMinUpsideEl = document.getElementById('config-rating-buy-min-upside');
+const configRatingBuyMinDiffEl = document.getElementById('config-rating-buy-min-diff');
+const configRatingBuyMinBullishConfidenceEl = document.getElementById('config-rating-buy-min-bullish-confidence');
+const configRatingStrongSellMaxUpsideEl = document.getElementById('config-rating-strong-sell-max-upside');
+const configRatingStrongSellMaxDiffEl = document.getElementById('config-rating-strong-sell-max-diff');
+const configRatingStrongSellMinBearishConfidenceEl = document.getElementById('config-rating-strong-sell-min-bearish-confidence');
+const configRatingSellMaxUpsideEl = document.getElementById('config-rating-sell-max-upside');
+const configRatingSellMaxDiffEl = document.getElementById('config-rating-sell-max-diff');
+const configRatingSellMinBearishConfidenceEl = document.getElementById('config-rating-sell-min-bearish-confidence');
 
 let latestPositions = [];
 let positionSort = { key: 'symbol', direction: 'asc' };
@@ -67,6 +82,24 @@ let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
 let isEditingBusinessModel = false;
+
+const DEFAULT_RATING_SETTINGS = {
+  min_conviction_hold_threshold: 5.0,
+  strong_buy_min_upside: 50.0,
+  strong_buy_min_diff: 1.5,
+  strong_buy_min_bullish_confidence: 7.0,
+  buy_min_upside: 25.0,
+  buy_min_diff: 0.5,
+  buy_min_bullish_confidence: 5.5,
+  strong_sell_max_upside: 0.0,
+  strong_sell_max_diff: -1.5,
+  strong_sell_min_bearish_confidence: 7.0,
+  sell_max_upside: 10.0,
+  sell_max_diff: -0.5,
+  sell_min_bearish_confidence: 5.5,
+};
+
+let savedGeneralSettings = null;
 
 const POSITIONS_CACHE_KEY = 'bakingmoney.latestPositions';
 
@@ -122,6 +155,11 @@ const formatCurrencyValue = (value, currency, digits = 2) => {
 const formatPercent = (value) => (typeof value !== 'number' || Number.isNaN(value) ? 'N/A' : `${value.toFixed(2)}%`);
 const valueClass = (value) => (typeof value !== 'number' || Number.isNaN(value) || value === 0 ? '' : value > 0 ? 'pnl-positive' : 'pnl-negative');
 const formatConfidencePair = (bullish, bearish) => `${formatNumber(bullish, 2)} / ${formatNumber(bearish, 2)}`;
+const formatConfidenceDiffDisplay = (diff, bullish, bearish) => {
+  const diffNumber = typeof diff === 'number' && Number.isFinite(diff) ? diff : (Number(bullish) - Number(bearish));
+  const diffText = Number.isFinite(diffNumber) ? `${diffNumber >= 0 ? '+' : ''}${diffNumber.toFixed(2)}` : 'N/A';
+  return `${diffText} (${formatNumber(bullish, 2)} / ${formatNumber(bearish, 2)})`;
+};
 const formatDateTime = (v) => {
   if (!v) return 'N/A';
   const d = new Date(v);
@@ -177,7 +215,7 @@ function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
   sortAnalysis(getFilteredAnalysisItems()).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td><td>${item.rating || 'Hold'}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
@@ -253,7 +291,7 @@ function renderAnalysisDetail() {
   const businessModelSection = isEditingBusinessModel
     ? `<div class="business-model-editor"><label><strong>Business Model:</strong></label><textarea id="analysis-business-model-input" class="analysis-business-model-input" rows="5">${effectiveBusinessModel}</textarea><div class="table-actions"><button id="analysis-business-model-save-btn">Save</button><button id="analysis-business-model-cancel-btn">Cancel</button></div></div>`
     : `<div class="business-model-editor"><p><strong>Business Model:</strong> ${effectiveBusinessModel || 'N/A'}</p><button id="analysis-business-model-edit-btn">Edit Business Model</button></div>`;
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</div></div></div>${businessModelSection}<p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p><p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</div></div><div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}<p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p><p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   analysisScenariosBody.innerHTML = '';
@@ -623,13 +661,81 @@ ${rendered.analysis_prompt_scenarios || ''}`;
   } catch (error) { promptPreviewOutput.textContent = `Error: ${error.message}`; }
 }
 
+function getRatingSettingsFromForm() {
+  return {
+    min_conviction_hold_threshold: Number(configRatingMinConvictionHoldThresholdEl.value),
+    strong_buy_min_upside: Number(configRatingStrongBuyMinUpsideEl.value),
+    strong_buy_min_diff: Number(configRatingStrongBuyMinDiffEl.value),
+    strong_buy_min_bullish_confidence: Number(configRatingStrongBuyMinBullishConfidenceEl.value),
+    buy_min_upside: Number(configRatingBuyMinUpsideEl.value),
+    buy_min_diff: Number(configRatingBuyMinDiffEl.value),
+    buy_min_bullish_confidence: Number(configRatingBuyMinBullishConfidenceEl.value),
+    strong_sell_max_upside: Number(configRatingStrongSellMaxUpsideEl.value),
+    strong_sell_max_diff: Number(configRatingStrongSellMaxDiffEl.value),
+    strong_sell_min_bearish_confidence: Number(configRatingStrongSellMinBearishConfidenceEl.value),
+    sell_max_upside: Number(configRatingSellMaxUpsideEl.value),
+    sell_max_diff: Number(configRatingSellMaxDiffEl.value),
+    sell_min_bearish_confidence: Number(configRatingSellMinBearishConfidenceEl.value),
+  };
+}
+
+function applyRatingSettingsToForm(settings) {
+  const effective = { ...DEFAULT_RATING_SETTINGS, ...(settings || {}) };
+  configRatingMinConvictionHoldThresholdEl.value = effective.min_conviction_hold_threshold;
+  configRatingStrongBuyMinUpsideEl.value = effective.strong_buy_min_upside;
+  configRatingStrongBuyMinDiffEl.value = effective.strong_buy_min_diff;
+  configRatingStrongBuyMinBullishConfidenceEl.value = effective.strong_buy_min_bullish_confidence;
+  configRatingBuyMinUpsideEl.value = effective.buy_min_upside;
+  configRatingBuyMinDiffEl.value = effective.buy_min_diff;
+  configRatingBuyMinBullishConfidenceEl.value = effective.buy_min_bullish_confidence;
+  configRatingStrongSellMaxUpsideEl.value = effective.strong_sell_max_upside;
+  configRatingStrongSellMaxDiffEl.value = effective.strong_sell_max_diff;
+  configRatingStrongSellMinBearishConfidenceEl.value = effective.strong_sell_min_bearish_confidence;
+  configRatingSellMaxUpsideEl.value = effective.sell_max_upside;
+  configRatingSellMaxDiffEl.value = effective.sell_max_diff;
+  configRatingSellMinBearishConfidenceEl.value = effective.sell_min_bearish_confidence;
+}
+
+function validateRatingSettings(settings) {
+  const confidenceKeys = [
+    'min_conviction_hold_threshold',
+    'strong_buy_min_bullish_confidence',
+    'buy_min_bullish_confidence',
+    'strong_sell_min_bearish_confidence',
+    'sell_min_bearish_confidence',
+  ];
+  for (const [key, value] of Object.entries(settings)) {
+    if (!Number.isFinite(value)) return `${key} must be numeric.`;
+    if (confidenceKeys.includes(key) && (value < 0 || value > 10)) return `${key} must be between 0 and 10.`;
+  }
+  return null;
+}
+
+function cancelGeneralConfigurationEdits() {
+  if (!savedGeneralSettings) return;
+  configIbPriceWaitSecondsEl.value = savedGeneralSettings.ib_price_wait_seconds ?? 5;
+  configScenarioMultiPassEnabledEl.checked = Boolean(savedGeneralSettings.scenario_multi_pass_enabled);
+  configScenarioPassCountEl.value = savedGeneralSettings.scenario_pass_count || 1;
+  applyRatingSettingsToForm(savedGeneralSettings.rating_settings || DEFAULT_RATING_SETTINGS);
+  configurationStatusEl.textContent = 'Unsaved changes reverted.';
+  configurationStatusEl.className = 'status';
+}
+
+function restoreDefaultRatingSettings() {
+  applyRatingSettingsToForm(DEFAULT_RATING_SETTINGS);
+  configurationStatusEl.textContent = 'Default rating settings restored in form. Click Save to persist.';
+  configurationStatusEl.className = 'status';
+}
+
 async function loadGeneralConfiguration() {
   configurationStatusEl.textContent = 'Loading configuration…'; configurationStatusEl.className = 'status';
   try { const response = await fetch('/api/configuration/general'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load configuration'));
     const settings = payload.settings || {};
+    savedGeneralSettings = settings;
     configIbPriceWaitSecondsEl.value = settings.ib_price_wait_seconds ?? 5;
     configScenarioMultiPassEnabledEl.checked = Boolean(settings.scenario_multi_pass_enabled);
     configScenarioPassCountEl.value = settings.scenario_pass_count || 1;
+    applyRatingSettingsToForm(settings.rating_settings || DEFAULT_RATING_SETTINGS);
     configurationStatusEl.textContent = 'Configuration loaded.';
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }
@@ -648,9 +754,18 @@ async function saveGeneralConfiguration() {
     return;
   }
 
+  const ratingSettings = getRatingSettingsFromForm();
+  const ratingValidationError = validateRatingSettings(ratingSettings);
+  if (ratingValidationError) {
+    configurationStatusEl.textContent = `Error: ${ratingValidationError}`;
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+
   configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount } }) });
-    const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); configurationStatusEl.textContent = 'Configuration saved.';
+  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, rating_settings: ratingSettings } }) });
+    const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); savedGeneralSettings = payload.settings || null; configurationStatusEl.textContent = 'Configuration saved.';
+    await loadAnalysis();
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }
 
@@ -725,6 +840,8 @@ promptResetBtn.addEventListener('click', resetPromptConfiguration);
 promptPreviewBtn.addEventListener('click', previewPromptConfiguration);
 promptPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') previewPromptConfiguration(); });
 configSaveBtn.addEventListener('click', saveGeneralConfiguration);
+configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
+configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();

@@ -52,6 +52,7 @@
                     <th data-sort-key="upside" class="sortable">Upside</th>
                     <th>Portfolio</th>
                     <th>Confidence</th>
+                    <th>Rating</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
@@ -195,8 +196,29 @@
               <label><input id="config-scenario-multi-pass-enabled" type="checkbox" /> Enable scenario multi-pass consensus</label>
               <label>Scenario pass count <input id="config-scenario-pass-count" type="number" min="1" max="10" value="1" /></label>
             </div>
+          </section>
+
+          <section class="detail-card">
+            <h3>Rating Settings</h3>
+            <div class="table-actions config-actions settings-grid">
+              <label>Min conviction hold threshold <input id="config-rating-min-conviction-hold-threshold" type="number" min="0" max="10" step="0.1" value="5.0" /></label>
+              <label>Strong Buy min upside <input id="config-rating-strong-buy-min-upside" type="number" step="0.1" value="50.0" /></label>
+              <label>Strong Buy min diff <input id="config-rating-strong-buy-min-diff" type="number" step="0.1" value="1.5" /></label>
+              <label>Strong Buy min bullish confidence <input id="config-rating-strong-buy-min-bullish-confidence" type="number" min="0" max="10" step="0.1" value="7.0" /></label>
+              <label>Buy min upside <input id="config-rating-buy-min-upside" type="number" step="0.1" value="25.0" /></label>
+              <label>Buy min diff <input id="config-rating-buy-min-diff" type="number" step="0.1" value="0.5" /></label>
+              <label>Buy min bullish confidence <input id="config-rating-buy-min-bullish-confidence" type="number" min="0" max="10" step="0.1" value="5.5" /></label>
+              <label>Strong Sell max upside <input id="config-rating-strong-sell-max-upside" type="number" step="0.1" value="0.0" /></label>
+              <label>Strong Sell max diff <input id="config-rating-strong-sell-max-diff" type="number" step="0.1" value="-1.5" /></label>
+              <label>Strong Sell min bearish confidence <input id="config-rating-strong-sell-min-bearish-confidence" type="number" min="0" max="10" step="0.1" value="7.0" /></label>
+              <label>Sell max upside <input id="config-rating-sell-max-upside" type="number" step="0.1" value="10.0" /></label>
+              <label>Sell max diff <input id="config-rating-sell-max-diff" type="number" step="0.1" value="-0.5" /></label>
+              <label>Sell min bearish confidence <input id="config-rating-sell-min-bearish-confidence" type="number" min="0" max="10" step="0.1" value="5.5" /></label>
+            </div>
             <div class="table-actions config-actions">
               <button id="config-save-btn">Save Settings</button>
+              <button id="config-cancel-btn">Cancel</button>
+              <button id="config-restore-defaults-btn">Restore Defaults</button>
             </div>
           </section>
         </section>

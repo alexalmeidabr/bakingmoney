@@ -27,6 +27,12 @@ class OpenAIToolsTests(unittest.TestCase):
         self.assertTrue(web_server._looks_like_unsupported_web_tool_error("Invalid tool type web_search_preview"))
         self.assertFalse(web_server._looks_like_unsupported_web_tool_error("Rate limit exceeded"))
 
+    def test_openai_timeout_selection_uses_longer_timeout_for_recent_event_check(self):
+        with mock.patch.object(web_server, "OPENAI_REQUEST_TIMEOUT_SECONDS", 60.0), \
+             mock.patch.object(web_server, "OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS", 120.0):
+            self.assertEqual(web_server.get_openai_timeout_seconds_for_step("business_model"), 60.0)
+            self.assertEqual(web_server.get_openai_timeout_seconds_for_step("recent_event_check"), 120.0)
+
 
 if __name__ == "__main__":
     unittest.main()

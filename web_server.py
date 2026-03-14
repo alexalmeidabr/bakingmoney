@@ -39,6 +39,8 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower() or "medium"
 OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
 OPENAI_WEB_SEARCH_TOOL_CANDIDATES = ("web_search", "web_search_preview")
+OPENAI_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "60"))
+OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS", "120"))
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
@@ -1498,6 +1500,12 @@ def _looks_like_unsupported_web_tool_error(response_text):
     return "tool" in lower and ("unsupported" in lower or "unknown" in lower or "invalid" in lower) and "web_search" in lower
 
 
+def get_openai_timeout_seconds_for_step(step_name):
+    if step_name == "recent_event_check":
+        return max(10.0, OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS)
+    return max(10.0, OPENAI_REQUEST_TIMEOUT_SECONDS)
+
+
 def request_ai_step(step_name, prompt_text, json_schema):
     temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
     reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
@@ -1513,6 +1521,7 @@ def request_ai_step(step_name, prompt_text, json_schema):
 
     tool_candidates = list(OPENAI_WEB_SEARCH_TOOL_CANDIDATES)
     last_exc = None
+    request_timeout_seconds = get_openai_timeout_seconds_for_step(step_name)
 
     for idx, tool_type in enumerate(tool_candidates):
         body = build_openai_request_body(
@@ -1525,6 +1534,7 @@ def request_ai_step(step_name, prompt_text, json_schema):
         )
         logger.info("OpenAI Analysis request includes web search tool")
         logger.info("OpenAI web search tool type: %s", tool_type)
+        logger.info("OpenAI request timeout seconds for step=%s: %.1f", step_name, request_timeout_seconds)
 
         request = Request(
             "https://api.openai.com/v1/responses",
@@ -1537,7 +1547,7 @@ def request_ai_step(step_name, prompt_text, json_schema):
         )
 
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=request_timeout_seconds) as response:
                 raw = json.loads(response.read().decode("utf-8"))
             output_text = _extract_output_text(raw)
             if not output_text:
@@ -1568,6 +1578,11 @@ def request_ai_step(step_name, prompt_text, json_schema):
 
             if _looks_like_unsupported_web_tool_error(response_text):
                 logger.error("OpenAI web-search tool type appears unsupported: %s", tool_type)
+            raise last_exc from exc
+        except TimeoutError as exc:
+            last_exc = RuntimeError(
+                f"OpenAI request timed out on step {step_name} after {request_timeout_seconds:.1f}s"
+            )
             raise last_exc from exc
 
     if last_exc:

@@ -84,7 +84,7 @@ let positionSort = { key: 'symbol', direction: 'asc' };
 let latestAnalysis = [];
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
-let ratingFilter = 'all';
+let ratingFilters = new Set();
 let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
@@ -231,7 +231,7 @@ function getFilteredAnalysisItems() {
   if (portfolioFilter === 'in_portfolio') items = items.filter((item) => item.inPortfolio === true);
   if (portfolioFilter === 'not_in_portfolio') items = items.filter((item) => item.inPortfolio === false);
 
-  if (ratingFilter !== 'all') {
+  if (ratingFilters.size > 0) {
     const map = {
       strong_buy: 'Strong Buy',
       buy: 'Buy',
@@ -239,8 +239,8 @@ function getFilteredAnalysisItems() {
       sell: 'Sell',
       strong_sell: 'Strong Sell',
     };
-    const expected = map[ratingFilter];
-    items = items.filter((item) => (item.rating || 'Hold') === expected);
+    const expectedRatings = new Set(Array.from(ratingFilters).map((key) => map[key]).filter(Boolean));
+    items = items.filter((item) => expectedRatings.has(item.rating || 'Hold'));
   }
 
   return items;
@@ -868,7 +868,8 @@ analysisPortfolioFilterEl.addEventListener('change', () => {
   renderAnalysisList();
 });
 analysisRatingFilterEl.addEventListener('change', () => {
-  ratingFilter = analysisRatingFilterEl.value || 'all';
+  const selected = Array.from(analysisRatingFilterEl.selectedOptions || []).map((option) => option.value).filter(Boolean);
+  ratingFilters = new Set(selected);
   renderAnalysisList();
 });
 analysisSelectAllEl.addEventListener('change', () => {

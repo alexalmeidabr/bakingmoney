@@ -2989,7 +2989,7 @@ def run_recent_event_check(conn, symbols):
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "additionalProperties": True,
+                        "additionalProperties": False,
                         "properties": {
                             "alert_type": {"type": "string"},
                             "event_summary": {"type": "string"},

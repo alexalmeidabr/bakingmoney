@@ -13,6 +13,7 @@
         <nav>
           <button class="menu-item active" data-view="analysis">Analysis</button>
           <button class="menu-item" data-view="positions">My Positions</button>
+          <button class="menu-item" data-view="prompt">Prompt</button>
           <button class="menu-item" data-view="configuration">Configuration</button>
         </nav>
       </aside>
@@ -25,6 +26,30 @@
               <div class="table-actions">
                 <input id="analysis-symbol-input" type="text" placeholder="e.g. NVDA" maxlength="16" />
                 <button id="analysis-add-btn">Add Symbol</button>
+                <label for="analysis-portfolio-filter" class="inline-control-label">Portfolio Filter</label>
+                <select id="analysis-portfolio-filter">
+                  <option value="all">All</option>
+                  <option value="in_portfolio">In Portfolio</option>
+                  <option value="not_in_portfolio">Not in Portfolio</option>
+                </select>
+                <label for="analysis-rating-filter-toggle" class="inline-control-label">Rating Filter</label>
+                <div id="analysis-rating-filter" class="rating-filter" data-open="false">
+                  <button id="analysis-rating-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="analysis-rating-filter-label" class="rating-filter-label-text">All</span>
+                    <span class="rating-filter-caret" aria-hidden="true">▼</span>
+                  </button>
+                  <div id="analysis-rating-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Rating filter options">
+                    <div class="rating-filter-actions">
+                      <button id="analysis-rating-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                      <button id="analysis-rating-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                    </div>
+                    <label class="rating-filter-option"><input type="checkbox" value="strong_buy" /> <span class="rating-filter-option-label">Strong Buy</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="buy" /> <span class="rating-filter-option-label">Buy</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="hold" /> <span class="rating-filter-option-label">Hold</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="sell" /> <span class="rating-filter-option-label">Sell</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="strong_sell" /> <span class="rating-filter-option-label">Strong Sell</span></label>
+                  </div>
+                </div>
                 <button id="analysis-import-btn">Import from My Positions</button>
                 <button id="analysis-refresh-prices-btn">Update Current Prices</button>
                 <button id="analysis-rerun-selected-btn">Re-run Scenarios for Selected</button>
@@ -40,9 +65,11 @@
                     <th><input id="analysis-select-all" type="checkbox" /></th>
                     <th data-sort-key="symbol" class="sortable">Symbol</th>
                     <th>Version / Passes</th>
+                    <th data-sort-key="rating" class="sortable">Rating</th>
                     <th data-sort-key="current_price" class="sortable">Current Price</th>
                     <th data-sort-key="expected_price" class="sortable">Expected Price</th>
                     <th data-sort-key="upside" class="sortable">Upside</th>
+                    <th>Portfolio</th>
                     <th>Confidence</th>
                     <th>Actions</th>
                   </tr>
@@ -132,6 +159,45 @@
         </section>
 
 
+        <section id="prompt" class="view">
+          <div class="view-header">
+            <h2>Prompt</h2>
+          </div>
+
+          <p id="prompt-status" class="status">Loading prompt configuration…</p>
+
+          <section class="detail-card">
+            <h3>Identify Business Model Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional)</p>
+            <textarea id="prompt-business-model" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Identify Key Variables Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong></p>
+            <textarea id="prompt-key-variables" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Build Scenarios Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
+            <textarea id="prompt-scenarios" class="config-textarea" rows="14"></textarea>
+            <div class="table-actions config-actions">
+              <button id="prompt-save-btn">Save Prompts</button>
+              <button id="prompt-reset-btn">Restore Default Prompts</button>
+            </div>
+          </section>
+
+          <section class="detail-card">
+            <h3>Preview</h3>
+            <div class="table-actions">
+              <input id="prompt-preview-symbol-input" type="text" placeholder="e.g. NBIS" maxlength="16" />
+              <button id="prompt-preview-btn">Preview Rendered Prompts</button>
+            </div>
+            <pre id="prompt-preview-output" class="config-preview"></pre>
+          </section>
+        </section>
+
         <section id="configuration" class="view">
           <div class="view-header">
             <h2>Configuration</h2>
@@ -140,43 +206,59 @@
           <p id="configuration-status" class="status">Loading configuration…</p>
 
           <section class="detail-card">
-            <h3>Identify Business Model Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional)</p>
-            <textarea id="config-prompt-business-model" class="config-textarea" rows="14"></textarea>
-          </section>
-
-          <section class="detail-card">
-            <h3>Identify Key Variables Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong></p>
-            <textarea id="config-prompt-key-variables" class="config-textarea" rows="14"></textarea>
-          </section>
-
-          <section class="detail-card">
-            <h3>Build Scenarios Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
-            <textarea id="config-prompt-scenarios" class="config-textarea" rows="14"></textarea>
-            <div class="table-actions config-actions">
+            <h3>Market Data / Analysis Settings</h3>
+            <div class="table-actions config-actions settings-grid">
+              <label>Price wait time for IB/TWS (seconds)
+                <input id="config-ib-price-wait-seconds" type="number" min="1" max="30" step="0.5" value="5" />
+              </label>
               <label><input id="config-scenario-multi-pass-enabled" type="checkbox" /> Enable scenario multi-pass consensus</label>
-              <label>Pass count <input id="config-scenario-pass-count" type="number" min="1" max="8" value="1" /></label>
-              <label><input id="config-scenario-outlier-filter-enabled" type="checkbox" checked /> Outlier filter enabled</label>
-            </div>
-            <div class="table-actions config-actions">
-              <button id="config-save-btn">Save All</button>
-              <button id="config-reset-btn">Restore Default Prompts</button>
+              <label>Scenario pass count <input id="config-scenario-pass-count" type="number" min="1" max="10" value="1" /></label>
             </div>
           </section>
 
+
           <section class="detail-card">
-            <h3>Preview</h3>
-            <div class="table-actions">
-              <input id="config-preview-symbol-input" type="text" placeholder="e.g. NBIS" maxlength="16" />
-              <button id="config-preview-btn">Preview Rendered Prompts</button>
+            <h3>Scenario Probability Settings</h3>
+            <div class="table-actions config-actions settings-grid">
+              <label>Probability source mode
+                <select id="config-scenario-probability-source-mode">
+                  <option value="ai">AI</option>
+                  <option value="backend">Backend</option>
+                  <option value="hybrid" selected>Hybrid</option>
+                </select>
+              </label>
+              <label>Hybrid AI weight <input id="config-scenario-probability-hybrid-ai-weight" type="number" min="0" step="0.01" value="0.70" /></label>
+              <label>Hybrid Backend weight <input id="config-scenario-probability-hybrid-backend-weight" type="number" min="0" step="0.01" value="0.30" /></label>
+              <label>Backend Base Max Probability <input id="config-scenario-probability-backend-base-max" type="number" min="0" max="100" step="0.1" value="60.0" /></label>
+              <label>Backend Base Min Probability <input id="config-scenario-probability-backend-base-min" type="number" min="0" max="100" step="0.1" value="35.0" /></label>
             </div>
-            <pre id="config-preview-output" class="config-preview"></pre>
+          </section>
+          <section class="detail-card">
+            <h3>Rating Settings</h3>
+            <div class="table-actions config-actions settings-grid">
+              <label>Min conviction hold threshold <input id="config-rating-min-conviction-hold-threshold" type="number" min="0" max="10" step="0.1" value="5.0" /></label>
+              <label>Strong Buy min upside <input id="config-rating-strong-buy-min-upside" type="number" step="0.1" value="50.0" /></label>
+              <label>Strong Buy min diff <input id="config-rating-strong-buy-min-diff" type="number" step="0.1" value="1.5" /></label>
+              <label>Strong Buy min bullish confidence <input id="config-rating-strong-buy-min-bullish-confidence" type="number" min="0" max="10" step="0.1" value="7.0" /></label>
+              <label>Buy min upside <input id="config-rating-buy-min-upside" type="number" step="0.1" value="25.0" /></label>
+              <label>Buy min diff <input id="config-rating-buy-min-diff" type="number" step="0.1" value="0.5" /></label>
+              <label>Buy min bullish confidence <input id="config-rating-buy-min-bullish-confidence" type="number" min="0" max="10" step="0.1" value="5.5" /></label>
+              <label>Strong Sell max upside <input id="config-rating-strong-sell-max-upside" type="number" step="0.1" value="0.0" /></label>
+              <label>Strong Sell max diff <input id="config-rating-strong-sell-max-diff" type="number" step="0.1" value="-1.5" /></label>
+              <label>Strong Sell min bearish confidence <input id="config-rating-strong-sell-min-bearish-confidence" type="number" min="0" max="10" step="0.1" value="7.0" /></label>
+              <label>Sell max upside <input id="config-rating-sell-max-upside" type="number" step="0.1" value="10.0" /></label>
+              <label>Sell max diff <input id="config-rating-sell-max-diff" type="number" step="0.1" value="-0.5" /></label>
+              <label>Sell min bearish confidence <input id="config-rating-sell-min-bearish-confidence" type="number" min="0" max="10" step="0.1" value="5.5" /></label>
+            </div>
+            <div class="table-actions config-actions">
+              <button id="config-save-btn">Save Settings</button>
+              <button id="config-cancel-btn">Cancel</button>
+              <button id="config-restore-defaults-btn">Restore Defaults</button>
+            </div>
           </section>
         </section>
 
-        <section id="positions" class="view">
+<section id="positions" class="view">
           <div class="view-header">
             <h2>My Positions</h2>
             <button id="refresh-btn">Refresh</button>

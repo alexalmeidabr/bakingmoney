@@ -13,6 +13,13 @@ const analysisTableBody = analysisTable.querySelector('tbody');
 const analysisSortHeaders = document.querySelectorAll('#analysis-table th.sortable');
 const analysisSelectAllEl = document.getElementById('analysis-select-all');
 const analysisSymbolInput = document.getElementById('analysis-symbol-input');
+const analysisPortfolioFilterEl = document.getElementById('analysis-portfolio-filter');
+const analysisRatingFilterEl = document.getElementById('analysis-rating-filter');
+const analysisRatingFilterToggleEl = document.getElementById('analysis-rating-filter-toggle');
+const analysisRatingFilterLabelEl = document.getElementById('analysis-rating-filter-label');
+const analysisRatingFilterPanelEl = document.getElementById('analysis-rating-filter-panel');
+const analysisRatingFilterSelectAllEl = document.getElementById('analysis-rating-filter-select-all');
+const analysisRatingFilterClearEl = document.getElementById('analysis-rating-filter-clear');
 const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
 const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
@@ -41,33 +48,163 @@ const analysisScenarioInfoModal = document.getElementById('analysis-scenario-inf
 const analysisScenarioInfoText = document.getElementById('analysis-scenario-info-text');
 const analysisScenarioInfoCloseBtn = document.getElementById('analysis-scenario-info-close-btn');
 
+const promptStatusEl = document.getElementById('prompt-status');
+const promptBusinessModelEl = document.getElementById('prompt-business-model');
+const promptKeyVariablesEl = document.getElementById('prompt-key-variables');
+const promptScenariosEl = document.getElementById('prompt-scenarios');
+const promptSaveBtn = document.getElementById('prompt-save-btn');
+const promptResetBtn = document.getElementById('prompt-reset-btn');
+const promptPreviewSymbolInput = document.getElementById('prompt-preview-symbol-input');
+const promptPreviewBtn = document.getElementById('prompt-preview-btn');
+const promptPreviewOutput = document.getElementById('prompt-preview-output');
+
 const configurationStatusEl = document.getElementById('configuration-status');
-const configPromptBusinessModelEl = document.getElementById('config-prompt-business-model');
-const configPromptKeyVariablesEl = document.getElementById('config-prompt-key-variables');
-const configPromptScenariosEl = document.getElementById('config-prompt-scenarios');
+const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait-seconds');
 const configScenarioMultiPassEnabledEl = document.getElementById('config-scenario-multi-pass-enabled');
 const configScenarioPassCountEl = document.getElementById('config-scenario-pass-count');
-const configScenarioOutlierFilterEnabledEl = document.getElementById('config-scenario-outlier-filter-enabled');
+const configScenarioProbabilitySourceModeEl = document.getElementById('config-scenario-probability-source-mode');
+const configScenarioProbabilityHybridAiWeightEl = document.getElementById('config-scenario-probability-hybrid-ai-weight');
+const configScenarioProbabilityHybridBackendWeightEl = document.getElementById('config-scenario-probability-hybrid-backend-weight');
+const configScenarioProbabilityBackendBaseMaxEl = document.getElementById('config-scenario-probability-backend-base-max');
+const configScenarioProbabilityBackendBaseMinEl = document.getElementById('config-scenario-probability-backend-base-min');
 const configSaveBtn = document.getElementById('config-save-btn');
-const configResetBtn = document.getElementById('config-reset-btn');
-const configPreviewSymbolInput = document.getElementById('config-preview-symbol-input');
-const configPreviewBtn = document.getElementById('config-preview-btn');
-const configPreviewOutput = document.getElementById('config-preview-output');
+const configCancelBtn = document.getElementById('config-cancel-btn');
+const configRestoreDefaultsBtn = document.getElementById('config-restore-defaults-btn');
+const configRatingMinConvictionHoldThresholdEl = document.getElementById('config-rating-min-conviction-hold-threshold');
+const configRatingStrongBuyMinUpsideEl = document.getElementById('config-rating-strong-buy-min-upside');
+const configRatingStrongBuyMinDiffEl = document.getElementById('config-rating-strong-buy-min-diff');
+const configRatingStrongBuyMinBullishConfidenceEl = document.getElementById('config-rating-strong-buy-min-bullish-confidence');
+const configRatingBuyMinUpsideEl = document.getElementById('config-rating-buy-min-upside');
+const configRatingBuyMinDiffEl = document.getElementById('config-rating-buy-min-diff');
+const configRatingBuyMinBullishConfidenceEl = document.getElementById('config-rating-buy-min-bullish-confidence');
+const configRatingStrongSellMaxUpsideEl = document.getElementById('config-rating-strong-sell-max-upside');
+const configRatingStrongSellMaxDiffEl = document.getElementById('config-rating-strong-sell-max-diff');
+const configRatingStrongSellMinBearishConfidenceEl = document.getElementById('config-rating-strong-sell-min-bearish-confidence');
+const configRatingSellMaxUpsideEl = document.getElementById('config-rating-sell-max-upside');
+const configRatingSellMaxDiffEl = document.getElementById('config-rating-sell-max-diff');
+const configRatingSellMinBearishConfidenceEl = document.getElementById('config-rating-sell-min-bearish-confidence');
 
 let latestPositions = [];
 let positionSort = { key: 'symbol', direction: 'asc' };
 let latestAnalysis = [];
 let analysisSort = { key: 'upside', direction: 'desc' };
+let portfolioFilter = 'all';
+let ratingFilters = new Set();
 let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
+let isEditingBusinessModel = false;
+
+const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
+  probability_source_mode: 'hybrid',
+  hybrid_ai_weight: 0.70,
+  hybrid_backend_weight: 0.30,
+  backend_base_max_probability: 60.0,
+  backend_base_min_probability: 35.0,
+};
+
+const DEFAULT_RATING_SETTINGS = {
+  min_conviction_hold_threshold: 5.0,
+  strong_buy_min_upside: 50.0,
+  strong_buy_min_diff: 1.5,
+  strong_buy_min_bullish_confidence: 7.0,
+  buy_min_upside: 25.0,
+  buy_min_diff: 0.5,
+  buy_min_bullish_confidence: 5.5,
+  strong_sell_max_upside: 0.0,
+  strong_sell_max_diff: -1.5,
+  strong_sell_min_bearish_confidence: 7.0,
+  sell_max_upside: 10.0,
+  sell_max_diff: -0.5,
+  sell_min_bearish_confidence: 5.5,
+};
+
+let savedGeneralSettings = null;
+
+const POSITIONS_CACHE_KEY = 'bakingmoney.latestPositions';
+
+const RATING_FILTER_OPTIONS = [
+  { key: 'strong_buy', label: 'Strong Buy' },
+  { key: 'buy', label: 'Buy' },
+  { key: 'hold', label: 'Hold' },
+  { key: 'sell', label: 'Sell' },
+  { key: 'strong_sell', label: 'Strong Sell' },
+];
+
+const RATING_FILTER_LABEL_BY_KEY = Object.fromEntries(RATING_FILTER_OPTIONS.map((option) => [option.key, option.label]));
+
+function getAllRatingFilterKeys() {
+  return new Set(RATING_FILTER_OPTIONS.map((option) => option.key));
+}
+
+function setSelectedRatings(keys) {
+  ratingFilters = new Set(keys);
+  if (analysisRatingFilterPanelEl) {
+    analysisRatingFilterPanelEl.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = ratingFilters.has(checkbox.value);
+    });
+  }
+  updateRatingFilterLabel();
+}
+
+function getSelectedRatings() {
+  return new Set(ratingFilters);
+}
+
+function updateRatingFilterLabel() {
+  const selected = Array.from(getSelectedRatings());
+  const totalCount = RATING_FILTER_OPTIONS.length;
+  const selectedCount = selected.length;
+
+  if (!analysisRatingFilterLabelEl) return;
+
+  if (selectedCount === 0 || selectedCount === totalCount) {
+    analysisRatingFilterLabelEl.textContent = 'All';
+    return;
+  }
+
+  if (selectedCount === 1) {
+    analysisRatingFilterLabelEl.textContent = RATING_FILTER_LABEL_BY_KEY[selected[0]] || 'All';
+    return;
+  }
+
+  analysisRatingFilterLabelEl.textContent = `${selectedCount} selected`;
+}
+
+function setRatingFilterOpen(isOpen) {
+  if (!analysisRatingFilterEl || !analysisRatingFilterPanelEl || !analysisRatingFilterToggleEl) return;
+  analysisRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
+  analysisRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
+  analysisRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function loadCachedPositions() {
+  try {
+    const raw = localStorage.getItem(POSITIONS_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function saveCachedPositions(positions) {
+  try {
+    localStorage.setItem(POSITIONS_CACHE_KEY, JSON.stringify(Array.isArray(positions) ? positions : []));
+  } catch (_error) {
+    // Ignore localStorage write failures.
+  }
+}
+
+latestPositions = loadCachedPositions();
 
 async function getScenarioPassCountForStatus() {
   try {
-    const response = await fetch('/api/configuration/prompts');
+    const response = await fetch('/api/configuration/general');
     const payload = await response.json();
     if (!response.ok) return 1;
-    const settings = payload.scenario_settings || {};
+    const settings = payload.settings || {};
     if (!settings.scenario_multi_pass_enabled) return 1;
     const count = Number(settings.scenario_pass_count || 1);
     return Number.isFinite(count) && count > 1 ? Math.floor(count) : 1;
@@ -93,6 +230,11 @@ const formatCurrencyValue = (value, currency, digits = 2) => {
 const formatPercent = (value) => (typeof value !== 'number' || Number.isNaN(value) ? 'N/A' : `${value.toFixed(2)}%`);
 const valueClass = (value) => (typeof value !== 'number' || Number.isNaN(value) || value === 0 ? '' : value > 0 ? 'pnl-positive' : 'pnl-negative');
 const formatConfidencePair = (bullish, bearish) => `${formatNumber(bullish, 2)} / ${formatNumber(bearish, 2)}`;
+const formatConfidenceDiffDisplay = (diff, bullish, bearish) => {
+  const diffNumber = typeof diff === 'number' && Number.isFinite(diff) ? diff : (Number(bullish) - Number(bearish));
+  const diffText = Number.isFinite(diffNumber) ? `${diffNumber >= 0 ? '+' : ''}${diffNumber.toFixed(2)}` : 'N/A';
+  return `${diffText} (${formatNumber(bullish, 2)} / ${formatNumber(bearish, 2)})`;
+};
 const formatDateTime = (v) => {
   if (!v) return 'N/A';
   const d = new Date(v);
@@ -107,7 +249,13 @@ function compareValues(left, right, direction = 'asc') {
   return direction === 'asc' ? result : -result;
 }
 const sortPositions = (positions) => [...positions].sort((a, b) => compareValues(a[positionSort.key], b[positionSort.key], positionSort.direction));
-const sortAnalysis = (items) => [...items].sort((a, b) => compareValues(a[analysisSort.key], b[analysisSort.key], analysisSort.direction));
+const RATING_SORT_ORDER = { 'Strong Sell': 1, Sell: 2, Hold: 3, Buy: 4, 'Strong Buy': 5 };
+const sortAnalysis = (items) => [...items].sort((a, b) => {
+  if (analysisSort.key === 'rating') {
+    return compareValues(RATING_SORT_ORDER[a.rating] || 0, RATING_SORT_ORDER[b.rating] || 0, analysisSort.direction);
+  }
+  return compareValues(a[analysisSort.key], b[analysisSort.key], analysisSort.direction);
+});
 
 function updateSortHeaderState() { positionSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === positionSort.key ? positionSort.direction : ''; }); }
 function updateAnalysisSortHeaderState() { analysisSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === analysisSort.key ? analysisSort.direction : ''; }); }
@@ -121,11 +269,42 @@ function renderPositions() {
   });
 }
 
+function getPortfolioSymbols() {
+  return new Set(
+    latestPositions
+      .filter((position) => Number(position?.position) > 0)
+      .map((position) => String(position.symbol || '').toUpperCase())
+      .filter(Boolean),
+  );
+}
+
+function enrichAnalysisWithPortfolioStatus(items) {
+  const portfolioSymbols = getPortfolioSymbols();
+  return items.map((item) => ({
+    ...item,
+    inPortfolio: portfolioSymbols.has(String(item.symbol || '').toUpperCase()),
+  }));
+}
+
+function getFilteredAnalysisItems() {
+  let items = latestAnalysis;
+  if (portfolioFilter === 'in_portfolio') items = items.filter((item) => item.inPortfolio === true);
+  if (portfolioFilter === 'not_in_portfolio') items = items.filter((item) => item.inPortfolio === false);
+
+  const selectedRatings = getSelectedRatings();
+  if (selectedRatings.size > 0 && selectedRatings.size < RATING_FILTER_OPTIONS.length) {
+    const expectedRatings = new Set(Array.from(selectedRatings).map((key) => RATING_FILTER_LABEL_BY_KEY[key]).filter(Boolean));
+    items = items.filter((item) => expectedRatings.has(item.rating || 'Hold'));
+  }
+
+  return items;
+}
+
 function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
-  sortAnalysis(latestAnalysis).forEach((item) => {
+  sortAnalysis(getFilteredAnalysisItems()).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
@@ -142,7 +321,7 @@ function renderAnalysisList() {
 }
 
 function syncSelectAllCheckbox() {
-  const selectable = latestAnalysis.map((item) => item.symbol);
+  const selectable = getFilteredAnalysisItems().map((item) => item.symbol);
   if (!selectable.length) {
     analysisSelectAllEl.checked = false;
     return;
@@ -156,9 +335,19 @@ function setView(targetView) {
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
   if (targetView === 'analysis') { showAnalysisList(); loadAnalysis(); }
   if (targetView === 'positions') loadPositions();
-  if (targetView === 'configuration') loadConfiguration();
+  if (targetView === 'prompt') loadPromptConfiguration();
+  if (targetView === 'configuration') loadGeneralConfiguration();
 }
 menuItems.forEach((item) => item.addEventListener('click', () => setView(item.dataset.view)));
+
+
+function getEffectiveBusinessModel() {
+  const businessModelEdit = analysisDetailState?.saved_business_model_edit;
+  if (businessModelEdit && Number(businessModelEdit.based_on_version_id) === Number(analysisDetailState.version.id)) {
+    return businessModelEdit.business_model || '';
+  }
+  return analysisDetailState?.version?.business_model || '';
+}
 
 function selectedVersionIndex() {
   if (!analysisDetailState) return -1;
@@ -187,7 +376,11 @@ function renderVersionControls() {
 function renderAnalysisDetail() {
   const item = analysisDetailState.version;
   analysisDetailTitle.textContent = `Analysis: ${analysisDetailState.symbol}`;
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidencePair(item.bullish_confidence, item.bearish_confidence)}</div></div></div><p><strong>Business Model:</strong> ${item.business_model || 'N/A'}</p><p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p><p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
+    const effectiveBusinessModel = getEffectiveBusinessModel();
+  const businessModelSection = isEditingBusinessModel
+    ? `<div class="business-model-editor"><label><strong>Business Model:</strong></label><textarea id="analysis-business-model-input" class="analysis-business-model-input" rows="5">${effectiveBusinessModel}</textarea><div class="table-actions"><button id="analysis-business-model-save-btn">Save</button><button id="analysis-business-model-cancel-btn">Cancel</button></div></div>`
+    : `<div class="business-model-editor"><p><strong>Business Model:</strong> ${effectiveBusinessModel || 'N/A'}</p><button id="analysis-business-model-edit-btn">Edit Business Model</button></div>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</div></div><div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}<p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p><p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   analysisScenariosBody.innerHTML = '';
@@ -243,6 +436,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   analysisListView.classList.add('hidden');
   analysisDetailView.classList.remove('hidden');
   isEditingVariables = false;
+  isEditingBusinessModel = false;
 
   try {
     const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : '';
@@ -267,6 +461,41 @@ function collectEditedVariables() {
   }));
 }
 
+async function saveEditedBusinessModel() {
+  const symbol = analysisDetailState.symbol;
+  const versionId = analysisDetailState.version.id;
+  const businessModel = document.getElementById('analysis-business-model-input')?.value?.trim() || '';
+  if (!businessModel) {
+    analysisDetailStatus.textContent = 'Business model cannot be empty.';
+    analysisDetailStatus.className = 'status error';
+    return;
+  }
+
+  analysisDetailStatus.textContent = 'Saving business model edit…';
+  analysisDetailStatus.className = 'status';
+  try {
+    const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}/business-model`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: versionId, business_model: businessModel }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save business model'));
+    analysisDetailState = payload.analysis;
+    isEditingBusinessModel = false;
+    renderAnalysisDetail();
+    analysisDetailStatus.textContent = 'Business model edit saved.';
+  } catch (error) {
+    analysisDetailStatus.textContent = `Error: ${error.message}`;
+    analysisDetailStatus.className = 'status error';
+  }
+}
+
+function cancelEditedBusinessModel() {
+  isEditingBusinessModel = false;
+  renderAnalysisDetail();
+  analysisDetailStatus.textContent = 'Business model editing canceled.';
+  analysisDetailStatus.className = 'status';
+}
+
 async function saveEditedVariables() {
   const variables = collectEditedVariables();
   const symbol = analysisDetailState.symbol;
@@ -281,6 +510,7 @@ async function saveEditedVariables() {
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save key variables'));
     analysisDetailState = payload.analysis;
     isEditingVariables = false;
+    isEditingBusinessModel = false;
     renderAnalysisDetail();
     analysisDetailStatus.textContent = 'Key variable edits saved.';
   } catch (error) {
@@ -302,6 +532,7 @@ async function rerunScenarios() {
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to re-run scenarios'));
     analysisDetailState = payload.analysis;
     isEditingVariables = false;
+    isEditingBusinessModel = false;
     renderAnalysisDetail();
     loadAnalysis();
     analysisDetailStatus.textContent = 'Scenarios re-run and new version created.';
@@ -311,21 +542,65 @@ async function rerunScenarios() {
   }
 }
 
-async function loadPositions() { /* unchanged */
-  positionsStatusEl.textContent = 'Loading positions…'; positionsStatusEl.className = 'status'; positionsTable.classList.add('hidden');
-  try { const response = await fetch('/api/positions'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
-    latestPositions = payload.positions || []; if (!latestPositions.length) { positionsTableBody.innerHTML = ''; positionsStatusEl.textContent = 'No positions found.'; return; }
-    updateSortHeaderState(); renderPositions(); positionsStatusEl.textContent = `Loaded ${latestPositions.length} position(s).`; positionsTable.classList.remove('hidden');
-  } catch (error) { positionsStatusEl.textContent = `Error: ${error.message}`; positionsStatusEl.className = 'status error'; }
+async function loadPositions() {
+  positionsStatusEl.textContent = 'Loading positions…';
+  positionsStatusEl.className = 'status';
+  positionsTable.classList.add('hidden');
+
+  try {
+    const response = await fetch('/api/positions');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
+
+    latestPositions = payload.positions || [];
+    saveCachedPositions(latestPositions);
+
+    if (!latestPositions.length) {
+      positionsTableBody.innerHTML = '';
+      positionsStatusEl.textContent = 'No positions found.';
+      return;
+    }
+
+    updateSortHeaderState();
+    renderPositions();
+    positionsStatusEl.textContent = `Loaded ${latestPositions.length} position(s).`;
+    positionsTable.classList.remove('hidden');
+  } catch (error) {
+    if (latestPositions.length) {
+      updateSortHeaderState();
+      renderPositions();
+      positionsTable.classList.remove('hidden');
+      positionsStatusEl.textContent = `Warning: ${error.message} Showing latest loaded positions.`;
+      positionsStatusEl.className = 'status error';
+      return;
+    }
+
+    positionsStatusEl.textContent = `Error: ${error.message}`;
+    positionsStatusEl.className = 'status error';
+  }
 }
 
 async function loadAnalysis() {
   analysisStatusEl.textContent = 'Loading analysis…'; analysisStatusEl.className = 'status'; analysisTable.classList.add('hidden');
-  try { const response = await fetch('/api/analysis'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
-    latestAnalysis = payload.analysis || []; analysisTableBody.innerHTML = '';
+  try {
+    const [analysisResponse, positionsResponse] = await Promise.all([
+      fetch('/api/analysis'),
+      fetch('/api/positions'),
+    ]);
+    const analysisPayload = await analysisResponse.json();
+    const positionsPayload = await positionsResponse.json();
+    if (!analysisResponse.ok) throw new Error(extractErrorMessage(analysisPayload, 'Request failed'));
+    latestPositions = positionsResponse.ok ? (positionsPayload.positions || []) : latestPositions;
+    if (positionsResponse.ok) saveCachedPositions(latestPositions);
+
+    latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
+    analysisTableBody.innerHTML = '';
     selectedAnalysisSymbols = new Set([...selectedAnalysisSymbols].filter((symbol) => latestAnalysis.some((item) => item.symbol === symbol)));
     if (!latestAnalysis.length) { analysisStatusEl.textContent = 'Analysis is empty.'; syncSelectAllCheckbox(); return; }
-    updateAnalysisSortHeaderState(); renderAnalysisList(); analysisStatusEl.textContent = `Loaded ${latestAnalysis.length} analysis symbol(s).`; analysisTable.classList.remove('hidden');
+    updateAnalysisSortHeaderState();
+    renderAnalysisList();
+    analysisStatusEl.textContent = `Loaded ${latestAnalysis.length} analysis symbol(s).`;
+    analysisTable.classList.remove('hidden');
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
@@ -411,7 +686,7 @@ async function refreshAnalysisPrices() {
     const response = await fetch('/api/analysis/refresh-prices', { method: 'POST' });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to refresh analysis prices'));
-    latestAnalysis = payload.analysis || [];
+    latestAnalysis = enrichAnalysisWithPortfolioStatus(payload.analysis || []);
     updateAnalysisSortHeaderState();
     renderAnalysisList();
     analysisTable.classList.toggle('hidden', latestAnalysis.length === 0);
@@ -429,47 +704,207 @@ async function deleteAnalysis(symbol) {
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
-async function loadConfiguration() { /* unchanged */
-  configurationStatusEl.textContent = 'Loading configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load configuration'));
+async function loadPromptConfiguration() {
+  promptStatusEl.textContent = 'Loading prompt configuration…';
+  promptStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/prompts'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load prompt configuration'));
     const templates = payload.templates || {}; const sources = payload.sources || {};
-    configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
-    configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
-    configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
-    const scenarioSettings = payload.scenario_settings || {};
-    configScenarioMultiPassEnabledEl.checked = Boolean(scenarioSettings.scenario_multi_pass_enabled);
-    configScenarioPassCountEl.value = scenarioSettings.scenario_pass_count || 1;
-    configScenarioOutlierFilterEnabledEl.checked = scenarioSettings.scenario_outlier_filter_enabled !== false;
-    configurationStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
-  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
+    promptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
+    promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
+    promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
+  } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
-async function saveConfiguration() { /* unchanged */
-  configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: configPromptBusinessModelEl.value, analysis_prompt_key_variables: configPromptKeyVariablesEl.value, analysis_prompt_scenarios: configPromptScenariosEl.value }, scenario_settings: { scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: Number(configScenarioPassCountEl.value || 1), scenario_outlier_filter_enabled: configScenarioOutlierFilterEnabledEl.checked } }) });
-    const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); configurationStatusEl.textContent = 'Configuration saved.';
-  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
+async function savePromptConfiguration() {
+  promptStatusEl.textContent = 'Saving prompts…'; promptStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value } }) });
+    const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save prompts')); promptStatusEl.textContent = 'Prompts saved.';
+  } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
-async function resetConfiguration() {
-  configurationStatusEl.textContent = 'Restoring default prompts…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset configuration'));
-    const templates = payload.templates || {}; configPromptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; configPromptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; configPromptScenariosEl.value = templates.analysis_prompt_scenarios || '';
-    const scenarioSettings = payload.scenario_settings || {};
-    configScenarioMultiPassEnabledEl.checked = Boolean(scenarioSettings.scenario_multi_pass_enabled);
-    configScenarioPassCountEl.value = scenarioSettings.scenario_pass_count || 1;
-    configScenarioOutlierFilterEnabledEl.checked = scenarioSettings.scenario_outlier_filter_enabled !== false;
-    configurationStatusEl.textContent = 'Default prompts restored.';
-  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
+async function resetPromptConfiguration() {
+  promptStatusEl.textContent = 'Restoring default prompts…'; promptStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset prompts'));
+    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    promptStatusEl.textContent = 'Default prompts restored.';
+  } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
-async function previewConfiguration() {
-  const symbol = configPreviewSymbolInput.value.trim().toUpperCase(); if (!symbol) { configPreviewOutput.textContent = 'Enter a symbol to preview.'; return; }
-  configPreviewOutput.textContent = 'Rendering preview…';
+async function previewPromptConfiguration() {
+  const symbol = promptPreviewSymbolInput.value.trim().toUpperCase(); if (!symbol) { promptPreviewOutput.textContent = 'Enter a symbol to preview.'; return; }
+  promptPreviewOutput.textContent = 'Rendering preview…';
   try { const response = await fetch('/api/configuration/prompts/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to preview prompt'));
-    const rendered = payload.rendered_prompts || {}; configPreviewOutput.textContent = `Symbol: ${payload.symbol}\nPrice: ${payload.price}\n\n[Business Model Prompt]\n${rendered.analysis_prompt_business_model || ''}\n\n[Key Variables Prompt]\n${rendered.analysis_prompt_key_variables || ''}\n\n[Scenarios Prompt]\n${rendered.analysis_prompt_scenarios || ''}`;
-  } catch (error) { configPreviewOutput.textContent = `Error: ${error.message}`; }
+    const rendered = payload.rendered_prompts || {}; promptPreviewOutput.textContent = `Symbol: ${payload.symbol}
+Price: ${payload.price}
+
+[Business Model Prompt]
+${rendered.analysis_prompt_business_model || ''}
+
+[Key Variables Prompt]
+${rendered.analysis_prompt_key_variables || ''}
+
+[Scenarios Prompt]
+${rendered.analysis_prompt_scenarios || ''}`;
+  } catch (error) { promptPreviewOutput.textContent = `Error: ${error.message}`; }
+}
+
+function getScenarioProbabilitySettingsFromForm() {
+  return {
+    probability_source_mode: (configScenarioProbabilitySourceModeEl.value || 'hybrid').toLowerCase(),
+    hybrid_ai_weight: Number(configScenarioProbabilityHybridAiWeightEl.value),
+    hybrid_backend_weight: Number(configScenarioProbabilityHybridBackendWeightEl.value),
+    backend_base_max_probability: Number(configScenarioProbabilityBackendBaseMaxEl.value),
+    backend_base_min_probability: Number(configScenarioProbabilityBackendBaseMinEl.value),
+  };
+}
+
+function applyScenarioProbabilitySettingsToForm(settings) {
+  const effective = { ...DEFAULT_SCENARIO_PROBABILITY_SETTINGS, ...(settings || {}) };
+  configScenarioProbabilitySourceModeEl.value = String(effective.probability_source_mode || 'hybrid').toLowerCase();
+  configScenarioProbabilityHybridAiWeightEl.value = effective.hybrid_ai_weight;
+  configScenarioProbabilityHybridBackendWeightEl.value = effective.hybrid_backend_weight;
+  configScenarioProbabilityBackendBaseMaxEl.value = effective.backend_base_max_probability;
+  configScenarioProbabilityBackendBaseMinEl.value = effective.backend_base_min_probability;
+}
+
+function validateScenarioProbabilitySettings(settings) {
+  if (!['ai', 'backend', 'hybrid'].includes(settings.probability_source_mode)) {
+    return 'probability_source_mode must be AI, Backend, or Hybrid.';
+  }
+  if (!Number.isFinite(settings.hybrid_ai_weight) || settings.hybrid_ai_weight < 0) {
+    return 'hybrid_ai_weight must be numeric and >= 0.';
+  }
+  if (!Number.isFinite(settings.hybrid_backend_weight) || settings.hybrid_backend_weight < 0) {
+    return 'hybrid_backend_weight must be numeric and >= 0.';
+  }
+  if (!Number.isFinite(settings.backend_base_max_probability) || settings.backend_base_max_probability < 0 || settings.backend_base_max_probability > 100) {
+    return 'backend_base_max_probability must be between 0 and 100.';
+  }
+  if (!Number.isFinite(settings.backend_base_min_probability) || settings.backend_base_min_probability < 0 || settings.backend_base_min_probability > 100) {
+    return 'backend_base_min_probability must be between 0 and 100.';
+  }
+  return null;
+}
+
+function getRatingSettingsFromForm() {
+  return {
+    min_conviction_hold_threshold: Number(configRatingMinConvictionHoldThresholdEl.value),
+    strong_buy_min_upside: Number(configRatingStrongBuyMinUpsideEl.value),
+    strong_buy_min_diff: Number(configRatingStrongBuyMinDiffEl.value),
+    strong_buy_min_bullish_confidence: Number(configRatingStrongBuyMinBullishConfidenceEl.value),
+    buy_min_upside: Number(configRatingBuyMinUpsideEl.value),
+    buy_min_diff: Number(configRatingBuyMinDiffEl.value),
+    buy_min_bullish_confidence: Number(configRatingBuyMinBullishConfidenceEl.value),
+    strong_sell_max_upside: Number(configRatingStrongSellMaxUpsideEl.value),
+    strong_sell_max_diff: Number(configRatingStrongSellMaxDiffEl.value),
+    strong_sell_min_bearish_confidence: Number(configRatingStrongSellMinBearishConfidenceEl.value),
+    sell_max_upside: Number(configRatingSellMaxUpsideEl.value),
+    sell_max_diff: Number(configRatingSellMaxDiffEl.value),
+    sell_min_bearish_confidence: Number(configRatingSellMinBearishConfidenceEl.value),
+  };
+}
+
+function applyRatingSettingsToForm(settings) {
+  const effective = { ...DEFAULT_RATING_SETTINGS, ...(settings || {}) };
+  configRatingMinConvictionHoldThresholdEl.value = effective.min_conviction_hold_threshold;
+  configRatingStrongBuyMinUpsideEl.value = effective.strong_buy_min_upside;
+  configRatingStrongBuyMinDiffEl.value = effective.strong_buy_min_diff;
+  configRatingStrongBuyMinBullishConfidenceEl.value = effective.strong_buy_min_bullish_confidence;
+  configRatingBuyMinUpsideEl.value = effective.buy_min_upside;
+  configRatingBuyMinDiffEl.value = effective.buy_min_diff;
+  configRatingBuyMinBullishConfidenceEl.value = effective.buy_min_bullish_confidence;
+  configRatingStrongSellMaxUpsideEl.value = effective.strong_sell_max_upside;
+  configRatingStrongSellMaxDiffEl.value = effective.strong_sell_max_diff;
+  configRatingStrongSellMinBearishConfidenceEl.value = effective.strong_sell_min_bearish_confidence;
+  configRatingSellMaxUpsideEl.value = effective.sell_max_upside;
+  configRatingSellMaxDiffEl.value = effective.sell_max_diff;
+  configRatingSellMinBearishConfidenceEl.value = effective.sell_min_bearish_confidence;
+}
+
+function validateRatingSettings(settings) {
+  const confidenceKeys = [
+    'min_conviction_hold_threshold',
+    'strong_buy_min_bullish_confidence',
+    'buy_min_bullish_confidence',
+    'strong_sell_min_bearish_confidence',
+    'sell_min_bearish_confidence',
+  ];
+  for (const [key, value] of Object.entries(settings)) {
+    if (!Number.isFinite(value)) return `${key} must be numeric.`;
+    if (confidenceKeys.includes(key) && (value < 0 || value > 10)) return `${key} must be between 0 and 10.`;
+  }
+  return null;
+}
+
+function cancelGeneralConfigurationEdits() {
+  if (!savedGeneralSettings) return;
+  configIbPriceWaitSecondsEl.value = savedGeneralSettings.ib_price_wait_seconds ?? 5;
+  configScenarioMultiPassEnabledEl.checked = Boolean(savedGeneralSettings.scenario_multi_pass_enabled);
+  configScenarioPassCountEl.value = savedGeneralSettings.scenario_pass_count || 1;
+  applyScenarioProbabilitySettingsToForm(savedGeneralSettings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
+  applyRatingSettingsToForm(savedGeneralSettings.rating_settings || DEFAULT_RATING_SETTINGS);
+  configurationStatusEl.textContent = 'Unsaved changes reverted.';
+  configurationStatusEl.className = 'status';
+}
+
+function restoreDefaultRatingSettings() {
+  applyScenarioProbabilitySettingsToForm(DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
+  applyRatingSettingsToForm(DEFAULT_RATING_SETTINGS);
+  configurationStatusEl.textContent = 'Default rating and scenario probability settings restored in form. Click Save to persist.';
+  configurationStatusEl.className = 'status';
+}
+
+async function loadGeneralConfiguration() {
+  configurationStatusEl.textContent = 'Loading configuration…'; configurationStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/general'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load configuration'));
+    const settings = payload.settings || {};
+    savedGeneralSettings = settings;
+    configIbPriceWaitSecondsEl.value = settings.ib_price_wait_seconds ?? 5;
+    configScenarioMultiPassEnabledEl.checked = Boolean(settings.scenario_multi_pass_enabled);
+    configScenarioPassCountEl.value = settings.scenario_pass_count || 1;
+    applyScenarioProbabilitySettingsToForm(settings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
+    applyRatingSettingsToForm(settings.rating_settings || DEFAULT_RATING_SETTINGS);
+    configurationStatusEl.textContent = 'Configuration loaded.';
+  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
+}
+
+async function saveGeneralConfiguration() {
+  const waitSeconds = Number(configIbPriceWaitSecondsEl.value);
+  const passCount = Number(configScenarioPassCountEl.value);
+  if (!Number.isFinite(waitSeconds) || waitSeconds < 1 || waitSeconds > 30) {
+    configurationStatusEl.textContent = 'Error: Price wait time must be between 1 and 30 seconds.';
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+  if (!Number.isInteger(passCount) || passCount < 1 || passCount > 10) {
+    configurationStatusEl.textContent = 'Error: Scenario pass count must be an integer between 1 and 10.';
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+
+  const scenarioProbabilitySettings = getScenarioProbabilitySettingsFromForm();
+  const scenarioProbabilityError = validateScenarioProbabilitySettings(scenarioProbabilitySettings);
+  if (scenarioProbabilityError) {
+    configurationStatusEl.textContent = `Error: ${scenarioProbabilityError}`;
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+
+  const ratingSettings = getRatingSettingsFromForm();
+  const ratingValidationError = validateRatingSettings(ratingSettings);
+  if (ratingValidationError) {
+    configurationStatusEl.textContent = `Error: ${ratingValidationError}`;
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+
+  configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
+  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings } }) });
+    const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); savedGeneralSettings = payload.settings || null; configurationStatusEl.textContent = 'Configuration saved.';
+    await loadAnalysis();
+  } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }
 
 positionSortHeaders.forEach((header) => header.addEventListener('click', () => {
@@ -482,9 +917,44 @@ analysisSortHeaders.forEach((header) => header.addEventListener('click', () => {
   if (analysisSort.key === sortKey) analysisSort.direction = analysisSort.direction === 'asc' ? 'desc' : 'asc'; else analysisSort = { key: sortKey, direction: 'asc' };
   updateAnalysisSortHeaderState(); renderAnalysisList();
 }));
+analysisPortfolioFilterEl.addEventListener('change', () => {
+  portfolioFilter = analysisPortfolioFilterEl.value || 'all';
+  renderAnalysisList();
+});
+analysisRatingFilterToggleEl.addEventListener('click', () => {
+  const isOpen = analysisRatingFilterEl?.dataset.open === 'true';
+  setRatingFilterOpen(!isOpen);
+});
+analysisRatingFilterPanelEl.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+  const next = getSelectedRatings();
+  if (target.checked) next.add(target.value);
+  else next.delete(target.value);
+  setSelectedRatings(next);
+  renderAnalysisList();
+});
+analysisRatingFilterSelectAllEl.addEventListener('click', () => {
+  setSelectedRatings(getAllRatingFilterKeys());
+  renderAnalysisList();
+});
+analysisRatingFilterClearEl.addEventListener('click', () => {
+  setSelectedRatings(new Set());
+  renderAnalysisList();
+});
+document.addEventListener('click', (event) => {
+  if (!analysisRatingFilterEl || !(event.target instanceof Node)) return;
+  if (analysisRatingFilterEl.contains(event.target)) return;
+  setRatingFilterOpen(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  setRatingFilterOpen(false);
+});
 analysisSelectAllEl.addEventListener('change', () => {
-  if (analysisSelectAllEl.checked) latestAnalysis.forEach((item) => selectedAnalysisSymbols.add(item.symbol));
-  else selectedAnalysisSymbols.clear();
+  const visibleItems = getFilteredAnalysisItems();
+  if (analysisSelectAllEl.checked) visibleItems.forEach((item) => selectedAnalysisSymbols.add(item.symbol));
+  else visibleItems.forEach((item) => selectedAnalysisSymbols.delete(item.symbol));
   renderAnalysisList();
 });
 
@@ -497,6 +967,22 @@ analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') 
 analysisBackBtn.addEventListener('click', showAnalysisList);
 analysisScenarioInfoBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.remove('hidden'));
 analysisScenarioInfoCloseBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.add('hidden'));
+analysisSummary.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (target.id === 'analysis-business-model-edit-btn') {
+    isEditingBusinessModel = true;
+    renderAnalysisDetail();
+    return;
+  }
+  if (target.id === 'analysis-business-model-save-btn') {
+    saveEditedBusinessModel();
+    return;
+  }
+  if (target.id === 'analysis-business-model-cancel-btn') {
+    cancelEditedBusinessModel();
+  }
+});
 analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderVariablesTable(); });
 analysisAddVariableBtn.addEventListener('click', () => {
   if (!isEditingVariables) return;
@@ -517,11 +1003,16 @@ analysisVersionNextBtn.addEventListener('click', () => {
 });
 analysisVersionSelect.addEventListener('change', () => loadAnalysisDetail(analysisDetailState.symbol, analysisVersionSelect.value));
 
-configSaveBtn.addEventListener('click', saveConfiguration);
-configResetBtn.addEventListener('click', resetConfiguration);
-configPreviewBtn.addEventListener('click', previewConfiguration);
-configPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') previewConfiguration(); });
+promptSaveBtn.addEventListener('click', savePromptConfiguration);
+promptResetBtn.addEventListener('click', resetPromptConfiguration);
+promptPreviewBtn.addEventListener('click', previewPromptConfiguration);
+promptPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') previewPromptConfiguration(); });
+configSaveBtn.addEventListener('click', saveGeneralConfiguration);
+configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
+configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();
+setSelectedRatings(getAllRatingFilterKeys());
+setRatingFilterOpen(false);
 setView('analysis');

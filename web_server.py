@@ -871,6 +871,21 @@ def render_prompt_template(template, context):
     return rendered
 
 
+def render_scenario_prompt(template, values):
+    """Render scenario prompt from configured template using placeholder substitution only.
+
+    IMPORTANT: Scenario generation must use exactly the saved "Build Scenario Prompt"
+    template plus replacement of the supported placeholders below. Do not inject
+    implicit fields (for example Summary/context blocks/instructions) here.
+    """
+    supported_placeholders = ("$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables")
+    substitution_context = {
+        placeholder: str(values.get(placeholder, ""))
+        for placeholder in supported_placeholders
+    }
+    return render_prompt_template(template, substitution_context)
+
+
 def format_key_variables_for_prompt(key_variables):
     return json.dumps(key_variables, separators=(",", ":"), ensure_ascii=False)
 
@@ -1307,6 +1322,18 @@ def build_analysis_prompt(symbol, current_price=None, template=None, company_nam
     return render_prompt_template(base_template, context)
 
 
+def build_scenario_generation_prompt(symbol, current_price=None, template=None, company_name="", business_model="", key_variables=None):
+    base_template = template if template is not None else DEFAULT_PROMPT_SCENARIOS
+    context = build_prompt_context(
+        symbol=symbol,
+        price=current_price,
+        company_name=company_name,
+        business_model=business_model,
+        key_variables=key_variables,
+    )
+    return render_scenario_prompt(base_template, context)
+
+
 def _extract_output_text(raw):
     output_text = raw.get("output_text")
     if output_text:
@@ -1623,12 +1650,14 @@ def request_ai_analysis(symbol, current_price=None):
     step2 = validate_step2_key_variables(step2_raw)
 
     logger.info("Starting AI step=scenarios symbol=%s", symbol)
-    prompt3 = build_analysis_prompt(
+    # Scenario prompt must be sourced strictly from saved scenario template +
+    # placeholder substitution only. Do not append implicit summary/context text.
+    prompt3 = build_scenario_generation_prompt(
         symbol,
         effective_price,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=company_name,
-        business_model=business_for_prompt,
+        business_model=step1["business_model"],
         key_variables=step2["key_variables"],
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2539,13 +2568,12 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     effective_business_model = base_version["business_model_text"]
     if business_model_draft and int(business_model_draft["based_on_version_id"]) == int(base_version_id):
         effective_business_model = business_model_draft["business_model"]
-    business_for_prompt = f"{effective_business_model or ''}\nSummary: {base_version['business_summary_text'] or ''}"
-    prompt = build_analysis_prompt(
+    prompt = build_scenario_generation_prompt(
         symbol,
         base_version["current_price"],
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=base_version["company_name"] or "",
-        business_model=business_for_prompt,
+        business_model=effective_business_model or "",
         key_variables=key_variables,
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2648,13 +2676,12 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
     effective_business_model = base_version["business_model_text"]
     if business_model_draft and int(business_model_draft["based_on_version_id"]) == int(base_version_id):
         effective_business_model = business_model_draft["business_model"]
-    business_for_prompt = f"{effective_business_model or ''}\nSummary: {base_version['business_summary_text'] or ''}"
-    prompt = build_analysis_prompt(
+    prompt = build_scenario_generation_prompt(
         symbol,
         base_version["current_price"],
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=base_version["company_name"] or "",
-        business_model=business_for_prompt,
+        business_model=effective_business_model or "",
         key_variables=key_variables,
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1

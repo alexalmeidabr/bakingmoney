@@ -15,6 +15,11 @@ const analysisSelectAllEl = document.getElementById('analysis-select-all');
 const analysisSymbolInput = document.getElementById('analysis-symbol-input');
 const analysisPortfolioFilterEl = document.getElementById('analysis-portfolio-filter');
 const analysisRatingFilterEl = document.getElementById('analysis-rating-filter');
+const analysisRatingFilterToggleEl = document.getElementById('analysis-rating-filter-toggle');
+const analysisRatingFilterLabelEl = document.getElementById('analysis-rating-filter-label');
+const analysisRatingFilterPanelEl = document.getElementById('analysis-rating-filter-panel');
+const analysisRatingFilterSelectAllEl = document.getElementById('analysis-rating-filter-select-all');
+const analysisRatingFilterClearEl = document.getElementById('analysis-rating-filter-clear');
 const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
 const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
@@ -117,6 +122,64 @@ const DEFAULT_RATING_SETTINGS = {
 let savedGeneralSettings = null;
 
 const POSITIONS_CACHE_KEY = 'bakingmoney.latestPositions';
+
+const RATING_FILTER_OPTIONS = [
+  { key: 'strong_buy', label: 'Strong Buy' },
+  { key: 'buy', label: 'Buy' },
+  { key: 'hold', label: 'Hold' },
+  { key: 'sell', label: 'Sell' },
+  { key: 'strong_sell', label: 'Strong Sell' },
+];
+
+const RATING_FILTER_LABEL_BY_KEY = Object.fromEntries(RATING_FILTER_OPTIONS.map((option) => [option.key, option.label]));
+
+function getAllRatingFilterKeys() {
+  return new Set(RATING_FILTER_OPTIONS.map((option) => option.key));
+}
+
+function setSelectedRatings(keys) {
+  ratingFilters = new Set(keys);
+  if (analysisRatingFilterPanelEl) {
+    analysisRatingFilterPanelEl.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = ratingFilters.has(checkbox.value);
+    });
+  }
+  updateRatingFilterLabel();
+}
+
+function getSelectedRatings() {
+  return new Set(ratingFilters);
+}
+
+function updateRatingFilterLabel() {
+  const selected = Array.from(getSelectedRatings());
+  const totalCount = RATING_FILTER_OPTIONS.length;
+  const selectedCount = selected.length;
+
+  if (!analysisRatingFilterLabelEl) return;
+
+  if (selectedCount === 0 || selectedCount === totalCount) {
+    analysisRatingFilterLabelEl.textContent = 'All';
+    return;
+  }
+
+  if (selectedCount === 1) {
+    analysisRatingFilterLabelEl.textContent = RATING_FILTER_LABEL_BY_KEY[selected[0]] || 'All';
+    return;
+  }
+
+  const firstLabel = RATING_FILTER_LABEL_BY_KEY[selected[0]] || '';
+  analysisRatingFilterLabelEl.textContent = selectedCount === 2 && firstLabel
+    ? `${firstLabel} + 1`
+    : `${selectedCount} selected`;
+}
+
+function setRatingFilterOpen(isOpen) {
+  if (!analysisRatingFilterEl || !analysisRatingFilterPanelEl || !analysisRatingFilterToggleEl) return;
+  analysisRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
+  analysisRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
+  analysisRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
 
 function loadCachedPositions() {
   try {
@@ -231,15 +294,9 @@ function getFilteredAnalysisItems() {
   if (portfolioFilter === 'in_portfolio') items = items.filter((item) => item.inPortfolio === true);
   if (portfolioFilter === 'not_in_portfolio') items = items.filter((item) => item.inPortfolio === false);
 
-  if (ratingFilters.size > 0) {
-    const map = {
-      strong_buy: 'Strong Buy',
-      buy: 'Buy',
-      hold: 'Hold',
-      sell: 'Sell',
-      strong_sell: 'Strong Sell',
-    };
-    const expectedRatings = new Set(Array.from(ratingFilters).map((key) => map[key]).filter(Boolean));
+  const selectedRatings = getSelectedRatings();
+  if (selectedRatings.size > 0 && selectedRatings.size < RATING_FILTER_OPTIONS.length) {
+    const expectedRatings = new Set(Array.from(selectedRatings).map((key) => RATING_FILTER_LABEL_BY_KEY[key]).filter(Boolean));
     items = items.filter((item) => expectedRatings.has(item.rating || 'Hold'));
   }
 
@@ -867,10 +924,35 @@ analysisPortfolioFilterEl.addEventListener('change', () => {
   portfolioFilter = analysisPortfolioFilterEl.value || 'all';
   renderAnalysisList();
 });
-analysisRatingFilterEl.addEventListener('change', () => {
-  const selected = Array.from(analysisRatingFilterEl.selectedOptions || []).map((option) => option.value).filter(Boolean);
-  ratingFilters = new Set(selected);
+analysisRatingFilterToggleEl.addEventListener('click', () => {
+  const isOpen = analysisRatingFilterEl?.dataset.open === 'true';
+  setRatingFilterOpen(!isOpen);
+});
+analysisRatingFilterPanelEl.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+  const next = getSelectedRatings();
+  if (target.checked) next.add(target.value);
+  else next.delete(target.value);
+  setSelectedRatings(next);
   renderAnalysisList();
+});
+analysisRatingFilterSelectAllEl.addEventListener('click', () => {
+  setSelectedRatings(getAllRatingFilterKeys());
+  renderAnalysisList();
+});
+analysisRatingFilterClearEl.addEventListener('click', () => {
+  setSelectedRatings(new Set());
+  renderAnalysisList();
+});
+document.addEventListener('click', (event) => {
+  if (!analysisRatingFilterEl || !(event.target instanceof Node)) return;
+  if (analysisRatingFilterEl.contains(event.target)) return;
+  setRatingFilterOpen(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  setRatingFilterOpen(false);
 });
 analysisSelectAllEl.addEventListener('change', () => {
   const visibleItems = getFilteredAnalysisItems();
@@ -934,4 +1016,6 @@ configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings)
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();
+setSelectedRatings(getAllRatingFilterKeys());
+setRatingFilterOpen(false);
 setView('analysis');

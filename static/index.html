@@ -31,14 +31,24 @@
                   <option value="in_portfolio">In Portfolio</option>
                   <option value="not_in_portfolio">Not in Portfolio</option>
                 </select>
-                <label for="analysis-rating-filter" class="inline-control-label">Rating Filter</label>
-                <select id="analysis-rating-filter" multiple size="5" title="Select one or more ratings">
-                  <option value="strong_buy">Strong Buy</option>
-                  <option value="buy">Buy</option>
-                  <option value="hold">Hold</option>
-                  <option value="sell">Sell</option>
-                  <option value="strong_sell">Strong Sell</option>
-                </select>
+                <label for="analysis-rating-filter-toggle" class="inline-control-label">Rating Filter</label>
+                <div id="analysis-rating-filter" class="rating-filter" data-open="false">
+                  <button id="analysis-rating-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="analysis-rating-filter-label">All</span>
+                    <span class="rating-filter-caret" aria-hidden="true">▼</span>
+                  </button>
+                  <div id="analysis-rating-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Rating filter options">
+                    <div class="rating-filter-actions">
+                      <button id="analysis-rating-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                      <button id="analysis-rating-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                    </div>
+                    <label class="rating-filter-option"><input type="checkbox" value="strong_buy" /> <span>Strong Buy</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="buy" /> <span>Buy</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="hold" /> <span>Hold</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="sell" /> <span>Sell</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="strong_sell" /> <span>Strong Sell</span></label>
+                  </div>
+                </div>
                 <button id="analysis-add-btn">Add Symbol</button>
                 <button id="analysis-import-btn">Import from My Positions</button>
                 <button id="analysis-refresh-prices-btn">Update Current Prices</button>

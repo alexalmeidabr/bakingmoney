@@ -168,10 +168,7 @@ function updateRatingFilterLabel() {
     return;
   }
 
-  const firstLabel = RATING_FILTER_LABEL_BY_KEY[selected[0]] || '';
-  analysisRatingFilterLabelEl.textContent = selectedCount === 2 && firstLabel
-    ? `${firstLabel} + 1`
-    : `${selectedCount} selected`;
+  analysisRatingFilterLabelEl.textContent = `${selectedCount} selected`;
 }
 
 function setRatingFilterOpen(isOpen) {

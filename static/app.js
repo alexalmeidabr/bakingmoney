@@ -24,6 +24,7 @@ const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
 const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
 const analysisRerunSelectedBtn = document.getElementById('analysis-rerun-selected-btn');
+const analysisCheckEventsBtn = document.getElementById('analysis-check-events-btn');
 
 const analysisListView = document.getElementById('analysis-list-view');
 const analysisDetailView = document.getElementById('analysis-detail-view');
@@ -52,11 +53,16 @@ const promptStatusEl = document.getElementById('prompt-status');
 const promptBusinessModelEl = document.getElementById('prompt-business-model');
 const promptKeyVariablesEl = document.getElementById('prompt-key-variables');
 const promptScenariosEl = document.getElementById('prompt-scenarios');
+const promptRecentEventsEl = document.getElementById('prompt-recent-events');
 const promptSaveBtn = document.getElementById('prompt-save-btn');
 const promptResetBtn = document.getElementById('prompt-reset-btn');
 const promptPreviewSymbolInput = document.getElementById('prompt-preview-symbol-input');
 const promptPreviewBtn = document.getElementById('prompt-preview-btn');
 const promptPreviewOutput = document.getElementById('prompt-preview-output');
+
+const alertsStatusEl = document.getElementById('alerts-status');
+const alertsTable = document.getElementById('alerts-table');
+const alertsTableBody = alertsTable.querySelector('tbody');
 
 const configurationStatusEl = document.getElementById('configuration-status');
 const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait-seconds');
@@ -335,6 +341,7 @@ function setView(targetView) {
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
   if (targetView === 'analysis') { showAnalysisList(); loadAnalysis(); }
   if (targetView === 'positions') loadPositions();
+  if (targetView === 'alerts') loadAlerts();
   if (targetView === 'prompt') loadPromptConfiguration();
   if (targetView === 'configuration') loadGeneralConfiguration();
 }
@@ -650,6 +657,32 @@ async function rerunSelectedSymbolsScenarios() {
   }
 }
 
+async function checkRecentEventsForSelected() {
+  const symbols = [...selectedAnalysisSymbols];
+  if (!symbols.length) {
+    analysisStatusEl.textContent = 'Select at least one symbol first.';
+    analysisStatusEl.className = 'status error';
+    return;
+  }
+
+  analysisStatusEl.textContent = `Checking recent events for ${symbols.length} symbol(s)…`;
+  analysisStatusEl.className = 'status';
+  try {
+    const response = await fetch('/api/alerts/check-recent-events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols }),
+    });
+    const payload = await response.json();
+    if (!response.ok && response.status !== 207) throw new Error(extractErrorMessage(payload, 'Unable to check recent events'));
+    analysisStatusEl.textContent = `Checked ${payload.symbols_checked || 0} symbols. Created ${payload.alerts_created || 0} alerts. ${payload.no_material_impact_count || 0} symbol(s) had no material thesis impact.`;
+    analysisStatusEl.className = payload.errors_count ? 'status error' : 'status';
+  } catch (error) {
+    analysisStatusEl.textContent = `Error: ${error.message}`;
+    analysisStatusEl.className = 'status error';
+  }
+}
+
 async function addAnalysisSymbol() {
   const symbol = analysisSymbolInput.value.trim().toUpperCase(); if (!symbol) return;
   analysisStatusEl.className = 'status';
@@ -704,6 +737,60 @@ async function deleteAnalysis(symbol) {
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
+function renderAlertsList(alerts) {
+  alertsTableBody.innerHTML = '';
+  alerts.forEach((alert) => {
+    const row = document.createElement('tr');
+    const affected = (alert.affected_variables || []).join(', ') || '—';
+    row.innerHTML = `<td><button class="symbol-link" data-symbol="${alert.symbol}">${alert.symbol}</button></td><td>${formatDateTime(alert.event_date || alert.created_at)}</td><td>${alert.alert_type}</td><td>${alert.status}</td><td>${alert.event_summary}</td><td>${affected}</td><td>${alert.suggested_action || '—'}</td><td><button class="alert-review-btn" data-id="${alert.id}">Mark Reviewed</button> <button class="alert-dismiss-btn" data-id="${alert.id}">Dismiss</button></td>`;
+    alertsTableBody.appendChild(row);
+  });
+  alertsTableBody.querySelectorAll('.alert-review-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Reviewed')));
+  alertsTableBody.querySelectorAll('.alert-dismiss-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Dismissed')));
+  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => {
+    setView('analysis');
+    await loadAnalysisDetail(btn.dataset.symbol);
+  }));
+}
+
+async function loadAlerts() {
+  alertsStatusEl.textContent = 'Loading alerts…';
+  alertsStatusEl.className = 'status';
+  alertsTable.classList.add('hidden');
+  try {
+    const response = await fetch('/api/alerts');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load alerts'));
+    const alerts = payload.alerts || [];
+    if (!alerts.length) {
+      alertsStatusEl.textContent = 'No alerts found.';
+      return;
+    }
+    renderAlertsList(alerts);
+    alertsTable.classList.remove('hidden');
+    alertsStatusEl.textContent = `Loaded ${alerts.length} alert(s).`;
+  } catch (error) {
+    alertsStatusEl.textContent = `Error: ${error.message}`;
+    alertsStatusEl.className = 'status error';
+  }
+}
+
+async function updateAlertStatus(alertId, status) {
+  try {
+    const response = await fetch(`/api/alerts/${encodeURIComponent(alertId)}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to update alert status'));
+    await loadAlerts();
+  } catch (error) {
+    alertsStatusEl.textContent = `Error: ${error.message}`;
+    alertsStatusEl.className = 'status error';
+  }
+}
+
 async function loadPromptConfiguration() {
   promptStatusEl.textContent = 'Loading prompt configuration…';
   promptStatusEl.className = 'status';
@@ -712,13 +799,14 @@ async function loadPromptConfiguration() {
     promptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
     promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
     promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
-    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
+    promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || '';
+    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}, recent-events=${sources.analysis_prompt_recent_event_check || 'default'}).`;
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
 async function savePromptConfiguration() {
   promptStatusEl.textContent = 'Saving prompts…'; promptStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value } }) });
+  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value, analysis_prompt_recent_event_check: promptRecentEventsEl.value } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save prompts')); promptStatusEl.textContent = 'Prompts saved.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -726,7 +814,7 @@ async function savePromptConfiguration() {
 async function resetPromptConfiguration() {
   promptStatusEl.textContent = 'Restoring default prompts…'; promptStatusEl.className = 'status';
   try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset prompts'));
-    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || ''; promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || '';
     promptStatusEl.textContent = 'Default prompts restored.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -746,7 +834,10 @@ ${rendered.analysis_prompt_business_model || ''}
 ${rendered.analysis_prompt_key_variables || ''}
 
 [Scenarios Prompt]
-${rendered.analysis_prompt_scenarios || ''}`;
+${rendered.analysis_prompt_scenarios || ''}
+
+[Recent Event Check Prompt]
+${rendered.analysis_prompt_recent_event_check || ''}`;
   } catch (error) { promptPreviewOutput.textContent = `Error: ${error.message}`; }
 }
 
@@ -963,6 +1054,7 @@ analysisAddBtn.addEventListener('click', addAnalysisSymbol);
 analysisImportBtn.addEventListener('click', importAnalysisFromPositions);
 analysisRefreshPricesBtn.addEventListener('click', refreshAnalysisPrices);
 analysisRerunSelectedBtn.addEventListener('click', rerunSelectedSymbolsScenarios);
+analysisCheckEventsBtn.addEventListener('click', checkRecentEventsForSelected);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', showAnalysisList);
 analysisScenarioInfoBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.remove('hidden'));

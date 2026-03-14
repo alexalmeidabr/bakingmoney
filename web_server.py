@@ -43,6 +43,7 @@ NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
 ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
+ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK = "analysis_prompt_recent_event_check"
 ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
 ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
 ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
@@ -213,6 +214,78 @@ Rules:
 - No markdown.
 - No commentary outside JSON."""
 
+DEFAULT_PROMPT_RECENT_EVENT_CHECK = """You are an equity analyst reviewing whether recent company-specific developments may materially affect an existing 5-year stock thesis.
+
+Company context:
+- Symbol: $Symbol
+- Company name: $CompanyName
+- Current price: $Price USD
+- Business model: $BusinessModel
+- Key variables: $KeyVariables
+
+Task:
+Review recent company-specific developments and determine whether any event should trigger a manual thesis-review alert.
+
+Definitions:
+- A thesis-review alert should be created only if a recent event may materially strengthen, weaken, challenge, or add to the current 5-year key-variable framework.
+- Material means the event could plausibly affect revenue growth, margins, cash flow, valuation, capital needs, competitive position, or scenario probabilities over a multi-year horizon.
+- Do not create alerts for short-term noise that does not change the long-term thesis.
+
+Guidance:
+- Check whether the event:
+  - strengthens an existing key variable
+  - weakens an existing key variable
+  - suggests a missing key variable
+  - suggests that a current key variable has become less relevant
+- Focus on company-specific developments such as:
+  - earnings/guidance changes
+  - major customer wins or losses
+  - large contracts or backlog changes
+  - acquisitions or divestitures
+  - financing, dilution, or capital raising
+  - product launches or technical milestones
+  - regulatory decisions that are central to the business model
+  - major competitive developments
+- Avoid generic market commentary unless it clearly affects this company’s core business model.
+- Do not automatically change any key variable. This task is only to create review alerts.
+
+Return ONLY valid JSON in this exact structure:
+{
+  "symbol": "$Symbol",
+  "alerts": [
+    {
+      "alert_type": "text",
+      "event_summary": "text",
+      "impact_summary": "text",
+      "affected_variables": ["text"],
+      "suggested_action": "text"
+    }
+  ]
+}
+
+Rules:
+- Return only alerts for material thesis-impacting events.
+- If no material event is found, return an empty alerts array.
+- alert_type must be exactly one of:
+  - Strengthens existing variable
+  - Weakens existing variable
+  - Potential new variable
+  - Potentially obsolete variable
+- affected_variables should list the current variable text(s) impacted when applicable.
+- Keep event_summary and impact_summary concise.
+- For existing variables, add in the suggested_action a recommendation for the update on importance and confidence
+- Do not modify the variables directly.
+- JSON only.
+- No markdown.
+- No commentary outside JSON."""
+
+ALLOWED_ALERT_TYPES = {
+    "Strengthens existing variable",
+    "Weakens existing variable",
+    "Potential new variable",
+    "Potentially obsolete variable",
+}
+
 PROMPT_TEMPLATE_CONFIG = {
     ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL: {
         "default": DEFAULT_PROMPT_BUSINESS_MODEL,
@@ -225,6 +298,10 @@ PROMPT_TEMPLATE_CONFIG = {
     ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS: {
         "default": DEFAULT_PROMPT_SCENARIOS,
         "required_vars": ["$Symbol", "$CompanyName", "$BusinessModel", "$KeyVariables"],
+    },
+    ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK: {
+        "default": DEFAULT_PROMPT_RECENT_EVENT_CHECK,
+        "required_vars": ["$Symbol", "$CompanyName", "$KeyVariables"],
     },
 }
 
@@ -886,6 +963,16 @@ def render_scenario_prompt(template, values):
     return render_prompt_template(template, substitution_context)
 
 
+def render_recent_event_prompt(template, values):
+    """Render recent-event prompt from configured template using placeholder substitution only."""
+    supported_placeholders = ("$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables")
+    substitution_context = {
+        placeholder: str(values.get(placeholder, ""))
+        for placeholder in supported_placeholders
+    }
+    return render_prompt_template(template, substitution_context)
+
+
 def format_key_variables_for_prompt(key_variables):
     return json.dumps(key_variables, separators=(",", ":"), ensure_ascii=False)
 
@@ -1077,6 +1164,32 @@ def init_db():
               value TEXT NOT NULL,
               updated_at TEXT NOT NULL
             )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS thesis_review_alerts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              symbol TEXT NOT NULL,
+              company_name TEXT,
+              alert_type TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'New',
+              event_date TEXT,
+              event_summary TEXT NOT NULL,
+              impact_summary TEXT NOT NULL,
+              affected_variables_json TEXT NOT NULL,
+              suggested_action TEXT,
+              prompt_used TEXT,
+              raw_response_json TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_dedupe
+            ON thesis_review_alerts(symbol, alert_type, event_summary, impact_summary)
             """
         )
         ensure_column_exists(conn, "analysis_symbols", "company_name", "TEXT")
@@ -2761,6 +2874,222 @@ def get_positions_with_prices():
     return symbols, prices
 
 
+def get_latest_analysis_context(conn, symbol):
+    row = conn.execute(
+        """
+        SELECT r.id AS analysis_root_id,
+               v.id AS analysis_version_id,
+               v.symbol,
+               v.company_name,
+               v.current_price,
+               v.business_model_text
+        FROM analysis_roots r
+        JOIN analysis_versions v ON v.analysis_root_id = r.id
+        WHERE r.symbol = ?
+        ORDER BY v.version_number DESC
+        LIMIT 1
+        """,
+        (symbol,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Analysis for symbol {symbol} not found")
+
+    key_variables = conn.execute(
+        """
+        SELECT variable_text, variable_type, confidence, importance
+        FROM analysis_version_key_variables
+        WHERE analysis_version_id = ?
+        ORDER BY id ASC
+        """,
+        (row["analysis_version_id"],),
+    ).fetchall()
+    return {
+        "symbol": row["symbol"],
+        "company_name": row["company_name"] or row["symbol"],
+        "current_price": row["current_price"],
+        "business_model": row["business_model_text"] or "",
+        "key_variables": [
+            {
+                "variable": item["variable_text"],
+                "type": item["variable_type"],
+                "confidence": item["confidence"],
+                "importance": item["importance"],
+            }
+            for item in key_variables
+        ],
+    }
+
+
+def _normalize_recent_event_alert(item):
+    if not isinstance(item, dict):
+        return None
+    alert_type = str(item.get("alert_type", "")).strip()
+    event_summary = str(item.get("event_summary", "")).strip()
+    impact_summary = str(item.get("impact_summary", "")).strip()
+    if alert_type not in ALLOWED_ALERT_TYPES or not event_summary or not impact_summary:
+        return None
+    affected_variables = item.get("affected_variables")
+    if isinstance(affected_variables, list):
+        affected_variables = [str(value).strip() for value in affected_variables if str(value).strip()]
+    else:
+        affected_variables = []
+    return {
+        "alert_type": alert_type,
+        "event_summary": event_summary,
+        "impact_summary": impact_summary,
+        "affected_variables": affected_variables,
+        "suggested_action": str(item.get("suggested_action", "")).strip(),
+    }
+
+
+def insert_recent_event_alert(conn, context, alert, prompt_used, raw_response):
+    now = utc_now_iso()
+    # Deterministic V1 dedupe: keep exactly one alert per
+    # (symbol, alert_type, event_summary, impact_summary), regardless of status.
+    try:
+        conn.execute(
+            """
+            INSERT INTO thesis_review_alerts (
+              symbol, company_name, alert_type, status, event_date, event_summary,
+              impact_summary, affected_variables_json, suggested_action,
+              prompt_used, raw_response_json, created_at, updated_at
+            ) VALUES (?, ?, ?, 'New', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                context["symbol"],
+                context["company_name"],
+                alert["alert_type"],
+                alert.get("event_date"),
+                alert["event_summary"],
+                alert["impact_summary"],
+                json.dumps(alert["affected_variables"], ensure_ascii=False),
+                alert["suggested_action"],
+                prompt_used,
+                json.dumps(raw_response, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def run_recent_event_check(conn, symbols):
+    templates, _sources = get_all_prompt_templates(conn)
+    template = templates[ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK]
+    schema = {
+        "name": "analysis_recent_events",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "alerts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "properties": {
+                            "alert_type": {"type": "string"},
+                            "event_summary": {"type": "string"},
+                            "impact_summary": {"type": "string"},
+                            "affected_variables": {"type": "array", "items": {"type": "string"}},
+                            "suggested_action": {"type": "string"},
+                        },
+                        "required": ["alert_type", "event_summary", "impact_summary", "affected_variables", "suggested_action"],
+                    },
+                },
+            },
+            "required": ["symbol", "alerts"],
+        },
+    }
+
+    summary = {
+        "symbols_checked": 0,
+        "alerts_created": 0,
+        "no_material_impact_count": 0,
+        "errors_count": 0,
+        "errors": [],
+    }
+
+    for symbol in symbols:
+        summary["symbols_checked"] += 1
+        try:
+            context = get_latest_analysis_context(conn, symbol)
+            prompt = render_recent_event_prompt(
+                template,
+                build_prompt_context(
+                    symbol=context["symbol"],
+                    price=context["current_price"],
+                    company_name=context["company_name"],
+                    business_model=context["business_model"],
+                    key_variables=context["key_variables"],
+                ),
+            )
+            response = request_ai_step("recent_event_check", prompt, schema)
+            alerts = response.get("alerts") if isinstance(response, dict) else None
+            if not isinstance(alerts, list) or not alerts:
+                summary["no_material_impact_count"] += 1
+                continue
+
+            valid_alert_count = 0
+            for raw_alert in alerts:
+                normalized = _normalize_recent_event_alert(raw_alert)
+                if not normalized:
+                    continue
+                created = insert_recent_event_alert(conn, context, normalized, prompt, response)
+                if created:
+                    summary["alerts_created"] += 1
+                valid_alert_count += 1
+
+            if valid_alert_count == 0:
+                summary["no_material_impact_count"] += 1
+        except Exception as exc:
+            summary["errors_count"] += 1
+            summary["errors"].append({"symbol": symbol, "error": str(exc)})
+            logger.exception("Recent-event check failed for %s", symbol)
+    conn.commit()
+    return summary
+
+
+def get_alerts(conn):
+    rows = conn.execute(
+        """
+        SELECT id, symbol, company_name, alert_type, status, event_date, event_summary,
+               impact_summary, affected_variables_json, suggested_action, created_at, updated_at
+        FROM thesis_review_alerts
+        ORDER BY datetime(created_at) DESC, id DESC
+        """
+    ).fetchall()
+    alerts = []
+    for row in rows:
+        affected = []
+        try:
+            parsed = json.loads(row["affected_variables_json"] or "[]")
+            if isinstance(parsed, list):
+                affected = parsed
+        except Exception:
+            affected = []
+        alerts.append(
+            {
+                "id": row["id"],
+                "symbol": row["symbol"],
+                "company_name": row["company_name"],
+                "alert_type": row["alert_type"],
+                "status": row["status"],
+                "event_date": row["event_date"],
+                "event_summary": row["event_summary"],
+                "impact_summary": row["impact_summary"],
+                "affected_variables": affected,
+                "suggested_action": row["suggested_action"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    return alerts
+
+
 class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(BASE_DIR), **kwargs)
@@ -2807,6 +3136,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_prompts_get()
         if path == "/api/configuration/general":
             return self.handle_configuration_general_get()
+        if path == "/api/alerts":
+            return self.handle_alerts_get()
 
         if path == "/":
             self.path = "/static/index.html"
@@ -2847,6 +3178,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_prompts_preview()
         if path == "/api/configuration/prompts/reset":
             return self.handle_configuration_prompts_reset()
+        if path == "/api/alerts/check-recent-events":
+            return self.handle_alerts_check_recent_events()
 
         self.send_error(404, "Not Found")
 
@@ -2856,6 +3189,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_prompts_put()
         if path == "/api/configuration/general":
             return self.handle_configuration_general_put()
+        if path.startswith("/api/alerts/") and path.endswith("/status"):
+            alert_id = path[len("/api/alerts/") : -len("/status")]
+            return self.handle_alerts_status_put(alert_id)
 
         self.send_error(404, "Not Found")
 
@@ -3318,6 +3654,60 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 "rendered_prompts": preview,
             }
         )
+
+    def handle_alerts_get(self):
+        conn = get_db_connection()
+        try:
+            self._send_json({"alerts": get_alerts(conn)})
+        except Exception as exc:
+            self._send_json({"error": "Unable to load alerts.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_alerts_check_recent_events(self):
+        payload = self._read_json_body() or {}
+        symbols_payload = payload.get("symbols", [])
+        if not isinstance(symbols_payload, list):
+            return self._send_json({"error": "symbols must be an array"}, status=400)
+        symbols = []
+        for value in symbols_payload:
+            symbol = normalize_symbol(value)
+            if symbol:
+                symbols.append(symbol)
+        if not symbols:
+            return self._send_json({"error": "No valid symbols provided"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            summary = run_recent_event_check(conn, symbols)
+            self._send_json(summary, status=207 if summary["errors_count"] else 200)
+        finally:
+            conn.close()
+
+    def handle_alerts_status_put(self, raw_alert_id):
+        try:
+            alert_id = int(raw_alert_id)
+        except Exception:
+            return self._send_json({"error": "Invalid alert id"}, status=400)
+        payload = self._read_json_body() or {}
+        status_value = str(payload.get("status", "")).strip()
+        if status_value not in {"New", "Reviewed", "Dismissed"}:
+            return self._send_json({"error": "status must be one of New, Reviewed, Dismissed"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            cursor = conn.execute(
+                "UPDATE thesis_review_alerts SET status = ?, updated_at = ? WHERE id = ?",
+                (status_value, utc_now_iso(), alert_id),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                return self._send_json({"error": "Alert not found"}, status=404)
+            self._send_json({"ok": True, "id": alert_id, "status": status_value})
+        except Exception as exc:
+            self._send_json({"error": "Unable to update alert status.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

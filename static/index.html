@@ -293,7 +293,27 @@
 <section id="positions" class="view">
           <div class="view-header">
             <h2>My Positions</h2>
-            <button id="refresh-btn">Refresh</button>
+            <div class="table-actions">
+              <label for="positions-rating-filter-toggle" class="inline-control-label">Rating Filter</label>
+              <div id="positions-rating-filter" class="rating-filter" data-open="false">
+                <button id="positions-rating-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                  <span id="positions-rating-filter-label" class="rating-filter-label-text">All</span>
+                  <span class="rating-filter-caret" aria-hidden="true">▼</span>
+                </button>
+                <div id="positions-rating-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Positions rating filter options">
+                  <div class="rating-filter-actions">
+                    <button id="positions-rating-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                    <button id="positions-rating-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                  </div>
+                  <label class="rating-filter-option"><input type="checkbox" value="strong_buy" /> <span class="rating-filter-option-label">Strong Buy</span></label>
+                  <label class="rating-filter-option"><input type="checkbox" value="buy" /> <span class="rating-filter-option-label">Buy</span></label>
+                  <label class="rating-filter-option"><input type="checkbox" value="hold" /> <span class="rating-filter-option-label">Hold</span></label>
+                  <label class="rating-filter-option"><input type="checkbox" value="sell" /> <span class="rating-filter-option-label">Sell</span></label>
+                  <label class="rating-filter-option"><input type="checkbox" value="strong_sell" /> <span class="rating-filter-option-label">Strong Sell</span></label>
+                </div>
+              </div>
+              <button id="refresh-btn">Refresh</button>
+            </div>
           </div>
 
           <p id="status" class="status">Loading positions…</p>

@@ -6,6 +6,12 @@ const positionsTable = document.getElementById('positions-table');
 const positionsTableBody = positionsTable.querySelector('tbody');
 const refreshBtn = document.getElementById('refresh-btn');
 const positionSortHeaders = document.querySelectorAll('#positions-table th.sortable');
+const positionsRatingFilterEl = document.getElementById('positions-rating-filter');
+const positionsRatingFilterToggleEl = document.getElementById('positions-rating-filter-toggle');
+const positionsRatingFilterLabelEl = document.getElementById('positions-rating-filter-label');
+const positionsRatingFilterPanelEl = document.getElementById('positions-rating-filter-panel');
+const positionsRatingFilterSelectAllEl = document.getElementById('positions-rating-filter-select-all');
+const positionsRatingFilterClearEl = document.getElementById('positions-rating-filter-clear');
 
 const analysisStatusEl = document.getElementById('analysis-status');
 const analysisTable = document.getElementById('analysis-table');
@@ -96,6 +102,7 @@ let latestAnalysis = [];
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
 let ratingFilters = new Set();
+let positionRatingFilters = new Set();
 let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
@@ -154,8 +161,22 @@ function setSelectedRatings(keys) {
   updateRatingFilterLabel();
 }
 
+function setSelectedPositionRatings(keys) {
+  positionRatingFilters = new Set(keys);
+  if (positionsRatingFilterPanelEl) {
+    positionsRatingFilterPanelEl.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = positionRatingFilters.has(checkbox.value);
+    });
+  }
+  updatePositionRatingFilterLabel();
+}
+
 function getSelectedRatings() {
   return new Set(ratingFilters);
+}
+
+function getSelectedPositionRatings() {
+  return new Set(positionRatingFilters);
 }
 
 function updateRatingFilterLabel() {
@@ -178,11 +199,38 @@ function updateRatingFilterLabel() {
   analysisRatingFilterLabelEl.textContent = `${selectedCount} selected`;
 }
 
+function updatePositionRatingFilterLabel() {
+  const selected = Array.from(getSelectedPositionRatings());
+  const totalCount = RATING_FILTER_OPTIONS.length;
+  const selectedCount = selected.length;
+
+  if (!positionsRatingFilterLabelEl) return;
+
+  if (selectedCount === 0 || selectedCount === totalCount) {
+    positionsRatingFilterLabelEl.textContent = 'All';
+    return;
+  }
+
+  if (selectedCount === 1) {
+    positionsRatingFilterLabelEl.textContent = RATING_FILTER_LABEL_BY_KEY[selected[0]] || 'All';
+    return;
+  }
+
+  positionsRatingFilterLabelEl.textContent = `${selectedCount} selected`;
+}
+
 function setRatingFilterOpen(isOpen) {
   if (!analysisRatingFilterEl || !analysisRatingFilterPanelEl || !analysisRatingFilterToggleEl) return;
   analysisRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
   analysisRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
   analysisRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function setPositionsRatingFilterOpen(isOpen) {
+  if (!positionsRatingFilterEl || !positionsRatingFilterPanelEl || !positionsRatingFilterToggleEl) return;
+  positionsRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
+  positionsRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
+  positionsRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
 }
 
 function loadCachedPositions() {
@@ -287,7 +335,7 @@ function updateAnalysisSortHeaderState() { analysisSortHeaders.forEach((h) => { 
 
 function renderPositions() {
   positionsTableBody.innerHTML = '';
-  sortPositions(latestPositions).forEach((position) => {
+  sortPositions(getFilteredPositions()).forEach((position) => {
     const row = document.createElement('tr');
     const rating = position.rating || '—';
     const upsideValue = typeof position.upside === 'number' ? formatPercent(position.upside) : '—';
@@ -298,6 +346,16 @@ function renderPositions() {
     row.innerHTML = `<td>${position.symbol ?? ''}</td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td>${confidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.price, position.currency)}</td><td>${formatNumber(position.avgCost)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td>`;
     positionsTableBody.appendChild(row);
   });
+}
+
+function getFilteredPositions() {
+  let items = latestPositions;
+  const selectedRatings = getSelectedPositionRatings();
+  if (selectedRatings.size > 0 && selectedRatings.size < RATING_FILTER_OPTIONS.length) {
+    const expectedRatings = new Set(Array.from(selectedRatings).map((key) => RATING_FILTER_LABEL_BY_KEY[key]).filter(Boolean));
+    items = items.filter((item) => expectedRatings.has(item.rating || ''));
+  }
+  return items;
 }
 
 function mergePositionsWithAnalysis(positions, analysisItems) {
@@ -1156,6 +1214,10 @@ analysisRatingFilterToggleEl.addEventListener('click', () => {
   const isOpen = analysisRatingFilterEl?.dataset.open === 'true';
   setRatingFilterOpen(!isOpen);
 });
+positionsRatingFilterToggleEl.addEventListener('click', () => {
+  const isOpen = positionsRatingFilterEl?.dataset.open === 'true';
+  setPositionsRatingFilterOpen(!isOpen);
+});
 analysisRatingFilterPanelEl.addEventListener('change', (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
@@ -1165,22 +1227,43 @@ analysisRatingFilterPanelEl.addEventListener('change', (event) => {
   setSelectedRatings(next);
   renderAnalysisList();
 });
+positionsRatingFilterPanelEl.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+  const next = getSelectedPositionRatings();
+  if (target.checked) next.add(target.value);
+  else next.delete(target.value);
+  setSelectedPositionRatings(next);
+  renderPositions();
+});
 analysisRatingFilterSelectAllEl.addEventListener('click', () => {
   setSelectedRatings(getAllRatingFilterKeys());
   renderAnalysisList();
+});
+positionsRatingFilterSelectAllEl.addEventListener('click', () => {
+  setSelectedPositionRatings(getAllRatingFilterKeys());
+  renderPositions();
 });
 analysisRatingFilterClearEl.addEventListener('click', () => {
   setSelectedRatings(new Set());
   renderAnalysisList();
 });
+positionsRatingFilterClearEl.addEventListener('click', () => {
+  setSelectedPositionRatings(new Set());
+  renderPositions();
+});
 document.addEventListener('click', (event) => {
   if (!analysisRatingFilterEl || !(event.target instanceof Node)) return;
   if (analysisRatingFilterEl.contains(event.target)) return;
   setRatingFilterOpen(false);
+  if (!positionsRatingFilterEl) return;
+  if (positionsRatingFilterEl.contains(event.target)) return;
+  setPositionsRatingFilterOpen(false);
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   setRatingFilterOpen(false);
+  setPositionsRatingFilterOpen(false);
 });
 analysisSelectAllEl.addEventListener('change', () => {
   const visibleItems = getFilteredAnalysisItems();
@@ -1260,4 +1343,6 @@ updateSortHeaderState();
 updateAnalysisSortHeaderState();
 setSelectedRatings(getAllRatingFilterKeys());
 setRatingFilterOpen(false);
+setSelectedPositionRatings(getAllRatingFilterKeys());
+setPositionsRatingFilterOpen(false);
 setView('analysis');

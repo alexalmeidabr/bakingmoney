@@ -24,6 +24,7 @@ const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
 const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
 const analysisRerunSelectedBtn = document.getElementById('analysis-rerun-selected-btn');
+const analysisCheckEventsBtn = document.getElementById('analysis-check-events-btn');
 
 const analysisListView = document.getElementById('analysis-list-view');
 const analysisDetailView = document.getElementById('analysis-detail-view');
@@ -52,11 +53,16 @@ const promptStatusEl = document.getElementById('prompt-status');
 const promptBusinessModelEl = document.getElementById('prompt-business-model');
 const promptKeyVariablesEl = document.getElementById('prompt-key-variables');
 const promptScenariosEl = document.getElementById('prompt-scenarios');
+const promptRecentEventsEl = document.getElementById('prompt-recent-events');
 const promptSaveBtn = document.getElementById('prompt-save-btn');
 const promptResetBtn = document.getElementById('prompt-reset-btn');
 const promptPreviewSymbolInput = document.getElementById('prompt-preview-symbol-input');
 const promptPreviewBtn = document.getElementById('prompt-preview-btn');
 const promptPreviewOutput = document.getElementById('prompt-preview-output');
+
+const alertsStatusEl = document.getElementById('alerts-status');
+const alertsTable = document.getElementById('alerts-table');
+const alertsTableBody = alertsTable.querySelector('tbody');
 
 const configurationStatusEl = document.getElementById('configuration-status');
 const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait-seconds');
@@ -94,6 +100,7 @@ let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let isEditingVariables = false;
 let isEditingBusinessModel = false;
+let isEditingBusinessSummary = false;
 
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
@@ -335,6 +342,7 @@ function setView(targetView) {
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
   if (targetView === 'analysis') { showAnalysisList(); loadAnalysis(); }
   if (targetView === 'positions') loadPositions();
+  if (targetView === 'alerts') loadAlerts();
   if (targetView === 'prompt') loadPromptConfiguration();
   if (targetView === 'configuration') loadGeneralConfiguration();
 }
@@ -347,6 +355,14 @@ function getEffectiveBusinessModel() {
     return businessModelEdit.business_model || '';
   }
   return analysisDetailState?.version?.business_model || '';
+}
+
+function getEffectiveBusinessSummary() {
+  const businessSummaryEdit = analysisDetailState?.saved_business_summary_edit;
+  if (businessSummaryEdit && Number(businessSummaryEdit.based_on_version_id) === Number(analysisDetailState.version.id)) {
+    return businessSummaryEdit.business_summary || '';
+  }
+  return analysisDetailState?.version?.business_summary || '';
 }
 
 function selectedVersionIndex() {
@@ -376,11 +392,15 @@ function renderVersionControls() {
 function renderAnalysisDetail() {
   const item = analysisDetailState.version;
   analysisDetailTitle.textContent = `Analysis: ${analysisDetailState.symbol}`;
-    const effectiveBusinessModel = getEffectiveBusinessModel();
+  const effectiveBusinessModel = getEffectiveBusinessModel();
+  const effectiveBusinessSummary = getEffectiveBusinessSummary();
   const businessModelSection = isEditingBusinessModel
     ? `<div class="business-model-editor"><label><strong>Business Model:</strong></label><textarea id="analysis-business-model-input" class="analysis-business-model-input" rows="5">${effectiveBusinessModel}</textarea><div class="table-actions"><button id="analysis-business-model-save-btn">Save</button><button id="analysis-business-model-cancel-btn">Cancel</button></div></div>`
     : `<div class="business-model-editor"><p><strong>Business Model:</strong> ${effectiveBusinessModel || 'N/A'}</p><button id="analysis-business-model-edit-btn">Edit Business Model</button></div>`;
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</div></div><div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}<p><strong>Business Summary:</strong> ${item.business_summary || 'N/A'}</p><p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
+  const businessSummarySection = isEditingBusinessSummary
+    ? `<div class="business-model-editor"><label><strong>Business Summary:</strong></label><textarea id="analysis-business-summary-input" class="analysis-business-model-input" rows="4">${effectiveBusinessSummary}</textarea><div class="table-actions"><button id="analysis-business-summary-save-btn">Save</button><button id="analysis-business-summary-cancel-btn">Cancel</button></div></div>`
+    : `<div class="business-model-editor"><p><strong>Business Summary:</strong> ${effectiveBusinessSummary || 'N/A'}</p><button id="analysis-business-summary-edit-btn">Edit Business Summary</button></div>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</div></div><div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   analysisScenariosBody.innerHTML = '';
@@ -437,6 +457,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   analysisDetailView.classList.remove('hidden');
   isEditingVariables = false;
   isEditingBusinessModel = false;
+  isEditingBusinessSummary = false;
 
   try {
     const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : '';
@@ -496,6 +517,36 @@ function cancelEditedBusinessModel() {
   analysisDetailStatus.className = 'status';
 }
 
+async function saveEditedBusinessSummary() {
+  const symbol = analysisDetailState.symbol;
+  const versionId = analysisDetailState.version.id;
+  const businessSummary = document.getElementById('analysis-business-summary-input')?.value?.trim() || '';
+
+  analysisDetailStatus.textContent = 'Saving business summary edit…';
+  analysisDetailStatus.className = 'status';
+  try {
+    const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}/business-summary`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: versionId, business_summary: businessSummary }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save business summary'));
+    analysisDetailState = payload.analysis;
+    isEditingBusinessSummary = false;
+    renderAnalysisDetail();
+    analysisDetailStatus.textContent = 'Business summary edit saved.';
+  } catch (error) {
+    analysisDetailStatus.textContent = `Error: ${error.message}`;
+    analysisDetailStatus.className = 'status error';
+  }
+}
+
+function cancelEditedBusinessSummary() {
+  isEditingBusinessSummary = false;
+  renderAnalysisDetail();
+  analysisDetailStatus.textContent = 'Business summary editing canceled.';
+  analysisDetailStatus.className = 'status';
+}
+
 async function saveEditedVariables() {
   const variables = collectEditedVariables();
   const symbol = analysisDetailState.symbol;
@@ -511,6 +562,7 @@ async function saveEditedVariables() {
     analysisDetailState = payload.analysis;
     isEditingVariables = false;
     isEditingBusinessModel = false;
+    isEditingBusinessSummary = false;
     renderAnalysisDetail();
     analysisDetailStatus.textContent = 'Key variable edits saved.';
   } catch (error) {
@@ -650,6 +702,32 @@ async function rerunSelectedSymbolsScenarios() {
   }
 }
 
+async function checkRecentEventsForSelected() {
+  const symbols = [...selectedAnalysisSymbols];
+  if (!symbols.length) {
+    analysisStatusEl.textContent = 'Select at least one symbol first.';
+    analysisStatusEl.className = 'status error';
+    return;
+  }
+
+  analysisStatusEl.textContent = `Checking recent events for ${symbols.length} symbol(s)…`;
+  analysisStatusEl.className = 'status';
+  try {
+    const response = await fetch('/api/alerts/check-recent-events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols }),
+    });
+    const payload = await response.json();
+    if (!response.ok && response.status !== 207) throw new Error(extractErrorMessage(payload, 'Unable to check recent events'));
+    analysisStatusEl.textContent = `Checked ${payload.symbols_checked || 0} symbols. Created ${payload.alerts_created || 0} alerts. ${payload.no_material_impact_count || 0} symbol(s) had no material thesis impact.`;
+    analysisStatusEl.className = payload.errors_count ? 'status error' : 'status';
+  } catch (error) {
+    analysisStatusEl.textContent = `Error: ${error.message}`;
+    analysisStatusEl.className = 'status error';
+  }
+}
+
 async function addAnalysisSymbol() {
   const symbol = analysisSymbolInput.value.trim().toUpperCase(); if (!symbol) return;
   analysisStatusEl.className = 'status';
@@ -704,6 +782,60 @@ async function deleteAnalysis(symbol) {
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
+function renderAlertsList(alerts) {
+  alertsTableBody.innerHTML = '';
+  alerts.forEach((alert) => {
+    const row = document.createElement('tr');
+    const affected = (alert.affected_variables || []).join(', ') || '—';
+    row.innerHTML = `<td><button class="symbol-link" data-symbol="${alert.symbol}">${alert.symbol}</button></td><td>${formatDateTime(alert.event_date || alert.created_at)}</td><td>${alert.alert_type}</td><td>${alert.status}</td><td>${alert.event_summary}</td><td>${affected}</td><td>${alert.suggested_action || '—'}</td><td><button class="alert-review-btn" data-id="${alert.id}">Mark Reviewed</button> <button class="alert-dismiss-btn" data-id="${alert.id}">Dismiss</button></td>`;
+    alertsTableBody.appendChild(row);
+  });
+  alertsTableBody.querySelectorAll('.alert-review-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Reviewed')));
+  alertsTableBody.querySelectorAll('.alert-dismiss-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Dismissed')));
+  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => {
+    setView('analysis');
+    await loadAnalysisDetail(btn.dataset.symbol);
+  }));
+}
+
+async function loadAlerts() {
+  alertsStatusEl.textContent = 'Loading alerts…';
+  alertsStatusEl.className = 'status';
+  alertsTable.classList.add('hidden');
+  try {
+    const response = await fetch('/api/alerts');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load alerts'));
+    const alerts = payload.alerts || [];
+    if (!alerts.length) {
+      alertsStatusEl.textContent = 'No alerts found.';
+      return;
+    }
+    renderAlertsList(alerts);
+    alertsTable.classList.remove('hidden');
+    alertsStatusEl.textContent = `Loaded ${alerts.length} alert(s).`;
+  } catch (error) {
+    alertsStatusEl.textContent = `Error: ${error.message}`;
+    alertsStatusEl.className = 'status error';
+  }
+}
+
+async function updateAlertStatus(alertId, status) {
+  try {
+    const response = await fetch(`/api/alerts/${encodeURIComponent(alertId)}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to update alert status'));
+    await loadAlerts();
+  } catch (error) {
+    alertsStatusEl.textContent = `Error: ${error.message}`;
+    alertsStatusEl.className = 'status error';
+  }
+}
+
 async function loadPromptConfiguration() {
   promptStatusEl.textContent = 'Loading prompt configuration…';
   promptStatusEl.className = 'status';
@@ -712,13 +844,14 @@ async function loadPromptConfiguration() {
     promptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
     promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
     promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
-    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}).`;
+    promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || '';
+    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}, recent-events=${sources.analysis_prompt_recent_event_check || 'default'}).`;
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
 async function savePromptConfiguration() {
   promptStatusEl.textContent = 'Saving prompts…'; promptStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value } }) });
+  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value, analysis_prompt_recent_event_check: promptRecentEventsEl.value } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save prompts')); promptStatusEl.textContent = 'Prompts saved.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -726,7 +859,7 @@ async function savePromptConfiguration() {
 async function resetPromptConfiguration() {
   promptStatusEl.textContent = 'Restoring default prompts…'; promptStatusEl.className = 'status';
   try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset prompts'));
-    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || ''; promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || '';
     promptStatusEl.textContent = 'Default prompts restored.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -746,7 +879,10 @@ ${rendered.analysis_prompt_business_model || ''}
 ${rendered.analysis_prompt_key_variables || ''}
 
 [Scenarios Prompt]
-${rendered.analysis_prompt_scenarios || ''}`;
+${rendered.analysis_prompt_scenarios || ''}
+
+[Recent Event Check Prompt]
+${rendered.analysis_prompt_recent_event_check || ''}`;
   } catch (error) { promptPreviewOutput.textContent = `Error: ${error.message}`; }
 }
 
@@ -963,6 +1099,7 @@ analysisAddBtn.addEventListener('click', addAnalysisSymbol);
 analysisImportBtn.addEventListener('click', importAnalysisFromPositions);
 analysisRefreshPricesBtn.addEventListener('click', refreshAnalysisPrices);
 analysisRerunSelectedBtn.addEventListener('click', rerunSelectedSymbolsScenarios);
+analysisCheckEventsBtn.addEventListener('click', checkRecentEventsForSelected);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', showAnalysisList);
 analysisScenarioInfoBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.remove('hidden'));
@@ -981,6 +1118,19 @@ analysisSummary.addEventListener('click', (event) => {
   }
   if (target.id === 'analysis-business-model-cancel-btn') {
     cancelEditedBusinessModel();
+    return;
+  }
+  if (target.id === 'analysis-business-summary-edit-btn') {
+    isEditingBusinessSummary = true;
+    renderAnalysisDetail();
+    return;
+  }
+  if (target.id === 'analysis-business-summary-save-btn') {
+    saveEditedBusinessSummary();
+    return;
+  }
+  if (target.id === 'analysis-business-summary-cancel-btn') {
+    cancelEditedBusinessSummary();
   }
 });
 analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderVariablesTable(); });

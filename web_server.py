@@ -39,10 +39,13 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower() or "medium"
 OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
 OPENAI_WEB_SEARCH_TOOL_CANDIDATES = ("web_search", "web_search_preview")
+OPENAI_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "60"))
+OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS", "120"))
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
 ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
+ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK = "analysis_prompt_recent_event_check"
 ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
 ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
 ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
@@ -213,6 +216,78 @@ Rules:
 - No markdown.
 - No commentary outside JSON."""
 
+DEFAULT_PROMPT_RECENT_EVENT_CHECK = """You are an equity analyst reviewing whether recent company-specific developments may materially affect an existing 5-year stock thesis.
+
+Company context:
+- Symbol: $Symbol
+- Company name: $CompanyName
+- Current price: $Price USD
+- Business model: $BusinessModel
+- Key variables: $KeyVariables
+
+Task:
+Review recent company-specific developments and determine whether any event should trigger a manual thesis-review alert.
+
+Definitions:
+- A thesis-review alert should be created only if a recent event may materially strengthen, weaken, challenge, or add to the current 5-year key-variable framework.
+- Material means the event could plausibly affect revenue growth, margins, cash flow, valuation, capital needs, competitive position, or scenario probabilities over a multi-year horizon.
+- Do not create alerts for short-term noise that does not change the long-term thesis.
+
+Guidance:
+- Check whether the event:
+  - strengthens an existing key variable
+  - weakens an existing key variable
+  - suggests a missing key variable
+  - suggests that a current key variable has become less relevant
+- Focus on company-specific developments such as:
+  - earnings/guidance changes
+  - major customer wins or losses
+  - large contracts or backlog changes
+  - acquisitions or divestitures
+  - financing, dilution, or capital raising
+  - product launches or technical milestones
+  - regulatory decisions that are central to the business model
+  - major competitive developments
+- Avoid generic market commentary unless it clearly affects this company’s core business model.
+- Do not automatically change any key variable. This task is only to create review alerts.
+
+Return ONLY valid JSON in this exact structure:
+{
+  "symbol": "$Symbol",
+  "alerts": [
+    {
+      "alert_type": "text",
+      "event_summary": "text",
+      "impact_summary": "text",
+      "affected_variables": ["text"],
+      "suggested_action": "text"
+    }
+  ]
+}
+
+Rules:
+- Return only alerts for material thesis-impacting events.
+- If no material event is found, return an empty alerts array.
+- alert_type must be exactly one of:
+  - Strengthens existing variable
+  - Weakens existing variable
+  - Potential new variable
+  - Potentially obsolete variable
+- affected_variables should list the current variable text(s) impacted when applicable.
+- Keep event_summary and impact_summary concise.
+- For existing variables, add in the suggested_action a recommendation for the update on importance and confidence
+- Do not modify the variables directly.
+- JSON only.
+- No markdown.
+- No commentary outside JSON."""
+
+ALLOWED_ALERT_TYPES = {
+    "Strengthens existing variable",
+    "Weakens existing variable",
+    "Potential new variable",
+    "Potentially obsolete variable",
+}
+
 PROMPT_TEMPLATE_CONFIG = {
     ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL: {
         "default": DEFAULT_PROMPT_BUSINESS_MODEL,
@@ -225,6 +300,10 @@ PROMPT_TEMPLATE_CONFIG = {
     ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS: {
         "default": DEFAULT_PROMPT_SCENARIOS,
         "required_vars": ["$Symbol", "$CompanyName", "$BusinessModel", "$KeyVariables"],
+    },
+    ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK: {
+        "default": DEFAULT_PROMPT_RECENT_EVENT_CHECK,
+        "required_vars": ["$Symbol", "$CompanyName", "$KeyVariables"],
     },
 }
 
@@ -886,15 +965,37 @@ def render_scenario_prompt(template, values):
     return render_prompt_template(template, substitution_context)
 
 
+def render_recent_event_prompt(template, values):
+    """Render recent-event prompt from configured template using placeholder substitution only."""
+    supported_placeholders = ("$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables")
+    substitution_context = {
+        placeholder: str(values.get(placeholder, ""))
+        for placeholder in supported_placeholders
+    }
+    return render_prompt_template(template, substitution_context)
+
+
 def format_key_variables_for_prompt(key_variables):
     return json.dumps(key_variables, separators=(",", ":"), ensure_ascii=False)
 
 
-def build_prompt_context(symbol, price=None, company_name="", business_model="", key_variables=None):
+def build_business_model_prompt_value(business_model="", business_summary=""):
+    model_text = (business_model or "").strip()
+    summary_text = (business_summary or "").strip()
+    if model_text and summary_text:
+        return f"{model_text}\n\nSummary: {summary_text}"
+    if model_text:
+        return model_text
+    if summary_text:
+        return f"Summary: {summary_text}"
+    return ""
+
+
+def build_prompt_context(symbol, price=None, company_name="", business_model="", business_summary="", key_variables=None):
     symbol_value = symbol or "unknown"
     price_value = f"{price:.2f}" if isinstance(price, (int, float)) and math.isfinite(price) else "unknown"
     company_name_value = company_name or "unknown"
-    business_value = business_model or ""
+    business_value = build_business_model_prompt_value(business_model=business_model, business_summary=business_summary)
     key_vars_value = format_key_variables_for_prompt(key_variables or [])
     return {
         "$Symbol": symbol_value,
@@ -1072,11 +1173,49 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS analysis_business_summary_edits (
+              analysis_root_id INTEGER PRIMARY KEY,
+              based_on_version_id INTEGER NOT NULL,
+              business_summary_text TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_root_id) REFERENCES analysis_roots(id) ON DELETE CASCADE,
+              FOREIGN KEY (based_on_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS app_settings (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL,
               updated_at TEXT NOT NULL
             )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS thesis_review_alerts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              symbol TEXT NOT NULL,
+              company_name TEXT,
+              alert_type TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'New',
+              event_date TEXT,
+              event_summary TEXT NOT NULL,
+              impact_summary TEXT NOT NULL,
+              affected_variables_json TEXT NOT NULL,
+              suggested_action TEXT,
+              prompt_used TEXT,
+              raw_response_json TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_dedupe
+            ON thesis_review_alerts(symbol, alert_type, event_summary, impact_summary)
             """
         )
         ensure_column_exists(conn, "analysis_symbols", "company_name", "TEXT")
@@ -1310,25 +1449,27 @@ def resolve_company_profile_from_tws(symbol):
     return profile
 
 
-def build_analysis_prompt(symbol, current_price=None, template=None, company_name="", business_model="", key_variables=None):
+def build_analysis_prompt(symbol, current_price=None, template=None, company_name="", business_model="", business_summary="", key_variables=None):
     base_template = template if template is not None else DEFAULT_PROMPT_SCENARIOS
     context = build_prompt_context(
         symbol=symbol,
         price=current_price,
         company_name=company_name,
         business_model=business_model,
+        business_summary=business_summary,
         key_variables=key_variables,
     )
     return render_prompt_template(base_template, context)
 
 
-def build_scenario_generation_prompt(symbol, current_price=None, template=None, company_name="", business_model="", key_variables=None):
+def build_scenario_generation_prompt(symbol, current_price=None, template=None, company_name="", business_model="", business_summary="", key_variables=None):
     base_template = template if template is not None else DEFAULT_PROMPT_SCENARIOS
     context = build_prompt_context(
         symbol=symbol,
         price=current_price,
         company_name=company_name,
         business_model=business_model,
+        business_summary=business_summary,
         key_variables=key_variables,
     )
     return render_scenario_prompt(base_template, context)
@@ -1385,6 +1526,12 @@ def _looks_like_unsupported_web_tool_error(response_text):
     return "tool" in lower and ("unsupported" in lower or "unknown" in lower or "invalid" in lower) and "web_search" in lower
 
 
+def get_openai_timeout_seconds_for_step(step_name):
+    if step_name == "recent_event_check":
+        return max(10.0, OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS)
+    return max(10.0, OPENAI_REQUEST_TIMEOUT_SECONDS)
+
+
 def request_ai_step(step_name, prompt_text, json_schema):
     temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
     reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
@@ -1400,6 +1547,7 @@ def request_ai_step(step_name, prompt_text, json_schema):
 
     tool_candidates = list(OPENAI_WEB_SEARCH_TOOL_CANDIDATES)
     last_exc = None
+    request_timeout_seconds = get_openai_timeout_seconds_for_step(step_name)
 
     for idx, tool_type in enumerate(tool_candidates):
         body = build_openai_request_body(
@@ -1412,6 +1560,7 @@ def request_ai_step(step_name, prompt_text, json_schema):
         )
         logger.info("OpenAI Analysis request includes web search tool")
         logger.info("OpenAI web search tool type: %s", tool_type)
+        logger.info("OpenAI request timeout seconds for step=%s: %.1f", step_name, request_timeout_seconds)
 
         request = Request(
             "https://api.openai.com/v1/responses",
@@ -1424,7 +1573,7 @@ def request_ai_step(step_name, prompt_text, json_schema):
         )
 
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=request_timeout_seconds) as response:
                 raw = json.loads(response.read().decode("utf-8"))
             output_text = _extract_output_text(raw)
             if not output_text:
@@ -1455,6 +1604,11 @@ def request_ai_step(step_name, prompt_text, json_schema):
 
             if _looks_like_unsupported_web_tool_error(response_text):
                 logger.error("OpenAI web-search tool type appears unsupported: %s", tool_type)
+            raise last_exc from exc
+        except TimeoutError as exc:
+            last_exc = RuntimeError(
+                f"OpenAI request timed out on step {step_name} after {request_timeout_seconds:.1f}s"
+            )
             raise last_exc from exc
 
     if last_exc:
@@ -1638,13 +1792,13 @@ def request_ai_analysis(symbol, current_price=None):
     step1 = validate_step1_business_model(step1_raw)
 
     logger.info("Starting AI step=key_variables symbol=%s", symbol)
-    business_for_prompt = f"{step1['business_model']}\nSummary: {step1['business_summary']}"
     prompt2 = build_analysis_prompt(
         symbol,
         effective_price,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES],
         company_name=company_name,
-        business_model=business_for_prompt,
+        business_model=step1["business_model"],
+        business_summary=step1["business_summary"],
     )
     step2_raw = request_ai_step("key_variables", prompt2, schema_step2)
     step2 = validate_step2_key_variables(step2_raw)
@@ -1658,6 +1812,7 @@ def request_ai_analysis(symbol, current_price=None):
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=company_name,
         business_model=step1["business_model"],
+        business_summary=step1["business_summary"],
         key_variables=step2["key_variables"],
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2268,6 +2423,20 @@ def _get_saved_business_model_edit(conn, root_id):
     }
 
 
+def _get_saved_business_summary_edit(conn, root_id):
+    draft = conn.execute(
+        "SELECT based_on_version_id, business_summary_text, updated_at FROM analysis_business_summary_edits WHERE analysis_root_id = ?",
+        (root_id,),
+    ).fetchone()
+    if not draft:
+        return None
+    return {
+        "based_on_version_id": draft["based_on_version_id"],
+        "business_summary": draft["business_summary_text"],
+        "updated_at": draft["updated_at"],
+    }
+
+
 def get_analysis_detail(conn, symbol, version_id=None):
     root = conn.execute("SELECT id, symbol FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
     if not root:
@@ -2313,6 +2482,7 @@ def get_analysis_detail(conn, symbol, version_id=None):
             "key_variables": json.loads(draft["key_variables_json"]),
         } if draft else None,
         "saved_business_model_edit": _get_saved_business_model_edit(conn, root["id"]),
+        "saved_business_summary_edit": _get_saved_business_summary_edit(conn, root["id"]),
     }
 
 
@@ -2539,6 +2709,37 @@ def save_business_model_edit(conn, symbol, version_id, business_model):
     return get_analysis_detail(conn, symbol, version_id=version_id)
 
 
+def save_business_summary_edit(conn, symbol, version_id, business_summary):
+    if not isinstance(business_summary, str):
+        raise AnalysisValidationError("business_summary must be a string")
+
+    root = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
+    if not root:
+        raise ValueError("Analysis symbol not found")
+
+    base = conn.execute(
+        "SELECT id FROM analysis_versions WHERE id = ? AND analysis_root_id = ?",
+        (version_id, root["id"]),
+    ).fetchone()
+    if not base:
+        raise ValueError("Base version not found")
+
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO analysis_business_summary_edits (analysis_root_id, based_on_version_id, business_summary_text, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(analysis_root_id) DO UPDATE SET
+          based_on_version_id = excluded.based_on_version_id,
+          business_summary_text = excluded.business_summary_text,
+          updated_at = excluded.updated_at
+        """,
+        (root["id"], version_id, business_summary.strip(), now),
+    )
+    conn.commit()
+    return get_analysis_detail(conn, symbol, version_id=version_id)
+
+
 def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     root = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
     if not root:
@@ -2565,15 +2766,20 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     templates, _sources = get_all_prompt_templates(conn)
     scenario_settings = get_scenario_generation_config(conn)
     business_model_draft = _get_saved_business_model_edit(conn, root["id"])
+    business_summary_draft = _get_saved_business_summary_edit(conn, root["id"])
     effective_business_model = base_version["business_model_text"]
+    effective_business_summary = base_version["business_summary_text"]
     if business_model_draft and int(business_model_draft["based_on_version_id"]) == int(base_version_id):
         effective_business_model = business_model_draft["business_model"]
+    if business_summary_draft and int(business_summary_draft["based_on_version_id"]) == int(base_version_id):
+        effective_business_summary = business_summary_draft["business_summary"]
     prompt = build_scenario_generation_prompt(
         symbol,
         base_version["current_price"],
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=base_version["company_name"] or "",
         business_model=effective_business_model or "",
+        business_summary=effective_business_summary or "",
         key_variables=key_variables,
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2626,7 +2832,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
             company_name=base_version["company_name"],
             current_price=base_version["current_price"],
             business_model=effective_business_model,
-            business_summary=base_version["business_summary_text"],
+            business_summary=effective_business_summary,
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
@@ -2673,15 +2879,20 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
     templates, _sources = get_all_prompt_templates(conn)
     scenario_settings = get_scenario_generation_config(conn)
     business_model_draft = _get_saved_business_model_edit(conn, root["id"])
+    business_summary_draft = _get_saved_business_summary_edit(conn, root["id"])
     effective_business_model = base_version["business_model_text"]
+    effective_business_summary = base_version["business_summary_text"]
     if business_model_draft and int(business_model_draft["based_on_version_id"]) == int(base_version_id):
         effective_business_model = business_model_draft["business_model"]
+    if business_summary_draft and int(business_summary_draft["based_on_version_id"]) == int(base_version_id):
+        effective_business_summary = business_summary_draft["business_summary"]
     prompt = build_scenario_generation_prompt(
         symbol,
         base_version["current_price"],
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=base_version["company_name"] or "",
         business_model=effective_business_model or "",
+        business_summary=effective_business_summary or "",
         key_variables=key_variables,
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2734,7 +2945,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
             company_name=base_version["company_name"],
             current_price=base_version["current_price"],
             business_model=effective_business_model,
-            business_summary=base_version["business_summary_text"],
+            business_summary=effective_business_summary,
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
@@ -2759,6 +2970,225 @@ def get_positions_with_prices():
     symbols = [s for s in symbols if s]
     prices, _warnings = fetch_ib_prices(symbols)
     return symbols, prices
+
+
+def get_latest_analysis_context(conn, symbol):
+    row = conn.execute(
+        """
+        SELECT r.id AS analysis_root_id,
+               v.id AS analysis_version_id,
+               v.symbol,
+               v.company_name,
+               v.current_price,
+               v.business_model_text,
+               v.business_summary_text
+        FROM analysis_roots r
+        JOIN analysis_versions v ON v.analysis_root_id = r.id
+        WHERE r.symbol = ?
+        ORDER BY v.version_number DESC
+        LIMIT 1
+        """,
+        (symbol,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Analysis for symbol {symbol} not found")
+
+    key_variables = conn.execute(
+        """
+        SELECT variable_text, variable_type, confidence, importance
+        FROM analysis_version_key_variables
+        WHERE analysis_version_id = ?
+        ORDER BY id ASC
+        """,
+        (row["analysis_version_id"],),
+    ).fetchall()
+    return {
+        "symbol": row["symbol"],
+        "company_name": row["company_name"] or row["symbol"],
+        "current_price": row["current_price"],
+        "business_model": row["business_model_text"] or "",
+        "business_summary": row["business_summary_text"] or "",
+        "key_variables": [
+            {
+                "variable": item["variable_text"],
+                "type": item["variable_type"],
+                "confidence": item["confidence"],
+                "importance": item["importance"],
+            }
+            for item in key_variables
+        ],
+    }
+
+
+def _normalize_recent_event_alert(item):
+    if not isinstance(item, dict):
+        return None
+    alert_type = str(item.get("alert_type", "")).strip()
+    event_summary = str(item.get("event_summary", "")).strip()
+    impact_summary = str(item.get("impact_summary", "")).strip()
+    if alert_type not in ALLOWED_ALERT_TYPES or not event_summary or not impact_summary:
+        return None
+    affected_variables = item.get("affected_variables")
+    if isinstance(affected_variables, list):
+        affected_variables = [str(value).strip() for value in affected_variables if str(value).strip()]
+    else:
+        affected_variables = []
+    return {
+        "alert_type": alert_type,
+        "event_summary": event_summary,
+        "impact_summary": impact_summary,
+        "affected_variables": affected_variables,
+        "suggested_action": str(item.get("suggested_action", "")).strip(),
+    }
+
+
+def insert_recent_event_alert(conn, context, alert, prompt_used, raw_response):
+    now = utc_now_iso()
+    # Deterministic V1 dedupe: keep exactly one alert per
+    # (symbol, alert_type, event_summary, impact_summary), regardless of status.
+    try:
+        conn.execute(
+            """
+            INSERT INTO thesis_review_alerts (
+              symbol, company_name, alert_type, status, event_date, event_summary,
+              impact_summary, affected_variables_json, suggested_action,
+              prompt_used, raw_response_json, created_at, updated_at
+            ) VALUES (?, ?, ?, 'New', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                context["symbol"],
+                context["company_name"],
+                alert["alert_type"],
+                alert.get("event_date"),
+                alert["event_summary"],
+                alert["impact_summary"],
+                json.dumps(alert["affected_variables"], ensure_ascii=False),
+                alert["suggested_action"],
+                prompt_used,
+                json.dumps(raw_response, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def run_recent_event_check(conn, symbols):
+    templates, _sources = get_all_prompt_templates(conn)
+    template = templates[ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK]
+    schema = {
+        "name": "analysis_recent_events",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "alerts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "alert_type": {"type": "string"},
+                            "event_summary": {"type": "string"},
+                            "impact_summary": {"type": "string"},
+                            "affected_variables": {"type": "array", "items": {"type": "string"}},
+                            "suggested_action": {"type": "string"},
+                        },
+                        "required": ["alert_type", "event_summary", "impact_summary", "affected_variables", "suggested_action"],
+                    },
+                },
+            },
+            "required": ["symbol", "alerts"],
+        },
+    }
+
+    summary = {
+        "symbols_checked": 0,
+        "alerts_created": 0,
+        "no_material_impact_count": 0,
+        "errors_count": 0,
+        "errors": [],
+    }
+
+    for symbol in symbols:
+        summary["symbols_checked"] += 1
+        try:
+            context = get_latest_analysis_context(conn, symbol)
+            prompt = render_recent_event_prompt(
+                template,
+                build_prompt_context(
+                    symbol=context["symbol"],
+                    price=context["current_price"],
+                    company_name=context["company_name"],
+                    business_model=context["business_model"],
+                    business_summary=context["business_summary"],
+                    key_variables=context["key_variables"],
+                ),
+            )
+            response = request_ai_step("recent_event_check", prompt, schema)
+            alerts = response.get("alerts") if isinstance(response, dict) else None
+            if not isinstance(alerts, list) or not alerts:
+                summary["no_material_impact_count"] += 1
+                continue
+
+            valid_alert_count = 0
+            for raw_alert in alerts:
+                normalized = _normalize_recent_event_alert(raw_alert)
+                if not normalized:
+                    continue
+                created = insert_recent_event_alert(conn, context, normalized, prompt, response)
+                if created:
+                    summary["alerts_created"] += 1
+                valid_alert_count += 1
+
+            if valid_alert_count == 0:
+                summary["no_material_impact_count"] += 1
+        except Exception as exc:
+            summary["errors_count"] += 1
+            summary["errors"].append({"symbol": symbol, "error": str(exc)})
+            logger.exception("Recent-event check failed for %s", symbol)
+    conn.commit()
+    return summary
+
+
+def get_alerts(conn):
+    rows = conn.execute(
+        """
+        SELECT id, symbol, company_name, alert_type, status, event_date, event_summary,
+               impact_summary, affected_variables_json, suggested_action, created_at, updated_at
+        FROM thesis_review_alerts
+        ORDER BY datetime(created_at) DESC, id DESC
+        """
+    ).fetchall()
+    alerts = []
+    for row in rows:
+        affected = []
+        try:
+            parsed = json.loads(row["affected_variables_json"] or "[]")
+            if isinstance(parsed, list):
+                affected = parsed
+        except Exception:
+            affected = []
+        alerts.append(
+            {
+                "id": row["id"],
+                "symbol": row["symbol"],
+                "company_name": row["company_name"],
+                "alert_type": row["alert_type"],
+                "status": row["status"],
+                "event_date": row["event_date"],
+                "event_summary": row["event_summary"],
+                "impact_summary": row["impact_summary"],
+                "affected_variables": affected,
+                "suggested_action": row["suggested_action"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    return alerts
 
 
 class BakingMoneyHandler(SimpleHTTPRequestHandler):
@@ -2807,6 +3237,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_prompts_get()
         if path == "/api/configuration/general":
             return self.handle_configuration_general_get()
+        if path == "/api/alerts":
+            return self.handle_alerts_get()
 
         if path == "/":
             self.path = "/static/index.html"
@@ -2836,6 +3268,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if not symbol:
                 return self._send_json({"error": "Invalid symbol"}, status=400)
             return self.handle_analysis_business_model_save(symbol)
+        if path.startswith("/api/analysis/") and path.endswith("/business-summary"):
+            symbol = normalize_symbol(path[len("/api/analysis/") : -len("/business-summary")])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_analysis_business_summary_save(symbol)
         if path.startswith("/api/analysis/") and path.endswith("/rerun-scenarios"):
             symbol = normalize_symbol(path[len("/api/analysis/") : -len("/rerun-scenarios")])
             if not symbol:
@@ -2847,6 +3284,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_prompts_preview()
         if path == "/api/configuration/prompts/reset":
             return self.handle_configuration_prompts_reset()
+        if path == "/api/alerts/check-recent-events":
+            return self.handle_alerts_check_recent_events()
 
         self.send_error(404, "Not Found")
 
@@ -2856,6 +3295,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_prompts_put()
         if path == "/api/configuration/general":
             return self.handle_configuration_general_put()
+        if path.startswith("/api/alerts/") and path.endswith("/status"):
+            alert_id = path[len("/api/alerts/") : -len("/status")]
+            return self.handle_alerts_status_put(alert_id)
 
         self.send_error(404, "Not Found")
 
@@ -3098,6 +3540,26 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
+    def handle_analysis_business_summary_save(self, symbol):
+        payload = self._read_json_body() or {}
+        version_id = payload.get("version_id")
+        if version_id is None:
+            return self._send_json({"error": "version_id is required"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            detail = save_business_summary_edit(conn, symbol, int(version_id), payload.get("business_summary"))
+            self._send_json({"ok": True, "analysis": detail})
+        except AnalysisValidationError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            logger.exception("Unable to save business summary edit for symbol %s", symbol)
+            self._send_json({"error": "Unable to save business summary.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
     def handle_analysis_rerun_scenarios(self, symbol):
         payload = self._read_json_body() or {}
         version_id = payload.get("version_id")
@@ -3318,6 +3780,60 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 "rendered_prompts": preview,
             }
         )
+
+    def handle_alerts_get(self):
+        conn = get_db_connection()
+        try:
+            self._send_json({"alerts": get_alerts(conn)})
+        except Exception as exc:
+            self._send_json({"error": "Unable to load alerts.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_alerts_check_recent_events(self):
+        payload = self._read_json_body() or {}
+        symbols_payload = payload.get("symbols", [])
+        if not isinstance(symbols_payload, list):
+            return self._send_json({"error": "symbols must be an array"}, status=400)
+        symbols = []
+        for value in symbols_payload:
+            symbol = normalize_symbol(value)
+            if symbol:
+                symbols.append(symbol)
+        if not symbols:
+            return self._send_json({"error": "No valid symbols provided"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            summary = run_recent_event_check(conn, symbols)
+            self._send_json(summary, status=207 if summary["errors_count"] else 200)
+        finally:
+            conn.close()
+
+    def handle_alerts_status_put(self, raw_alert_id):
+        try:
+            alert_id = int(raw_alert_id)
+        except Exception:
+            return self._send_json({"error": "Invalid alert id"}, status=400)
+        payload = self._read_json_body() or {}
+        status_value = str(payload.get("status", "")).strip()
+        if status_value not in {"New", "Reviewed", "Dismissed"}:
+            return self._send_json({"error": "status must be one of New, Reviewed, Dismissed"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            cursor = conn.execute(
+                "UPDATE thesis_review_alerts SET status = ?, updated_at = ? WHERE id = ?",
+                (status_value, utc_now_iso(), alert_id),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                return self._send_json({"error": "Alert not found"}, status=404)
+            self._send_json({"ok": True, "id": alert_id, "status": status_value})
+        except Exception as exc:
+            self._send_json({"error": "Unable to update alert status.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

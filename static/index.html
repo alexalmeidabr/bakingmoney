@@ -13,6 +13,7 @@
         <nav>
           <button class="menu-item active" data-view="analysis">Analysis</button>
           <button class="menu-item" data-view="positions">My Positions</button>
+          <button class="menu-item" data-view="alerts">Alerts</button>
           <button class="menu-item" data-view="prompt">Prompt</button>
           <button class="menu-item" data-view="configuration">Configuration</button>
         </nav>
@@ -53,6 +54,7 @@
                 <button id="analysis-import-btn">Import from My Positions</button>
                 <button id="analysis-refresh-prices-btn">Update Current Prices</button>
                 <button id="analysis-rerun-selected-btn">Re-run Scenarios for Selected</button>
+                <button id="analysis-check-events-btn">Check recent events</button>
               </div>
             </div>
 
@@ -182,6 +184,12 @@
             <h3>Build Scenarios Prompt</h3>
             <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
             <textarea id="prompt-scenarios" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Recent Event Check Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong> (optional), <strong>$KeyVariables</strong> (required)</p>
+            <textarea id="prompt-recent-events" class="config-textarea" rows="14"></textarea>
             <div class="table-actions config-actions">
               <button id="prompt-save-btn">Save Prompts</button>
               <button id="prompt-reset-btn">Restore Default Prompts</button>
@@ -256,6 +264,30 @@
               <button id="config-restore-defaults-btn">Restore Defaults</button>
             </div>
           </section>
+        </section>
+
+        <section id="alerts" class="view">
+          <div class="view-header">
+            <h2>Alerts</h2>
+          </div>
+          <p id="alerts-status" class="status">Loading alerts…</p>
+          <div class="table-wrap">
+            <table id="alerts-table" class="hidden">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Date</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Event</th>
+                  <th>Affected variable(s)</th>
+                  <th>Suggested action</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </section>
 
 <section id="positions" class="view">

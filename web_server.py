@@ -2972,6 +2972,26 @@ def get_positions_with_prices():
     return symbols, prices
 
 
+def merge_positions_with_latest_analysis(positions, analysis_items):
+    analysis_by_symbol = {
+        normalize_symbol(item.get("symbol")): item
+        for item in (analysis_items or [])
+        if normalize_symbol(item.get("symbol"))
+    }
+    merged = []
+    for position in positions:
+        symbol = normalize_symbol(position.get("symbol"))
+        analysis = analysis_by_symbol.get(symbol)
+        row = dict(position)
+        row["rating"] = analysis.get("rating") if analysis else None
+        row["upside"] = analysis.get("upside") if analysis else None
+        row["bullish_confidence"] = analysis.get("bullish_confidence") if analysis else None
+        row["bearish_confidence"] = analysis.get("bearish_confidence") if analysis else None
+        row["confidence_diff"] = analysis.get("confidence_diff") if analysis else None
+        merged.append(row)
+    return merged
+
+
 def get_latest_analysis_context(conn, symbol):
     row = conn.execute(
         """
@@ -3358,7 +3378,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
                 data.append(
                     {
-                        "symbol": contract.symbol,
+                        "symbol": normalize_symbol(contract.symbol),
                         "position": qty,
                         "price": price,
                         "avgCost": avg_cost,
@@ -3370,7 +3390,12 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     }
                 )
 
-            self._send_json({"positions": data})
+            conn = get_db_connection()
+            try:
+                analysis_items = list_analysis_symbols(conn)
+            finally:
+                conn.close()
+            self._send_json({"positions": merge_positions_with_latest_analysis(data, analysis_items)})
         except Exception as exc:
             self._send_json(
                 {

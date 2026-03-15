@@ -264,7 +264,12 @@ function compareValues(left, right, direction = 'asc') {
   const result = typeof left === 'number' && typeof right === 'number' ? left - right : String(left).localeCompare(String(right));
   return direction === 'asc' ? result : -result;
 }
-const sortPositions = (positions) => [...positions].sort((a, b) => compareValues(a[positionSort.key], b[positionSort.key], positionSort.direction));
+const sortPositions = (positions) => [...positions].sort((a, b) => {
+  if (positionSort.key === 'rating') {
+    return compareValues(RATING_SORT_ORDER[a.rating] || 0, RATING_SORT_ORDER[b.rating] || 0, positionSort.direction);
+  }
+  return compareValues(a[positionSort.key], b[positionSort.key], positionSort.direction);
+});
 const RATING_SORT_ORDER = { 'Strong Sell': 1, Sell: 2, Hold: 3, Buy: 4, 'Strong Buy': 5 };
 const sortAnalysis = (items) => [...items].sort((a, b) => {
   if (analysisSort.key === 'rating') {
@@ -280,7 +285,13 @@ function renderPositions() {
   positionsTableBody.innerHTML = '';
   sortPositions(latestPositions).forEach((position) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td>${position.symbol ?? ''}</td><td>${formatNumber(position.position, 4)}</td><td>${formatCurrencyValue(position.price, position.currency)}</td><td>${formatNumber(position.avgCost)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td>`;
+    const rating = position.rating || '—';
+    const upsideValue = typeof position.upside === 'number' ? formatPercent(position.upside) : '—';
+    const upsideClass = typeof position.upside === 'number' ? valueClass(position.upside) : '';
+    const confidenceValue = (typeof position.bullish_confidence === 'number' || typeof position.bearish_confidence === 'number')
+      ? formatConfidenceDiffDisplay(position.confidence_diff, position.bullish_confidence, position.bearish_confidence)
+      : '—';
+    row.innerHTML = `<td>${position.symbol ?? ''}</td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td>${confidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.price, position.currency)}</td><td>${formatNumber(position.avgCost)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td>`;
     positionsTableBody.appendChild(row);
   });
 }

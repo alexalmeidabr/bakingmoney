@@ -84,5 +84,31 @@ class BusinessSummaryEditTests(unittest.TestCase):
                     conn.close()
 
 
+class PositionsAnalysisMergeTests(unittest.TestCase):
+    def test_merge_positions_with_latest_analysis_attaches_rating_upside_confidence(self):
+        positions = [{"symbol": "NVDA", "marketValue": 1000}, {"symbol": "MSFT", "marketValue": 2000}]
+        analysis_items = [
+            {
+                "symbol": "NVDA",
+                "rating": "Buy",
+                "upside": 25.5,
+                "bullish_confidence": 6.8,
+                "bearish_confidence": 4.1,
+                "confidence_diff": 2.7,
+            }
+        ]
+
+        merged = web_server.merge_positions_with_latest_analysis(positions, analysis_items)
+        nvda = next(item for item in merged if item["symbol"] == "NVDA")
+        msft = next(item for item in merged if item["symbol"] == "MSFT")
+
+        self.assertEqual(nvda["rating"], "Buy")
+        self.assertEqual(nvda["upside"], 25.5)
+        self.assertEqual(nvda["confidence_diff"], 2.7)
+        self.assertEqual(msft["rating"], None)
+        self.assertEqual(msft["upside"], None)
+        self.assertEqual(msft["confidence_diff"], None)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1173,6 +1173,18 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS analysis_business_summary_edits (
+              analysis_root_id INTEGER PRIMARY KEY,
+              based_on_version_id INTEGER NOT NULL,
+              business_summary_text TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_root_id) REFERENCES analysis_roots(id) ON DELETE CASCADE,
+              FOREIGN KEY (based_on_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS app_settings (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL,
@@ -2411,6 +2423,20 @@ def _get_saved_business_model_edit(conn, root_id):
     }
 
 
+def _get_saved_business_summary_edit(conn, root_id):
+    draft = conn.execute(
+        "SELECT based_on_version_id, business_summary_text, updated_at FROM analysis_business_summary_edits WHERE analysis_root_id = ?",
+        (root_id,),
+    ).fetchone()
+    if not draft:
+        return None
+    return {
+        "based_on_version_id": draft["based_on_version_id"],
+        "business_summary": draft["business_summary_text"],
+        "updated_at": draft["updated_at"],
+    }
+
+
 def get_analysis_detail(conn, symbol, version_id=None):
     root = conn.execute("SELECT id, symbol FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
     if not root:
@@ -2456,6 +2482,7 @@ def get_analysis_detail(conn, symbol, version_id=None):
             "key_variables": json.loads(draft["key_variables_json"]),
         } if draft else None,
         "saved_business_model_edit": _get_saved_business_model_edit(conn, root["id"]),
+        "saved_business_summary_edit": _get_saved_business_summary_edit(conn, root["id"]),
     }
 
 
@@ -2682,6 +2709,37 @@ def save_business_model_edit(conn, symbol, version_id, business_model):
     return get_analysis_detail(conn, symbol, version_id=version_id)
 
 
+def save_business_summary_edit(conn, symbol, version_id, business_summary):
+    if not isinstance(business_summary, str):
+        raise AnalysisValidationError("business_summary must be a string")
+
+    root = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
+    if not root:
+        raise ValueError("Analysis symbol not found")
+
+    base = conn.execute(
+        "SELECT id FROM analysis_versions WHERE id = ? AND analysis_root_id = ?",
+        (version_id, root["id"]),
+    ).fetchone()
+    if not base:
+        raise ValueError("Base version not found")
+
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO analysis_business_summary_edits (analysis_root_id, based_on_version_id, business_summary_text, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(analysis_root_id) DO UPDATE SET
+          based_on_version_id = excluded.based_on_version_id,
+          business_summary_text = excluded.business_summary_text,
+          updated_at = excluded.updated_at
+        """,
+        (root["id"], version_id, business_summary.strip(), now),
+    )
+    conn.commit()
+    return get_analysis_detail(conn, symbol, version_id=version_id)
+
+
 def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     root = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
     if not root:
@@ -2708,16 +2766,20 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     templates, _sources = get_all_prompt_templates(conn)
     scenario_settings = get_scenario_generation_config(conn)
     business_model_draft = _get_saved_business_model_edit(conn, root["id"])
+    business_summary_draft = _get_saved_business_summary_edit(conn, root["id"])
     effective_business_model = base_version["business_model_text"]
+    effective_business_summary = base_version["business_summary_text"]
     if business_model_draft and int(business_model_draft["based_on_version_id"]) == int(base_version_id):
         effective_business_model = business_model_draft["business_model"]
+    if business_summary_draft and int(business_summary_draft["based_on_version_id"]) == int(base_version_id):
+        effective_business_summary = business_summary_draft["business_summary"]
     prompt = build_scenario_generation_prompt(
         symbol,
         base_version["current_price"],
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=base_version["company_name"] or "",
         business_model=effective_business_model or "",
-        business_summary=base_version["business_summary_text"] or "",
+        business_summary=effective_business_summary or "",
         key_variables=key_variables,
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2770,7 +2832,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
             company_name=base_version["company_name"],
             current_price=base_version["current_price"],
             business_model=effective_business_model,
-            business_summary=base_version["business_summary_text"],
+            business_summary=effective_business_summary,
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
@@ -2817,16 +2879,20 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
     templates, _sources = get_all_prompt_templates(conn)
     scenario_settings = get_scenario_generation_config(conn)
     business_model_draft = _get_saved_business_model_edit(conn, root["id"])
+    business_summary_draft = _get_saved_business_summary_edit(conn, root["id"])
     effective_business_model = base_version["business_model_text"]
+    effective_business_summary = base_version["business_summary_text"]
     if business_model_draft and int(business_model_draft["based_on_version_id"]) == int(base_version_id):
         effective_business_model = business_model_draft["business_model"]
+    if business_summary_draft and int(business_summary_draft["based_on_version_id"]) == int(base_version_id):
+        effective_business_summary = business_summary_draft["business_summary"]
     prompt = build_scenario_generation_prompt(
         symbol,
         base_version["current_price"],
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=base_version["company_name"] or "",
         business_model=effective_business_model or "",
-        business_summary=base_version["business_summary_text"] or "",
+        business_summary=effective_business_summary or "",
         key_variables=key_variables,
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2879,7 +2945,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
             company_name=base_version["company_name"],
             current_price=base_version["current_price"],
             business_model=effective_business_model,
-            business_summary=base_version["business_summary_text"],
+            business_summary=effective_business_summary,
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
@@ -3202,6 +3268,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if not symbol:
                 return self._send_json({"error": "Invalid symbol"}, status=400)
             return self.handle_analysis_business_model_save(symbol)
+        if path.startswith("/api/analysis/") and path.endswith("/business-summary"):
+            symbol = normalize_symbol(path[len("/api/analysis/") : -len("/business-summary")])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_analysis_business_summary_save(symbol)
         if path.startswith("/api/analysis/") and path.endswith("/rerun-scenarios"):
             symbol = normalize_symbol(path[len("/api/analysis/") : -len("/rerun-scenarios")])
             if not symbol:
@@ -3466,6 +3537,26 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             logger.exception("Unable to save business model edit for symbol %s", symbol)
             self._send_json({"error": "Unable to save business model.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_analysis_business_summary_save(self, symbol):
+        payload = self._read_json_body() or {}
+        version_id = payload.get("version_id")
+        if version_id is None:
+            return self._send_json({"error": "version_id is required"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            detail = save_business_summary_edit(conn, symbol, int(version_id), payload.get("business_summary"))
+            self._send_json({"ok": True, "analysis": detail})
+        except AnalysisValidationError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            logger.exception("Unable to save business summary edit for symbol %s", symbol)
+            self._send_json({"error": "Unable to save business summary.", "details": str(exc)}, status=500)
         finally:
             conn.close()
 

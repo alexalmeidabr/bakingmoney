@@ -3349,6 +3349,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             ensure_event_loop()
             ib = get_ib_connection()
             positions = ib.positions()
+            logger.info("Positions API using live IBKR path positions_count=%s", len(positions))
             contracts = [p.contract for p in positions if p.contract]
             tickers_by_conid = {}
 
@@ -3407,8 +3408,14 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 analysis_items = list_analysis_symbols(conn)
             finally:
                 conn.close()
+            logger.info(
+                "Positions API analysis enrichment candidates=%s sample_symbols=%s",
+                len(analysis_items),
+                [item.get("symbol") for item in analysis_items[:5]],
+            )
             self._send_json({"positions": merge_positions_with_latest_analysis(data, analysis_items)})
         except Exception as exc:
+            logger.warning("Positions API live path unavailable; client may use cached fallback (%s)", exc)
             self._send_json(
                 {
                     "error": "Unable to fetch positions from IBKR. Check that TWS is running and API access is enabled.",

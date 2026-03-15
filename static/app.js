@@ -699,6 +699,10 @@ async function loadPositions() {
     positionsTable.classList.remove('hidden');
   } catch (error) {
     if (latestPositions.length) {
+      console.debug('[positions] using cached/fallback positions path', {
+        cachedCount: latestPositions.length,
+        withRating: latestPositions.filter((row) => !!row.rating).length,
+      });
       updateSortHeaderState();
       renderPositions();
       positionsTable.classList.remove('hidden');
@@ -722,10 +726,16 @@ async function loadAnalysis() {
     const analysisPayload = await analysisResponse.json();
     const positionsPayload = await positionsResponse.json();
     if (!analysisResponse.ok) throw new Error(extractErrorMessage(analysisPayload, 'Request failed'));
-    latestPositions = positionsResponse.ok ? (positionsPayload.positions || []) : latestPositions;
-    if (positionsResponse.ok) saveCachedPositions(latestPositions);
-
     latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
+    if (positionsResponse.ok) {
+      latestPositions = mergePositionsWithAnalysis(positionsPayload.positions || [], latestAnalysis);
+      saveCachedPositions(latestPositions);
+      console.debug('[analysis] refreshed cached positions with analysis enrichment', {
+        positionsCount: latestPositions.length,
+        withRating: latestPositions.filter((row) => !!row.rating).length,
+      });
+    }
+
     analysisTableBody.innerHTML = '';
     selectedAnalysisSymbols = new Set([...selectedAnalysisSymbols].filter((symbol) => latestAnalysis.some((item) => item.symbol === symbol)));
     if (!latestAnalysis.length) { analysisStatusEl.textContent = 'Analysis is empty.'; syncSelectAllCheckbox(); return; }

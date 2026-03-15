@@ -109,6 +109,23 @@ class PositionsAnalysisMergeTests(unittest.TestCase):
         self.assertEqual(msft["upside"], None)
         self.assertEqual(msft["confidence_diff"], None)
 
+    def test_merge_positions_with_latest_analysis_normalizes_symbol_keys(self):
+        positions = [{"symbol": " msft "}]
+        analysis_items = [
+            {
+                "symbol": "MSFT",
+                "rating": "Strong Buy",
+                "upside": 40.0,
+                "bullish_confidence": 7.2,
+                "bearish_confidence": 3.1,
+                "confidence_diff": 4.1,
+            }
+        ]
+        merged = web_server.merge_positions_with_latest_analysis(positions, analysis_items)
+        self.assertEqual(merged[0]["rating"], "Strong Buy")
+        self.assertEqual(merged[0]["upside"], 40.0)
+        self.assertEqual(merged[0]["confidence_diff"], 4.1)
+
 
 if __name__ == "__main__":
     unittest.main()

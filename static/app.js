@@ -337,15 +337,17 @@ function renderPositions() {
   positionsTableBody.innerHTML = '';
   sortPositions(getFilteredPositions()).forEach((position) => {
     const row = document.createElement('tr');
+    const symbol = String(position.symbol ?? '');
     const rating = position.rating || '—';
     const upsideValue = typeof position.upside === 'number' ? formatPercent(position.upside) : '—';
     const upsideClass = typeof position.upside === 'number' ? valueClass(position.upside) : '';
     const confidenceValue = (typeof position.bullish_confidence === 'number' || typeof position.bearish_confidence === 'number')
       ? formatConfidenceDiffDisplay(position.confidence_diff, position.bullish_confidence, position.bearish_confidence)
       : '—';
-    row.innerHTML = `<td>${position.symbol ?? ''}</td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td>${confidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.price, position.currency)}</td><td>${formatNumber(position.avgCost)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td>`;
+    row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(symbol)}">${escapeHtml(symbol)}</button></td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td>${confidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.price, position.currency)}</td><td>${formatNumber(position.avgCost)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td>`;
     positionsTableBody.appendChild(row);
   });
+  positionsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol)));
 }
 
 function getFilteredPositions() {
@@ -423,7 +425,7 @@ function renderAnalysisList() {
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
-  analysisTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => loadAnalysisDetail(btn.dataset.symbol)));
+  analysisTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { switchToAnalysisView: false })));
   analysisTableBody.querySelectorAll('.analysis-row-select').forEach((checkbox) => {
     checkbox.addEventListener('change', () => {
       const symbol = checkbox.dataset.symbol;
@@ -560,6 +562,12 @@ function renderVariablesTable() {
   analysisCancelVariablesBtn.classList.toggle('hidden', !isEditingVariables);
 }
 
+async function openAnalysisDetailForSymbol(symbol, options = {}) {
+  const { switchToAnalysisView = true } = options;
+  if (switchToAnalysisView) setView('analysis');
+  await loadAnalysisDetail(symbol);
+}
+
 async function loadAnalysisDetail(symbol, versionId = null) {
   analysisDetailStatus.textContent = `Loading ${symbol} detail…`;
   analysisDetailStatus.className = 'status';
@@ -579,7 +587,8 @@ async function loadAnalysisDetail(symbol, versionId = null) {
     renderAnalysisDetail();
     analysisDetailStatus.textContent = `Loaded ${symbol} detail.`;
   } catch (error) {
-    analysisDetailStatus.textContent = `Error: ${error.message}`;
+    const noAnalysisMessage = 'No analysis found for this symbol.';
+    analysisDetailStatus.textContent = /not found/i.test(error.message || '') ? noAnalysisMessage : `Error: ${error.message}`;
     analysisDetailStatus.className = 'status error';
   }
 }
@@ -945,10 +954,7 @@ function renderAlertsList(alerts) {
   });
   alertsTableBody.querySelectorAll('.alert-review-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Reviewed')));
   alertsTableBody.querySelectorAll('.alert-dismiss-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Dismissed')));
-  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => {
-    setView('analysis');
-    await loadAnalysisDetail(btn.dataset.symbol);
-  }));
+  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol)));
 }
 
 async function loadAlerts() {

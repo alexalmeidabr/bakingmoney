@@ -270,6 +270,15 @@
           <div id="alerts-list-view">
             <div class="view-header">
               <h2>Alerts</h2>
+              <div class="table-actions">
+                <label for="alerts-status-filter" class="inline-control-label">Status</label>
+                <select id="alerts-status-filter">
+                  <option value="New" selected>New</option>
+                  <option value="Reviewed">Reviewed</option>
+                  <option value="Dismissed">Dismissed</option>
+                  <option value="All">All</option>
+                </select>
+              </div>
             </div>
             <p id="alerts-status" class="status">Loading alerts…</p>
             <div class="table-wrap">

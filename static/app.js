@@ -69,6 +69,7 @@ const promptPreviewOutput = document.getElementById('prompt-preview-output');
 const alertsStatusEl = document.getElementById('alerts-status');
 const alertsTable = document.getElementById('alerts-table');
 const alertsTableBody = alertsTable.querySelector('tbody');
+const alertsStatusFilterEl = document.getElementById('alerts-status-filter');
 const alertsListView = document.getElementById('alerts-list-view');
 const alertDetailView = document.getElementById('alert-detail-view');
 const alertDetailBackBtn = document.getElementById('alert-detail-back-btn');
@@ -121,6 +122,8 @@ let isEditingVariables = false;
 let isEditingBusinessModel = false;
 let isEditingBusinessSummary = false;
 let currentAlertDetailId = null;
+let latestAlerts = [];
+let alertsStatusFilter = 'New';
 
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
@@ -963,6 +966,11 @@ function showAlertsListView() {
   alertDetailView.classList.add('hidden');
 }
 
+function getFilteredAlerts() {
+  if (alertsStatusFilter === 'All') return latestAlerts;
+  return latestAlerts.filter((alert) => (alert.status || 'New') === alertsStatusFilter);
+}
+
 function renderAlertSources(sources) {
   alertDetailSourcesEl.innerHTML = '';
   const items = Array.isArray(sources) ? sources : [];
@@ -990,9 +998,9 @@ function renderAlertSources(sources) {
   });
 }
 
-function renderAlertsList(alerts) {
+function renderAlertsList() {
   alertsTableBody.innerHTML = '';
-  alerts.forEach((alert) => {
+  getFilteredAlerts().forEach((alert) => {
     const row = document.createElement('tr');
     const affected = (alert.affected_variables || []).join(', ') || '—';
     row.innerHTML = `<td><button class="symbol-link" data-alert-id="${alert.id}">${escapeHtml(alert.symbol || '')}</button></td><td>${escapeHtml(alert.alert_type || '—')}</td><td>${formatDateTime(alert.event_date || alert.created_at)}</td><td>${escapeHtml(alert.status || 'New')}</td><td>${escapeHtml(affected)}</td><td><button class="alert-review-btn" data-id="${alert.id}">Mark Reviewed</button> <button class="alert-dismiss-btn" data-id="${alert.id}">Dismiss</button></td>`;
@@ -1039,14 +1047,15 @@ async function loadAlerts() {
     const response = await fetch('/api/alerts');
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load alerts'));
-    const alerts = payload.alerts || [];
-    if (!alerts.length) {
+    latestAlerts = payload.alerts || [];
+    if (!latestAlerts.length) {
       alertsStatusEl.textContent = 'No alerts found.';
       return;
     }
-    renderAlertsList(alerts);
+    renderAlertsList();
+    const visibleCount = getFilteredAlerts().length;
     alertsTable.classList.remove('hidden');
-    alertsStatusEl.textContent = `Loaded ${alerts.length} alert(s).`;
+    alertsStatusEl.textContent = `Showing ${visibleCount} of ${latestAlerts.length} alert(s).`;
   } catch (error) {
     alertsStatusEl.textContent = `Error: ${error.message}`;
     alertsStatusEl.className = 'status error';
@@ -1365,6 +1374,11 @@ analysisCheckEventsBtn.addEventListener('click', checkRecentEventsForSelected);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', showAnalysisList);
 alertDetailBackBtn.addEventListener('click', showAlertsListView);
+alertsStatusFilterEl.addEventListener('change', () => {
+  alertsStatusFilter = alertsStatusFilterEl.value || 'New';
+  renderAlertsList();
+  alertsStatusEl.textContent = `Showing ${getFilteredAlerts().length} of ${latestAlerts.length} alert(s).`;
+});
 analysisScenarioInfoBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.remove('hidden'));
 analysisScenarioInfoCloseBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.add('hidden'));
 analysisSummary.addEventListener('click', (event) => {

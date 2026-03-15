@@ -316,6 +316,26 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Event Date', html)
         self.assertNotIn('<th>Event</th>', html)
 
+    def test_alerts_status_filter_defaults_to_new(self):
+        from pathlib import Path
+        html = Path('static/index.html').read_text(encoding='utf-8')
+        self.assertIn('id="alerts-status-filter"', html)
+        self.assertIn('<option value="New" selected>New</option>', html)
+
+    def test_alerts_status_filter_supports_all_values(self):
+        from pathlib import Path
+        html = Path('static/index.html').read_text(encoding='utf-8')
+        self.assertIn('<option value="Reviewed">Reviewed</option>', html)
+        self.assertIn('<option value="Dismissed">Dismissed</option>', html)
+        self.assertIn('<option value="All">All</option>', html)
+
+    def test_alerts_filter_logic_is_frontend_driven(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn("let alertsStatusFilter = 'New';", js)
+        self.assertIn('function getFilteredAlerts()', js)
+        self.assertIn("alertsStatusFilterEl.addEventListener('change'", js)
+
     def test_alert_detail_view_elements_exist(self):
         from pathlib import Path
         html = Path('static/index.html').read_text(encoding='utf-8')

@@ -257,6 +257,10 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function normalizeSymbolForJoin(symbol) {
+  return String(symbol ?? '').trim().toUpperCase();
+}
+
 function compareValues(left, right, direction = 'asc') {
   if (left == null && right == null) return 0;
   if (left == null) return 1;
@@ -297,14 +301,18 @@ function renderPositions() {
 }
 
 function mergePositionsWithAnalysis(positions, analysisItems) {
+  const normalizedAnalysisItems = Array.isArray(analysisItems)
+    ? analysisItems
+    : (analysisItems?.analysis || []);
+
   const analysisBySymbol = new Map(
-    (analysisItems || [])
+    (normalizedAnalysisItems || [])
       .filter((item) => item && item.symbol)
-      .map((item) => [String(item.symbol).toUpperCase(), item]),
+      .map((item) => [normalizeSymbolForJoin(item.symbol), item]),
   );
 
   return (positions || []).map((position) => {
-    const symbol = String(position?.symbol || '').toUpperCase();
+    const symbol = normalizeSymbolForJoin(position?.symbol);
     const matched = analysisBySymbol.get(symbol);
     if (!matched) return position;
     return {
@@ -653,10 +661,30 @@ async function loadPositions() {
     const analysisPayload = await analysisResponse.json();
     if (!positionsResponse.ok) throw new Error(extractErrorMessage(positionsPayload, 'Request failed'));
 
+    console.debug('[positions] raw /api/positions response sample:', {
+      count: (positionsPayload.positions || []).length,
+      first: (positionsPayload.positions || [])[0] || null,
+    });
+    console.debug('[positions] raw /api/analysis response sample:', {
+      ok: analysisResponse.ok,
+      topLevelKeys: analysisPayload && typeof analysisPayload === 'object' ? Object.keys(analysisPayload) : [],
+      count: Array.isArray(analysisPayload?.analysis) ? analysisPayload.analysis.length : 0,
+      first: Array.isArray(analysisPayload?.analysis) ? (analysisPayload.analysis[0] || null) : null,
+    });
+
     latestPositions = mergePositionsWithAnalysis(
       positionsPayload.positions || [],
-      analysisResponse.ok ? (analysisPayload.analysis || []) : [],
+      analysisResponse.ok ? analysisPayload : [],
     );
+
+    console.debug('[positions] merged rows sample:', {
+      count: latestPositions.length,
+      first: latestPositions[0] || null,
+      withRating: latestPositions.filter((row) => !!row.rating).length,
+      withUpside: latestPositions.filter((row) => typeof row.upside === 'number').length,
+      withConfidence: latestPositions.filter((row) => typeof row.confidence_diff === 'number').length,
+    });
+
     saveCachedPositions(latestPositions);
 
     if (!latestPositions.length) {

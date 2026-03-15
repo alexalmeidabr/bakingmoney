@@ -2989,6 +2989,18 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
         row["bearish_confidence"] = analysis.get("bearish_confidence") if analysis else None
         row["confidence_diff"] = analysis.get("confidence_diff") if analysis else None
         merged.append(row)
+
+    with_rating = sum(1 for row in merged if row.get("rating"))
+    with_upside = sum(1 for row in merged if isinstance(row.get("upside"), (int, float)))
+    with_confidence = sum(1 for row in merged if isinstance(row.get("confidence_diff"), (int, float)))
+    logger.info(
+        "Positions/analysis merge summary positions=%s analysis_rows=%s with_rating=%s with_upside=%s with_confidence=%s",
+        len(positions or []),
+        len(analysis_items or []),
+        with_rating,
+        with_upside,
+        with_confidence,
+    )
     return merged
 
 

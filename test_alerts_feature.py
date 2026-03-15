@@ -308,6 +308,28 @@ class RecentEventAlertEnhancementTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_recent_event_schema_requires_event_date_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn)
+                    captured = {}
+
+                    def fake_request(step, prompt, schema):
+                        captured["schema"] = schema
+                        return {"symbol": "NVDA", "alerts": []}
+
+                    with mock.patch.object(web_server, "request_ai_step", side_effect=fake_request):
+                        web_server.run_recent_event_check(conn, ["NVDA"])
+
+                    required = captured["schema"]["schema"]["properties"]["alerts"]["items"]["required"]
+                    self.assertIn("event_date", required)
+                finally:
+                    conn.close()
+
 
 class AlertsUiStructureTests(unittest.TestCase):
     def test_alerts_list_headers_are_compact(self):

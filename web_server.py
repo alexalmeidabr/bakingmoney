@@ -3416,6 +3416,7 @@ def run_recent_event_check(conn, symbols):
                         },
                         "required": [
                             "alert_type",
+                            "event_date",
                             "event_summary",
                             "impact_summary",
                             "affected_variables",

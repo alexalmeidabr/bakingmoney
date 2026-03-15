@@ -248,6 +248,15 @@ const formatDateTime = (v) => {
   return Number.isNaN(d.getTime()) ? v : d.toLocaleString();
 };
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function compareValues(left, right, direction = 'asc') {
   if (left == null && right == null) return 0;
   if (left == null) return 1;
@@ -394,13 +403,16 @@ function renderAnalysisDetail() {
   analysisDetailTitle.textContent = `Analysis: ${analysisDetailState.symbol}`;
   const effectiveBusinessModel = getEffectiveBusinessModel();
   const effectiveBusinessSummary = getEffectiveBusinessSummary();
+  const safeBusinessModel = escapeHtml(effectiveBusinessModel);
+  const safeBusinessSummary = escapeHtml(effectiveBusinessSummary);
+  const safeAssumptions = escapeHtml(item.assumptions || '');
   const businessModelSection = isEditingBusinessModel
-    ? `<div class="business-model-editor"><label><strong>Business Model:</strong></label><textarea id="analysis-business-model-input" class="analysis-business-model-input" rows="5">${effectiveBusinessModel}</textarea><div class="table-actions"><button id="analysis-business-model-save-btn">Save</button><button id="analysis-business-model-cancel-btn">Cancel</button></div></div>`
-    : `<div class="business-model-editor"><p><strong>Business Model:</strong> ${effectiveBusinessModel || 'N/A'}</p><button id="analysis-business-model-edit-btn">Edit Business Model</button></div>`;
+    ? `<div class="business-model-editor"><label><strong>Business Model:</strong></label><textarea id="analysis-business-model-input" class="analysis-business-model-input" rows="5">${safeBusinessModel}</textarea><div class="table-actions"><button id="analysis-business-model-save-btn">Save</button><button id="analysis-business-model-cancel-btn">Cancel</button></div></div>`
+    : `<div class="business-model-editor"><p><strong>Business Model:</strong> ${safeBusinessModel || 'N/A'}</p><button id="analysis-business-model-edit-btn">Edit Business Model</button></div>`;
   const businessSummarySection = isEditingBusinessSummary
-    ? `<div class="business-model-editor"><label><strong>Business Summary:</strong></label><textarea id="analysis-business-summary-input" class="analysis-business-model-input" rows="4">${effectiveBusinessSummary}</textarea><div class="table-actions"><button id="analysis-business-summary-save-btn">Save</button><button id="analysis-business-summary-cancel-btn">Cancel</button></div></div>`
-    : `<div class="business-model-editor"><p><strong>Business Summary:</strong> ${effectiveBusinessSummary || 'N/A'}</p><button id="analysis-business-summary-edit-btn">Edit Business Summary</button></div>`;
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</div></div><div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${item.assumptions || 'N/A'}</p>`;
+    ? `<div class="business-model-editor"><label><strong>Business Summary:</strong></label><textarea id="analysis-business-summary-input" class="analysis-business-model-input" rows="4">${safeBusinessSummary}</textarea><div class="table-actions"><button id="analysis-business-summary-save-btn">Save</button><button id="analysis-business-summary-cancel-btn">Cancel</button></div></div>`
+    : `<div class="business-model-editor"><p><strong>Business Summary:</strong> ${safeBusinessSummary || 'N/A'}</p><div class="table-actions"><button id="analysis-business-summary-edit-btn">Edit Business Summary</button></div></div>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</div></div><div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   analysisScenariosBody.innerHTML = '';

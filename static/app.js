@@ -296,6 +296,28 @@ function renderPositions() {
   });
 }
 
+function mergePositionsWithAnalysis(positions, analysisItems) {
+  const analysisBySymbol = new Map(
+    (analysisItems || [])
+      .filter((item) => item && item.symbol)
+      .map((item) => [String(item.symbol).toUpperCase(), item]),
+  );
+
+  return (positions || []).map((position) => {
+    const symbol = String(position?.symbol || '').toUpperCase();
+    const matched = analysisBySymbol.get(symbol);
+    if (!matched) return position;
+    return {
+      ...position,
+      rating: position.rating ?? matched.rating,
+      upside: typeof position.upside === 'number' ? position.upside : matched.upside,
+      confidence_diff: typeof position.confidence_diff === 'number' ? position.confidence_diff : matched.confidence_diff,
+      bullish_confidence: typeof position.bullish_confidence === 'number' ? position.bullish_confidence : matched.bullish_confidence,
+      bearish_confidence: typeof position.bearish_confidence === 'number' ? position.bearish_confidence : matched.bearish_confidence,
+    };
+  });
+}
+
 function getPortfolioSymbols() {
   return new Set(
     latestPositions
@@ -623,11 +645,18 @@ async function loadPositions() {
   positionsTable.classList.add('hidden');
 
   try {
-    const response = await fetch('/api/positions');
-    const payload = await response.json();
-    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Request failed'));
+    const [positionsResponse, analysisResponse] = await Promise.all([
+      fetch('/api/positions'),
+      fetch('/api/analysis'),
+    ]);
+    const positionsPayload = await positionsResponse.json();
+    const analysisPayload = await analysisResponse.json();
+    if (!positionsResponse.ok) throw new Error(extractErrorMessage(positionsPayload, 'Request failed'));
 
-    latestPositions = payload.positions || [];
+    latestPositions = mergePositionsWithAnalysis(
+      positionsPayload.positions || [],
+      analysisResponse.ok ? (analysisPayload.analysis || []) : [],
+    );
     saveCachedPositions(latestPositions);
 
     if (!latestPositions.length) {

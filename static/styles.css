@@ -450,3 +450,18 @@ th.sortable[data-sort-direction='desc']::after {
   text-overflow: ellipsis;
   padding-right: 8px;
 }
+
+.secondary-btn {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.clean-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.clean-list li {
+  margin-bottom: 8px;
+}

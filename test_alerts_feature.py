@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -178,6 +179,148 @@ class PositionsOfflineCacheTests(unittest.TestCase):
 
         self.assertEqual(payload["positions"], [])
         self.assertEqual(payload["data_source"], "empty")
+
+
+class RecentEventAlertEnhancementTests(unittest.TestCase):
+    def _seed_analysis(self, conn, symbol='NVDA', created_at='2026-03-01T00:00:00+00:00'):
+        now = created_at
+        conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", (symbol, now, now))
+        root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO analysis_versions (
+                analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
+                raw_ai_response, source_trigger, created_at
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (root_id, symbol, f"{symbol} Inc.", 100.0, 130.0, 30.0, 6.0, "assume", "model", "summary", "{}", "test", now),
+        )
+        version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO analysis_version_key_variables (analysis_version_id, variable_text, variable_type, confidence, importance, created_at)
+            VALUES (?, 'Demand', 'Growth', 6.0, 7.0, ?)
+            """,
+            (version_id, now),
+        )
+        conn.commit()
+
+    def test_recent_event_check_stores_event_date_sources_and_cutoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn)
+                    conn.execute(
+                        "INSERT INTO recent_event_checks (symbol, checked_at, cutoff_used, alerts_created_count, events_found_count) VALUES (?, ?, ?, 0, 0)",
+                        ("NVDA", "2026-03-02T00:00:00+00:00", None),
+                    )
+                    conn.commit()
+
+                    ai_response = {
+                        "symbol": "NVDA",
+                        "alerts": [
+                            {
+                                "alert_type": "Weakens existing variable",
+                                "event_date": "2026-03-05",
+                                "event_summary": "Large customer delayed rollout",
+                                "impact_summary": "Demand ramp could slip",
+                                "affected_variables": ["Demand"],
+                                "suggested_action": "Review confidence",
+                                "event_sources": [
+                                    {"title": "Delay report", "url": "https://a.com/x", "source_name": "A", "published_at": "2026-03-04"},
+                                    {"title": "Delay report", "url": "https://a.com/x", "source_name": "A", "published_at": "2026-03-04"},
+                                    {"title": "Supplier note", "url": "https://b.com/y", "source_name": "B", "published_at": "2026-03-03"},
+                                ],
+                            },
+                            {
+                                "alert_type": "Weakens existing variable",
+                                "event_date": "2026-03-05",
+                                "event_summary": "Large customer delayed rollout",
+                                "impact_summary": "Demand ramp could slip",
+                                "affected_variables": ["Demand"],
+                                "suggested_action": "Review confidence",
+                                "event_sources": [
+                                    {"title": "Alt source", "url": "https://c.com/z", "source_name": "C", "published_at": "2026-03-06"}
+                                ],
+                            },
+                        ],
+                    }
+                    with mock.patch.object(web_server, "request_ai_step", return_value=ai_response):
+                        summary = web_server.run_recent_event_check(conn, ["NVDA"])
+
+                    self.assertEqual(summary["alerts_created"], 1)
+                    alert = conn.execute("SELECT event_date, event_sources_json, search_cutoff_used FROM thesis_review_alerts WHERE symbol = 'NVDA'").fetchone()
+                    self.assertEqual(alert["search_cutoff_used"], "2026-03-02T00:00:00+00:00")
+                    self.assertEqual(alert["event_date"], "2026-03-03")
+                    sources = json.loads(alert["event_sources_json"])
+                    self.assertEqual(len(sources), 3)
+                finally:
+                    conn.close()
+
+    def test_recent_event_check_uses_later_of_last_check_and_latest_scenario_build_for_cutoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, created_at='2026-03-10T00:00:00+00:00')
+                    conn.execute(
+                        "INSERT INTO recent_event_checks (symbol, checked_at, cutoff_used, alerts_created_count, events_found_count) VALUES (?, ?, ?, 0, 0)",
+                        ("NVDA", "2026-03-05T00:00:00+00:00", None),
+                    )
+                    conn.commit()
+
+                    ai_response = {
+                        "symbol": "NVDA",
+                        "alerts": [
+                            {
+                                "alert_type": "Potential new variable",
+                                "event_date": "2026-03-09",
+                                "event_summary": "Old event",
+                                "impact_summary": "Should be filtered",
+                                "affected_variables": [],
+                                "suggested_action": "None",
+                                "event_sources": [{"title": "Old", "url": "https://old", "source_name": "Old", "published_at": "2026-03-09"}],
+                            },
+                            {
+                                "alert_type": "Potential new variable",
+                                "event_date": "2026-03-11",
+                                "event_summary": "New event",
+                                "impact_summary": "Should be kept",
+                                "affected_variables": [],
+                                "suggested_action": "None",
+                                "event_sources": [{"title": "New", "url": "https://new", "source_name": "New", "published_at": "2026-03-11"}],
+                            },
+                        ],
+                    }
+                    with mock.patch.object(web_server, "request_ai_step", return_value=ai_response):
+                        summary = web_server.run_recent_event_check(conn, ["NVDA"])
+
+                    self.assertEqual(summary["alerts_created"], 1)
+                    saved = conn.execute("SELECT event_summary, search_cutoff_used FROM thesis_review_alerts").fetchall()
+                    self.assertEqual(saved[0]["event_summary"], "New event")
+                    self.assertEqual(saved[0]["search_cutoff_used"], "2026-03-10T00:00:00+00:00")
+                finally:
+                    conn.close()
+
+
+class AlertsUiStructureTests(unittest.TestCase):
+    def test_alerts_list_headers_are_compact(self):
+        from pathlib import Path
+        html = Path('static/index.html').read_text(encoding='utf-8')
+        self.assertIn('Event Date', html)
+        self.assertNotIn('<th>Event</th>', html)
+
+    def test_alert_detail_view_elements_exist(self):
+        from pathlib import Path
+        html = Path('static/index.html').read_text(encoding='utf-8')
+        self.assertIn('id="alert-detail-view"', html)
+        self.assertIn('id="alert-detail-sources"', html)
 
 
 if __name__ == "__main__":

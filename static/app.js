@@ -69,6 +69,18 @@ const promptPreviewOutput = document.getElementById('prompt-preview-output');
 const alertsStatusEl = document.getElementById('alerts-status');
 const alertsTable = document.getElementById('alerts-table');
 const alertsTableBody = alertsTable.querySelector('tbody');
+const alertsListView = document.getElementById('alerts-list-view');
+const alertDetailView = document.getElementById('alert-detail-view');
+const alertDetailBackBtn = document.getElementById('alert-detail-back-btn');
+const alertDetailTitleEl = document.getElementById('alert-detail-title');
+const alertDetailStatusEl = document.getElementById('alert-detail-status');
+const alertDetailPanelsEl = document.getElementById('alert-detail-panels');
+const alertDetailTypeEl = document.getElementById('alert-detail-type');
+const alertDetailAffectedEl = document.getElementById('alert-detail-affected');
+const alertDetailEventEl = document.getElementById('alert-detail-event');
+const alertDetailDateEl = document.getElementById('alert-detail-date');
+const alertDetailSourcesEl = document.getElementById('alert-detail-sources');
+const alertDetailSuggestedEl = document.getElementById('alert-detail-suggested');
 
 const configurationStatusEl = document.getElementById('configuration-status');
 const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait-seconds');
@@ -108,6 +120,7 @@ let analysisDetailState = null;
 let isEditingVariables = false;
 let isEditingBusinessModel = false;
 let isEditingBusinessSummary = false;
+let currentAlertDetailId = null;
 
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
@@ -944,20 +957,81 @@ async function deleteAnalysis(symbol) {
   } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
 }
 
+function showAlertsListView() {
+  currentAlertDetailId = null;
+  alertsListView.classList.remove('hidden');
+  alertDetailView.classList.add('hidden');
+}
+
+function renderAlertSources(sources) {
+  alertDetailSourcesEl.innerHTML = '';
+  const items = Array.isArray(sources) ? sources : [];
+  if (!items.length) {
+    const li = document.createElement('li');
+    li.textContent = '—';
+    alertDetailSourcesEl.appendChild(li);
+    return;
+  }
+  items.forEach((source) => {
+    const li = document.createElement('li');
+    const label = [source.source_name, source.published_at].filter(Boolean).join(' · ');
+    if (source.url) {
+      const link = document.createElement('a');
+      link.href = source.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = source.title || source.url;
+      li.appendChild(link);
+      if (label) li.append(` (${label})`);
+    } else {
+      li.textContent = [source.title || 'Source', label].filter(Boolean).join(' · ');
+    }
+    alertDetailSourcesEl.appendChild(li);
+  });
+}
+
 function renderAlertsList(alerts) {
   alertsTableBody.innerHTML = '';
   alerts.forEach((alert) => {
     const row = document.createElement('tr');
     const affected = (alert.affected_variables || []).join(', ') || '—';
-    row.innerHTML = `<td><button class="symbol-link" data-symbol="${alert.symbol}">${alert.symbol}</button></td><td>${formatDateTime(alert.event_date || alert.created_at)}</td><td>${alert.alert_type}</td><td>${alert.status}</td><td>${alert.event_summary}</td><td>${affected}</td><td>${alert.suggested_action || '—'}</td><td><button class="alert-review-btn" data-id="${alert.id}">Mark Reviewed</button> <button class="alert-dismiss-btn" data-id="${alert.id}">Dismiss</button></td>`;
+    row.innerHTML = `<td><button class="symbol-link" data-alert-id="${alert.id}">${escapeHtml(alert.symbol || '')}</button></td><td>${escapeHtml(alert.alert_type || '—')}</td><td>${formatDateTime(alert.event_date || alert.created_at)}</td><td>${escapeHtml(alert.status || 'New')}</td><td>${escapeHtml(affected)}</td><td><button class="alert-review-btn" data-id="${alert.id}">Mark Reviewed</button> <button class="alert-dismiss-btn" data-id="${alert.id}">Dismiss</button></td>`;
     alertsTableBody.appendChild(row);
   });
   alertsTableBody.querySelectorAll('.alert-review-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Reviewed')));
   alertsTableBody.querySelectorAll('.alert-dismiss-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Dismissed')));
-  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol)));
+  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAlertDetail(btn.dataset.alertId)));
+}
+
+async function openAlertDetail(alertId) {
+  currentAlertDetailId = alertId;
+  alertsListView.classList.add('hidden');
+  alertDetailView.classList.remove('hidden');
+  alertDetailStatusEl.textContent = 'Loading alert detail…';
+  alertDetailStatusEl.className = 'status';
+  alertDetailPanelsEl.classList.add('hidden');
+  try {
+    const response = await fetch(`/api/alerts/${encodeURIComponent(alertId)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load alert detail'));
+    const alert = payload.alert || {};
+    alertDetailTitleEl.textContent = `Alert Detail · ${alert.symbol || ''}`;
+    alertDetailTypeEl.textContent = alert.alert_type || '—';
+    alertDetailAffectedEl.textContent = (alert.affected_variables || []).join(', ') || '—';
+    alertDetailEventEl.textContent = alert.event_summary || '—';
+    alertDetailDateEl.textContent = formatDateTime(alert.event_date || alert.created_at);
+    alertDetailSuggestedEl.textContent = alert.suggested_action || '—';
+    renderAlertSources(alert.event_sources || []);
+    alertDetailPanelsEl.classList.remove('hidden');
+    alertDetailStatusEl.textContent = `Status: ${alert.status || 'New'}`;
+  } catch (error) {
+    alertDetailStatusEl.textContent = `Error: ${error.message}`;
+    alertDetailStatusEl.className = 'status error';
+  }
 }
 
 async function loadAlerts() {
+  showAlertsListView();
   alertsStatusEl.textContent = 'Loading alerts…';
   alertsStatusEl.className = 'status';
   alertsTable.classList.add('hidden');
@@ -988,12 +1062,16 @@ async function updateAlertStatus(alertId, status) {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to update alert status'));
+    if (currentAlertDetailId && String(currentAlertDetailId) === String(alertId)) {
+      await openAlertDetail(alertId);
+    }
     await loadAlerts();
   } catch (error) {
     alertsStatusEl.textContent = `Error: ${error.message}`;
     alertsStatusEl.className = 'status error';
   }
 }
+
 
 async function loadPromptConfiguration() {
   promptStatusEl.textContent = 'Loading prompt configuration…';
@@ -1286,6 +1364,7 @@ analysisRerunSelectedBtn.addEventListener('click', rerunSelectedSymbolsScenarios
 analysisCheckEventsBtn.addEventListener('click', checkRecentEventsForSelected);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', showAnalysisList);
+alertDetailBackBtn.addEventListener('click', showAlertsListView);
 analysisScenarioInfoBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.remove('hidden'));
 analysisScenarioInfoCloseBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.add('hidden'));
 analysisSummary.addEventListener('click', (event) => {

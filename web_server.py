@@ -257,10 +257,19 @@ Return ONLY valid JSON in this exact structure:
   "alerts": [
     {
       "alert_type": "text",
+      "event_date": "YYYY-MM-DD or ISO-8601 datetime",
       "event_summary": "text",
       "impact_summary": "text",
       "affected_variables": ["text"],
-      "suggested_action": "text"
+      "suggested_action": "text",
+      "event_sources": [
+        {
+          "title": "text",
+          "url": "https://...",
+          "source_name": "text",
+          "published_at": "YYYY-MM-DD or ISO-8601 datetime"
+        }
+      ]
     }
   ]
 }
@@ -275,6 +284,8 @@ Rules:
   - Potentially obsolete variable
 - affected_variables should list the current variable text(s) impacted when applicable.
 - Keep event_summary and impact_summary concise.
+- Include the best event_date when available from supporting sources.
+- Include event_sources with one or more concrete references when possible.
 - For existing variables, add in the suggested_action a recommendation for the update on importance and confidence
 - Do not modify the variables directly.
 - JSON only.
@@ -1241,6 +1252,8 @@ def init_db():
               event_summary TEXT NOT NULL,
               impact_summary TEXT NOT NULL,
               affected_variables_json TEXT NOT NULL,
+              event_sources_json TEXT,
+              search_cutoff_used TEXT,
               suggested_action TEXT,
               prompt_used TEXT,
               raw_response_json TEXT,
@@ -1251,10 +1264,24 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS recent_event_checks (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              symbol TEXT NOT NULL,
+              checked_at TEXT NOT NULL,
+              cutoff_used TEXT,
+              alerts_created_count INTEGER NOT NULL DEFAULT 0,
+              events_found_count INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_dedupe
             ON thesis_review_alerts(symbol, alert_type, event_summary, impact_summary)
             """
         )
+        ensure_column_exists(conn, "thesis_review_alerts", "event_sources_json", "TEXT")
+        ensure_column_exists(conn, "thesis_review_alerts", "search_cutoff_used", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "company_name", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_model_text", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_summary_text", "TEXT")
@@ -3170,6 +3197,58 @@ def get_latest_analysis_context(conn, symbol):
     }
 
 
+def _parse_iso_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except Exception:
+        return None
+
+
+def _normalize_event_sources(value):
+    if not isinstance(value, list):
+        return []
+    dedupe = set()
+    normalized = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title", "")).strip()
+        url = str(raw.get("url", "")).strip()
+        source_name = str(raw.get("source_name", "")).strip()
+        published_at = str(raw.get("published_at", "")).strip()
+        if not (title or url or source_name):
+            continue
+        key = (title.lower(), url.lower(), source_name.lower(), published_at)
+        if key in dedupe:
+            continue
+        dedupe.add(key)
+        normalized.append(
+            {
+                "title": title,
+                "url": url,
+                "source_name": source_name,
+                "published_at": published_at,
+            }
+        )
+    return normalized
+
+
+def _choose_alert_event_date(raw_event_date, event_sources):
+    dated_sources = [src for src in event_sources if _parse_iso_datetime(src.get("published_at"))]
+    if dated_sources:
+        # Deterministic rule: use earliest reliable source date to anchor first known event publication.
+        dated_sources.sort(key=lambda src: _parse_iso_datetime(src.get("published_at")))
+        return dated_sources[0].get("published_at")
+    return str(raw_event_date or "").strip() or None
+
+
 def _normalize_recent_event_alert(item):
     if not isinstance(item, dict):
         return None
@@ -3183,27 +3262,81 @@ def _normalize_recent_event_alert(item):
         affected_variables = [str(value).strip() for value in affected_variables if str(value).strip()]
     else:
         affected_variables = []
+    event_sources = _normalize_event_sources(item.get("event_sources"))
+    event_date = _choose_alert_event_date(item.get("event_date"), event_sources)
     return {
         "alert_type": alert_type,
+        "event_date": event_date,
         "event_summary": event_summary,
         "impact_summary": impact_summary,
         "affected_variables": affected_variables,
+        "event_sources": event_sources,
         "suggested_action": str(item.get("suggested_action", "")).strip(),
     }
 
 
-def insert_recent_event_alert(conn, context, alert, prompt_used, raw_response):
+def get_latest_scenario_build_timestamp(conn, symbol):
+    row = conn.execute(
+        """
+        SELECT MAX(v.created_at) AS latest_created_at
+        FROM analysis_roots r
+        JOIN analysis_versions v ON v.analysis_root_id = r.id
+        WHERE r.symbol = ?
+        """,
+        (symbol,),
+    ).fetchone()
+    return row["latest_created_at"] if row else None
+
+
+def get_last_recent_event_check_timestamp(conn, symbol):
+    row = conn.execute(
+        "SELECT MAX(checked_at) AS last_checked_at FROM recent_event_checks WHERE symbol = ?",
+        (symbol,),
+    ).fetchone()
+    return row["last_checked_at"] if row else None
+
+
+def get_recent_event_search_cutoff(conn, symbol):
+    last_check = _parse_iso_datetime(get_last_recent_event_check_timestamp(conn, symbol))
+    latest_scenario = _parse_iso_datetime(get_latest_scenario_build_timestamp(conn, symbol))
+    candidates = [dt for dt in (last_check, latest_scenario) if dt]
+    if not candidates:
+        return None
+    return max(candidates).isoformat()
+
+
+def _is_alert_after_cutoff(alert, cutoff_iso):
+    if not cutoff_iso:
+        return True
+    cutoff_dt = _parse_iso_datetime(cutoff_iso)
+    event_dt = _parse_iso_datetime(alert.get("event_date"))
+    if not cutoff_dt or not event_dt:
+        return False
+    return event_dt > cutoff_dt
+
+
+def record_recent_event_check(conn, symbol, cutoff_used, alerts_created_count, events_found_count):
+    conn.execute(
+        """
+        INSERT INTO recent_event_checks (symbol, checked_at, cutoff_used, alerts_created_count, events_found_count)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (symbol, utc_now_iso(), cutoff_used, int(alerts_created_count), int(events_found_count)),
+    )
+
+
+def insert_recent_event_alert(conn, context, alert, prompt_used, raw_response, search_cutoff_used=None):
     now = utc_now_iso()
-    # Deterministic V1 dedupe: keep exactly one alert per
-    # (symbol, alert_type, event_summary, impact_summary), regardless of status.
+    # Deterministic dedupe: keep exactly one alert per
+    # (symbol, alert_type, event_summary, impact_summary) regardless of status.
     try:
         conn.execute(
             """
             INSERT INTO thesis_review_alerts (
               symbol, company_name, alert_type, status, event_date, event_summary,
-              impact_summary, affected_variables_json, suggested_action,
-              prompt_used, raw_response_json, created_at, updated_at
-            ) VALUES (?, ?, ?, 'New', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              impact_summary, affected_variables_json, event_sources_json, search_cutoff_used,
+              suggested_action, prompt_used, raw_response_json, created_at, updated_at
+            ) VALUES (?, ?, ?, 'New', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 context["symbol"],
@@ -3213,6 +3346,8 @@ def insert_recent_event_alert(conn, context, alert, prompt_used, raw_response):
                 alert["event_summary"],
                 alert["impact_summary"],
                 json.dumps(alert["affected_variables"], ensure_ascii=False),
+                json.dumps(alert.get("event_sources", []), ensure_ascii=False),
+                search_cutoff_used,
                 alert["suggested_action"],
                 prompt_used,
                 json.dumps(raw_response, ensure_ascii=False),
@@ -3223,6 +3358,23 @@ def insert_recent_event_alert(conn, context, alert, prompt_used, raw_response):
         return True
     except sqlite3.IntegrityError:
         return False
+
+
+def _merge_alert_items_by_event(items):
+    merged = {}
+    for alert in items:
+        key = (alert["alert_type"], alert["event_summary"], alert["impact_summary"])
+        if key not in merged:
+            merged[key] = dict(alert)
+            continue
+        existing = merged[key]
+        existing_sources = _normalize_event_sources((existing.get("event_sources") or []) + (alert.get("event_sources") or []))
+        existing["event_sources"] = existing_sources
+        existing_date = _parse_iso_datetime(existing.get("event_date"))
+        incoming_date = _parse_iso_datetime(alert.get("event_date"))
+        if incoming_date and (not existing_date or incoming_date < existing_date):
+            existing["event_date"] = alert.get("event_date")
+    return list(merged.values())
 
 
 def run_recent_event_check(conn, symbols):
@@ -3242,12 +3394,34 @@ def run_recent_event_check(conn, symbols):
                         "additionalProperties": False,
                         "properties": {
                             "alert_type": {"type": "string"},
+                            "event_date": {"type": "string"},
                             "event_summary": {"type": "string"},
                             "impact_summary": {"type": "string"},
                             "affected_variables": {"type": "array", "items": {"type": "string"}},
                             "suggested_action": {"type": "string"},
+                            "event_sources": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "url": {"type": "string"},
+                                        "source_name": {"type": "string"},
+                                        "published_at": {"type": "string"},
+                                    },
+                                    "required": ["title", "url", "source_name", "published_at"],
+                                },
+                            },
                         },
-                        "required": ["alert_type", "event_summary", "impact_summary", "affected_variables", "suggested_action"],
+                        "required": [
+                            "alert_type",
+                            "event_summary",
+                            "impact_summary",
+                            "affected_variables",
+                            "suggested_action",
+                            "event_sources",
+                        ],
                     },
                 },
             },
@@ -3265,6 +3439,7 @@ def run_recent_event_check(conn, symbols):
 
     for symbol in symbols:
         summary["symbols_checked"] += 1
+        cutoff_used = get_recent_event_search_cutoff(conn, symbol)
         try:
             context = get_latest_analysis_context(conn, symbol)
             prompt = render_recent_event_prompt(
@@ -3282,63 +3457,96 @@ def run_recent_event_check(conn, symbols):
             alerts = response.get("alerts") if isinstance(response, dict) else None
             if not isinstance(alerts, list) or not alerts:
                 summary["no_material_impact_count"] += 1
+                record_recent_event_check(conn, symbol, cutoff_used, alerts_created_count=0, events_found_count=0)
                 continue
 
-            valid_alert_count = 0
+            normalized_alerts = []
             for raw_alert in alerts:
                 normalized = _normalize_recent_event_alert(raw_alert)
-                if not normalized:
-                    continue
-                created = insert_recent_event_alert(conn, context, normalized, prompt, response)
+                if normalized:
+                    normalized_alerts.append(normalized)
+            normalized_alerts = _merge_alert_items_by_event(normalized_alerts)
+            filtered_alerts = [item for item in normalized_alerts if _is_alert_after_cutoff(item, cutoff_used)]
+
+            created_for_symbol = 0
+            for normalized in filtered_alerts:
+                created = insert_recent_event_alert(conn, context, normalized, prompt, response, cutoff_used)
                 if created:
                     summary["alerts_created"] += 1
-                valid_alert_count += 1
+                    created_for_symbol += 1
 
-            if valid_alert_count == 0:
+            if not filtered_alerts:
                 summary["no_material_impact_count"] += 1
+
+            record_recent_event_check(
+                conn,
+                symbol,
+                cutoff_used,
+                alerts_created_count=created_for_symbol,
+                events_found_count=len(filtered_alerts),
+            )
         except Exception as exc:
             summary["errors_count"] += 1
             summary["errors"].append({"symbol": symbol, "error": str(exc)})
             logger.exception("Recent-event check failed for %s", symbol)
+            record_recent_event_check(conn, symbol, cutoff_used, alerts_created_count=0, events_found_count=0)
     conn.commit()
     return summary
+
+
+def _deserialize_json_list(value):
+    try:
+        parsed = json.loads(value or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def _serialize_alert_row(row):
+    return {
+        "id": row["id"],
+        "symbol": row["symbol"],
+        "company_name": row["company_name"],
+        "alert_type": row["alert_type"],
+        "status": row["status"],
+        "event_date": row["event_date"],
+        "event_summary": row["event_summary"],
+        "impact_summary": row["impact_summary"],
+        "affected_variables": _deserialize_json_list(row["affected_variables_json"]),
+        "event_sources": _deserialize_json_list(row["event_sources_json"]),
+        "search_cutoff_used": row["search_cutoff_used"],
+        "suggested_action": row["suggested_action"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 def get_alerts(conn):
     rows = conn.execute(
         """
         SELECT id, symbol, company_name, alert_type, status, event_date, event_summary,
-               impact_summary, affected_variables_json, suggested_action, created_at, updated_at
+               impact_summary, affected_variables_json, event_sources_json, search_cutoff_used,
+               suggested_action, created_at, updated_at
         FROM thesis_review_alerts
-        ORDER BY datetime(created_at) DESC, id DESC
+        ORDER BY COALESCE(event_date, created_at) DESC, id DESC
         """
     ).fetchall()
-    alerts = []
-    for row in rows:
-        affected = []
-        try:
-            parsed = json.loads(row["affected_variables_json"] or "[]")
-            if isinstance(parsed, list):
-                affected = parsed
-        except Exception:
-            affected = []
-        alerts.append(
-            {
-                "id": row["id"],
-                "symbol": row["symbol"],
-                "company_name": row["company_name"],
-                "alert_type": row["alert_type"],
-                "status": row["status"],
-                "event_date": row["event_date"],
-                "event_summary": row["event_summary"],
-                "impact_summary": row["impact_summary"],
-                "affected_variables": affected,
-                "suggested_action": row["suggested_action"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            }
-        )
-    return alerts
+    return [_serialize_alert_row(row) for row in rows]
+
+
+def get_alert_by_id(conn, alert_id):
+    row = conn.execute(
+        """
+        SELECT id, symbol, company_name, alert_type, status, event_date, event_summary,
+               impact_summary, affected_variables_json, event_sources_json, search_cutoff_used,
+               suggested_action, created_at, updated_at
+        FROM thesis_review_alerts
+        WHERE id = ?
+        """,
+        (alert_id,),
+    ).fetchone()
+    return _serialize_alert_row(row) if row else None
+
 
 
 class BakingMoneyHandler(SimpleHTTPRequestHandler):
@@ -3389,6 +3597,10 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_general_get()
         if path == "/api/alerts":
             return self.handle_alerts_get()
+        if path.startswith("/api/alerts/"):
+            alert_id = path[len("/api/alerts/"):]
+            if alert_id.isdigit():
+                return self.handle_alert_detail_get(alert_id)
 
         if path == "/":
             self.path = "/static/index.html"
@@ -3975,6 +4187,23 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             self._send_json({"alerts": get_alerts(conn)})
         except Exception as exc:
             self._send_json({"error": "Unable to load alerts.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_alert_detail_get(self, raw_alert_id):
+        try:
+            alert_id = int(raw_alert_id)
+        except Exception:
+            return self._send_json({"error": "Invalid alert id"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            alert = get_alert_by_id(conn, alert_id)
+            if not alert:
+                return self._send_json({"error": "Alert not found"}, status=404)
+            self._send_json({"alert": alert})
+        except Exception as exc:
+            self._send_json({"error": "Unable to load alert detail.", "details": str(exc)}, status=500)
         finally:
             conn.close()
 

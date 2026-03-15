@@ -267,26 +267,42 @@
         </section>
 
         <section id="alerts" class="view">
-          <div class="view-header">
-            <h2>Alerts</h2>
+          <div id="alerts-list-view">
+            <div class="view-header">
+              <h2>Alerts</h2>
+            </div>
+            <p id="alerts-status" class="status">Loading alerts…</p>
+            <div class="table-wrap">
+              <table id="alerts-table" class="hidden">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Type</th>
+                    <th>Event Date</th>
+                    <th>Status</th>
+                    <th>Affected variable(s)</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
           </div>
-          <p id="alerts-status" class="status">Loading alerts…</p>
-          <div class="table-wrap">
-            <table id="alerts-table" class="hidden">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Date</th>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th>Event</th>
-                  <th>Affected variable(s)</th>
-                  <th>Suggested action</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
+
+          <div id="alert-detail-view" class="analysis-screen hidden">
+            <div class="view-header">
+              <button id="alert-detail-back-btn" class="secondary-btn">← Back to Alerts</button>
+              <h2 id="alert-detail-title">Alert Detail</h2>
+            </div>
+            <p id="alert-detail-status" class="status">Loading alert detail…</p>
+            <div id="alert-detail-panels" class="hidden">
+              <section class="detail-card"><h3>Alert Type</h3><p id="alert-detail-type">—</p></section>
+              <section class="detail-card"><h3>Affected Key Variable</h3><p id="alert-detail-affected">—</p></section>
+              <section class="detail-card"><h3>Event Information</h3><p id="alert-detail-event">—</p></section>
+              <section class="detail-card"><h3>Event Date</h3><p id="alert-detail-date">—</p></section>
+              <section class="detail-card"><h3>Event Sources</h3><ul id="alert-detail-sources" class="clean-list"></ul></section>
+              <section class="detail-card"><h3>Suggested Actions</h3><p id="alert-detail-suggested">—</p></section>
+            </div>
           </div>
         </section>
 

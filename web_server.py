@@ -979,11 +979,23 @@ def format_key_variables_for_prompt(key_variables):
     return json.dumps(key_variables, separators=(",", ":"), ensure_ascii=False)
 
 
-def build_prompt_context(symbol, price=None, company_name="", business_model="", key_variables=None):
+def build_business_model_prompt_value(business_model="", business_summary=""):
+    model_text = (business_model or "").strip()
+    summary_text = (business_summary or "").strip()
+    if model_text and summary_text:
+        return f"{model_text}\n\nSummary: {summary_text}"
+    if model_text:
+        return model_text
+    if summary_text:
+        return f"Summary: {summary_text}"
+    return ""
+
+
+def build_prompt_context(symbol, price=None, company_name="", business_model="", business_summary="", key_variables=None):
     symbol_value = symbol or "unknown"
     price_value = f"{price:.2f}" if isinstance(price, (int, float)) and math.isfinite(price) else "unknown"
     company_name_value = company_name or "unknown"
-    business_value = business_model or ""
+    business_value = build_business_model_prompt_value(business_model=business_model, business_summary=business_summary)
     key_vars_value = format_key_variables_for_prompt(key_variables or [])
     return {
         "$Symbol": symbol_value,
@@ -1425,25 +1437,27 @@ def resolve_company_profile_from_tws(symbol):
     return profile
 
 
-def build_analysis_prompt(symbol, current_price=None, template=None, company_name="", business_model="", key_variables=None):
+def build_analysis_prompt(symbol, current_price=None, template=None, company_name="", business_model="", business_summary="", key_variables=None):
     base_template = template if template is not None else DEFAULT_PROMPT_SCENARIOS
     context = build_prompt_context(
         symbol=symbol,
         price=current_price,
         company_name=company_name,
         business_model=business_model,
+        business_summary=business_summary,
         key_variables=key_variables,
     )
     return render_prompt_template(base_template, context)
 
 
-def build_scenario_generation_prompt(symbol, current_price=None, template=None, company_name="", business_model="", key_variables=None):
+def build_scenario_generation_prompt(symbol, current_price=None, template=None, company_name="", business_model="", business_summary="", key_variables=None):
     base_template = template if template is not None else DEFAULT_PROMPT_SCENARIOS
     context = build_prompt_context(
         symbol=symbol,
         price=current_price,
         company_name=company_name,
         business_model=business_model,
+        business_summary=business_summary,
         key_variables=key_variables,
     )
     return render_scenario_prompt(base_template, context)
@@ -1766,13 +1780,13 @@ def request_ai_analysis(symbol, current_price=None):
     step1 = validate_step1_business_model(step1_raw)
 
     logger.info("Starting AI step=key_variables symbol=%s", symbol)
-    business_for_prompt = f"{step1['business_model']}\nSummary: {step1['business_summary']}"
     prompt2 = build_analysis_prompt(
         symbol,
         effective_price,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES],
         company_name=company_name,
-        business_model=business_for_prompt,
+        business_model=step1["business_model"],
+        business_summary=step1["business_summary"],
     )
     step2_raw = request_ai_step("key_variables", prompt2, schema_step2)
     step2 = validate_step2_key_variables(step2_raw)
@@ -1786,6 +1800,7 @@ def request_ai_analysis(symbol, current_price=None):
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=company_name,
         business_model=step1["business_model"],
+        business_summary=step1["business_summary"],
         key_variables=step2["key_variables"],
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2702,6 +2717,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=base_version["company_name"] or "",
         business_model=effective_business_model or "",
+        business_summary=base_version["business_summary_text"] or "",
         key_variables=key_variables,
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2810,6 +2826,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
         company_name=base_version["company_name"] or "",
         business_model=effective_business_model or "",
+        business_summary=base_version["business_summary_text"] or "",
         key_variables=key_variables,
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
@@ -2897,7 +2914,8 @@ def get_latest_analysis_context(conn, symbol):
                v.symbol,
                v.company_name,
                v.current_price,
-               v.business_model_text
+               v.business_model_text,
+               v.business_summary_text
         FROM analysis_roots r
         JOIN analysis_versions v ON v.analysis_root_id = r.id
         WHERE r.symbol = ?
@@ -2923,6 +2941,7 @@ def get_latest_analysis_context(conn, symbol):
         "company_name": row["company_name"] or row["symbol"],
         "current_price": row["current_price"],
         "business_model": row["business_model_text"] or "",
+        "business_summary": row["business_summary_text"] or "",
         "key_variables": [
             {
                 "variable": item["variable_text"],
@@ -3039,6 +3058,7 @@ def run_recent_event_check(conn, symbols):
                     price=context["current_price"],
                     company_name=context["company_name"],
                     business_model=context["business_model"],
+                    business_summary=context["business_summary"],
                     key_variables=context["key_variables"],
                 ),
             )

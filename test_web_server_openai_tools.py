@@ -60,6 +60,12 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
         self.assertIn('Key Variables: [{"variable":"Demand"}]', rendered)
         self.assertNotIn("Summary:", rendered)
 
+    def test_build_business_model_prompt_value_combines_model_and_summary(self):
+        combined = web_server.build_business_model_prompt_value("Core model", "Key drivers and risks")
+        self.assertEqual(combined, "Core model\n\nSummary: Key drivers and risks")
+        self.assertEqual(web_server.build_business_model_prompt_value("Core model", ""), "Core model")
+        self.assertEqual(web_server.build_business_model_prompt_value("", "Key drivers and risks"), "Summary: Key drivers and risks")
+
     @mock.patch.object(web_server, "OPENAI_API_KEY", "test-key")
     def test_request_ai_analysis_exposes_exact_scenario_prompt_used_for_generation(self):
         templates = {
@@ -88,6 +94,7 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
                     "business_summary": "This summary must not be auto-injected",
                 }
             if step_name == "key_variables":
+                captured["key_variables_prompt"] = prompt_text
                 return {"symbol": "NBIS", "key_variables": key_variables}
             raise AssertionError(f"Unexpected step: {step_name}")
 
@@ -150,9 +157,11 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
             template=templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
             company_name="Nebius",
             business_model="Core business model",
+            business_summary="This summary must not be auto-injected",
             key_variables=result["key_variables"],
         )
 
         self.assertEqual(expected_prompt, captured["prompt_text"])
         self.assertEqual(expected_prompt, result["raw"]["step3_prompt"])
-        self.assertNotIn("Summary:", captured["prompt_text"])
+        self.assertIn("Summary: This summary must not be auto-injected", captured["key_variables_prompt"])
+        self.assertIn("Summary: This summary must not be auto-injected", captured["prompt_text"])

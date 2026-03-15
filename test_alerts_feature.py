@@ -144,11 +144,21 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_compute_unrealized_pnl_percent_from_cost_basis(self):
+        row = {"position": 10, "avgCost": 80, "unrealizedPnL": 200}
+        value = web_server.compute_unrealized_pnl_percent(row)
+        self.assertAlmostEqual(value, 25.0)
+
+    def test_compute_unrealized_pnl_percent_uses_absolute_cost_basis_for_shorts(self):
+        row = {"position": -10, "avgCost": 80, "unrealizedPnL": 200}
+        value = web_server.compute_unrealized_pnl_percent(row)
+        self.assertAlmostEqual(value, 25.0)
+
     def test_build_positions_payload_enriches_cached_rows(self):
         class DummyConn:
             pass
 
-        rows = [{"symbol": "MSFT"}]
+        rows = [{"symbol": "MSFT", "position": 10, "avgCost": 80, "unrealizedPnL": 200}]
         analysis = [{"symbol": "MSFT", "rating": "Buy", "upside": 22.0, "confidence_diff": 1.2, "bullish_confidence": 6.5, "bearish_confidence": 5.3}]
         with mock.patch.object(web_server, "list_analysis_symbols", return_value=analysis):
             payload = web_server.build_positions_payload(DummyConn(), rows, data_source="cached", warning="offline")
@@ -157,6 +167,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(payload["warning"], "offline")
         self.assertEqual(payload["positions"][0]["rating"], "Buy")
         self.assertEqual(payload["positions"][0]["upside"], 22.0)
+        self.assertAlmostEqual(payload["positions"][0]["unrealizedPnLPercent"], 25.0)
 
     def test_build_positions_payload_with_empty_cache_returns_empty_positions(self):
         class DummyConn:

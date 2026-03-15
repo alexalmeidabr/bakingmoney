@@ -374,6 +374,27 @@ def extract_close(ticker):
     return first_valid_number(getattr(ticker, "close", None), getattr(ticker, "prevClose", None))
 
 
+def compute_unrealized_pnl_percent(position_row):
+    if not isinstance(position_row, dict):
+        return None
+
+    direct_value = safe_number(position_row.get("unrealizedPnLPercent"))
+    if direct_value is not None:
+        return direct_value
+
+    unrealized_pnl = safe_number(position_row.get("unrealizedPnL"))
+    qty = safe_number(position_row.get("position"))
+    avg_cost = safe_number(position_row.get("avgCost"))
+    if unrealized_pnl is None or qty is None or avg_cost is None:
+        return None
+
+    cost_basis = abs(avg_cost * qty)
+    if cost_basis == 0:
+        return None
+
+    return (unrealized_pnl / cost_basis) * 100
+
+
 def normalize_symbol(value):
     if not isinstance(value, str):
         return None
@@ -3085,9 +3106,15 @@ def load_positions_cache(conn):
 
 
 def build_positions_payload(conn, positions, data_source, warning=None):
+    normalized_positions = []
+    for row in positions or []:
+        normalized_row = dict(row)
+        normalized_row["unrealizedPnLPercent"] = compute_unrealized_pnl_percent(normalized_row)
+        normalized_positions.append(normalized_row)
+
     analysis_items = list_analysis_symbols(conn)
     payload = {
-        "positions": merge_positions_with_latest_analysis(positions, analysis_items),
+        "positions": merge_positions_with_latest_analysis(normalized_positions, analysis_items),
         "data_source": data_source,
     }
     if warning:
@@ -3489,6 +3516,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         "changePercent": change_percent,
                         "marketValue": market_value,
                         "unrealizedPnL": unrealized_pnl,
+                        "unrealizedPnLPercent": (
+                            (unrealized_pnl / abs(avg_cost * qty)) * 100
+                            if unrealized_pnl is not None and avg_cost is not None and qty not in (None, 0) and (avg_cost * qty) != 0
+                            else None
+                        ),
                         "dailyPnL": daily_pnl,
                         "currency": getattr(contract, "currency", None),
                     }

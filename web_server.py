@@ -1194,6 +1194,22 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS positions_cache (
+              symbol TEXT PRIMARY KEY,
+              position REAL,
+              price REAL,
+              avg_cost REAL,
+              change_percent REAL,
+              market_value REAL,
+              unrealized_pnl REAL,
+              daily_pnl REAL,
+              currency TEXT,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS thesis_review_alerts (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               symbol TEXT NOT NULL,
@@ -3004,6 +3020,81 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
     return merged
 
 
+def save_positions_cache(conn, positions):
+    now = utc_now_iso()
+    for row in positions or []:
+        symbol = normalize_symbol(row.get("symbol"))
+        if not symbol:
+            continue
+        conn.execute(
+            """
+            INSERT INTO positions_cache (
+              symbol, position, price, avg_cost, change_percent,
+              market_value, unrealized_pnl, daily_pnl, currency, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+              position = excluded.position,
+              price = excluded.price,
+              avg_cost = excluded.avg_cost,
+              change_percent = excluded.change_percent,
+              market_value = excluded.market_value,
+              unrealized_pnl = excluded.unrealized_pnl,
+              daily_pnl = excluded.daily_pnl,
+              currency = excluded.currency,
+              updated_at = excluded.updated_at
+            """,
+            (
+                symbol,
+                row.get("position"),
+                row.get("price"),
+                row.get("avgCost"),
+                row.get("changePercent"),
+                row.get("marketValue"),
+                row.get("unrealizedPnL"),
+                row.get("dailyPnL"),
+                row.get("currency"),
+                now,
+            ),
+        )
+    conn.commit()
+
+
+def load_positions_cache(conn):
+    rows = conn.execute(
+        """
+        SELECT symbol, position, price, avg_cost, change_percent,
+               market_value, unrealized_pnl, daily_pnl, currency
+        FROM positions_cache
+        ORDER BY symbol ASC
+        """
+    ).fetchall()
+    return [
+        {
+            "symbol": row["symbol"],
+            "position": row["position"],
+            "price": row["price"],
+            "avgCost": row["avg_cost"],
+            "changePercent": row["change_percent"],
+            "marketValue": row["market_value"],
+            "unrealizedPnL": row["unrealized_pnl"],
+            "dailyPnL": row["daily_pnl"],
+            "currency": row["currency"],
+        }
+        for row in rows
+    ]
+
+
+def build_positions_payload(conn, positions, data_source, warning=None):
+    analysis_items = list_analysis_symbols(conn)
+    payload = {
+        "positions": merge_positions_with_latest_analysis(positions, analysis_items),
+        "data_source": data_source,
+    }
+    if warning:
+        payload["warning"] = warning
+    return payload
+
+
 def get_latest_analysis_context(conn, symbol):
     row = conn.execute(
         """
@@ -3405,24 +3496,45 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
             conn = get_db_connection()
             try:
-                analysis_items = list_analysis_symbols(conn)
+                save_positions_cache(conn, data)
+                payload = build_positions_payload(conn, data, data_source="live")
+                logger.info(
+                    "Positions API returning live rows=%s sample_symbols=%s",
+                    len(payload["positions"]),
+                    [item.get("symbol") for item in payload["positions"][:5]],
+                )
+                self._send_json(payload)
             finally:
                 conn.close()
-            logger.info(
-                "Positions API analysis enrichment candidates=%s sample_symbols=%s",
-                len(analysis_items),
-                [item.get("symbol") for item in analysis_items[:5]],
-            )
-            self._send_json({"positions": merge_positions_with_latest_analysis(data, analysis_items)})
         except Exception as exc:
             logger.warning("Positions API live path unavailable; client may use cached fallback (%s)", exc)
-            self._send_json(
-                {
-                    "error": "Unable to fetch positions from IBKR. Check that TWS is running and API access is enabled.",
-                    "details": str(exc),
-                },
-                status=500,
-            )
+            conn = get_db_connection()
+            try:
+                cached_positions = load_positions_cache(conn)
+                if cached_positions:
+                    payload = build_positions_payload(
+                        conn,
+                        cached_positions,
+                        data_source="cached",
+                        warning="TWS offline — showing saved positions.",
+                    )
+                    logger.info(
+                        "Positions API returning cached rows=%s sample_symbols=%s",
+                        len(payload["positions"]),
+                        [item.get("symbol") for item in payload["positions"][:5]],
+                    )
+                    self._send_json(payload)
+                else:
+                    self._send_json(
+                        {
+                            "positions": [],
+                            "data_source": "empty",
+                            "warning": "TWS offline and no saved positions available.",
+                            "details": str(exc),
+                        }
+                    )
+            finally:
+                conn.close()
 
     def handle_analysis_get(self):
         conn = get_db_connection()

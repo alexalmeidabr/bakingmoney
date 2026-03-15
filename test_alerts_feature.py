@@ -127,5 +127,47 @@ class PositionsAnalysisMergeTests(unittest.TestCase):
         self.assertEqual(merged[0]["confidence_diff"], 4.1)
 
 
+class PositionsOfflineCacheTests(unittest.TestCase):
+    def test_save_and_load_positions_cache_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    rows = [{"symbol": "msft", "position": 10, "price": 100, "avgCost": 80, "changePercent": 1.2, "marketValue": 1000, "unrealizedPnL": 200, "dailyPnL": 10, "currency": "USD"}]
+                    web_server.save_positions_cache(conn, rows)
+                    loaded = web_server.load_positions_cache(conn)
+                    self.assertEqual(len(loaded), 1)
+                    self.assertEqual(loaded[0]["symbol"], "MSFT")
+                    self.assertEqual(loaded[0]["marketValue"], 1000)
+                finally:
+                    conn.close()
+
+    def test_build_positions_payload_enriches_cached_rows(self):
+        class DummyConn:
+            pass
+
+        rows = [{"symbol": "MSFT"}]
+        analysis = [{"symbol": "MSFT", "rating": "Buy", "upside": 22.0, "confidence_diff": 1.2, "bullish_confidence": 6.5, "bearish_confidence": 5.3}]
+        with mock.patch.object(web_server, "list_analysis_symbols", return_value=analysis):
+            payload = web_server.build_positions_payload(DummyConn(), rows, data_source="cached", warning="offline")
+
+        self.assertEqual(payload["data_source"], "cached")
+        self.assertEqual(payload["warning"], "offline")
+        self.assertEqual(payload["positions"][0]["rating"], "Buy")
+        self.assertEqual(payload["positions"][0]["upside"], 22.0)
+
+    def test_build_positions_payload_with_empty_cache_returns_empty_positions(self):
+        class DummyConn:
+            pass
+
+        with mock.patch.object(web_server, "list_analysis_symbols", return_value=[]):
+            payload = web_server.build_positions_payload(DummyConn(), [], data_source="empty", warning="none")
+
+        self.assertEqual(payload["positions"], [])
+        self.assertEqual(payload["data_source"], "empty")
+
+
 if __name__ == "__main__":
     unittest.main()

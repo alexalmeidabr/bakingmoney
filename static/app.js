@@ -689,13 +689,18 @@ async function loadPositions() {
 
     if (!latestPositions.length) {
       positionsTableBody.innerHTML = '';
-      positionsStatusEl.textContent = 'No positions found.';
+      positionsStatusEl.textContent = positionsPayload.warning || 'No positions found.';
+      if (positionsPayload.warning) positionsStatusEl.className = 'status error';
       return;
     }
 
     updateSortHeaderState();
     renderPositions();
-    positionsStatusEl.textContent = `Loaded ${latestPositions.length} position(s).`;
+    const source = positionsPayload.data_source ? ` source=${positionsPayload.data_source}` : '';
+    positionsStatusEl.textContent = positionsPayload.warning
+      ? `${positionsPayload.warning} Loaded ${latestPositions.length} position(s).${source}`
+      : `Loaded ${latestPositions.length} position(s).${source}`;
+    positionsStatusEl.className = positionsPayload.warning ? 'status error' : 'status';
     positionsTable.classList.remove('hidden');
   } catch (error) {
     if (latestPositions.length) {

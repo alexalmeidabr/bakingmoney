@@ -374,11 +374,11 @@ PROMPT_TEMPLATE_CONFIG = {
     },
     ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE: {
         "default": DEFAULT_PROMPT_RECENT_EVENT_CANDIDATE,
-        "required_vars": ["$Symbol", "$CompanyName", "$KeyVariables", "$EventSearchCutoff"],
+        "required_vars": ["$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables", "$EventSearchCutoff"],
     },
     ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK: {
         "default": DEFAULT_PROMPT_RECENT_EVENT_CHECK,
-        "required_vars": ["$Symbol", "$CompanyName", "$KeyVariables", "$EventCandidates"],
+        "required_vars": ["$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables", "$EventCandidates"],
     },
 }
 

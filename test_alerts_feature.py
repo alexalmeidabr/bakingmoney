@@ -37,7 +37,7 @@ class RecentEventPromptTests(unittest.TestCase):
                 web_server.init_db()
                 conn = web_server.get_db_connection()
                 try:
-                    custom = "Candidate prompt for $Symbol / $CompanyName / $KeyVariables after $EventSearchCutoff"
+                    custom = "Candidate prompt for $Symbol / $CompanyName / $Price / $BusinessModel / $KeyVariables after $EventSearchCutoff"
                     web_server.save_prompt_template(conn, web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE, custom)
                     templates, sources = web_server.get_all_prompt_templates(conn)
                     self.assertEqual(templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE], custom)
@@ -45,7 +45,37 @@ class RecentEventPromptTests(unittest.TestCase):
                     web_server.reset_prompt_template(conn, web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE)
                     templates, sources = web_server.get_all_prompt_templates(conn)
                     self.assertIn("$EventSearchCutoff", templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE])
+                    self.assertIn("$Price", templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE])
+                    self.assertIn("$BusinessModel", templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE])
                     self.assertEqual(sources[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE], "default")
+                finally:
+                    conn.close()
+
+
+
+    def test_recent_event_candidate_prompt_requires_price_and_business_model_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    invalid = "Candidate prompt for $Symbol $CompanyName $KeyVariables after $EventSearchCutoff"
+                    with self.assertRaises(ValueError):
+                        web_server.save_prompt_template(conn, web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE, invalid)
+                finally:
+                    conn.close()
+
+    def test_recent_event_check_prompt_requires_price_and_business_model_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    invalid = "Check prompt for $Symbol $CompanyName $KeyVariables and $EventCandidates"
+                    with self.assertRaises(ValueError):
+                        web_server.save_prompt_template(conn, web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK, invalid)
                 finally:
                     conn.close()
 
@@ -421,6 +451,13 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("let alertsStatusFilter = 'New';", js)
         self.assertIn('function getFilteredAlerts()', js)
         self.assertIn("alertsStatusFilterEl.addEventListener('change'", js)
+
+    def test_prompt_candidate_field_is_wired_in_load_save_and_reset(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn("promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || ''", js)
+        self.assertIn("analysis_prompt_recent_event_candidate: promptRecentEventCandidatesEl.value.trim()", js)
+        self.assertIn("promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || ''", js)
 
     def test_alert_detail_view_elements_exist(self):
         from pathlib import Path

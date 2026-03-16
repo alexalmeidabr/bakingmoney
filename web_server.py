@@ -45,6 +45,7 @@ NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
 ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
+ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE = "analysis_prompt_recent_event_candidate"
 ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK = "analysis_prompt_recent_event_check"
 ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
 ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
@@ -216,7 +217,7 @@ Rules:
 - No markdown.
 - No commentary outside JSON."""
 
-DEFAULT_PROMPT_RECENT_EVENT_CHECK = """You are an equity analyst reviewing whether recent company-specific developments may materially affect an existing 5-year stock thesis.
+DEFAULT_PROMPT_RECENT_EVENT_CANDIDATE = """You are an equity analyst assistant preparing candidate recent events for later thesis-review analysis.
 
 Company context:
 - Symbol: $Symbol
@@ -225,30 +226,89 @@ Company context:
 - Business model: $BusinessModel
 - Key variables: $KeyVariables
 
+Search context:
+- Only consider events after this cutoff date/time: $EventSearchCutoff
+
 Task:
-Review recent company-specific developments and determine whether any event should trigger a manual thesis-review alert.
+Identify recent company-specific candidate events that may be relevant for later thesis review.
 
 Definitions:
-- A thesis-review alert should be created only if a recent event may materially strengthen, weaken, challenge, or add to the current 5-year key-variable framework.
-- Material means the event could plausibly affect revenue growth, margins, cash flow, valuation, capital needs, competitive position, or scenario probabilities over a multi-year horizon.
-- Do not create alerts for short-term noise that does not change the long-term thesis.
+- A candidate event is a recent company-specific development that could potentially matter to the business, key variables, or scenario outlook, but this step should not yet decide whether an alert must be created.
+- Focus on collecting structured event candidates and their sources.
+- Ignore events older than the cutoff.
+- Ignore generic market commentary unless it is clearly company-specific.
 
 Guidance:
-- Check whether the event:
-  - strengthens an existing key variable
-  - weakens an existing key variable
-  - suggests a missing key variable
-  - suggests that a current key variable has become less relevant
-- Focus on company-specific developments such as:
-  - earnings/guidance changes
+- Look for company-specific developments such as:
+  - earnings or guidance changes
   - major customer wins or losses
   - large contracts or backlog changes
   - acquisitions or divestitures
   - financing, dilution, or capital raising
   - product launches or technical milestones
-  - regulatory decisions that are central to the business model
+  - regulatory decisions central to the business
   - major competitive developments
-- Avoid generic market commentary unless it clearly affects this company’s core business model.
+  - management changes if clearly material
+- Prefer primary or highly reliable sources when available.
+- If multiple sources describe the same event, include them under the same candidate event rather than creating duplicates.
+- Keep summaries concise and factual.
+
+Return ONLY valid JSON in this exact structure:
+{
+  "symbol": "$Symbol",
+  "event_candidates": [
+    {
+      "event_title": "text",
+      "event_summary": "text",
+      "event_date": "YYYY-MM-DD",
+      "event_sources": [
+        {
+          "title": "text",
+          "url": "text",
+          "source_name": "text",
+          "published_at": "YYYY-MM-DD"
+        }
+      ]
+    }
+  ]
+}
+
+Rules:
+- Return only events newer than the cutoff.
+- Do not create duplicate candidate events for the same underlying development.
+- event_summary should be concise and factual.
+- event_sources should include the most relevant supporting sources available.
+- This step should identify candidates only, not decide whether an alert should be created.
+- If no relevant candidate events are found, return an empty event_candidates array.
+- JSON only.
+- No markdown.
+- No commentary outside JSON."""
+
+DEFAULT_PROMPT_RECENT_EVENT_CHECK = """You are an equity analyst reviewing whether recent company-specific event candidates may materially affect an existing 5-year stock thesis.
+
+Company context:
+- Symbol: $Symbol
+- Company name: $CompanyName
+- Current price: $Price USD
+- Business model: $BusinessModel
+- Key variables: $KeyVariables
+- Event candidates: $EventCandidates
+
+Task:
+Review the provided recent event candidates and determine whether any should trigger a manual thesis-review alert.
+
+Definitions:
+- A thesis-review alert should be created only if an event candidate may materially strengthen, weaken, challenge, or add to the current 5-year key-variable framework.
+- Material means the event could plausibly affect revenue growth, margins, cash flow, valuation, capital needs, competitive position, or scenario probabilities over a multi-year horizon.
+- Do not create alerts for short-term noise that does not change the long-term thesis.
+
+Guidance:
+- Check whether each candidate event:
+  - strengthens an existing key variable
+  - weakens an existing key variable
+  - suggests a missing key variable
+  - suggests that a current key variable has become less relevant
+- Focus on thesis impact, not general news summarization.
 - Do not automatically change any key variable. This task is only to create review alerts.
 
 Return ONLY valid JSON in this exact structure:
@@ -257,17 +317,17 @@ Return ONLY valid JSON in this exact structure:
   "alerts": [
     {
       "alert_type": "text",
-      "event_date": "YYYY-MM-DD or ISO-8601 datetime",
       "event_summary": "text",
       "impact_summary": "text",
       "affected_variables": ["text"],
       "suggested_action": "text",
+      "event_date": "YYYY-MM-DD",
       "event_sources": [
         {
           "title": "text",
-          "url": "https://...",
+          "url": "text",
           "source_name": "text",
-          "published_at": "YYYY-MM-DD or ISO-8601 datetime"
+          "published_at": "YYYY-MM-DD"
         }
       ]
     }
@@ -275,22 +335,22 @@ Return ONLY valid JSON in this exact structure:
 }
 
 Rules:
-- Return only alerts for material thesis-impacting events.
+- Return only alerts for material thesis-impacting event candidates.
 - If no material event is found, return an empty alerts array.
 - alert_type must be exactly one of:
   - Strengthens existing variable
   - Weakens existing variable
   - Potential new variable
   - Potentially obsolete variable
-- affected_variables should list the current variable text(s) impacted when applicable.
+- affected_variables should list the impacted current variable text(s) when applicable.
 - Keep event_summary and impact_summary concise.
-- Include the best event_date when available from supporting sources.
-- Include event_sources with one or more concrete references when possible.
-- For existing variables, add in the suggested_action a recommendation for the update on importance and confidence
+- If the alert strengthens or weakens an existing variable, include in suggested_action a concise recommendation on whether confidence and/or importance should be reviewed.
 - Do not modify the variables directly.
+- Base the analysis only on the provided candidate events and their sources.
 - JSON only.
 - No markdown.
 - No commentary outside JSON."""
+
 
 ALLOWED_ALERT_TYPES = {
     "Strengthens existing variable",
@@ -312,9 +372,13 @@ PROMPT_TEMPLATE_CONFIG = {
         "default": DEFAULT_PROMPT_SCENARIOS,
         "required_vars": ["$Symbol", "$CompanyName", "$BusinessModel", "$KeyVariables"],
     },
+    ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE: {
+        "default": DEFAULT_PROMPT_RECENT_EVENT_CANDIDATE,
+        "required_vars": ["$Symbol", "$CompanyName", "$KeyVariables", "$EventSearchCutoff"],
+    },
     ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK: {
         "default": DEFAULT_PROMPT_RECENT_EVENT_CHECK,
-        "required_vars": ["$Symbol", "$CompanyName", "$KeyVariables"],
+        "required_vars": ["$Symbol", "$CompanyName", "$KeyVariables", "$EventCandidates"],
     },
 }
 
@@ -999,7 +1063,7 @@ def render_scenario_prompt(template, values):
 
 def render_recent_event_prompt(template, values):
     """Render recent-event prompt from configured template using placeholder substitution only."""
-    supported_placeholders = ("$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables")
+    supported_placeholders = ("$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables", "$EventSearchCutoff", "$EventCandidates")
     substitution_context = {
         placeholder: str(values.get(placeholder, ""))
         for placeholder in supported_placeholders
@@ -1023,18 +1087,24 @@ def build_business_model_prompt_value(business_model="", business_summary=""):
     return ""
 
 
-def build_prompt_context(symbol, price=None, company_name="", business_model="", business_summary="", key_variables=None):
+def build_prompt_context(symbol, price=None, company_name="", business_model="", business_summary="", key_variables=None, event_search_cutoff="", event_candidates=""):
+
     symbol_value = symbol or "unknown"
     price_value = f"{price:.2f}" if isinstance(price, (int, float)) and math.isfinite(price) else "unknown"
     company_name_value = company_name or "unknown"
     business_value = build_business_model_prompt_value(business_model=business_model, business_summary=business_summary)
     key_vars_value = format_key_variables_for_prompt(key_variables or [])
+    event_candidates_value = event_candidates
+    if not isinstance(event_candidates_value, str):
+        event_candidates_value = json.dumps(event_candidates_value or [], separators=(",", ":"), ensure_ascii=False)
     return {
         "$Symbol": symbol_value,
         "$Price": price_value,
         "$CompanyName": company_name_value,
         "$BusinessModel": business_value,
         "$KeyVariables": key_vars_value,
+        "$EventSearchCutoff": str(event_search_cutoff or ""),
+        "$EventCandidates": event_candidates_value,
     }
 
 
@@ -1591,7 +1661,7 @@ def _looks_like_unsupported_web_tool_error(response_text):
 
 
 def get_openai_timeout_seconds_for_step(step_name):
-    if step_name == "recent_event_check":
+    if step_name in {"recent_event_check", "recent_event_candidates"}:
         return max(10.0, OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS)
     return max(10.0, OPENAI_REQUEST_TIMEOUT_SECONDS)
 
@@ -3377,10 +3447,96 @@ def _merge_alert_items_by_event(items):
     return list(merged.values())
 
 
-def run_recent_event_check(conn, symbols):
-    templates, _sources = get_all_prompt_templates(conn)
-    template = templates[ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK]
-    schema = {
+def _normalize_recent_event_candidate(item):
+    if not isinstance(item, dict):
+        return None
+    event_title = str(item.get("event_title", "")).strip()
+    event_summary = str(item.get("event_summary", "")).strip()
+    event_sources = _normalize_event_sources(item.get("event_sources"))
+    event_date = _choose_alert_event_date(item.get("event_date"), event_sources)
+    if not event_title and not event_summary:
+        return None
+    if not event_summary:
+        event_summary = event_title
+    if not event_title:
+        event_title = event_summary
+    return {
+        "event_title": event_title,
+        "event_summary": event_summary,
+        "event_date": event_date,
+        "event_sources": event_sources,
+    }
+
+
+def _is_candidate_after_cutoff(candidate, cutoff_iso):
+    if not cutoff_iso:
+        return True
+    cutoff_dt = _parse_iso_datetime(cutoff_iso)
+    event_dt = _parse_iso_datetime(candidate.get("event_date"))
+    if not cutoff_dt or not event_dt:
+        return False
+    return event_dt > cutoff_dt
+
+
+def _merge_candidate_events(items):
+    merged = {}
+    for candidate in items:
+        key = ((candidate.get("event_title") or "").lower(), (candidate.get("event_summary") or "").lower())
+        if key not in merged:
+            merged[key] = dict(candidate)
+            continue
+        existing = merged[key]
+        existing["event_sources"] = _normalize_event_sources((existing.get("event_sources") or []) + (candidate.get("event_sources") or []))
+        existing_date = _parse_iso_datetime(existing.get("event_date"))
+        incoming_date = _parse_iso_datetime(candidate.get("event_date"))
+        if incoming_date and (not existing_date or incoming_date < existing_date):
+            existing["event_date"] = candidate.get("event_date")
+    return list(merged.values())
+
+
+def _build_recent_event_candidate_schema():
+    return {
+        "name": "analysis_recent_event_candidates",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "event_candidates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "event_title": {"type": "string"},
+                            "event_summary": {"type": "string"},
+                            "event_date": {"type": "string"},
+                            "event_sources": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "url": {"type": "string"},
+                                        "source_name": {"type": "string"},
+                                        "published_at": {"type": "string"},
+                                    },
+                                    "required": ["title", "url", "source_name", "published_at"],
+                                },
+                            },
+                        },
+                        "required": ["event_title", "event_summary", "event_date", "event_sources"],
+                    },
+                },
+            },
+            "required": ["symbol", "event_candidates"],
+        },
+    }
+
+
+def _build_recent_event_check_schema():
+    return {
         "name": "analysis_recent_events",
         "schema": {
             "type": "object",
@@ -3430,6 +3586,12 @@ def run_recent_event_check(conn, symbols):
         },
     }
 
+
+def run_recent_event_check(conn, symbols):
+    templates, _sources = get_all_prompt_templates(conn)
+    candidate_template = templates[ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE]
+    check_template = templates[ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK]
+
     summary = {
         "symbols_checked": 0,
         "alerts_created": 0,
@@ -3443,8 +3605,10 @@ def run_recent_event_check(conn, symbols):
         cutoff_used = get_recent_event_search_cutoff(conn, symbol)
         try:
             context = get_latest_analysis_context(conn, symbol)
-            prompt = render_recent_event_prompt(
-                template,
+
+            # Step 2: discover post-cutoff candidate events.
+            candidate_prompt = render_recent_event_prompt(
+                candidate_template,
                 build_prompt_context(
                     symbol=context["symbol"],
                     price=context["current_price"],
@@ -3452,26 +3616,67 @@ def run_recent_event_check(conn, symbols):
                     business_model=context["business_model"],
                     business_summary=context["business_summary"],
                     key_variables=context["key_variables"],
+                    event_search_cutoff=cutoff_used or "none",
                 ),
             )
-            response = request_ai_step("recent_event_check", prompt, schema)
-            alerts = response.get("alerts") if isinstance(response, dict) else None
-            if not isinstance(alerts, list) or not alerts:
+            candidate_response = request_ai_step("recent_event_candidates", candidate_prompt, _build_recent_event_candidate_schema())
+            raw_candidates = candidate_response.get("event_candidates") if isinstance(candidate_response, dict) else None
+            raw_candidates = raw_candidates if isinstance(raw_candidates, list) else []
+            normalized_candidates = [item for item in (_normalize_recent_event_candidate(raw) for raw in raw_candidates) if item]
+            normalized_candidates = _merge_candidate_events(normalized_candidates)
+            post_cutoff_candidates = [item for item in normalized_candidates if _is_candidate_after_cutoff(item, cutoff_used)]
+
+            logger.info(
+                "Recent-event candidates symbol=%s cutoff=%s raw=%d normalized=%d post_cutoff=%d",
+                symbol,
+                cutoff_used,
+                len(raw_candidates),
+                len(normalized_candidates),
+                len(post_cutoff_candidates),
+            )
+
+            if not post_cutoff_candidates:
                 summary["no_material_impact_count"] += 1
                 record_recent_event_check(conn, symbol, cutoff_used, alerts_created_count=0, events_found_count=0)
                 continue
 
-            normalized_alerts = []
-            for raw_alert in alerts:
-                normalized = _normalize_recent_event_alert(raw_alert)
-                if normalized:
-                    normalized_alerts.append(normalized)
+            event_candidates_text = json.dumps(post_cutoff_candidates, separators=(",", ":"), ensure_ascii=False)
+
+            # Step 4/5: evaluate candidate events for material thesis impact.
+            check_prompt = render_recent_event_prompt(
+                check_template,
+                build_prompt_context(
+                    symbol=context["symbol"],
+                    price=context["current_price"],
+                    company_name=context["company_name"],
+                    business_model=context["business_model"],
+                    business_summary=context["business_summary"],
+                    key_variables=context["key_variables"],
+                    event_candidates=event_candidates_text,
+                ),
+            )
+            check_response = request_ai_step("recent_event_check", check_prompt, _build_recent_event_check_schema())
+            alerts = check_response.get("alerts") if isinstance(check_response, dict) else None
+            if not isinstance(alerts, list) or not alerts:
+                summary["no_material_impact_count"] += 1
+                record_recent_event_check(conn, symbol, cutoff_used, alerts_created_count=0, events_found_count=len(post_cutoff_candidates))
+                continue
+
+            normalized_alerts = [item for item in (_normalize_recent_event_alert(raw_alert) for raw_alert in alerts) if item]
             normalized_alerts = _merge_alert_items_by_event(normalized_alerts)
+            # Defensive filter: ensure only post-cutoff alerts persist even if model returns stale candidates.
             filtered_alerts = [item for item in normalized_alerts if _is_alert_after_cutoff(item, cutoff_used)]
 
             created_for_symbol = 0
+            raw_response = {
+                "candidate_prompt": candidate_prompt,
+                "candidate_response": candidate_response,
+                "candidate_events_used": post_cutoff_candidates,
+                "evaluation_prompt": check_prompt,
+                "evaluation_response": check_response,
+            }
             for normalized in filtered_alerts:
-                created = insert_recent_event_alert(conn, context, normalized, prompt, response, cutoff_used)
+                created = insert_recent_event_alert(conn, context, normalized, check_prompt, raw_response, cutoff_used)
                 if created:
                     summary["alerts_created"] += 1
                     created_for_symbol += 1
@@ -3484,7 +3689,7 @@ def run_recent_event_check(conn, symbols):
                 symbol,
                 cutoff_used,
                 alerts_created_count=created_for_symbol,
-                events_found_count=len(filtered_alerts),
+                events_found_count=len(post_cutoff_candidates),
             )
         except Exception as exc:
             summary["errors_count"] += 1

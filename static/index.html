@@ -187,8 +187,14 @@
           </section>
 
           <section class="detail-card">
+            <h3>Recent Event Candidate Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong> (optional), <strong>$KeyVariables</strong> (required), <strong>$EventSearchCutoff</strong> (required)</p>
+            <textarea id="prompt-recent-event-candidates" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
             <h3>Recent Event Check Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong> (optional), <strong>$KeyVariables</strong> (required)</p>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong> (optional), <strong>$KeyVariables</strong> (required), <strong>$EventCandidates</strong> (required)</p>
             <textarea id="prompt-recent-events" class="config-textarea" rows="14"></textarea>
             <div class="table-actions config-actions">
               <button id="prompt-save-btn">Save Prompts</button>

@@ -18,6 +18,8 @@ class RecentEventPromptTests(unittest.TestCase):
                 "$Price": "100.00",
                 "$BusinessModel": "chips",
                 "$KeyVariables": '[{"variable":"demand"}]',
+                "$EventSearchCutoff": "2026-03-10T00:00:00+00:00",
+                "$EventCandidates": '[{"event_title":"x"}]',
                 "$Hidden": "should-not-apply",
             },
         )
@@ -25,6 +27,27 @@ class RecentEventPromptTests(unittest.TestCase):
         self.assertIn("Company: NVIDIA", rendered)
         self.assertIn("Vars: [{\"variable\":\"demand\"}]", rendered)
         self.assertIn("Ignore: $Hidden", rendered)
+
+
+
+    def test_recent_event_candidate_prompt_can_be_saved_loaded_and_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    custom = "Candidate prompt for $Symbol / $CompanyName / $KeyVariables after $EventSearchCutoff"
+                    web_server.save_prompt_template(conn, web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE, custom)
+                    templates, sources = web_server.get_all_prompt_templates(conn)
+                    self.assertEqual(templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE], custom)
+                    self.assertEqual(sources[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE], "custom")
+                    web_server.reset_prompt_template(conn, web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE)
+                    templates, sources = web_server.get_all_prompt_templates(conn)
+                    self.assertIn("$EventSearchCutoff", templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE])
+                    self.assertEqual(sources[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE], "default")
+                finally:
+                    conn.close()
 
 
 class AlertsDedupTests(unittest.TestCase):
@@ -220,7 +243,23 @@ class RecentEventAlertEnhancementTests(unittest.TestCase):
                     )
                     conn.commit()
 
-                    ai_response = {
+                    candidate_response = {
+                        "symbol": "NVDA",
+                        "event_candidates": [
+                            {
+                                "event_title": "Customer delay",
+                                "event_summary": "Large customer delayed rollout",
+                                "event_date": "2026-03-05",
+                                "event_sources": [
+                                    {"title": "Delay report", "url": "https://a.com/x", "source_name": "A", "published_at": "2026-03-04"},
+                                    {"title": "Delay report", "url": "https://a.com/x", "source_name": "A", "published_at": "2026-03-04"},
+                                    {"title": "Supplier note", "url": "https://b.com/y", "source_name": "B", "published_at": "2026-03-03"},
+                                    {"title": "Alt source", "url": "https://c.com/z", "source_name": "C", "published_at": "2026-03-06"},
+                                ],
+                            }
+                        ],
+                    }
+                    eval_response = {
                         "symbol": "NVDA",
                         "alerts": [
                             {
@@ -232,24 +271,13 @@ class RecentEventAlertEnhancementTests(unittest.TestCase):
                                 "suggested_action": "Review confidence",
                                 "event_sources": [
                                     {"title": "Delay report", "url": "https://a.com/x", "source_name": "A", "published_at": "2026-03-04"},
-                                    {"title": "Delay report", "url": "https://a.com/x", "source_name": "A", "published_at": "2026-03-04"},
                                     {"title": "Supplier note", "url": "https://b.com/y", "source_name": "B", "published_at": "2026-03-03"},
+                                    {"title": "Alt source", "url": "https://c.com/z", "source_name": "C", "published_at": "2026-03-06"},
                                 ],
-                            },
-                            {
-                                "alert_type": "Weakens existing variable",
-                                "event_date": "2026-03-05",
-                                "event_summary": "Large customer delayed rollout",
-                                "impact_summary": "Demand ramp could slip",
-                                "affected_variables": ["Demand"],
-                                "suggested_action": "Review confidence",
-                                "event_sources": [
-                                    {"title": "Alt source", "url": "https://c.com/z", "source_name": "C", "published_at": "2026-03-06"}
-                                ],
-                            },
+                            }
                         ],
                     }
-                    with mock.patch.object(web_server, "request_ai_step", return_value=ai_response):
+                    with mock.patch.object(web_server, "request_ai_step", side_effect=[candidate_response, eval_response]):
                         summary = web_server.run_recent_event_check(conn, ["NVDA"])
 
                     self.assertEqual(summary["alerts_created"], 1)
@@ -275,18 +303,26 @@ class RecentEventAlertEnhancementTests(unittest.TestCase):
                     )
                     conn.commit()
 
-                    ai_response = {
+                    candidate_response = {
                         "symbol": "NVDA",
-                        "alerts": [
+                        "event_candidates": [
                             {
-                                "alert_type": "Potential new variable",
-                                "event_date": "2026-03-09",
+                                "event_title": "Old event",
                                 "event_summary": "Old event",
-                                "impact_summary": "Should be filtered",
-                                "affected_variables": [],
-                                "suggested_action": "None",
+                                "event_date": "2026-03-09",
                                 "event_sources": [{"title": "Old", "url": "https://old", "source_name": "Old", "published_at": "2026-03-09"}],
                             },
+                            {
+                                "event_title": "New event",
+                                "event_summary": "New event",
+                                "event_date": "2026-03-11",
+                                "event_sources": [{"title": "New", "url": "https://new", "source_name": "New", "published_at": "2026-03-11"}],
+                            },
+                        ],
+                    }
+                    eval_response = {
+                        "symbol": "NVDA",
+                        "alerts": [
                             {
                                 "alert_type": "Potential new variable",
                                 "event_date": "2026-03-11",
@@ -298,7 +334,7 @@ class RecentEventAlertEnhancementTests(unittest.TestCase):
                             },
                         ],
                     }
-                    with mock.patch.object(web_server, "request_ai_step", return_value=ai_response):
+                    with mock.patch.object(web_server, "request_ai_step", side_effect=[candidate_response, eval_response]):
                         summary = web_server.run_recent_event_check(conn, ["NVDA"])
 
                     self.assertEqual(summary["alerts_created"], 1)
@@ -308,7 +344,7 @@ class RecentEventAlertEnhancementTests(unittest.TestCase):
                 finally:
                     conn.close()
 
-    def test_recent_event_schema_requires_event_date_field(self):
+    def test_recent_event_schemas_include_expected_required_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")
             with mock.patch.object(web_server, "DB_PATH", db_path):
@@ -319,14 +355,42 @@ class RecentEventAlertEnhancementTests(unittest.TestCase):
                     captured = {}
 
                     def fake_request(step, prompt, schema):
-                        captured["schema"] = schema
+                        captured[step] = schema
+                        if step == "recent_event_candidates":
+                            return {"symbol": "NVDA", "event_candidates": [{"event_title": "X", "event_summary": "X", "event_date": "2026-03-12", "event_sources": []}]}
                         return {"symbol": "NVDA", "alerts": []}
 
                     with mock.patch.object(web_server, "request_ai_step", side_effect=fake_request):
                         web_server.run_recent_event_check(conn, ["NVDA"])
 
-                    required = captured["schema"]["schema"]["properties"]["alerts"]["items"]["required"]
-                    self.assertIn("event_date", required)
+                    candidate_required = captured["recent_event_candidates"]["schema"]["properties"]["event_candidates"]["items"]["required"]
+                    self.assertIn("event_date", candidate_required)
+                    eval_required = captured["recent_event_check"]["schema"]["properties"]["alerts"]["items"]["required"]
+                    self.assertIn("event_date", eval_required)
+                finally:
+                    conn.close()
+
+    def test_event_candidates_placeholder_is_passed_to_evaluation_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn)
+                    eval_prompts = []
+
+                    def fake_request(step, prompt, schema):
+                        if step == "recent_event_candidates":
+                            return {"symbol": "NVDA", "event_candidates": [{"event_title": "Fresh", "event_summary": "Fresh", "event_date": "2026-03-12", "event_sources": []}]}
+                        eval_prompts.append(prompt)
+                        return {"symbol": "NVDA", "alerts": []}
+
+                    with mock.patch.object(web_server, "request_ai_step", side_effect=fake_request):
+                        web_server.run_recent_event_check(conn, ["NVDA"])
+
+                    self.assertTrue(eval_prompts)
+                    self.assertIn('"event_title":"Fresh"', eval_prompts[0])
                 finally:
                     conn.close()
 
@@ -361,6 +425,7 @@ class AlertsUiStructureTests(unittest.TestCase):
     def test_alert_detail_view_elements_exist(self):
         from pathlib import Path
         html = Path('static/index.html').read_text(encoding='utf-8')
+        self.assertIn('id="prompt-recent-event-candidates"', html)
         self.assertIn('id="alert-detail-view"', html)
         self.assertIn('id="alert-detail-sources"', html)
 

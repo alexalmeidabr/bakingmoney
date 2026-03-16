@@ -59,6 +59,7 @@ const promptStatusEl = document.getElementById('prompt-status');
 const promptBusinessModelEl = document.getElementById('prompt-business-model');
 const promptKeyVariablesEl = document.getElementById('prompt-key-variables');
 const promptScenariosEl = document.getElementById('prompt-scenarios');
+const promptRecentEventCandidatesEl = document.getElementById('prompt-recent-event-candidates');
 const promptRecentEventsEl = document.getElementById('prompt-recent-events');
 const promptSaveBtn = document.getElementById('prompt-save-btn');
 const promptResetBtn = document.getElementById('prompt-reset-btn');
@@ -1090,14 +1091,15 @@ async function loadPromptConfiguration() {
     promptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
     promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
     promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
+    promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || '';
     promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || '';
-    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}, recent-events=${sources.analysis_prompt_recent_event_check || 'default'}).`;
+    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}, recent-event-candidates=${sources.analysis_prompt_recent_event_candidate || 'default'}, recent-events=${sources.analysis_prompt_recent_event_check || 'default'}).`;
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
 async function savePromptConfiguration() {
   promptStatusEl.textContent = 'Saving prompts…'; promptStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value, analysis_prompt_recent_event_check: promptRecentEventsEl.value } }) });
+  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value, analysis_prompt_recent_event_candidate: promptRecentEventCandidatesEl.value, analysis_prompt_recent_event_check: promptRecentEventsEl.value } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save prompts')); promptStatusEl.textContent = 'Prompts saved.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -1105,7 +1107,7 @@ async function savePromptConfiguration() {
 async function resetPromptConfiguration() {
   promptStatusEl.textContent = 'Restoring default prompts…'; promptStatusEl.className = 'status';
   try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset prompts'));
-    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || ''; promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || '';
+    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || ''; promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || ''; promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || '';
     promptStatusEl.textContent = 'Default prompts restored.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -1126,6 +1128,9 @@ ${rendered.analysis_prompt_key_variables || ''}
 
 [Scenarios Prompt]
 ${rendered.analysis_prompt_scenarios || ''}
+
+[Recent Event Candidate Prompt]
+${rendered.analysis_prompt_recent_event_candidate || ''}
 
 [Recent Event Check Prompt]
 ${rendered.analysis_prompt_recent_event_check || ''}`;

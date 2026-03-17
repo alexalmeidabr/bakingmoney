@@ -465,3 +465,11 @@ th.sortable[data-sort-direction='desc']::after {
 .clean-list li {
   margin-bottom: 8px;
 }
+
+
+#alerts-table th:nth-child(5),
+#alerts-table td:nth-child(5) {
+  white-space: normal;
+  min-width: 260px;
+  word-break: break-word;
+}

@@ -466,6 +466,12 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="alert-detail-view"', html)
         self.assertIn('id="alert-detail-sources"', html)
 
+    def test_alerts_affected_variables_column_has_wrap_style(self):
+        from pathlib import Path
+        css = Path('static/styles.css').read_text(encoding='utf-8')
+        self.assertIn('#alerts-table th:nth-child(5)', css)
+        self.assertIn('white-space: normal;', css)
+
 
 if __name__ == "__main__":
     unittest.main()

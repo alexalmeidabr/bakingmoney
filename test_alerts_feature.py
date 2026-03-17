@@ -452,6 +452,12 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function getFilteredAlerts()', js)
         self.assertIn("alertsStatusFilterEl.addEventListener('change'", js)
 
+    def test_alert_detail_next_button_is_wired(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn('function openNextAlertDetail()', js)
+        self.assertIn("alertDetailNextBtn.addEventListener('click'", js)
+
     def test_prompt_candidate_field_is_wired_in_load_save_and_reset(self):
         from pathlib import Path
         js = Path('static/app.js').read_text(encoding='utf-8')
@@ -467,6 +473,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="alert-detail-sources"', html)
         self.assertIn('id="alert-detail-review-btn"', html)
         self.assertIn('id="alert-detail-dismiss-btn"', html)
+        self.assertIn('id="alert-detail-next-btn"', html)
 
     def test_alerts_affected_variables_column_has_wrap_style(self):
         from pathlib import Path

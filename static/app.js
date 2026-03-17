@@ -85,6 +85,7 @@ const alertDetailSourcesEl = document.getElementById('alert-detail-sources');
 const alertDetailSuggestedEl = document.getElementById('alert-detail-suggested');
 const alertDetailReviewBtn = document.getElementById('alert-detail-review-btn');
 const alertDetailDismissBtn = document.getElementById('alert-detail-dismiss-btn');
+const alertDetailNextBtn = document.getElementById('alert-detail-next-btn');
 
 const configurationStatusEl = document.getElementById('configuration-status');
 const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait-seconds');
@@ -974,6 +975,32 @@ function getFilteredAlerts() {
   return latestAlerts.filter((alert) => (alert.status || 'New') === alertsStatusFilter);
 }
 
+function getCurrentAlertIndexWithinFiltered() {
+  if (!currentAlertDetailId) return -1;
+  const filtered = getFilteredAlerts();
+  return filtered.findIndex((item) => String(item.id) === String(currentAlertDetailId));
+}
+
+async function openNextAlertDetail() {
+  const filtered = getFilteredAlerts();
+  const index = getCurrentAlertIndexWithinFiltered();
+  const next = index >= 0 ? filtered[index + 1] : null;
+  if (!next) {
+    alertDetailStatusEl.textContent = 'No next alert in current filter.';
+    alertDetailStatusEl.className = 'status';
+    return;
+  }
+  await openAlertDetail(next.id);
+}
+
+async function refreshAlertsData() {
+  const response = await fetch('/api/alerts');
+  const payload = await response.json();
+  if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load alerts'));
+  latestAlerts = payload.alerts || [];
+  return payload;
+}
+
 function renderAlertSources(sources) {
   alertDetailSourcesEl.innerHTML = '';
   const items = Array.isArray(sources) ? sources : [];
@@ -1034,6 +1061,7 @@ async function openAlertDetail(alertId) {
     alertDetailSuggestedEl.textContent = alert.suggested_action || '—';
     alertDetailReviewBtn.disabled = false;
     alertDetailDismissBtn.disabled = false;
+    alertDetailNextBtn.disabled = getCurrentAlertIndexWithinFiltered() < 0 || getCurrentAlertIndexWithinFiltered() >= (getFilteredAlerts().length - 1);
     renderAlertSources(alert.event_sources || []);
     alertDetailPanelsEl.classList.remove('hidden');
     alertDetailStatusEl.textContent = `Status: ${alert.status || 'New'}`;
@@ -1042,6 +1070,7 @@ async function openAlertDetail(alertId) {
     alertDetailStatusEl.className = 'status error';
     alertDetailReviewBtn.disabled = true;
     alertDetailDismissBtn.disabled = true;
+    alertDetailNextBtn.disabled = true;
   }
 }
 
@@ -1051,10 +1080,7 @@ async function loadAlerts() {
   alertsStatusEl.className = 'status';
   alertsTable.classList.add('hidden');
   try {
-    const response = await fetch('/api/alerts');
-    const payload = await response.json();
-    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load alerts'));
-    latestAlerts = payload.alerts || [];
+    await refreshAlertsData();
     if (!latestAlerts.length) {
       alertsStatusEl.textContent = 'No alerts found.';
       return;
@@ -1079,13 +1105,14 @@ async function updateAlertStatus(alertId, status, options = {}) {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to update alert status'));
+
+    await refreshAlertsData();
+
     if (stayOnDetail) {
       await openAlertDetail(alertId);
       return;
     }
-    if (currentAlertDetailId && String(currentAlertDetailId) === String(alertId)) {
-      await openAlertDetail(alertId);
-    }
+
     await loadAlerts();
   } catch (error) {
     if (stayOnDetail) {
@@ -1397,6 +1424,7 @@ analysisBackBtn.addEventListener('click', showAnalysisList);
 alertDetailBackBtn.addEventListener('click', showAlertsListView);
 alertDetailReviewBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Reviewed', { stayOnDetail: true }); });
 alertDetailDismissBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Dismissed', { stayOnDetail: true }); });
+alertDetailNextBtn.addEventListener('click', () => openNextAlertDetail());
 alertsStatusFilterEl.addEventListener('change', () => {
   alertsStatusFilter = alertsStatusFilterEl.value || 'New';
   renderAlertsList();

@@ -465,6 +465,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="prompt-recent-event-candidates"', html)
         self.assertIn('id="alert-detail-view"', html)
         self.assertIn('id="alert-detail-sources"', html)
+        self.assertIn('id="alert-detail-review-btn"', html)
+        self.assertIn('id="alert-detail-dismiss-btn"', html)
 
     def test_alerts_affected_variables_column_has_wrap_style(self):
         from pathlib import Path

@@ -83,6 +83,8 @@ const alertDetailEventEl = document.getElementById('alert-detail-event');
 const alertDetailDateEl = document.getElementById('alert-detail-date');
 const alertDetailSourcesEl = document.getElementById('alert-detail-sources');
 const alertDetailSuggestedEl = document.getElementById('alert-detail-suggested');
+const alertDetailReviewBtn = document.getElementById('alert-detail-review-btn');
+const alertDetailDismissBtn = document.getElementById('alert-detail-dismiss-btn');
 
 const configurationStatusEl = document.getElementById('configuration-status');
 const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait-seconds');
@@ -1030,12 +1032,16 @@ async function openAlertDetail(alertId) {
     alertDetailEventEl.textContent = alert.event_summary || '—';
     alertDetailDateEl.textContent = formatDateTime(alert.event_date || alert.created_at);
     alertDetailSuggestedEl.textContent = alert.suggested_action || '—';
+    alertDetailReviewBtn.disabled = false;
+    alertDetailDismissBtn.disabled = false;
     renderAlertSources(alert.event_sources || []);
     alertDetailPanelsEl.classList.remove('hidden');
     alertDetailStatusEl.textContent = `Status: ${alert.status || 'New'}`;
   } catch (error) {
     alertDetailStatusEl.textContent = `Error: ${error.message}`;
     alertDetailStatusEl.className = 'status error';
+    alertDetailReviewBtn.disabled = true;
+    alertDetailDismissBtn.disabled = true;
   }
 }
 
@@ -1063,7 +1069,8 @@ async function loadAlerts() {
   }
 }
 
-async function updateAlertStatus(alertId, status) {
+async function updateAlertStatus(alertId, status, options = {}) {
+  const stayOnDetail = options.stayOnDetail === true;
   try {
     const response = await fetch(`/api/alerts/${encodeURIComponent(alertId)}/status`, {
       method: 'PUT',
@@ -1072,11 +1079,20 @@ async function updateAlertStatus(alertId, status) {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to update alert status'));
+    if (stayOnDetail) {
+      await openAlertDetail(alertId);
+      return;
+    }
     if (currentAlertDetailId && String(currentAlertDetailId) === String(alertId)) {
       await openAlertDetail(alertId);
     }
     await loadAlerts();
   } catch (error) {
+    if (stayOnDetail) {
+      alertDetailStatusEl.textContent = `Error: ${error.message}`;
+      alertDetailStatusEl.className = 'status error';
+      return;
+    }
     alertsStatusEl.textContent = `Error: ${error.message}`;
     alertsStatusEl.className = 'status error';
   }
@@ -1379,6 +1395,8 @@ analysisCheckEventsBtn.addEventListener('click', checkRecentEventsForSelected);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', showAnalysisList);
 alertDetailBackBtn.addEventListener('click', showAlertsListView);
+alertDetailReviewBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Reviewed', { stayOnDetail: true }); });
+alertDetailDismissBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Dismissed', { stayOnDetail: true }); });
 alertsStatusFilterEl.addEventListener('change', () => {
   alertsStatusFilter = alertsStatusFilterEl.value || 'New';
   renderAlertsList();

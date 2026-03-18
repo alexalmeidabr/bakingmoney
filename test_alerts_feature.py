@@ -520,6 +520,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         js = Path('static/app.js').read_text(encoding='utf-8')
         self.assertIn('function openNextAlertDetail()', js)
         self.assertIn("alertDetailNextBtn.addEventListener('click'", js)
+        self.assertIn('function openPreviousAlertDetail()', js)
+        self.assertIn("alertDetailPrevBtn.addEventListener('click'", js)
+        self.assertIn('advanceAfterUpdate: true', js)
+        self.assertIn('backToAlertsFromDetail', js)
 
     def test_prompt_candidate_field_is_wired_in_load_save_and_reset(self):
         from pathlib import Path
@@ -536,7 +540,11 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="alert-detail-sources"', html)
         self.assertIn('id="alert-detail-review-btn"', html)
         self.assertIn('id="alert-detail-dismiss-btn"', html)
+        self.assertIn('id="alert-detail-prev-btn"', html)
         self.assertIn('id="alert-detail-next-btn"', html)
+        self.assertIn('id="alert-detail-keyvars-status"', html)
+        self.assertIn('id="alert-detail-edit-vars-btn"', html)
+        self.assertIn('id="alert-detail-rerun-btn"', html)
 
     def test_alerts_affected_variables_column_has_wrap_style(self):
         from pathlib import Path

@@ -313,6 +313,7 @@
             <div class="table-actions">
               <button id="alert-detail-review-btn">Mark Reviewed</button>
               <button id="alert-detail-dismiss-btn">Dismiss</button>
+              <button id="alert-detail-prev-btn" class="secondary-btn">← Previous Alert</button>
               <button id="alert-detail-next-btn" class="secondary-btn">Next Alert →</button>
             </div>
             <div id="alert-detail-panels" class="hidden">
@@ -322,6 +323,29 @@
               <section class="detail-card"><h3>Event Date</h3><p id="alert-detail-date">—</p></section>
               <section class="detail-card"><h3>Event Sources</h3><ul id="alert-detail-sources" class="clean-list"></ul></section>
               <section class="detail-card"><h3>Suggested Actions</h3><p id="alert-detail-suggested">—</p></section>
+              <section class="detail-card">
+                <h3>Current Key Variables</h3>
+                <p id="alert-detail-keyvars-status" class="status">Loading key variables…</p>
+                <div class="table-actions">
+                  <button id="alert-detail-edit-vars-btn">Edit Key Variables</button>
+                  <button id="alert-detail-add-var-btn" class="hidden">Add Variable</button>
+                  <button id="alert-detail-save-vars-btn" class="hidden">Save Key Variables</button>
+                  <button id="alert-detail-cancel-vars-btn" class="hidden">Cancel</button>
+                  <button id="alert-detail-rerun-btn">Re-run Scenarios</button>
+                </div>
+                <table id="alert-detail-vars-table">
+                  <thead>
+                    <tr>
+                      <th>Variable</th>
+                      <th>Type</th>
+                      <th>Confidence</th>
+                      <th>Importance</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </section>
             </div>
           </div>
         </section>

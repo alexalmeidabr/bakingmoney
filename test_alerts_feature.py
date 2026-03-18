@@ -524,6 +524,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("alertDetailPrevBtn.addEventListener('click'", js)
         self.assertIn('advanceAfterUpdate: true', js)
         self.assertIn('backToAlertsFromDetail', js)
+        self.assertIn('currentAlertNavigationIds', js)
 
     def test_prompt_candidate_field_is_wired_in_load_save_and_reset(self):
         from pathlib import Path
@@ -551,6 +552,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         css = Path('static/styles.css').read_text(encoding='utf-8')
         self.assertIn('#alerts-table th:nth-child(5)', css)
         self.assertIn('white-space: normal;', css)
+        self.assertIn('.business-model-editor .table-actions button', css)
+        self.assertIn('min-width: 170px;', css)
 
 
 if __name__ == "__main__":

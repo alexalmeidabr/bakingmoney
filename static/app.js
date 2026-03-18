@@ -138,6 +138,7 @@ let latestAlerts = [];
 let alertsStatusFilter = 'New';
 let alertDetailAnalysisState = null;
 let alertDetailIsEditingVariables = false;
+let currentAlertNavigationIds = [];
 
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
@@ -976,6 +977,7 @@ async function deleteAnalysis(symbol) {
 
 function showAlertsListView() {
   currentAlertDetailId = null;
+  currentAlertNavigationIds = [];
   alertDetailAnalysisState = null;
   alertDetailIsEditingVariables = false;
   alertsListView.classList.remove('hidden');
@@ -989,14 +991,18 @@ function getFilteredAlerts() {
 
 function getCurrentAlertIndexWithinFiltered() {
   if (!currentAlertDetailId) return -1;
+  if (currentAlertNavigationIds.length) return currentAlertNavigationIds.indexOf(String(currentAlertDetailId));
   const filtered = getFilteredAlerts();
   return filtered.findIndex((item) => String(item.id) === String(currentAlertDetailId));
 }
 
 async function openNextAlertDetail() {
-  const filtered = getFilteredAlerts();
+  const navigationIds = currentAlertNavigationIds.length
+    ? currentAlertNavigationIds
+    : getFilteredAlerts().map((item) => String(item.id));
   const index = getCurrentAlertIndexWithinFiltered();
-  const next = index >= 0 ? filtered[index + 1] : null;
+  const nextId = index >= 0 ? navigationIds[index + 1] : null;
+  const next = nextId ? latestAlerts.find((item) => String(item.id) === String(nextId)) : null;
   if (!next) {
     alertDetailStatusEl.textContent = 'No next alert in current filter.';
     alertDetailStatusEl.className = 'status';
@@ -1006,9 +1012,12 @@ async function openNextAlertDetail() {
 }
 
 async function openPreviousAlertDetail() {
-  const filtered = getFilteredAlerts();
+  const navigationIds = currentAlertNavigationIds.length
+    ? currentAlertNavigationIds
+    : getFilteredAlerts().map((item) => String(item.id));
   const index = getCurrentAlertIndexWithinFiltered();
-  const prev = index > 0 ? filtered[index - 1] : null;
+  const prevId = index > 0 ? navigationIds[index - 1] : null;
+  const prev = prevId ? latestAlerts.find((item) => String(item.id) === String(prevId)) : null;
   if (!prev) {
     alertDetailStatusEl.textContent = 'No previous alert in current filter.';
     alertDetailStatusEl.className = 'status';
@@ -1099,6 +1108,11 @@ function collectEditedAlertDetailVariables() {
 }
 
 async function loadAlertDetailAnalysis(symbol) {
+  if (!symbol) {
+    alertDetailKeyvarsStatusEl.textContent = 'Error: Missing symbol for this alert.';
+    alertDetailKeyvarsStatusEl.className = 'status error';
+    return;
+  }
   alertDetailKeyvarsStatusEl.textContent = `Loading key variables for ${symbol}…`;
   alertDetailKeyvarsStatusEl.className = 'status';
   alertDetailAnalysisState = null;
@@ -1168,20 +1182,7 @@ async function rerunAlertDetailScenarios() {
 }
 
 async function backToAlertsFromDetail() {
-  alertsStatusEl.textContent = 'Refreshing alerts…';
-  alertsStatusEl.className = 'status';
-  showAlertsListView();
-  try {
-    await refreshAlertsData();
-    renderAlertsList();
-    alertsTable.classList.toggle('hidden', getFilteredAlerts().length === 0);
-    alertsStatusEl.textContent = latestAlerts.length
-      ? `Showing ${getFilteredAlerts().length} of ${latestAlerts.length} alert(s).`
-      : 'No alerts found.';
-  } catch (error) {
-    alertsStatusEl.textContent = `Error: ${error.message}`;
-    alertsStatusEl.className = 'status error';
-  }
+  await loadAlerts();
 }
 
 function renderAlertsList() {
@@ -1199,6 +1200,7 @@ function renderAlertsList() {
 
 async function openAlertDetail(alertId) {
   currentAlertDetailId = alertId;
+  currentAlertNavigationIds = getFilteredAlerts().map((item) => String(item.id));
   alertsListView.classList.add('hidden');
   alertDetailView.classList.remove('hidden');
   alertDetailStatusEl.textContent = 'Loading alert detail…';
@@ -1219,11 +1221,14 @@ async function openAlertDetail(alertId) {
     alertDetailDismissBtn.disabled = false;
     const currentIndex = getCurrentAlertIndexWithinFiltered();
     alertDetailPrevBtn.disabled = currentIndex <= 0;
-    alertDetailNextBtn.disabled = getCurrentAlertIndexWithinFiltered() < 0 || getCurrentAlertIndexWithinFiltered() >= (getFilteredAlerts().length - 1);
+    alertDetailNextBtn.disabled = currentIndex < 0 || currentIndex >= (currentAlertNavigationIds.length - 1);
     renderAlertSources(alert.event_sources || []);
-    await loadAlertDetailAnalysis(alert.symbol || '');
     alertDetailPanelsEl.classList.remove('hidden');
     alertDetailStatusEl.textContent = `Status: ${alert.status || 'New'}`;
+    loadAlertDetailAnalysis(alert.symbol || '').catch((error) => {
+      alertDetailKeyvarsStatusEl.textContent = `Error: ${error.message}`;
+      alertDetailKeyvarsStatusEl.className = 'status error';
+    });
   } catch (error) {
     alertDetailStatusEl.textContent = `Error: ${error.message}`;
     alertDetailStatusEl.className = 'status error';
@@ -1258,7 +1263,9 @@ async function loadAlerts() {
 async function updateAlertStatus(alertId, status, options = {}) {
   const stayOnDetail = options.stayOnDetail === true;
   const advanceAfterUpdate = options.advanceAfterUpdate === true;
-  const filteredBefore = getFilteredAlerts();
+  const filteredBefore = currentAlertNavigationIds.length
+    ? currentAlertNavigationIds.map((id) => ({ id }))
+    : getFilteredAlerts();
   const currentIndexBefore = getCurrentAlertIndexWithinFiltered();
   const nextAlertIdBefore = currentIndexBefore >= 0 && currentIndexBefore < (filteredBefore.length - 1)
     ? filteredBefore[currentIndexBefore + 1]?.id

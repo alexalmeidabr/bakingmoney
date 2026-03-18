@@ -79,6 +79,69 @@ class RecentEventPromptTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_recent_event_workflow_falls_back_to_default_when_custom_check_prompt_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                        (
+                            web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK,
+                            "Invalid event check prompt for $Symbol $CompanyName $Price $BusinessModel $KeyVariables",
+                            web_server.utc_now_iso(),
+                        ),
+                    )
+                    conn.commit()
+                    with self.assertLogs(web_server.logger, level="WARNING") as warning_logs:
+                        templates, sources = web_server.get_prompt_templates_for_keys(
+                            conn,
+                            web_server.RECENT_EVENT_WORKFLOW_PROMPT_KEYS,
+                            workflow_label="recent_event_check_test",
+                        )
+                    self.assertEqual(
+                        sources[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK],
+                        "default",
+                    )
+                    self.assertEqual(
+                        templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK],
+                        web_server.get_default_prompt_template(web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK),
+                    )
+                    self.assertIn("Invalid custom prompt template", "\n".join(warning_logs.output))
+                finally:
+                    conn.close()
+
+    def test_analysis_workflow_prompt_resolution_behavior_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    custom = "Custom business prompt for $Symbol and $CompanyName"
+                    web_server.save_prompt_template(
+                        conn,
+                        web_server.ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL,
+                        custom,
+                    )
+                    templates, sources = web_server.get_prompt_templates_for_keys(
+                        conn,
+                        web_server.ANALYSIS_WORKFLOW_PROMPT_KEYS,
+                        workflow_label="initial_analysis_test",
+                    )
+                    self.assertEqual(
+                        templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
+                        custom,
+                    )
+                    self.assertEqual(
+                        sources[web_server.ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
+                        "custom",
+                    )
+                finally:
+                    conn.close()
+
 
 class AlertsDedupTests(unittest.TestCase):
     def test_duplicate_alert_is_not_inserted_twice(self):

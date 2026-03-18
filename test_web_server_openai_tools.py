@@ -1,4 +1,6 @@
 import unittest
+import os
+import tempfile
 from unittest import mock
 
 import web_server
@@ -129,7 +131,7 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
 
         with mock.patch.object(web_server, "resolve_company_profile_from_tws", return_value={"company_name": "Nebius"}), \
              mock.patch.object(web_server, "get_db_connection", return_value=DummyConn()), \
-             mock.patch.object(web_server, "get_all_prompt_templates", return_value=(templates, sources)), \
+             mock.patch.object(web_server, "get_prompt_templates_for_keys", return_value=(templates, sources)), \
              mock.patch.object(web_server, "get_scenario_generation_config", return_value={"scenario_multi_pass_enabled": False, "scenario_pass_count": 1, "scenario_outlier_filter_enabled": True}), \
              mock.patch.object(web_server, "request_ai_step", side_effect=fake_request_ai_step), \
              mock.patch.object(web_server, "generate_scenarios_multi_pass", side_effect=fake_generate_scenarios_multi_pass), \
@@ -165,3 +167,84 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
         self.assertEqual(expected_prompt, result["raw"]["step3_prompt"])
         self.assertIn("Summary: This summary must not be auto-injected", captured["key_variables_prompt"])
         self.assertIn("Summary: This summary must not be auto-injected", captured["prompt_text"])
+
+    @mock.patch.object(web_server, "OPENAI_API_KEY", "test-key")
+    def test_request_ai_analysis_ignores_invalid_recent_event_prompt_during_initial_workflow(self):
+        key_variables = [
+            {"variable": "Demand", "type": "Bullish", "confidence": 8, "importance": 9},
+            {"variable": "Pricing", "type": "Bullish", "confidence": 7, "importance": 8},
+            {"variable": "Margins", "type": "Bullish", "confidence": 6, "importance": 7},
+            {"variable": "Competition", "type": "Bearish", "confidence": 5, "importance": 6},
+            {"variable": "Capex", "type": "Bearish", "confidence": 4, "importance": 5},
+            {"variable": "Execution", "type": "Bearish", "confidence": 3, "importance": 4},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                        (
+                            web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK,
+                            "Invalid event check prompt for $Symbol $CompanyName $Price $BusinessModel $KeyVariables",
+                            web_server.utc_now_iso(),
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                def fake_request_ai_step(step_name, prompt_text, _schema):
+                    if step_name == "business_model":
+                        return {
+                            "symbol": "NBIS",
+                            "company_name": "Nebius",
+                            "business_model": "Core business model",
+                            "business_summary": "Summary text",
+                        }
+                    if step_name == "key_variables":
+                        return {"symbol": "NBIS", "key_variables": key_variables}
+                    raise AssertionError(f"Unexpected step: {step_name}")
+
+                def fake_generate_scenarios_multi_pass(**_kwargs):
+                    return (
+                        {
+                            "assumptions": "assume",
+                            "scenarios": [
+                                {"scenario_name": "Bear", "price_low": 10, "price_high": 20, "cagr_low": -5, "cagr_high": 0, "probability": 0.2},
+                                {"scenario_name": "Base", "price_low": 20, "price_high": 30, "cagr_low": 0, "cagr_high": 5, "probability": 0.6},
+                                {"scenario_name": "Bull", "price_low": 30, "price_high": 40, "cagr_low": 5, "cagr_high": 10, "probability": 0.2},
+                            ],
+                        },
+                        [],
+                    )
+
+                with mock.patch.object(web_server, "resolve_company_profile_from_tws", return_value={"company_name": "Nebius"}), \
+                     mock.patch.object(web_server, "request_ai_step", side_effect=fake_request_ai_step), \
+                     mock.patch.object(web_server, "generate_scenarios_multi_pass", side_effect=fake_generate_scenarios_multi_pass), \
+                     mock.patch.object(web_server, "validate_step3_scenarios", side_effect=lambda payload, symbol, kv: {
+                         "symbol": symbol,
+                         "assumptions": payload["assumptions"],
+                         "scenarios": [
+                             {"scenario_name": s["name"], "price_low": s["price_low"], "price_high": s["price_high"], "cagr_low": s["cagr_low"], "cagr_high": s["cagr_high"], "probability": s["probability"]}
+                             for s in payload["scenarios"]
+                         ],
+                         "key_variables": kv,
+                     }), \
+                     mock.patch.object(web_server, "get_scenario_probability_settings", return_value={
+                         "probability_source_mode": "hybrid",
+                         "hybrid_ai_weight": 0.7,
+                         "hybrid_backend_weight": 0.3,
+                         "backend_base_max_probability": 60.0,
+                         "backend_base_min_probability": 35.0,
+                     }):
+                    with self.assertLogs(web_server.logger, level="INFO") as captured_logs:
+                        result = web_server.request_ai_analysis("NBIS", current_price=50.25)
+
+                joined_logs = "\n".join(captured_logs.output)
+                self.assertIn("workflow=initial_analysis", joined_logs)
+                self.assertNotIn(web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK, joined_logs)
+                self.assertEqual(result["parsed"]["symbol"], "NBIS")

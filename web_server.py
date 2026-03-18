@@ -382,6 +382,17 @@ PROMPT_TEMPLATE_CONFIG = {
     },
 }
 
+ANALYSIS_WORKFLOW_PROMPT_KEYS = (
+    ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL,
+    ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES,
+    ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,
+)
+
+RECENT_EVENT_WORKFLOW_PROMPT_KEYS = (
+    ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE,
+    ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK,
+)
+
 
 
 _ib = None
@@ -552,9 +563,15 @@ def get_prompt_template(conn, key):
 
 
 def get_all_prompt_templates(conn):
+    return get_prompt_templates_for_keys(conn, PROMPT_TEMPLATE_CONFIG.keys(), workflow_label="all")
+
+
+def get_prompt_templates_for_keys(conn, keys, workflow_label="custom"):
     templates = {}
     sources = {}
-    for key in PROMPT_TEMPLATE_CONFIG.keys():
+    resolved_keys = tuple(keys)
+    logger.info("Resolving prompt templates workflow=%s keys=%s", workflow_label, ",".join(resolved_keys))
+    for key in resolved_keys:
         template, source = get_prompt_template(conn, key)
         templates[key] = template
         sources[key] = source
@@ -1832,7 +1849,11 @@ def request_ai_analysis(symbol, current_price=None):
 
     conn = get_db_connection()
     try:
-        templates, sources = get_all_prompt_templates(conn)
+        templates, sources = get_prompt_templates_for_keys(
+            conn,
+            ANALYSIS_WORKFLOW_PROMPT_KEYS,
+            workflow_label="initial_analysis",
+        )
         scenario_settings = get_scenario_generation_config(conn)
     finally:
         conn.close()
@@ -2897,7 +2918,11 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
 
     key_variables = json.loads(draft["key_variables_json"])
 
-    templates, _sources = get_all_prompt_templates(conn)
+    templates, _sources = get_prompt_templates_for_keys(
+        conn,
+        (ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,),
+        workflow_label="scenario_rerun_from_saved_edits",
+    )
     scenario_settings = get_scenario_generation_config(conn)
     business_model_draft = _get_saved_business_model_edit(conn, root["id"])
     business_summary_draft = _get_saved_business_summary_edit(conn, root["id"])
@@ -3010,7 +3035,11 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
     if not key_variables:
         raise ValueError("No key variables found for base version")
 
-    templates, _sources = get_all_prompt_templates(conn)
+    templates, _sources = get_prompt_templates_for_keys(
+        conn,
+        (ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,),
+        workflow_label="scenario_rerun_from_existing_version",
+    )
     scenario_settings = get_scenario_generation_config(conn)
     business_model_draft = _get_saved_business_model_edit(conn, root["id"])
     business_summary_draft = _get_saved_business_summary_edit(conn, root["id"])
@@ -3588,7 +3617,11 @@ def _build_recent_event_check_schema():
 
 
 def run_recent_event_check(conn, symbols):
-    templates, _sources = get_all_prompt_templates(conn)
+    templates, _sources = get_prompt_templates_for_keys(
+        conn,
+        RECENT_EVENT_WORKFLOW_PROMPT_KEYS,
+        workflow_label="recent_event_check",
+    )
     candidate_template = templates[ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE]
     check_template = templates[ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK]
 

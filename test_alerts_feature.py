@@ -727,6 +727,26 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('.business-model-editor .table-actions button', css)
         self.assertIn('min-width: 170px;', css)
 
+    def test_positions_column_sequence_matches_expected_order(self):
+        from pathlib import Path
+        html = Path('static/index.html').read_text(encoding='utf-8')
+        expected = [
+            'data-sort-key="symbol" class="sortable">Symbol</th>',
+            'data-sort-key="rating" class="sortable">Rating</th>',
+            'data-sort-key="upside" class="sortable">Upside</th>',
+            'data-sort-key="confidence_diff" class="sortable">Confidence</th>',
+            'data-sort-key="marketValue" class="sortable">Market Value</th>',
+            'data-sort-key="costBasis" class="sortable">Cost Value</th>',
+            'data-sort-key="unrealizedPnL" class="sortable">Unrealized P&amp;L</th>',
+            'data-sort-key="unrealizedPnLPercent" class="sortable">Unrealized P&amp;L %</th>',
+            'data-sort-key="price" class="sortable">Price</th>',
+            'data-sort-key="avgCost" class="sortable">Avg Cost</th>',
+            'data-sort-key="dailyPnL" class="sortable">Daily P&amp;L</th>',
+            'data-sort-key="changePercent" class="sortable">Change %</th>',
+        ]
+        positions = [html.index(fragment) for fragment in expected]
+        self.assertEqual(positions, sorted(positions))
+
 
 if __name__ == "__main__":
     unittest.main()

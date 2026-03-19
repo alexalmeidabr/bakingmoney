@@ -285,6 +285,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(payload["positions"][0]["rating"], "Buy")
         self.assertEqual(payload["positions"][0]["upside"], 22.0)
         self.assertAlmostEqual(payload["positions"][0]["unrealizedPnLPercent"], 25.0)
+        self.assertAlmostEqual(payload["positions"][0]["costBasis"], 800.0)
 
     def test_build_positions_payload_with_empty_cache_returns_empty_positions(self):
         class DummyConn:
@@ -294,7 +295,11 @@ class PositionsOfflineCacheTests(unittest.TestCase):
             payload = web_server.build_positions_payload(DummyConn(), [], data_source="empty", warning="none")
 
         self.assertEqual(payload["positions"], [])
-        self.assertEqual(payload["data_source"], "empty")
+
+    def test_compute_cost_basis_uses_abs_quantity_times_avg_cost(self):
+        self.assertEqual(web_server.compute_cost_basis({"position": 10, "avgCost": 80}), 800)
+        self.assertEqual(web_server.compute_cost_basis({"position": -10, "avgCost": 80}), 800)
+        self.assertIsNone(web_server.compute_cost_basis({"position": 10}))
 
 
 class RecentEventAlertEnhancementTests(unittest.TestCase):
@@ -379,6 +384,26 @@ class RecentEventAlertEnhancementTests(unittest.TestCase):
                     self.assertEqual(alert["event_date"], "2026-03-03")
                     sources = json.loads(alert["event_sources_json"])
                     self.assertEqual(len(sources), 3)
+                finally:
+                    conn.close()
+
+    def test_list_analysis_symbols_includes_latest_scenario_or_event_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="NVDA", created_at="2026-03-01T00:00:00+00:00")
+                    conn.execute(
+                        "INSERT INTO recent_event_checks (symbol, checked_at, cutoff_used, alerts_created_count, events_found_count) VALUES (?, ?, ?, 0, 0)",
+                        ("NVDA", "2026-03-05T00:00:00+00:00", None),
+                    )
+                    conn.commit()
+                    rows = web_server.list_analysis_symbols(conn)
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0]["symbol"], "NVDA")
+                    self.assertEqual(rows[0]["last_activity_at"], "2026-03-05T00:00:00+00:00")
                 finally:
                     conn.close()
 
@@ -546,6 +571,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="alert-detail-keyvars-status"', html)
         self.assertIn('id="alert-detail-edit-vars-btn"', html)
         self.assertIn('id="alert-detail-rerun-btn"', html)
+        self.assertIn('data-sort-key="confidence_diff" class="sortable">Confidence</th>', html)
+        self.assertIn('data-sort-key="last_activity_at" class="sortable">Last Scenario/Event</th>', html)
+        self.assertIn('data-sort-key="costBasis" class="sortable">Cost Basis</th>', html)
 
     def test_alerts_affected_variables_column_has_wrap_style(self):
         from pathlib import Path

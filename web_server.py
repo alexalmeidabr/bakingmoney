@@ -481,6 +481,16 @@ def compute_unrealized_pnl_percent(position_row):
     return (unrealized_pnl / cost_basis) * 100
 
 
+def compute_cost_basis(position_row):
+    if not isinstance(position_row, dict):
+        return None
+    qty = safe_number(position_row.get("position"))
+    avg_cost = safe_number(position_row.get("avgCost"))
+    if qty is None or avg_cost is None:
+        return None
+    return abs(qty * avg_cost)
+
+
 def normalize_symbol(value):
     if not isinstance(value, str):
         return None
@@ -2341,6 +2351,11 @@ def list_analysis_symbols(conn):
                    FROM analysis_version_key_variables kv
                    WHERE kv.analysis_version_id = v.id AND kv.variable_type = 'Bearish'
                ) AS bearish_confidence,
+               (
+                   SELECT MAX(rc.checked_at)
+                   FROM recent_event_checks rc
+                   WHERE rc.symbol = r.symbol
+               ) AS last_recent_event_check_at,
                v.created_at AS updated_at
         FROM analysis_roots r
         JOIN analysis_versions v ON v.analysis_root_id = r.id
@@ -2366,6 +2381,10 @@ def list_analysis_symbols(conn):
         )
         item["confidence_diff"] = confidence_diff
         item["rating"] = rating
+        scenario_updated = _parse_iso_datetime(item.get("updated_at"))
+        event_checked = _parse_iso_datetime(item.get("last_recent_event_check_at"))
+        activity_candidates = [dt for dt in (scenario_updated, event_checked) if dt is not None]
+        item["last_activity_at"] = max(activity_candidates).isoformat() if activity_candidates else None
         output.append(item)
     return output
 
@@ -3236,6 +3255,7 @@ def build_positions_payload(conn, positions, data_source, warning=None):
     for row in positions or []:
         normalized_row = dict(row)
         normalized_row["unrealizedPnLPercent"] = compute_unrealized_pnl_percent(normalized_row)
+        normalized_row["costBasis"] = compute_cost_basis(normalized_row)
         normalized_positions.append(normalized_row)
 
     analysis_items = list_analysis_symbols(conn)

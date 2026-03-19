@@ -573,7 +573,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="alert-detail-rerun-btn"', html)
         self.assertIn('data-sort-key="confidence_diff" class="sortable">Confidence</th>', html)
         self.assertIn('data-sort-key="last_activity_at" class="sortable">Last Scenario/Event</th>', html)
-        self.assertIn('data-sort-key="costBasis" class="sortable">Cost Basis</th>', html)
+        self.assertIn('data-sort-key="costBasis" class="sortable">Cost Value</th>', html)
 
     def test_alerts_affected_variables_column_has_wrap_style(self):
         from pathlib import Path

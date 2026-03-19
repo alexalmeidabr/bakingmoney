@@ -1,6 +1,8 @@
 import json
 import os
+import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -317,6 +319,57 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(web_server.compute_cost_basis({"position": 10, "avgCost": 80}), 800)
         self.assertEqual(web_server.compute_cost_basis({"position": -10, "avgCost": 80}), 800)
         self.assertIsNone(web_server.compute_cost_basis({"position": 10}))
+
+    def test_fetch_ib_prices_batches_requests_and_cancels_market_data(self):
+        class FakeContract:
+            def __init__(self, symbol, conid):
+                self.symbol = symbol
+                self.conId = conid
+
+        class FakeTicker:
+            def __init__(self, contract, price):
+                self.contract = contract
+                self._price = price
+
+            def marketPrice(self):
+                return self._price
+
+        class FakeIB:
+            def __init__(self):
+                self.req_batch_sizes = []
+                self.cancelled = []
+
+            def positions(self):
+                return []
+
+            def qualifyContracts(self, *contracts):
+                return list(contracts)
+
+            def reqTickers(self, *contracts):
+                self.req_batch_sizes.append(len(contracts))
+                return [FakeTicker(c, 100.0 + idx) for idx, c in enumerate(contracts)]
+
+            def cancelMktData(self, contract):
+                self.cancelled.append(contract.conId)
+
+            def sleep(self, _seconds):
+                return None
+
+        symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"]
+        conids = {symbol: idx + 1 for idx, symbol in enumerate(symbols)}
+        fake_module = types.SimpleNamespace(Stock=lambda symbol, *_args: FakeContract(symbol, conids[symbol]))
+        fake_ib = FakeIB()
+
+        with mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
+             mock.patch.object(web_server, "get_ib_connection", return_value=fake_ib), \
+             mock.patch.object(web_server, "get_ib_market_data_batch_size", return_value=2), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0):
+            prices, warnings = web_server.fetch_ib_prices(symbols)
+
+        self.assertEqual(fake_ib.req_batch_sizes, [2, 2, 1])
+        self.assertEqual(len(fake_ib.cancelled), len(symbols))
+        self.assertTrue(all(prices[symbol] is not None for symbol in symbols))
+        self.assertTrue(all(warnings[symbol] in (None, web_server.NO_PRICE_WARNING) for symbol in symbols))
 
 
 class RecentEventAlertEnhancementTests(unittest.TestCase):

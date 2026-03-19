@@ -56,6 +56,7 @@ DEFAULT_SCENARIO_MULTI_PASS_ENABLED = False
 DEFAULT_SCENARIO_PASS_COUNT = 1
 DEFAULT_SCENARIO_OUTLIER_FILTER_ENABLED = True
 DEFAULT_IB_PRICE_WAIT_SECONDS = 5
+DEFAULT_IB_MARKET_DATA_BATCH_SIZE = 25
 
 RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD = "min_conviction_hold_threshold"
 RATING_SETTING_STRONG_BUY_MIN_UPSIDE = "strong_buy_min_upside"
@@ -1037,6 +1038,61 @@ def get_ib_price_wait_seconds():
         return DEFAULT_IB_PRICE_WAIT_SECONDS
 
 
+def get_ib_market_data_batch_size():
+    raw = os.getenv("IB_MARKET_DATA_BATCH_SIZE", str(DEFAULT_IB_MARKET_DATA_BATCH_SIZE))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_IB_MARKET_DATA_BATCH_SIZE
+    return max(1, min(90, value))
+
+
+def batched(items, size):
+    step = max(1, int(size or 1))
+    for idx in range(0, len(items), step):
+        yield items[idx : idx + step]
+
+
+def request_ib_tickers_batched(ib, qualified_contracts, purpose):
+    if not qualified_contracts:
+        return []
+
+    batch_size = get_ib_market_data_batch_size()
+    batches = list(batched(list(qualified_contracts), batch_size))
+    logger.info(
+        "IBKR market data request purpose=%s contracts=%s batch_size=%s batches=%s",
+        purpose,
+        len(qualified_contracts),
+        batch_size,
+        len(batches),
+    )
+
+    tickers = []
+    for batch_idx, batch in enumerate(batches, start=1):
+        logger.info(
+            "IBKR market data batch purpose=%s index=%s/%s size=%s",
+            purpose,
+            batch_idx,
+            len(batches),
+            len(batch),
+        )
+        batch_tickers = ib.reqTickers(*batch)
+        ib.sleep(get_ib_price_wait_seconds())
+        tickers.extend(batch_tickers or [])
+        for contract in batch:
+            try:
+                ib.cancelMktData(contract)
+                logger.debug(
+                    "Cancelled IBKR market data purpose=%s conid=%s symbol=%s",
+                    purpose,
+                    getattr(contract, "conId", None),
+                    getattr(contract, "symbol", None),
+                )
+            except Exception:
+                continue
+    return tickers
+
+
 def save_prompt_template(conn, key, template):
     validate_prompt_template(key, template)
     conn.execute(
@@ -1524,8 +1580,11 @@ def fetch_ib_prices(symbols):
         }
 
         if qualified:
-            tickers = ib.reqTickers(*qualified)
-            ib.sleep(get_ib_price_wait_seconds())
+            tickers = request_ib_tickers_batched(
+                ib,
+                qualified,
+                purpose="price_fetch",
+            )
             for ticker in tickers:
                 contract = getattr(ticker, "contract", None)
                 conid = getattr(contract, "conId", None)
@@ -3945,8 +4004,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if contracts:
                 qualified = ib.qualifyContracts(*contracts)
                 if qualified:
-                    tickers = ib.reqTickers(*qualified)
-                    ib.sleep(get_ib_price_wait_seconds())
+                    tickers = request_ib_tickers_batched(
+                        ib,
+                        qualified,
+                        purpose="positions_api",
+                    )
                     tickers_by_conid = {
                         t.contract.conId: t for t in tickers if getattr(t, "contract", None)
                     }

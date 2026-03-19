@@ -51,6 +51,7 @@ ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
 ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
 ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
 ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS = "ib_price_wait_seconds"
+ANALYSIS_SETTING_USE_TWS_DATA = "use_tws_data"
 
 DEFAULT_SCENARIO_MULTI_PASS_ENABLED = False
 DEFAULT_SCENARIO_PASS_COUNT = 1
@@ -891,6 +892,11 @@ def apply_final_probabilities_to_scenarios(scenarios, final_probabilities):
 def get_general_configuration(conn):
     scenario = get_scenario_generation_config(conn)
     return {
+        "use_tws_data": get_bool_setting(
+            conn,
+            ANALYSIS_SETTING_USE_TWS_DATA,
+            False,
+        ),
         "ib_price_wait_seconds": get_float_setting(
             conn,
             ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS,
@@ -911,6 +917,27 @@ def save_general_configuration(conn, settings):
         raise ValueError("settings must be an object")
 
     now = utc_now_iso()
+    if "use_tws_data" in settings:
+        requested = bool(settings["use_tws_data"])
+        effective = requested
+        if requested:
+            try:
+                ib = get_ib_connection()
+                effective = bool(ib and ib.isConnected())
+            except Exception:
+                logger.warning("Unable to enable use_tws_data because TWS/IBKR is unavailable")
+                effective = False
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            (ANALYSIS_SETTING_USE_TWS_DATA, "1" if effective else "0", now),
+        )
+
     if "ib_price_wait_seconds" in settings:
         try:
             wait_seconds = float(settings.get("ib_price_wait_seconds"))
@@ -1036,6 +1063,17 @@ def get_ib_price_wait_seconds():
             conn.close()
     except Exception:
         return DEFAULT_IB_PRICE_WAIT_SECONDS
+
+
+def is_tws_data_enabled():
+    try:
+        conn = get_db_connection()
+        try:
+            return get_bool_setting(conn, ANALYSIS_SETTING_USE_TWS_DATA, False)
+        finally:
+            conn.close()
+    except Exception:
+        return False
 
 
 def get_ib_market_data_batch_size():
@@ -1551,6 +1589,11 @@ def fetch_ib_prices(symbols):
     prices = {symbol: None for symbol in symbols}
     warnings = {symbol: None for symbol in symbols}
     if not symbols:
+        return prices, warnings
+    if not is_tws_data_enabled():
+        logger.info("Skipping IBKR price fetch because use_tws_data is disabled symbols=%s", len(symbols))
+        for symbol in symbols:
+            warnings[symbol] = NO_PRICE_WARNING
         return prices, warnings
 
     ensure_event_loop()
@@ -4000,8 +4043,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             logger.info("Positions API using live IBKR path positions_count=%s", len(positions))
             contracts = [p.contract for p in positions if p.contract]
             tickers_by_conid = {}
+            tws_data_enabled = is_tws_data_enabled()
 
-            if contracts:
+            if contracts and tws_data_enabled:
                 qualified = ib.qualifyContracts(*contracts)
                 if qualified:
                     tickers = request_ib_tickers_batched(
@@ -4062,7 +4106,12 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             conn = get_db_connection()
             try:
                 save_positions_cache(conn, data)
-                payload = build_positions_payload(conn, data, data_source="live")
+                payload = build_positions_payload(
+                    conn,
+                    data,
+                    data_source="live",
+                    warning=None if tws_data_enabled else "Data from TWS is disabled.",
+                )
                 logger.info(
                     "Positions API returning live rows=%s sample_symbols=%s",
                     len(payload["positions"]),

@@ -120,6 +120,8 @@ const configRatingStrongSellMinBearishConfidenceEl = document.getElementById('co
 const configRatingSellMaxUpsideEl = document.getElementById('config-rating-sell-max-upside');
 const configRatingSellMaxDiffEl = document.getElementById('config-rating-sell-max-diff');
 const configRatingSellMinBearishConfidenceEl = document.getElementById('config-rating-sell-min-bearish-confidence');
+const twsDataToggleEl = document.getElementById('tws-data-toggle');
+const twsDataStatusEl = document.getElementById('tws-data-status');
 
 let latestPositions = [];
 let positionSort = { key: 'marketValue', direction: 'desc' };
@@ -139,6 +141,7 @@ let alertsStatusFilter = 'New';
 let alertDetailAnalysisState = null;
 let alertDetailIsEditingVariables = false;
 let currentAlertNavigationIds = [];
+let isUpdatingTwsDataToggle = false;
 
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
@@ -1468,6 +1471,59 @@ function restoreDefaultRatingSettings() {
   configurationStatusEl.className = 'status';
 }
 
+function applyTwsDataToggleState(useTwsData, message = '') {
+  twsDataToggleEl.checked = Boolean(useTwsData);
+  twsDataStatusEl.textContent = message;
+  twsDataStatusEl.className = message ? 'status' : 'status';
+}
+
+async function loadTwsDataToggleState() {
+  try {
+    const response = await fetch('/api/configuration/general');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load TWS data switch state'));
+    const settings = payload.settings || {};
+    applyTwsDataToggleState(Boolean(settings.use_tws_data), settings.use_tws_data ? 'TWS data enabled.' : 'TWS data disabled.');
+  } catch (error) {
+    applyTwsDataToggleState(false, `Error: ${error.message}`);
+    twsDataStatusEl.className = 'status error';
+  }
+}
+
+async function updateTwsDataToggle(enabled) {
+  if (isUpdatingTwsDataToggle) return;
+  isUpdatingTwsDataToggle = true;
+  twsDataToggleEl.disabled = true;
+  twsDataStatusEl.textContent = enabled ? 'Enabling TWS data…' : 'Disabling TWS data…';
+  twsDataStatusEl.className = 'status';
+  try {
+    const response = await fetch('/api/configuration/general', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { use_tws_data: enabled } }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to update TWS data switch'));
+    const effective = Boolean(payload?.settings?.use_tws_data);
+    applyTwsDataToggleState(
+      effective,
+      enabled && !effective
+        ? 'TWS unavailable. Data from TWS remains off.'
+        : (effective ? 'TWS data enabled.' : 'TWS data disabled.'),
+    );
+    if (!effective) {
+      twsDataStatusEl.className = enabled ? 'status error' : 'status';
+    }
+  } catch (error) {
+    twsDataToggleEl.checked = false;
+    twsDataStatusEl.textContent = `Error: ${error.message}`;
+    twsDataStatusEl.className = 'status error';
+  } finally {
+    twsDataToggleEl.disabled = false;
+    isUpdatingTwsDataToggle = false;
+  }
+}
+
 async function loadGeneralConfiguration() {
   configurationStatusEl.textContent = 'Loading configuration…'; configurationStatusEl.className = 'status';
   try { const response = await fetch('/api/configuration/general'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load configuration'));
@@ -1478,6 +1534,7 @@ async function loadGeneralConfiguration() {
     configScenarioPassCountEl.value = settings.scenario_pass_count || 1;
     applyScenarioProbabilitySettingsToForm(settings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
     applyRatingSettingsToForm(settings.rating_settings || DEFAULT_RATING_SETTINGS);
+    applyTwsDataToggleState(Boolean(settings.use_tws_data), Boolean(settings.use_tws_data) ? 'TWS data enabled.' : 'TWS data disabled.');
     configurationStatusEl.textContent = 'Configuration loaded.';
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }
@@ -1513,8 +1570,9 @@ async function saveGeneralConfiguration() {
   }
 
   configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings } }) });
+  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings, use_tws_data: Boolean(twsDataToggleEl.checked) } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); savedGeneralSettings = payload.settings || null; configurationStatusEl.textContent = 'Configuration saved.';
+    if (savedGeneralSettings) applyTwsDataToggleState(Boolean(savedGeneralSettings.use_tws_data), Boolean(savedGeneralSettings.use_tws_data) ? 'TWS data enabled.' : 'TWS data disabled.');
     await loadAnalysis();
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }
@@ -1690,6 +1748,7 @@ promptPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Ent
 configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
 configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
+twsDataToggleEl.addEventListener('change', () => updateTwsDataToggle(Boolean(twsDataToggleEl.checked)));
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();
@@ -1697,4 +1756,5 @@ setSelectedRatings(getAllRatingFilterKeys());
 setRatingFilterOpen(false);
 setSelectedPositionRatings(getAllRatingFilterKeys());
 setPositionsRatingFilterOpen(false);
+loadTwsDataToggleState();
 setView('analysis');

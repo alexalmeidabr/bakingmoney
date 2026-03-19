@@ -362,6 +362,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
 
         with mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
              mock.patch.object(web_server, "get_ib_connection", return_value=fake_ib), \
+             mock.patch.object(web_server, "is_tws_data_enabled", return_value=True), \
              mock.patch.object(web_server, "get_ib_market_data_batch_size", return_value=2), \
              mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0):
             prices, warnings = web_server.fetch_ib_prices(symbols)
@@ -370,6 +371,30 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(len(fake_ib.cancelled), len(symbols))
         self.assertTrue(all(prices[symbol] is not None for symbol in symbols))
         self.assertTrue(all(warnings[symbol] in (None, web_server.NO_PRICE_WARNING) for symbol in symbols))
+
+    def test_fetch_ib_prices_skips_ibkr_when_tws_data_is_disabled(self):
+        with mock.patch.object(web_server, "is_tws_data_enabled", return_value=False), \
+             mock.patch.object(web_server, "get_ib_connection") as mocked_get_ib:
+            prices, warnings = web_server.fetch_ib_prices(["AAPL", "MSFT"])
+        mocked_get_ib.assert_not_called()
+        self.assertEqual(prices["AAPL"], None)
+        self.assertEqual(prices["MSFT"], None)
+        self.assertEqual(warnings["AAPL"], web_server.NO_PRICE_WARNING)
+        self.assertEqual(warnings["MSFT"], web_server.NO_PRICE_WARNING)
+
+    def test_save_general_configuration_auto_turns_off_use_tws_data_when_ib_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    with mock.patch.object(web_server, "get_ib_connection", side_effect=RuntimeError("down")):
+                        web_server.save_general_configuration(conn, {"use_tws_data": True})
+                    settings = web_server.get_general_configuration(conn)
+                    self.assertFalse(settings["use_tws_data"])
+                finally:
+                    conn.close()
 
 
 class RecentEventAlertEnhancementTests(unittest.TestCase):
@@ -645,6 +670,15 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-sort-key="confidence_diff" class="sortable">Confidence</th>', html)
         self.assertIn('data-sort-key="last_activity_at" class="sortable">Last Scenario/Event</th>', html)
         self.assertIn('data-sort-key="costBasis" class="sortable">Cost Value</th>', html)
+        self.assertIn('id="tws-data-toggle"', html)
+        self.assertIn('Data from TWS', html)
+
+    def test_tws_data_toggle_is_wired_in_frontend(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn("const twsDataToggleEl = document.getElementById('tws-data-toggle');", js)
+        self.assertIn('async function updateTwsDataToggle(enabled)', js)
+        self.assertIn("twsDataToggleEl.addEventListener('change'", js)
 
     def test_alerts_affected_variables_column_has_wrap_style(self):
         from pathlib import Path

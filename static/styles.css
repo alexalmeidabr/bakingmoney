@@ -63,6 +63,25 @@ body {
   padding: 28px;
 }
 
+.global-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.switch-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+#tws-data-status.status {
+  margin: 0;
+}
+
 .view {
   display: none;
 }

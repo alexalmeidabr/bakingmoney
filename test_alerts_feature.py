@@ -396,6 +396,45 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_overlay_cached_market_fields_fills_missing_live_market_values(self):
+        live_rows = [
+            {
+                "symbol": "AAPL",
+                "position": 10,
+                "avgCost": 120.0,
+                "price": None,
+                "marketValue": None,
+                "unrealizedPnL": None,
+                "unrealizedPnLPercent": None,
+                "dailyPnL": None,
+                "changePercent": None,
+                "currency": None,
+            }
+        ]
+        cached_rows = [
+            {
+                "symbol": "AAPL",
+                "position": 10,
+                "avgCost": 120.0,
+                "price": 150.0,
+                "marketValue": 1500.0,
+                "unrealizedPnL": 300.0,
+                "unrealizedPnLPercent": 25.0,
+                "dailyPnL": 10.0,
+                "changePercent": 1.5,
+                "currency": "USD",
+            }
+        ]
+        merged = web_server.overlay_cached_market_fields(live_rows, cached_rows)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["price"], 150.0)
+        self.assertEqual(merged[0]["marketValue"], 1500.0)
+        self.assertEqual(merged[0]["unrealizedPnL"], 300.0)
+        self.assertEqual(merged[0]["unrealizedPnLPercent"], 25.0)
+        self.assertEqual(merged[0]["dailyPnL"], 10.0)
+        self.assertEqual(merged[0]["changePercent"], 1.5)
+        self.assertEqual(merged[0]["currency"], "USD")
+
 
 class RecentEventAlertEnhancementTests(unittest.TestCase):
     def _seed_analysis(self, conn, symbol='NVDA', created_at='2026-03-01T00:00:00+00:00'):

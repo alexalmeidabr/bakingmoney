@@ -3352,6 +3352,25 @@ def load_positions_cache(conn):
     ]
 
 
+def overlay_cached_market_fields(live_rows, cached_rows):
+    cached_by_symbol = {
+        normalize_symbol(item.get("symbol")): item
+        for item in (cached_rows or [])
+        if normalize_symbol(item.get("symbol"))
+    }
+    merged = []
+    for row in live_rows or []:
+        combined = dict(row)
+        symbol = normalize_symbol(combined.get("symbol"))
+        cached = cached_by_symbol.get(symbol)
+        if cached:
+            for field in ("price", "changePercent", "marketValue", "unrealizedPnL", "unrealizedPnLPercent", "dailyPnL", "currency"):
+                if combined.get(field) is None and cached.get(field) is not None:
+                    combined[field] = cached.get(field)
+        merged.append(combined)
+    return merged
+
+
 def build_positions_payload(conn, positions, data_source, warning=None):
     normalized_positions = []
     for row in positions or []:
@@ -4105,12 +4124,21 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
             conn = get_db_connection()
             try:
-                save_positions_cache(conn, data)
+                effective_data = data
+                warning_message = None
+                if tws_data_enabled:
+                    save_positions_cache(conn, effective_data)
+                else:
+                    cached_rows = load_positions_cache(conn)
+                    effective_data = overlay_cached_market_fields(data, cached_rows)
+                    if cached_rows:
+                        save_positions_cache(conn, effective_data)
+                    warning_message = "Data from TWS is disabled. Showing latest cached market values when available."
                 payload = build_positions_payload(
                     conn,
-                    data,
+                    effective_data,
                     data_source="live",
-                    warning=None if tws_data_enabled else "Data from TWS is disabled.",
+                    warning=warning_message,
                 )
                 logger.info(
                     "Positions API returning live rows=%s sample_symbols=%s",

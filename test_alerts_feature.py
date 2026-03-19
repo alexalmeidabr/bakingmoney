@@ -539,6 +539,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("let alertsStatusFilter = 'New';", js)
         self.assertIn('function getFilteredAlerts()', js)
         self.assertIn("alertsStatusFilterEl.addEventListener('change'", js)
+        self.assertIn("let positionSort = { key: 'marketValue', direction: 'desc' };", js)
 
     def test_alert_detail_next_button_is_wired(self):
         from pathlib import Path

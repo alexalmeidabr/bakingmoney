@@ -122,7 +122,7 @@ const configRatingSellMaxDiffEl = document.getElementById('config-rating-sell-ma
 const configRatingSellMinBearishConfidenceEl = document.getElementById('config-rating-sell-min-bearish-confidence');
 
 let latestPositions = [];
-let positionSort = { key: 'symbol', direction: 'asc' };
+let positionSort = { key: 'marketValue', direction: 'desc' };
 let latestAnalysis = [];
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';

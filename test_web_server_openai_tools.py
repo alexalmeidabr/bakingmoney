@@ -245,6 +245,6 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
                         result = web_server.request_ai_analysis("NBIS", current_price=50.25)
 
                 joined_logs = "\n".join(captured_logs.output)
-                self.assertIn("workflow=initial_analysis", joined_logs)
+                self.assertIn("purpose=analysis_execution", joined_logs)
                 self.assertNotIn(web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK, joined_logs)
                 self.assertEqual(result["parsed"]["symbol"], "NBIS")

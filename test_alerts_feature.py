@@ -99,7 +99,7 @@ class RecentEventPromptTests(unittest.TestCase):
                         templates, sources = web_server.get_prompt_templates_for_keys(
                             conn,
                             web_server.RECENT_EVENT_WORKFLOW_PROMPT_KEYS,
-                            workflow_label="recent_event_check_test",
+                            purpose="recent_event_check_test",
                         )
                     self.assertEqual(
                         sources[web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK],
@@ -129,7 +129,7 @@ class RecentEventPromptTests(unittest.TestCase):
                     templates, sources = web_server.get_prompt_templates_for_keys(
                         conn,
                         web_server.ANALYSIS_WORKFLOW_PROMPT_KEYS,
-                        workflow_label="initial_analysis_test",
+                        purpose="initial_analysis_test",
                     )
                     self.assertEqual(
                         templates[web_server.ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
@@ -139,6 +139,23 @@ class RecentEventPromptTests(unittest.TestCase):
                         sources[web_server.ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
                         "custom",
                     )
+                finally:
+                    conn.close()
+
+    def test_prompt_configuration_ui_resolves_all_prompts_with_explicit_purpose_logging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    with self.assertLogs(web_server.logger, level="INFO") as captured_logs:
+                        templates, _sources = web_server.get_all_prompt_templates(conn, purpose="prompt_configuration_ui")
+                    joined_logs = "\n".join(captured_logs.output)
+                    self.assertIn("purpose=prompt_configuration_ui", joined_logs)
+                    self.assertIn(web_server.ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL, joined_logs)
+                    self.assertIn(web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK, joined_logs)
+                    self.assertIn(web_server.ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK, templates)
                 finally:
                     conn.close()
 

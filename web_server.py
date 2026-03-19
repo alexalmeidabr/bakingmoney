@@ -572,15 +572,15 @@ def get_prompt_template(conn, key):
     return get_default_prompt_template(key), "default"
 
 
-def get_all_prompt_templates(conn):
-    return get_prompt_templates_for_keys(conn, PROMPT_TEMPLATE_CONFIG.keys(), workflow_label="all")
+def get_all_prompt_templates(conn, purpose="prompt_configuration_ui"):
+    return get_prompt_templates_for_keys(conn, PROMPT_TEMPLATE_CONFIG.keys(), purpose=purpose)
 
 
-def get_prompt_templates_for_keys(conn, keys, workflow_label="custom"):
+def get_prompt_templates_for_keys(conn, keys, purpose="custom"):
     templates = {}
     sources = {}
     resolved_keys = tuple(keys)
-    logger.info("Resolving prompt templates workflow=%s keys=%s", workflow_label, ",".join(resolved_keys))
+    logger.info("Resolving prompt templates purpose=%s keys=%s", purpose, ",".join(resolved_keys))
     for key in resolved_keys:
         template, source = get_prompt_template(conn, key)
         templates[key] = template
@@ -1862,7 +1862,7 @@ def request_ai_analysis(symbol, current_price=None):
         templates, sources = get_prompt_templates_for_keys(
             conn,
             ANALYSIS_WORKFLOW_PROMPT_KEYS,
-            workflow_label="initial_analysis",
+            purpose="analysis_execution",
         )
         scenario_settings = get_scenario_generation_config(conn)
     finally:
@@ -2940,7 +2940,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     templates, _sources = get_prompt_templates_for_keys(
         conn,
         (ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,),
-        workflow_label="scenario_rerun_from_saved_edits",
+        purpose="analysis_scenario_rerun_from_saved_edits",
     )
     scenario_settings = get_scenario_generation_config(conn)
     business_model_draft = _get_saved_business_model_edit(conn, root["id"])
@@ -3057,7 +3057,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
     templates, _sources = get_prompt_templates_for_keys(
         conn,
         (ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,),
-        workflow_label="scenario_rerun_from_existing_version",
+        purpose="analysis_scenario_rerun_from_existing_version",
     )
     scenario_settings = get_scenario_generation_config(conn)
     business_model_draft = _get_saved_business_model_edit(conn, root["id"])
@@ -3640,7 +3640,7 @@ def run_recent_event_check(conn, symbols):
     templates, _sources = get_prompt_templates_for_keys(
         conn,
         RECENT_EVENT_WORKFLOW_PROMPT_KEYS,
-        workflow_label="recent_event_check",
+        purpose="recent_event_check",
     )
     candidate_template = templates[ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE]
     check_template = templates[ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK]
@@ -4318,7 +4318,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def handle_configuration_prompts_get(self):
         conn = get_db_connection()
         try:
-            templates, sources = get_all_prompt_templates(conn)
+            templates, sources = get_all_prompt_templates(conn, purpose="prompt_configuration_ui")
             self._send_json(
                 {
                     "templates": templates,
@@ -4359,7 +4359,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         try:
             for key in PROMPT_TEMPLATE_CONFIG.keys():
                 reset_prompt_template(conn, key)
-            templates, sources = get_all_prompt_templates(conn)
+            templates, sources = get_all_prompt_templates(conn, purpose="prompt_configuration_ui_reset")
             self._send_json(
                 {
                     "ok": True,
@@ -4417,7 +4417,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
         conn = get_db_connection()
         try:
-            templates, _sources = get_all_prompt_templates(conn)
+            templates, _sources = get_all_prompt_templates(conn, purpose="prompt_configuration_preview")
         finally:
             conn.close()
 

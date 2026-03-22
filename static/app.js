@@ -532,6 +532,51 @@ async function restoreBackupFile() {
   }
 }
 
+function parseDownloadFilename(contentDispositionValue, fallbackName) {
+  if (!contentDispositionValue) return fallbackName;
+  const utf8Match = contentDispositionValue.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch (_error) {
+      return utf8Match[1];
+    }
+  }
+  const basicMatch = contentDispositionValue.match(/filename=\"?([^\";]+)\"?/i);
+  return basicMatch?.[1] || fallbackName;
+}
+
+async function exportBackupFile() {
+  backupStatusEl.textContent = 'Preparing backup download…';
+  backupStatusEl.className = 'status';
+  backupExportBtn.disabled = true;
+  try {
+    const response = await fetch('/api/backup/export');
+    if (!response.ok) {
+      let payload = null;
+      try { payload = await response.json(); } catch (_error) { payload = null; }
+      throw new Error(extractErrorMessage(payload, 'Unable to download backup.'));
+    }
+    const blob = await response.blob();
+    const filename = parseDownloadFilename(response.headers.get('Content-Disposition'), `bakingmoney-backup-${new Date().toISOString().slice(0, 16).replace('T', '-')}.db`);
+    const objectUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(objectUrl);
+    backupStatusEl.textContent = 'Backup downloaded successfully.';
+    backupStatusEl.className = 'status';
+  } catch (error) {
+    backupStatusEl.textContent = `Error: ${error.message}`;
+    backupStatusEl.className = 'status error';
+  } finally {
+    backupExportBtn.disabled = false;
+  }
+}
+
 function setView(targetView) {
   menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === targetView));
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
@@ -1810,11 +1855,7 @@ configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
 configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
 twsDataToggleEl.addEventListener('change', () => updateTwsDataToggle(Boolean(twsDataToggleEl.checked)));
-backupExportBtn.addEventListener('click', () => {
-  backupStatusEl.textContent = 'Preparing backup download…';
-  backupStatusEl.className = 'status';
-  window.location.href = '/api/backup/export';
-});
+backupExportBtn.addEventListener('click', exportBackupFile);
 backupImportBtn.addEventListener('click', restoreBackupFile);
 
 updateSortHeaderState();

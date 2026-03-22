@@ -3,8 +3,10 @@ import json
 import logging
 import math
 import os
+import shutil
 import sqlite3
 import statistics
+import tempfile
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -30,6 +32,25 @@ PORT = 8080
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 DB_PATH = BASE_DIR / "bakingmoney.db"
+BACKUP_DIR = BASE_DIR / "backups"
+BACKUP_IMPORT_MAX_BYTES = 100 * 1024 * 1024
+BACKUP_REQUIRED_TABLES = (
+    "analysis_symbols",
+    "analysis_scenarios",
+    "analysis_key_variables",
+    "analysis_roots",
+    "analysis_versions",
+    "analysis_version_scenarios",
+    "analysis_version_key_variables",
+    "analysis_version_scenario_passes",
+    "analysis_key_variable_edits",
+    "analysis_business_model_edits",
+    "analysis_business_summary_edits",
+    "app_settings",
+    "positions_cache",
+    "thesis_review_alerts",
+    "recent_event_checks",
+)
 
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "7496"))
@@ -536,6 +557,53 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _is_probably_sqlite_file(path):
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(16)
+        return header == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def _validate_backup_db_file(path):
+    if not _is_probably_sqlite_file(path):
+        raise ValueError("Uploaded file is not a valid SQLite database file")
+
+    conn = sqlite3.connect(path)
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        missing_tables = [name for name in BACKUP_REQUIRED_TABLES if name not in tables]
+        if missing_tables:
+            raise ValueError(f"Backup is missing required table(s): {', '.join(missing_tables)}")
+
+        integrity_row = conn.execute("PRAGMA integrity_check").fetchone()
+        integrity_result = integrity_row[0] if integrity_row else ""
+        if str(integrity_result).lower() != "ok":
+            raise ValueError("SQLite integrity_check failed for uploaded backup")
+
+        current_schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if current_schema_version < 0:
+            raise ValueError("Invalid SQLite schema version in uploaded backup")
+    finally:
+        conn.close()
+
+
+def _create_db_backup_snapshot(source_path, destination_path):
+    source_conn = sqlite3.connect(source_path)
+    destination_conn = sqlite3.connect(destination_path)
+    try:
+        source_conn.backup(destination_conn)
+    finally:
+        destination_conn.close()
+        source_conn.close()
 
 
 def get_default_prompt_template(key):
@@ -3954,6 +4022,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         except Exception:
             return None
 
+    def _send_file(self, file_path, download_name):
+        with open(file_path, "rb") as handle:
+            payload = handle.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
@@ -3977,6 +4055,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_general_get()
         if path == "/api/alerts":
             return self.handle_alerts_get()
+        if path == "/api/backup/export":
+            return self.handle_backup_export()
         if path.startswith("/api/alerts/"):
             alert_id = path[len("/api/alerts/"):]
             if alert_id.isdigit():
@@ -4028,6 +4108,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_prompts_reset()
         if path == "/api/alerts/check-recent-events":
             return self.handle_alerts_check_recent_events()
+        if path == "/api/backup/import":
+            return self.handle_backup_import()
 
         self.send_error(404, "Not Found")
 
@@ -4177,6 +4259,77 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     )
             finally:
                 conn.close()
+
+    def handle_backup_export(self):
+        temp_backup_path = None
+        try:
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".db", dir=str(BACKUP_DIR)) as temp_handle:
+                temp_backup_path = temp_handle.name
+            _create_db_backup_snapshot(str(DB_PATH), temp_backup_path)
+            filename = f"bakingmoney-backup-{datetime.now().strftime('%Y-%m-%d-%H%M')}.db"
+            self._send_file(temp_backup_path, filename)
+        except Exception as exc:
+            logger.exception("Backup export failed")
+            self._send_json({"error": f"Unable to export backup: {exc}"}, status=500)
+        finally:
+            if temp_backup_path and os.path.exists(temp_backup_path):
+                os.remove(temp_backup_path)
+
+    def handle_backup_import(self):
+        temp_upload_path = None
+        safety_backup_path = None
+        try:
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return self._send_json({"error": "Invalid upload content length"}, status=400)
+
+            if content_length <= 0:
+                return self._send_json({"error": "No backup file uploaded"}, status=400)
+            if content_length > BACKUP_IMPORT_MAX_BYTES:
+                return self._send_json({"error": "Backup file too large"}, status=413)
+
+            body = self.rfile.read(content_length)
+            if len(body) != content_length:
+                return self._send_json({"error": "Backup upload was incomplete"}, status=400)
+
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".db", dir=str(BACKUP_DIR)) as temp_handle:
+                temp_handle.write(body)
+                temp_upload_path = temp_handle.name
+
+            _validate_backup_db_file(temp_upload_path)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            safety_backup_path = str(BACKUP_DIR / f"pre-restore-{timestamp}.db")
+            _create_db_backup_snapshot(str(DB_PATH), safety_backup_path)
+
+            os.replace(temp_upload_path, DB_PATH)
+            temp_upload_path = None
+
+            conn = None
+            try:
+                conn = get_db_connection()
+                conn.execute("SELECT 1").fetchone()
+            except Exception as exc:
+                shutil.copy2(safety_backup_path, DB_PATH)
+                raise RuntimeError(f"Restore verification failed and original DB was recovered: {exc}") from exc
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            return self._send_json({"success": True, "message": "Backup restored successfully"})
+        except ValueError as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Backup import failed")
+            return self._send_json({"error": f"Unable to restore backup: {exc}"}, status=500)
+        finally:
+            if temp_upload_path and os.path.exists(temp_upload_path):
+                os.remove(temp_upload_path)
 
     def handle_analysis_get(self):
         conn = get_db_connection()

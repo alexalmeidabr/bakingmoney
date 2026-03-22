@@ -123,6 +123,10 @@ const configRatingSellMaxDiffEl = document.getElementById('config-rating-sell-ma
 const configRatingSellMinBearishConfidenceEl = document.getElementById('config-rating-sell-min-bearish-confidence');
 const twsDataToggleEl = document.getElementById('tws-data-toggle');
 const twsDataStatusEl = document.getElementById('tws-data-status');
+const backupStatusEl = document.getElementById('backup-status');
+const backupExportBtn = document.getElementById('backup-export-btn');
+const backupImportFileEl = document.getElementById('backup-import-file');
+const backupImportBtn = document.getElementById('backup-import-btn');
 
 let latestPositions = [];
 let positionSort = { key: 'marketValue', direction: 'desc' };
@@ -483,6 +487,51 @@ function syncSelectAllCheckbox() {
 }
 
 function showAnalysisList() { analysisListView.classList.remove('hidden'); analysisDetailView.classList.add('hidden'); }
+function loadBackupView() {
+  if (!backupStatusEl) return;
+  backupStatusEl.textContent = 'Export your current local database or restore from a backup file.';
+  backupStatusEl.className = 'status';
+}
+
+async function restoreBackupFile() {
+  if (!backupImportFileEl?.files?.length) {
+    backupStatusEl.textContent = 'Please choose a .db backup file first.';
+    backupStatusEl.className = 'status error';
+    return;
+  }
+
+  const file = backupImportFileEl.files[0];
+  if (!file.name.toLowerCase().endsWith('.db')) {
+    backupStatusEl.textContent = 'Only .db backup files are supported.';
+    backupStatusEl.className = 'status error';
+    return;
+  }
+
+  const confirmed = window.confirm('Restore this backup and replace your current local database? This cannot be undone.');
+  if (!confirmed) return;
+
+  backupStatusEl.textContent = 'Restoring backup…';
+  backupStatusEl.className = 'status';
+  backupImportBtn.disabled = true;
+  try {
+    const response = await fetch('/api/backup/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Backup-Filename': file.name },
+      body: file,
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Restore failed.'));
+    backupStatusEl.textContent = 'Backup restored successfully. Reloading app…';
+    backupStatusEl.className = 'status';
+    setTimeout(() => window.location.reload(), 900);
+  } catch (error) {
+    backupStatusEl.textContent = `Error: ${error.message}`;
+    backupStatusEl.className = 'status error';
+  } finally {
+    backupImportBtn.disabled = false;
+  }
+}
+
 function setView(targetView) {
   menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === targetView));
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
@@ -491,6 +540,7 @@ function setView(targetView) {
   if (targetView === 'alerts') loadAlerts();
   if (targetView === 'prompt') loadPromptConfiguration();
   if (targetView === 'configuration') loadGeneralConfiguration();
+  if (targetView === 'backup') loadBackupView();
 }
 menuItems.forEach((item) => item.addEventListener('click', () => setView(item.dataset.view)));
 
@@ -1760,6 +1810,12 @@ configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
 configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
 twsDataToggleEl.addEventListener('change', () => updateTwsDataToggle(Boolean(twsDataToggleEl.checked)));
+backupExportBtn.addEventListener('click', () => {
+  backupStatusEl.textContent = 'Preparing backup download…';
+  backupStatusEl.className = 'status';
+  window.location.href = '/api/backup/export';
+});
+backupImportBtn.addEventListener('click', restoreBackupFile);
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();

@@ -293,6 +293,11 @@ th.sortable[data-sort-direction='desc']::after {
   width: 100%;
 }
 
+.alert-var-text {
+  min-width: 420px;
+  width: 100%;
+}
+
 #analysis-scenario-info-btn {
   border-radius: 999px;
   width: 22px;

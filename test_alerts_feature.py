@@ -726,6 +726,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('white-space: normal;', css)
         self.assertIn('.business-model-editor .table-actions button', css)
         self.assertIn('min-width: 170px;', css)
+        self.assertIn('.alert-var-text', css)
+        self.assertIn('min-width: 420px;', css)
 
     def test_positions_column_sequence_matches_expected_order(self):
         from pathlib import Path

@@ -57,6 +57,17 @@ class BackupRestoreValidationTests(unittest.TestCase):
                 copied_conn.close()
             self.assertEqual(row[0], "backup-test")
 
+    def test_build_backup_manifest_reports_env_flag(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "manifest.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                manifest = web_server._build_backup_manifest(True)
+        self.assertEqual(manifest["app_name"], "BakingMoney")
+        self.assertIn("exported_at", manifest)
+        self.assertTrue(manifest["includes_env"])
+        self.assertIn("schema_version", manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

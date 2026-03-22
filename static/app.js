@@ -125,7 +125,9 @@ const twsDataToggleEl = document.getElementById('tws-data-toggle');
 const twsDataStatusEl = document.getElementById('tws-data-status');
 const backupStatusEl = document.getElementById('backup-status');
 const backupExportBtn = document.getElementById('backup-export-btn');
+const backupIncludeEnvEl = document.getElementById('backup-include-env');
 const backupImportFileEl = document.getElementById('backup-import-file');
+const backupRestoreEnvEl = document.getElementById('backup-restore-env');
 const backupImportBtn = document.getElementById('backup-import-btn');
 
 let latestPositions = [];
@@ -489,20 +491,20 @@ function syncSelectAllCheckbox() {
 function showAnalysisList() { analysisListView.classList.remove('hidden'); analysisDetailView.classList.add('hidden'); }
 function loadBackupView() {
   if (!backupStatusEl) return;
-  backupStatusEl.textContent = 'Export your current local database or restore from a backup file.';
+  backupStatusEl.textContent = 'Export a portable backup package (.zip) or restore one from another computer.';
   backupStatusEl.className = 'status';
 }
 
 async function restoreBackupFile() {
   if (!backupImportFileEl?.files?.length) {
-    backupStatusEl.textContent = 'Please choose a .db backup file first.';
+    backupStatusEl.textContent = 'Please choose a .zip backup package first.';
     backupStatusEl.className = 'status error';
     return;
   }
 
   const file = backupImportFileEl.files[0];
-  if (!file.name.toLowerCase().endsWith('.db')) {
-    backupStatusEl.textContent = 'Only .db backup files are supported.';
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    backupStatusEl.textContent = 'Only .zip backup packages are supported.';
     backupStatusEl.className = 'status error';
     return;
   }
@@ -514,9 +516,10 @@ async function restoreBackupFile() {
   backupStatusEl.className = 'status';
   backupImportBtn.disabled = true;
   try {
-    const response = await fetch('/api/backup/import', {
+    const restoreEnv = backupRestoreEnvEl?.checked ? '1' : '0';
+    const response = await fetch(`/api/backup/import?restore_env=${restoreEnv}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream', 'X-Backup-Filename': file.name },
+      headers: { 'Content-Type': 'application/zip', 'X-Backup-Filename': file.name },
       body: file,
     });
     const payload = await response.json();
@@ -551,14 +554,15 @@ async function exportBackupFile() {
   backupStatusEl.className = 'status';
   backupExportBtn.disabled = true;
   try {
-    const response = await fetch('/api/backup/export');
+    const includeEnv = backupIncludeEnvEl?.checked ? '1' : '0';
+    const response = await fetch(`/api/backup/export?include_env=${includeEnv}`);
     if (!response.ok) {
       let payload = null;
       try { payload = await response.json(); } catch (_error) { payload = null; }
       throw new Error(extractErrorMessage(payload, 'Unable to download backup.'));
     }
     const blob = await response.blob();
-    const filename = parseDownloadFilename(response.headers.get('Content-Disposition'), `bakingmoney-backup-${new Date().toISOString().slice(0, 16).replace('T', '-')}.db`);
+    const filename = parseDownloadFilename(response.headers.get('Content-Disposition'), `bakingmoney-backup-${new Date().toISOString().slice(0, 16).replace('T', '-')}.zip`);
     const objectUrl = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = objectUrl;

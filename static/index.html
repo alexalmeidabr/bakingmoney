@@ -291,15 +291,19 @@
 
           <section class="detail-card">
             <h3>Export current database</h3>
-            <p class="status">Creates a full SQLite snapshot of your local BakingMoney data.</p>
+            <p class="status">Creates a portable backup package containing your full local app state.</p>
+            <label><input id="backup-include-env" type="checkbox" checked /> Include environment file (.env)</label>
+            <p class="status error">The .env file may contain API keys and other secrets. Store backups securely.</p>
             <button id="backup-export-btn">Download Backup</button>
           </section>
 
           <section class="detail-card">
             <h3>Import database backup</h3>
             <p class="status error">Warning: restoring a backup will replace your current local database.</p>
+            <label><input id="backup-restore-env" type="checkbox" checked /> Restore environment file (.env) if present</label>
+            <p class="status error">If selected, the current .env file will also be replaced.</p>
             <div class="table-actions">
-              <input id="backup-import-file" type="file" accept=".db,application/octet-stream" />
+              <input id="backup-import-file" type="file" accept=".zip,application/zip" />
               <button id="backup-import-btn">Restore Backup</button>
             </div>
           </section>

@@ -7,11 +7,13 @@ import shutil
 import sqlite3
 import statistics
 import tempfile
+import zipfile
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
@@ -32,8 +34,13 @@ PORT = 8080
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 DB_PATH = BASE_DIR / "bakingmoney.db"
+ENV_PATH = BASE_DIR / ".env"
 BACKUP_DIR = BASE_DIR / "backups"
 BACKUP_IMPORT_MAX_BYTES = 100 * 1024 * 1024
+BACKUP_EXPORT_FILENAME_PREFIX = "bakingmoney-backup"
+BACKUP_PACKAGE_DB_FILENAME = "bakingmoney.db"
+BACKUP_PACKAGE_ENV_FILENAME = ".env"
+BACKUP_PACKAGE_MANIFEST_FILENAME = "manifest.json"
 BACKUP_REQUIRED_TABLES = (
     "analysis_symbols",
     "analysis_scenarios",
@@ -604,6 +611,26 @@ def _create_db_backup_snapshot(source_path, destination_path):
     finally:
         destination_conn.close()
         source_conn.close()
+
+
+def _build_backup_manifest(includes_env):
+    schema_version = 0
+    conn = None
+    try:
+        conn = get_db_connection()
+        row = conn.execute("PRAGMA user_version").fetchone()
+        schema_version = int(row[0]) if row else 0
+    except Exception:
+        schema_version = 0
+    finally:
+        if conn:
+            conn.close()
+    return {
+        "app_name": "BakingMoney",
+        "exported_at": utc_now_iso(),
+        "schema_version": schema_version,
+        "includes_env": bool(includes_env),
+    }
 
 
 def get_default_prompt_template(key):
@@ -4056,7 +4083,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         if path == "/api/alerts":
             return self.handle_alerts_get()
         if path == "/api/backup/export":
-            return self.handle_backup_export()
+            query = parse_qs(parsed_url.query or "")
+            include_env = str(query.get("include_env", ["1"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            return self.handle_backup_export(include_env=include_env)
         if path.startswith("/api/alerts/"):
             alert_id = path[len("/api/alerts/"):]
             if alert_id.isdigit():
@@ -4260,25 +4289,46 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             finally:
                 conn.close()
 
-    def handle_backup_export(self):
-        temp_backup_path = None
+    def handle_backup_export(self, include_env=True):
+        temp_db_snapshot_path = None
         try:
             BACKUP_DIR.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".db", dir=str(BACKUP_DIR)) as temp_handle:
-                temp_backup_path = temp_handle.name
-            _create_db_backup_snapshot(str(DB_PATH), temp_backup_path)
-            filename = f"bakingmoney-backup-{datetime.now().strftime('%Y-%m-%d-%H%M')}.db"
-            self._send_file(temp_backup_path, filename)
+                temp_db_snapshot_path = temp_handle.name
+            _create_db_backup_snapshot(str(DB_PATH), temp_db_snapshot_path)
+
+            include_env_in_package = bool(include_env and ENV_PATH.exists())
+            manifest = _build_backup_manifest(include_env_in_package)
+
+            package_bytes = BytesIO()
+            with zipfile.ZipFile(package_bytes, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.write(temp_db_snapshot_path, BACKUP_PACKAGE_DB_FILENAME)
+                if include_env_in_package:
+                    archive.write(ENV_PATH, BACKUP_PACKAGE_ENV_FILENAME)
+                archive.writestr(BACKUP_PACKAGE_MANIFEST_FILENAME, json.dumps(manifest, indent=2))
+
+            payload = package_bytes.getvalue()
+            filename = f"{BACKUP_EXPORT_FILENAME_PREFIX}-{datetime.now().strftime('%Y-%m-%d-%H%M')}.zip"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
         except Exception as exc:
             logger.exception("Backup export failed")
             self._send_json({"error": f"Unable to export backup: {exc}"}, status=500)
         finally:
-            if temp_backup_path and os.path.exists(temp_backup_path):
-                os.remove(temp_backup_path)
+            if temp_db_snapshot_path and os.path.exists(temp_db_snapshot_path):
+                os.remove(temp_db_snapshot_path)
 
     def handle_backup_import(self):
-        temp_upload_path = None
-        safety_backup_path = None
+        temp_upload_zip_path = None
+        temp_import_db_path = None
+        temp_import_env_path = None
+        safety_backup_db_path = None
+        safety_backup_env_path = None
+        restored_env = False
         try:
             try:
                 content_length = int(self.headers.get("Content-Length", "0"))
@@ -4294,26 +4344,64 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if len(body) != content_length:
                 return self._send_json({"error": "Backup upload was incomplete"}, status=400)
 
-            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".db", dir=str(BACKUP_DIR)) as temp_handle:
-                temp_handle.write(body)
-                temp_upload_path = temp_handle.name
+            content_type = str(self.headers.get("Content-Type", "")).lower()
+            if "application/zip" not in content_type and "application/octet-stream" not in content_type:
+                return self._send_json({"error": "Backup upload must be a .zip package"}, status=400)
 
-            _validate_backup_db_file(temp_upload_path)
+            parsed_url = urlparse(self.path)
+            query = parse_qs(parsed_url.query or "")
+            restore_env_requested = str(query.get("restore_env", ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip", dir=str(BACKUP_DIR)) as temp_handle:
+                temp_handle.write(body)
+                temp_upload_zip_path = temp_handle.name
+
+            with zipfile.ZipFile(temp_upload_zip_path, "r") as archive:
+                names = set(archive.namelist())
+                if BACKUP_PACKAGE_DB_FILENAME not in names:
+                    return self._send_json({"error": "Backup package is missing bakingmoney.db"}, status=400)
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".db", dir=str(BACKUP_DIR)) as db_handle:
+                    db_handle.write(archive.read(BACKUP_PACKAGE_DB_FILENAME))
+                    temp_import_db_path = db_handle.name
+
+                if BACKUP_PACKAGE_MANIFEST_FILENAME in names:
+                    try:
+                        json.loads(archive.read(BACKUP_PACKAGE_MANIFEST_FILENAME).decode("utf-8"))
+                    except Exception as exc:
+                        return self._send_json({"error": f"Backup package manifest is invalid: {exc}"}, status=400)
+
+                if restore_env_requested and BACKUP_PACKAGE_ENV_FILENAME in names:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".env", dir=str(BACKUP_DIR)) as env_handle:
+                        env_handle.write(archive.read(BACKUP_PACKAGE_ENV_FILENAME))
+                        temp_import_env_path = env_handle.name
+
+            _validate_backup_db_file(temp_import_db_path)
 
             timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-            safety_backup_path = str(BACKUP_DIR / f"pre-restore-{timestamp}.db")
-            _create_db_backup_snapshot(str(DB_PATH), safety_backup_path)
+            safety_backup_db_path = str(BACKUP_DIR / f"pre-restore-db-{timestamp}.db")
+            _create_db_backup_snapshot(str(DB_PATH), safety_backup_db_path)
+            if ENV_PATH.exists():
+                safety_backup_env_path = str(BACKUP_DIR / f"pre-restore-env-{timestamp}.env")
+                shutil.copy2(ENV_PATH, safety_backup_env_path)
 
-            os.replace(temp_upload_path, DB_PATH)
-            temp_upload_path = None
+            os.replace(temp_import_db_path, DB_PATH)
+            temp_import_db_path = None
+            if restore_env_requested and temp_import_env_path:
+                os.replace(temp_import_env_path, ENV_PATH)
+                temp_import_env_path = None
+                restored_env = True
 
             conn = None
             try:
                 conn = get_db_connection()
                 conn.execute("SELECT 1").fetchone()
             except Exception as exc:
-                shutil.copy2(safety_backup_path, DB_PATH)
+                if safety_backup_db_path and os.path.exists(safety_backup_db_path):
+                    shutil.copy2(safety_backup_db_path, DB_PATH)
+                if safety_backup_env_path and os.path.exists(safety_backup_env_path):
+                    shutil.copy2(safety_backup_env_path, ENV_PATH)
                 raise RuntimeError(f"Restore verification failed and original DB was recovered: {exc}") from exc
             finally:
                 try:
@@ -4321,15 +4409,27 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 except Exception:
                     pass
 
-            return self._send_json({"success": True, "message": "Backup restored successfully"})
+            return self._send_json(
+                {
+                    "success": True,
+                    "message": "Backup restored successfully",
+                    "restored_env": restored_env,
+                }
+            )
         except ValueError as exc:
             return self._send_json({"error": str(exc)}, status=400)
+        except zipfile.BadZipFile:
+            return self._send_json({"error": "Uploaded file is not a valid backup .zip package"}, status=400)
         except Exception as exc:
             logger.exception("Backup import failed")
             return self._send_json({"error": f"Unable to restore backup: {exc}"}, status=500)
         finally:
-            if temp_upload_path and os.path.exists(temp_upload_path):
-                os.remove(temp_upload_path)
+            if temp_upload_zip_path and os.path.exists(temp_upload_zip_path):
+                os.remove(temp_upload_zip_path)
+            if temp_import_db_path and os.path.exists(temp_import_db_path):
+                os.remove(temp_import_db_path)
+            if temp_import_env_path and os.path.exists(temp_import_env_path):
+                os.remove(temp_import_env_path)
 
     def handle_analysis_get(self):
         conn = get_db_connection()

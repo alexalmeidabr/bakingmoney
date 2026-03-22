@@ -16,6 +16,7 @@
           <button class="menu-item" data-view="alerts">Alerts</button>
           <button class="menu-item" data-view="prompt">Prompt</button>
           <button class="menu-item" data-view="configuration">Configuration</button>
+          <button class="menu-item" data-view="backup">Backup &amp; Restore</button>
         </nav>
       </aside>
 
@@ -277,6 +278,29 @@
               <button id="config-save-btn">Save Settings</button>
               <button id="config-cancel-btn">Cancel</button>
               <button id="config-restore-defaults-btn">Restore Defaults</button>
+            </div>
+          </section>
+        </section>
+
+        <section id="backup" class="view">
+          <div class="view-header">
+            <h2>Backup &amp; Restore</h2>
+          </div>
+
+          <p id="backup-status" class="status">Export your current local database or restore from a backup file.</p>
+
+          <section class="detail-card">
+            <h3>Export current database</h3>
+            <p class="status">Creates a full SQLite snapshot of your local BakingMoney data.</p>
+            <button id="backup-export-btn">Download Backup</button>
+          </section>
+
+          <section class="detail-card">
+            <h3>Import database backup</h3>
+            <p class="status error">Warning: restoring a backup will replace your current local database.</p>
+            <div class="table-actions">
+              <input id="backup-import-file" type="file" accept=".db,application/octet-stream" />
+              <button id="backup-import-btn">Restore Backup</button>
             </div>
           </section>
         </section>

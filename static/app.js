@@ -567,7 +567,7 @@ async function exportBackupFile() {
     link.click();
     link.remove();
     window.URL.revokeObjectURL(objectUrl);
-    backupStatusEl.textContent = 'Backup downloaded successfully.';
+    backupStatusEl.textContent = 'Backup file generation completed';
     backupStatusEl.className = 'status';
   } catch (error) {
     backupStatusEl.textContent = `Error: ${error.message}`;

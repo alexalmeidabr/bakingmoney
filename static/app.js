@@ -89,6 +89,7 @@ const alertDetailPrevBtn = document.getElementById('alert-detail-prev-btn');
 const alertDetailNextBtn = document.getElementById('alert-detail-next-btn');
 const alertDetailKeyvarsStatusEl = document.getElementById('alert-detail-keyvars-status');
 const alertDetailVarsBody = document.querySelector('#alert-detail-vars-table tbody');
+const alertDetailOpenAnalysisBtn = document.getElementById('alert-detail-open-analysis-btn');
 const alertDetailEditVarsBtn = document.getElementById('alert-detail-edit-vars-btn');
 const alertDetailAddVarBtn = document.getElementById('alert-detail-add-var-btn');
 const alertDetailSaveVarsBtn = document.getElementById('alert-detail-save-vars-btn');
@@ -141,6 +142,7 @@ let alertsStatusFilter = 'New';
 let alertDetailAnalysisState = null;
 let alertDetailIsEditingVariables = false;
 let currentAlertNavigationIds = [];
+let currentAlertDetailSymbol = null;
 let isUpdatingTwsDataToggle = false;
 
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
@@ -980,6 +982,7 @@ async function deleteAnalysis(symbol) {
 
 function showAlertsListView() {
   currentAlertDetailId = null;
+  currentAlertDetailSymbol = null;
   currentAlertNavigationIds = [];
   alertDetailAnalysisState = null;
   alertDetailIsEditingVariables = false;
@@ -1099,6 +1102,7 @@ function renderAlertDetailVariablesTable() {
   alertDetailSaveVarsBtn.classList.toggle('hidden', !alertDetailIsEditingVariables || !hasAnalysis);
   alertDetailCancelVarsBtn.classList.toggle('hidden', !alertDetailIsEditingVariables || !hasAnalysis);
   alertDetailRerunBtn.disabled = !hasAnalysis;
+  alertDetailOpenAnalysisBtn.disabled = !currentAlertDetailSymbol;
 }
 
 function collectEditedAlertDetailVariables() {
@@ -1214,6 +1218,7 @@ async function openAlertDetail(alertId) {
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load alert detail'));
     const alert = payload.alert || {};
+    currentAlertDetailSymbol = alert.symbol || null;
     alertDetailTitleEl.textContent = `Alert Detail · ${alert.symbol || ''}`;
     alertDetailTypeEl.textContent = alert.alert_type || '—';
     alertDetailAffectedEl.textContent = (alert.affected_variables || []).join(', ') || '—';
@@ -1233,12 +1238,14 @@ async function openAlertDetail(alertId) {
       alertDetailKeyvarsStatusEl.className = 'status error';
     });
   } catch (error) {
+    currentAlertDetailSymbol = null;
     alertDetailStatusEl.textContent = `Error: ${error.message}`;
     alertDetailStatusEl.className = 'status error';
     alertDetailReviewBtn.disabled = true;
     alertDetailDismissBtn.disabled = true;
     alertDetailPrevBtn.disabled = true;
     alertDetailNextBtn.disabled = true;
+    alertDetailOpenAnalysisBtn.disabled = true;
   }
 }
 
@@ -1678,6 +1685,10 @@ alertDetailAddVarBtn.addEventListener('click', () => {
   row.querySelector('.alert-var-delete-btn')?.addEventListener('click', () => row.remove());
 });
 alertDetailSaveVarsBtn.addEventListener('click', saveAlertDetailVariables);
+alertDetailOpenAnalysisBtn.addEventListener('click', () => {
+  if (!currentAlertDetailSymbol) return;
+  openAnalysisDetailForSymbol(currentAlertDetailSymbol, { switchToAnalysisView: true });
+});
 alertDetailCancelVarsBtn.addEventListener('click', () => {
   alertDetailIsEditingVariables = false;
   renderAlertDetailVariablesTable();

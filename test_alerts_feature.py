@@ -704,6 +704,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="alert-detail-prev-btn"', html)
         self.assertIn('id="alert-detail-next-btn"', html)
         self.assertIn('id="alert-detail-keyvars-status"', html)
+        self.assertIn('id="alert-detail-open-analysis-btn"', html)
         self.assertIn('id="alert-detail-edit-vars-btn"', html)
         self.assertIn('id="alert-detail-rerun-btn"', html)
         self.assertIn('data-sort-key="confidence_diff" class="sortable">Confidence</th>', html)
@@ -718,6 +719,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("const twsDataToggleEl = document.getElementById('tws-data-toggle');", js)
         self.assertIn('async function updateTwsDataToggle(enabled)', js)
         self.assertIn("twsDataToggleEl.addEventListener('change'", js)
+        self.assertIn("alertDetailOpenAnalysisBtn.addEventListener('click'", js)
 
     def test_alerts_affected_variables_column_has_wrap_style(self):
         from pathlib import Path

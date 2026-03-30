@@ -123,6 +123,12 @@ const configRatingSellMaxDiffEl = document.getElementById('config-rating-sell-ma
 const configRatingSellMinBearishConfidenceEl = document.getElementById('config-rating-sell-min-bearish-confidence');
 const twsDataToggleEl = document.getElementById('tws-data-toggle');
 const twsDataStatusEl = document.getElementById('tws-data-status');
+const backupStatusEl = document.getElementById('backup-status');
+const backupExportBtn = document.getElementById('backup-export-btn');
+const backupIncludeEnvEl = document.getElementById('backup-include-env');
+const backupImportFileEl = document.getElementById('backup-import-file');
+const backupRestoreEnvEl = document.getElementById('backup-restore-env');
+const backupImportBtn = document.getElementById('backup-import-btn');
 
 let latestPositions = [];
 let positionSort = { key: 'marketValue', direction: 'desc' };
@@ -483,6 +489,98 @@ function syncSelectAllCheckbox() {
 }
 
 function showAnalysisList() { analysisListView.classList.remove('hidden'); analysisDetailView.classList.add('hidden'); }
+function loadBackupView() {
+  if (!backupStatusEl) return;
+  backupStatusEl.textContent = 'Export a portable backup package (.zip) or restore one from another computer.';
+  backupStatusEl.className = 'status';
+}
+
+async function restoreBackupFile() {
+  if (!backupImportFileEl?.files?.length) {
+    backupStatusEl.textContent = 'Please choose a .zip backup package first.';
+    backupStatusEl.className = 'status error';
+    return;
+  }
+
+  const file = backupImportFileEl.files[0];
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    backupStatusEl.textContent = 'Only .zip backup packages are supported.';
+    backupStatusEl.className = 'status error';
+    return;
+  }
+
+  const confirmed = window.confirm('Restore this backup and replace your current local database? This cannot be undone.');
+  if (!confirmed) return;
+
+  backupStatusEl.textContent = 'Restoring backup…';
+  backupStatusEl.className = 'status';
+  backupImportBtn.disabled = true;
+  try {
+    const restoreEnv = backupRestoreEnvEl?.checked ? '1' : '0';
+    const response = await fetch(`/api/backup/import?restore_env=${restoreEnv}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip', 'X-Backup-Filename': file.name },
+      body: file,
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Restore failed.'));
+    backupStatusEl.textContent = 'Backup restored successfully. Reloading app…';
+    backupStatusEl.className = 'status';
+    setTimeout(() => window.location.reload(), 900);
+  } catch (error) {
+    backupStatusEl.textContent = `Error: ${error.message}`;
+    backupStatusEl.className = 'status error';
+  } finally {
+    backupImportBtn.disabled = false;
+  }
+}
+
+function parseDownloadFilename(contentDispositionValue, fallbackName) {
+  if (!contentDispositionValue) return fallbackName;
+  const utf8Match = contentDispositionValue.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch (_error) {
+      return utf8Match[1];
+    }
+  }
+  const basicMatch = contentDispositionValue.match(/filename=\"?([^\";]+)\"?/i);
+  return basicMatch?.[1] || fallbackName;
+}
+
+async function exportBackupFile() {
+  backupStatusEl.textContent = 'Preparing backup download…';
+  backupStatusEl.className = 'status';
+  backupExportBtn.disabled = true;
+  try {
+    const includeEnv = backupIncludeEnvEl?.checked ? '1' : '0';
+    const response = await fetch(`/api/backup/export?include_env=${includeEnv}`);
+    if (!response.ok) {
+      let payload = null;
+      try { payload = await response.json(); } catch (_error) { payload = null; }
+      throw new Error(extractErrorMessage(payload, 'Unable to download backup.'));
+    }
+    const blob = await response.blob();
+    const filename = parseDownloadFilename(response.headers.get('Content-Disposition'), `bakingmoney-backup-${new Date().toISOString().slice(0, 16).replace('T', '-')}.zip`);
+    const objectUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(objectUrl);
+    backupStatusEl.textContent = 'Backup file generation completed';
+    backupStatusEl.className = 'status';
+  } catch (error) {
+    backupStatusEl.textContent = `Error: ${error.message}`;
+    backupStatusEl.className = 'status error';
+  } finally {
+    backupExportBtn.disabled = false;
+  }
+}
+
 function setView(targetView) {
   menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === targetView));
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
@@ -491,6 +589,7 @@ function setView(targetView) {
   if (targetView === 'alerts') loadAlerts();
   if (targetView === 'prompt') loadPromptConfiguration();
   if (targetView === 'configuration') loadGeneralConfiguration();
+  if (targetView === 'backup') loadBackupView();
 }
 menuItems.forEach((item) => item.addEventListener('click', () => setView(item.dataset.view)));
 
@@ -1760,6 +1859,8 @@ configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
 configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
 twsDataToggleEl.addEventListener('change', () => updateTwsDataToggle(Boolean(twsDataToggleEl.checked)));
+backupExportBtn.addEventListener('click', exportBackupFile);
+backupImportBtn.addEventListener('click', restoreBackupFile);
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();

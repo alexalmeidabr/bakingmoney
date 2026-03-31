@@ -467,6 +467,18 @@ def safe_number(value):
     return None
 
 
+def is_valid_market_price(value):
+    numeric = safe_number(value)
+    return numeric is not None and numeric > 0
+
+
+def normalize_market_price(value):
+    numeric = safe_number(value)
+    if not is_valid_market_price(numeric):
+        return None
+    return safe_number(numeric)
+
+
 def first_valid_number(*values):
     for value in values:
         numeric = safe_number(value)
@@ -480,14 +492,21 @@ def extract_price(ticker):
         return None
     market_price = None
     if hasattr(ticker, "marketPrice"):
-        market_price = safe_number(ticker.marketPrice())
-    return first_valid_number(market_price, getattr(ticker, "last", None), getattr(ticker, "close", None))
+        market_price = normalize_market_price(ticker.marketPrice())
+    return first_valid_number(
+        normalize_market_price(market_price),
+        normalize_market_price(getattr(ticker, "last", None)),
+        normalize_market_price(getattr(ticker, "close", None)),
+    )
 
 
 def extract_close(ticker):
     if not ticker:
         return None
-    return first_valid_number(getattr(ticker, "close", None), getattr(ticker, "prevClose", None))
+    return first_valid_number(
+        normalize_market_price(getattr(ticker, "close", None)),
+        normalize_market_price(getattr(ticker, "prevClose", None)),
+    )
 
 
 def compute_unrealized_pnl_percent(position_row):
@@ -1735,6 +1754,13 @@ def fetch_ib_prices(symbols):
                 price = extract_price(ticker)
                 prices[symbol] = price
                 if price is None:
+                    raw_market_price = safe_number(ticker.marketPrice()) if hasattr(ticker, "marketPrice") else None
+                    raw_last = safe_number(getattr(ticker, "last", None))
+                    raw_close = safe_number(getattr(ticker, "close", None))
+                    for invalid_candidate in (raw_market_price, raw_last, raw_close):
+                        if invalid_candidate is not None and invalid_candidate <= 0:
+                            logger.info("Ignoring invalid TWS price symbol=%s price=%s", symbol, invalid_candidate)
+                    logger.info("Keeping previous valid price for symbol=%s", symbol)
                     warnings[symbol] = NO_PRICE_WARNING
 
         for symbol in symbols:

@@ -382,6 +382,146 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(warnings["AAPL"], web_server.NO_PRICE_WARNING)
         self.assertEqual(warnings["MSFT"], web_server.NO_PRICE_WARNING)
 
+    def test_extract_price_accepts_positive_fallback_when_market_price_is_invalid(self):
+        ticker = types.SimpleNamespace(marketPrice=lambda: -1, last=125.5, close=120.0)
+        self.assertEqual(web_server.extract_price(ticker), 125.5)
+
+    def test_extract_price_rejects_non_positive_values(self):
+        ticker = types.SimpleNamespace(marketPrice=lambda: 0, last=-1, close=0)
+        self.assertIsNone(web_server.extract_price(ticker))
+
+    def test_fetch_ib_prices_ignores_invalid_non_positive_prices(self):
+        class FakeContract:
+            def __init__(self, symbol, conid):
+                self.symbol = symbol
+                self.conId = conid
+
+        class FakeTicker:
+            def __init__(self, contract, market_price, last, close):
+                self.contract = contract
+                self._market_price = market_price
+                self.last = last
+                self.close = close
+
+            def marketPrice(self):
+                return self._market_price
+
+        class FakeIB:
+            def positions(self):
+                return []
+
+            def qualifyContracts(self, *contracts):
+                return list(contracts)
+
+            def reqTickers(self, *contracts):
+                return [
+                    FakeTicker(contracts[0], 101.25, None, None),
+                    FakeTicker(contracts[1], 0, -1, 0),
+                    FakeTicker(contracts[2], -1, -1, -1),
+                ]
+
+            def cancelMktData(self, _contract):
+                return None
+
+            def sleep(self, _seconds):
+                return None
+
+        symbols = ["AAPL", "MSFT", "NVDA"]
+        conids = {symbol: idx + 1 for idx, symbol in enumerate(symbols)}
+        fake_module = types.SimpleNamespace(Stock=lambda symbol, *_args: FakeContract(symbol, conids[symbol]))
+        fake_ib = FakeIB()
+
+        with mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
+             mock.patch.object(web_server, "get_ib_connection", return_value=fake_ib), \
+             mock.patch.object(web_server, "is_tws_data_enabled", return_value=True), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0):
+            prices, warnings = web_server.fetch_ib_prices(symbols)
+
+        self.assertEqual(prices["AAPL"], 101.25)
+        self.assertEqual(prices["MSFT"], None)
+        self.assertEqual(prices["NVDA"], None)
+        self.assertEqual(warnings["AAPL"], None)
+        self.assertEqual(warnings["MSFT"], web_server.NO_PRICE_WARNING)
+        self.assertEqual(warnings["NVDA"], web_server.NO_PRICE_WARNING)
+
+    def test_refresh_latest_analysis_market_prices_preserves_previous_valid_price_on_invalid_tws_price(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = web_server.utc_now_iso()
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("MSFT", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'MSFT'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
+                            raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'MSFT', 'Microsoft', 250.0, 300.0, 20.0, 6.0, 'a', 'b', 'c', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    conn.commit()
+
+                    with mock.patch.object(
+                        web_server,
+                        "fetch_ib_prices",
+                        return_value=({"MSFT": None}, {"MSFT": web_server.NO_PRICE_WARNING}),
+                    ):
+                        result = web_server.refresh_latest_analysis_market_prices(conn)
+
+                    row = conn.execute(
+                        "SELECT current_price FROM analysis_versions WHERE analysis_root_id = ? AND version_number = 1",
+                        (root_id,),
+                    ).fetchone()
+                    self.assertEqual(row["current_price"], 250.0)
+                    self.assertEqual(result["updated"], 0)
+                    self.assertEqual(result["skipped"], 1)
+                finally:
+                    conn.close()
+
+    def test_refresh_latest_analysis_market_prices_with_no_prior_valid_price_keeps_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = web_server.utc_now_iso()
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("NVDA", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
+                            raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'NVDA', 'NVIDIA', NULL, 400.0, NULL, 6.0, 'a', 'b', 'c', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    conn.commit()
+
+                    with mock.patch.object(
+                        web_server,
+                        "fetch_ib_prices",
+                        return_value=({"NVDA": None}, {"NVDA": web_server.NO_PRICE_WARNING}),
+                    ):
+                        result = web_server.refresh_latest_analysis_market_prices(conn)
+
+                    row = conn.execute(
+                        "SELECT current_price FROM analysis_versions WHERE analysis_root_id = ? AND version_number = 1",
+                        (root_id,),
+                    ).fetchone()
+                    self.assertIsNone(row["current_price"])
+                    self.assertEqual(result["updated"], 0)
+                    self.assertEqual(result["skipped"], 1)
+                finally:
+                    conn.close()
+
     def test_save_general_configuration_auto_turns_off_use_tws_data_when_ib_unavailable(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")

@@ -13,6 +13,7 @@
         <nav>
           <button class="menu-item active" data-view="analysis">Analysis</button>
           <button class="menu-item" data-view="positions">My Positions</button>
+          <button class="menu-item" data-view="earnings-review">Earnings Review</button>
           <button class="menu-item" data-view="alerts">Alerts</button>
           <button class="menu-item" data-view="prompt">Prompt</button>
           <button class="menu-item" data-view="configuration">Configuration</button>
@@ -170,6 +171,59 @@
           </div>
         </section>
 
+        <section id="earnings-review" class="view">
+          <div class="view-header">
+            <h2>Earnings Review</h2>
+          </div>
+          <p id="earnings-review-status" class="status">Loading symbols…</p>
+          <div class="detail-panels earnings-review-layout">
+            <section class="detail-card earnings-review-list-card">
+              <div class="table-wrap">
+                <table id="earnings-review-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Company</th>
+                      <th>Rating</th>
+                      <th>Last Analysis Update</th>
+                      <th>Status</th>
+                      <th>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+            <section class="detail-card earnings-review-detail-card">
+              <div class="view-header">
+                <h3 id="earnings-review-detail-title">Select a symbol</h3>
+                <button id="earnings-review-generate-btn" disabled>Generate Earnings Watchpoints from Key Variables</button>
+              </div>
+              <p id="earnings-review-detail-meta" class="status">Select a symbol from the list to view details.</p>
+              <section class="detail-card">
+                <h4>Current Key Variables</h4>
+                <div class="table-wrap">
+                  <table id="earnings-review-key-variables-table">
+                    <thead>
+                      <tr>
+                        <th>Variable</th>
+                        <th>Type</th>
+                        <th>Confidence</th>
+                        <th>Importance</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </section>
+              <section class="detail-card">
+                <h4>Earnings Watchpoints</h4>
+                <div id="earnings-review-watchpoints" class="watchpoints-groups"></div>
+              </section>
+            </section>
+          </div>
+        </section>
+
 
         <section id="prompt" class="view">
           <div class="view-header">
@@ -206,6 +260,12 @@
             <h3>Recent Event Check Prompt</h3>
             <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong> (optional), <strong>$KeyVariables</strong> (required), <strong>$EventCandidates</strong> (required)</p>
             <textarea id="prompt-recent-events" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Earnings Watchpoints Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$BusinessModel</strong> (required), <strong>$KeyVariables</strong> (required)</p>
+            <textarea id="prompt-earnings-watchpoints" class="config-textarea" rows="14"></textarea>
             <div class="table-actions config-actions">
               <button id="prompt-save-btn">Save Prompts</button>
               <button id="prompt-reset-btn">Restore Default Prompts</button>

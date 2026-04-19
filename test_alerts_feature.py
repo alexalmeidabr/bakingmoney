@@ -892,5 +892,110 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
 
 
+class EarningsReviewTests(unittest.TestCase):
+    def _seed_analysis(self, conn, symbol="MSFT"):
+        now = web_server.utc_now_iso()
+        conn.execute(
+            "INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)",
+            (symbol, now, now),
+        )
+        root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO analysis_versions (
+                analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
+                raw_ai_response, source_trigger, created_at
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (root_id, symbol, f"{symbol} Inc.", 100.0, 120.0, 20.0, 6.0, "assume", "business model", "business summary", "{}", "test", now),
+        )
+        version_id = conn.execute(
+            "SELECT id FROM analysis_versions WHERE analysis_root_id = ? ORDER BY version_number DESC LIMIT 1",
+            (root_id,),
+        ).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO analysis_version_key_variables (
+                analysis_version_id, variable_text, variable_type, confidence, importance, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (version_id, "Cloud demand growth", "Bullish", 7.0, 8.0, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO analysis_version_key_variables (
+                analysis_version_id, variable_text, variable_type, confidence, importance, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (version_id, "Gross margin pressure", "Bearish", 5.0, 7.0, now),
+        )
+        conn.commit()
+
+    def test_earnings_prompt_template_requires_key_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    invalid = "Earnings review for $Symbol only"
+                    with self.assertRaises(ValueError):
+                        web_server.save_prompt_template(conn, web_server.ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINTS, invalid)
+                finally:
+                    conn.close()
+
+    def test_generate_earnings_watchpoints_persists_and_replaces_symbol_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="MSFT")
+                    first_response = {
+                        "watchpoints_by_variable": [
+                            {
+                                "key_variable": "Cloud demand growth",
+                                "type": "Bullish",
+                                "watchpoints": ["Azure bookings growth vs guidance", "Enterprise seat expansion commentary"],
+                            }
+                        ]
+                    }
+                    second_response = {
+                        "watchpoints_by_variable": [
+                            {
+                                "key_variable": "Gross margin pressure",
+                                "type": "Bearish",
+                                "watchpoints": ["AI infrastructure cost intensity", "Gross margin guide progression"],
+                            }
+                        ]
+                    }
+
+                    with mock.patch.object(web_server, "OPENAI_API_KEY", "test"), \
+                         mock.patch.object(web_server, "request_ai_step", side_effect=[first_response, second_response]):
+                        detail_first = web_server.generate_earnings_watchpoints(conn, "MSFT")
+                        detail_second = web_server.generate_earnings_watchpoints(conn, "MSFT")
+
+                    self.assertEqual(detail_first["watchpoints_status"], "Generated")
+                    self.assertEqual(detail_second["watchpoints_status"], "Generated")
+                    self.assertEqual(len(detail_second["watchpoints_by_variable"]), 1)
+                    self.assertEqual(detail_second["watchpoints_by_variable"][0]["key_variable"], "Gross margin pressure")
+
+                    rows = conn.execute(
+                        "SELECT key_variable_text FROM earnings_watchpoints WHERE symbol = ? ORDER BY id ASC",
+                        ("MSFT",),
+                    ).fetchall()
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0]["key_variable_text"], "Gross margin pressure")
+
+                    list_items = web_server.list_earnings_review_symbols(conn)
+                    msft_row = next(item for item in list_items if item["symbol"] == "MSFT")
+                    self.assertEqual(msft_row["watchpoints_status"], "Generated")
+                    self.assertEqual(msft_row["watchpoints_count"], 1)
+                finally:
+                    conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

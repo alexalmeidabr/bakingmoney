@@ -506,3 +506,37 @@ th.sortable[data-sort-direction='desc']::after {
   min-width: 260px;
   word-break: break-word;
 }
+
+.earnings-review-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(360px, 0.9fr) minmax(420px, 1.6fr);
+}
+
+.earnings-review-list-card table {
+  min-width: 100%;
+}
+
+.earnings-review-row-selected {
+  background: #e8f1ff !important;
+}
+
+.watchpoints-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.watchpoint-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fafcff;
+}
+
+.watchpoint-group h5 {
+  margin: 0 0 8px;
+}
+
+.watchpoint-group .status {
+  margin: 0 0 6px;
+}

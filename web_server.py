@@ -3780,6 +3780,32 @@ def _build_earnings_review_thesis_snapshot(conn, symbol):
     if not detail:
         raise ValueError(f"Analysis for symbol {symbol} not found")
     version = detail.get("version") or {}
+    raw_key_variables = version.get("key_variables") or []
+    normalized_key_variables = []
+    for item in raw_key_variables:
+        if not isinstance(item, dict):
+            continue
+        variable_text = (
+            item.get("variable")
+            or item.get("variable_text")
+            or item.get("key_variable")
+            or item.get("text")
+            or ""
+        )
+        variable_type = (
+            item.get("type")
+            or item.get("variable_type")
+            or item.get("polarity")
+            or ""
+        )
+        normalized_key_variables.append(
+            {
+                "variable": str(variable_text).strip(),
+                "type": str(variable_type).strip(),
+                "confidence": safe_number(item.get("confidence")),
+                "importance": safe_number(item.get("importance")),
+            }
+        )
     return {
         "symbol": symbol,
         "company_name": version.get("company_name") or symbol,
@@ -3789,7 +3815,7 @@ def _build_earnings_review_thesis_snapshot(conn, symbol):
         "upside": version.get("upside"),
         "business_model": version.get("business_model") or "",
         "business_summary": version.get("business_summary") or "",
-        "key_variables": version.get("key_variables") or [],
+        "key_variables": normalized_key_variables,
         "scenarios": version.get("scenarios") or [],
         "analysis_version_id": version.get("id"),
         "analysis_version_created_at": version.get("created_at"),
@@ -3988,6 +4014,29 @@ def get_earnings_review_record_detail(conn, symbol, review_id):
     except Exception:
         snapshot = {}
     watchpoints = get_earnings_review_watchpoints(conn, row["id"])
+    normalized_snapshot_key_variables = []
+    for item in snapshot.get("key_variables") or []:
+        if not isinstance(item, dict):
+            continue
+        normalized_snapshot_key_variables.append(
+            {
+                "variable": str(
+                    item.get("variable")
+                    or item.get("variable_text")
+                    or item.get("key_variable")
+                    or item.get("text")
+                    or ""
+                ).strip(),
+                "type": str(
+                    item.get("type")
+                    or item.get("variable_type")
+                    or item.get("polarity")
+                    or ""
+                ).strip(),
+                "confidence": safe_number(item.get("confidence")),
+                "importance": safe_number(item.get("importance")),
+            }
+        )
     return {
         "id": row["id"],
         "symbol": row["symbol"],
@@ -4000,7 +4049,7 @@ def get_earnings_review_record_detail(conn, symbol, review_id):
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "thesis_snapshot": snapshot,
-        "key_variables_snapshot": snapshot.get("key_variables") or [],
+        "key_variables_snapshot": normalized_snapshot_key_variables,
         "watchpoints_by_variable": watchpoints,
     }
 

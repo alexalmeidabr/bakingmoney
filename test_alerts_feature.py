@@ -1025,6 +1025,57 @@ class EarningsReviewTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_created_review_snapshot_normalizes_key_variable_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="NOW")
+                    created = web_server.create_earnings_review_record(conn, "NOW", fiscal_year=2026, fiscal_quarter="Q2")
+                    key_variables = created["key_variables_snapshot"]
+                    self.assertTrue(key_variables)
+                    self.assertTrue(all("variable" in item for item in key_variables))
+                    self.assertTrue(all("type" in item for item in key_variables))
+                    self.assertTrue(any(item["variable"] == "Cloud demand growth" for item in key_variables))
+                    self.assertTrue(any(item["type"] == "Bullish" for item in key_variables))
+                finally:
+                    conn.close()
+
+    def test_record_detail_maps_legacy_snapshot_variable_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = web_server.utc_now_iso()
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("ABC", now, now))
+                    legacy_snapshot = {
+                        "symbol": "ABC",
+                        "company_name": "ABC Inc.",
+                        "key_variables": [
+                            {"variable_text": "Legacy Variable", "variable_type": "Bearish", "confidence": 6, "importance": 8}
+                        ],
+                    }
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_reviews (
+                          symbol, company_name_snapshot, fiscal_year, fiscal_quarter, release_date, status,
+                          thesis_snapshot_json, watchpoints_generated_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        ("ABC", "ABC Inc.", 2026, "Q1", None, web_server.EARNINGS_REVIEW_STATUS_DRAFT, json.dumps(legacy_snapshot), None, now, now),
+                    )
+                    review_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                    conn.commit()
+                    detail = web_server.get_earnings_review_record_detail(conn, "ABC", review_id)
+                    self.assertEqual(detail["key_variables_snapshot"][0]["variable"], "Legacy Variable")
+                    self.assertEqual(detail["key_variables_snapshot"][0]["type"], "Bearish")
+                finally:
+                    conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

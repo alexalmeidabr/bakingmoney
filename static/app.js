@@ -1577,11 +1577,19 @@ function renderEarningsReviewSymbolHistoryTable(records) {
       <td>${formatDateTime(record.updated_at)}</td>
       <td>${typeof record.watchpoints_count === 'number' ? record.watchpoints_count : 0}</td>
       <td><button class="symbol-link earnings-record-open-btn" data-review-id="${record.id}">Open</button></td>
+      <td><button class="remove-btn earnings-record-delete-btn" data-review-id="${record.id}" data-fiscal-year="${record.fiscal_year}" data-fiscal-quarter="${record.fiscal_quarter}">Delete</button></td>
     `;
     earningsReviewSymbolTableBody.appendChild(row);
   });
   earningsReviewSymbolTableBody.querySelectorAll('.earnings-record-open-btn').forEach((btn) => {
     btn.addEventListener('click', () => openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, Number(btn.dataset.reviewId)));
+  });
+  earningsReviewSymbolTableBody.querySelectorAll('.earnings-record-delete-btn').forEach((btn) => {
+    btn.addEventListener('click', () => deleteEarningsReviewRecord({
+      reviewId: Number(btn.dataset.reviewId),
+      fiscalYear: btn.dataset.fiscalYear,
+      fiscalQuarter: btn.dataset.fiscalQuarter,
+    }));
   });
 }
 
@@ -1683,6 +1691,27 @@ async function createEarningsReviewRecord() {
     earningsReviewSymbolStatusEl.className = 'status error';
   } finally {
     earningsReviewCreateSubmitBtn.disabled = false;
+  }
+}
+
+async function deleteEarningsReviewRecord({ reviewId, fiscalYear, fiscalQuarter }) {
+  if (!earningsReviewSelectedSymbol || !Number.isFinite(reviewId)) return;
+  const confirmed = window.confirm(
+    `Delete Earnings Review\n\nAre you sure you want to delete this earnings review for FY${fiscalYear} ${fiscalQuarter}? This action cannot be undone.`
+  );
+  if (!confirmed) return;
+  earningsReviewSymbolStatusEl.textContent = 'Deleting earnings review record…';
+  earningsReviewSymbolStatusEl.className = 'status';
+  try {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(reviewId)}`, {
+      method: 'DELETE',
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Failed to delete earnings review. Please try again.'));
+    await openEarningsReviewSymbolHistory(earningsReviewSelectedSymbol);
+  } catch (_error) {
+    earningsReviewSymbolStatusEl.textContent = 'Failed to delete earnings review. Please try again.';
+    earningsReviewSymbolStatusEl.className = 'status error';
   }
 }
 

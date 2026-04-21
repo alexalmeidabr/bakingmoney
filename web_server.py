@@ -4779,6 +4779,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
+        if path.startswith("/api/earnings-review/"):
+            suffix = path[len("/api/earnings-review/") :]
+            parts = [item for item in suffix.split("/") if item]
+            if len(parts) == 2:
+                symbol = normalize_symbol(parts[0])
+                if not symbol or not parts[1].isdigit():
+                    return self._send_json({"error": "Invalid earnings review delete path"}, status=400)
+                return self.handle_earnings_review_delete(symbol, int(parts[1]))
+            return self._send_json({"error": "Invalid earnings review delete path"}, status=400)
+
         analysis_prefix = "/api/analysis/"
         if path.startswith(analysis_prefix):
             symbol = normalize_symbol(path[len(analysis_prefix) :])
@@ -4787,6 +4797,26 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_delete(symbol)
 
         self.send_error(404, "Not Found")
+
+    def handle_earnings_review_delete(self, symbol, review_id):
+        conn = get_db_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM earnings_reviews WHERE id = ? AND symbol = ?",
+                (review_id, symbol),
+            ).fetchone()
+            if not row:
+                return self._send_json({"error": "Earnings review record not found"}, status=404)
+            conn.execute("DELETE FROM earnings_reviews WHERE id = ? AND symbol = ?", (review_id, symbol))
+            conn.commit()
+            self._send_json({"ok": True, "deleted_review_id": review_id, "symbol": symbol})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to delete earnings review record.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
 
     def handle_positions_api(self):
         try:

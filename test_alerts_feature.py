@@ -904,6 +904,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('<option value="All" selected>All</option>', html)
         self.assertIn('<option value="Not generated">Not generated</option>', html)
         self.assertIn('<option value="Generated">Generated</option>', html)
+        self.assertIn('<th>Delete</th>', html)
 
     def test_earnings_review_navigation_uses_view_state_and_hash(self):
         from pathlib import Path
@@ -916,6 +917,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('const EARNINGS_REVIEW_STATUS_FILTER_OPTIONS = [\'All\', \'Not generated\', \'Generated\'];', js)
         self.assertIn('function getFilteredEarningsReviewItems()', js)
         self.assertIn('earningsReviewStatusFilterEl.addEventListener(\'change\'', js)
+        self.assertIn('function deleteEarningsReviewRecord(', js)
+        self.assertIn('earnings-record-delete-btn', js)
         self.assertIn('window.addEventListener(\'hashchange\'', js)
 
 
@@ -1073,6 +1076,40 @@ class EarningsReviewTests(unittest.TestCase):
                     detail = web_server.get_earnings_review_record_detail(conn, "ABC", review_id)
                     self.assertEqual(detail["key_variables_snapshot"][0]["variable"], "Legacy Variable")
                     self.assertEqual(detail["key_variables_snapshot"][0]["type"], "Bearish")
+                finally:
+                    conn.close()
+
+    def test_delete_earnings_review_record_removes_associated_watchpoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="DEL")
+                    created = web_server.create_earnings_review_record(conn, "DEL", fiscal_year=2026, fiscal_quarter="Q3")
+                    review_id = created["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_review_watchpoints (
+                          earnings_review_id, key_variable_text, key_variable_type, watchpoints_json,
+                          display_order, generated_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (review_id, "x", "Bullish", json.dumps(["w1"]), 0, web_server.utc_now_iso(), web_server.utc_now_iso(), web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+
+                    conn.execute("DELETE FROM earnings_reviews WHERE id = ? AND symbol = ?", (review_id, "DEL"))
+                    conn.commit()
+
+                    count_reviews = conn.execute("SELECT COUNT(*) AS c FROM earnings_reviews WHERE id = ?", (review_id,)).fetchone()["c"]
+                    count_watchpoints = conn.execute(
+                        "SELECT COUNT(*) AS c FROM earnings_review_watchpoints WHERE earnings_review_id = ?",
+                        (review_id,),
+                    ).fetchone()["c"]
+                    self.assertEqual(count_reviews, 0)
+                    self.assertEqual(count_watchpoints, 0)
                 finally:
                     conn.close()
 

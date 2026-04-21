@@ -507,18 +507,8 @@ th.sortable[data-sort-direction='desc']::after {
   word-break: break-word;
 }
 
-.earnings-review-layout {
-  display: grid;
-  gap: 16px;
-  grid-template-columns: minmax(360px, 0.9fr) minmax(420px, 1.6fr);
-}
-
 .earnings-review-list-card table {
   min-width: 100%;
-}
-
-.earnings-review-row-selected {
-  background: #e8f1ff !important;
 }
 
 .watchpoints-groups {

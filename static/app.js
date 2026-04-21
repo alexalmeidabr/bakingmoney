@@ -133,10 +133,14 @@ const backupImportBtn = document.getElementById('backup-import-btn');
 const earningsReviewStatusEl = document.getElementById('earnings-review-status');
 const earningsReviewTableBody = document.querySelector('#earnings-review-table tbody');
 const earningsReviewDetailTitleEl = document.getElementById('earnings-review-detail-title');
+const earningsReviewDetailHeaderEl = document.getElementById('earnings-review-detail-header');
 const earningsReviewDetailMetaEl = document.getElementById('earnings-review-detail-meta');
 const earningsReviewGenerateBtn = document.getElementById('earnings-review-generate-btn');
 const earningsReviewKeyVariablesBody = document.querySelector('#earnings-review-key-variables-table tbody');
 const earningsReviewWatchpointsEl = document.getElementById('earnings-review-watchpoints');
+const earningsReviewListView = document.getElementById('earnings-review-list-view');
+const earningsReviewDetailView = document.getElementById('earnings-review-detail-view');
+const earningsReviewBackBtn = document.getElementById('earnings-review-back-btn');
 
 let latestPositions = [];
 let positionSort = { key: 'marketValue', direction: 'desc' };
@@ -603,6 +607,27 @@ function setView(targetView) {
   if (targetView === 'backup') loadBackupView();
 }
 menuItems.forEach((item) => item.addEventListener('click', () => setView(item.dataset.view)));
+
+function showEarningsReviewList() {
+  earningsReviewListView.classList.remove('hidden');
+  earningsReviewDetailView.classList.add('hidden');
+}
+
+function showEarningsReviewDetail() {
+  earningsReviewListView.classList.add('hidden');
+  earningsReviewDetailView.classList.remove('hidden');
+}
+
+function setEarningsReviewHash(symbol) {
+  if (!symbol) {
+    if (window.location.hash === '#earnings-review') return;
+    window.location.hash = 'earnings-review';
+    return;
+  }
+  const target = `#earnings-review/${encodeURIComponent(symbol)}`;
+  if (window.location.hash === target) return;
+  window.location.hash = `earnings-review/${encodeURIComponent(symbol)}`;
+}
 
 
 function getEffectiveBusinessModel() {
@@ -1431,7 +1456,6 @@ function renderEarningsReviewList() {
   earningsReviewTableBody.innerHTML = '';
   earningsReviewItems.forEach((item) => {
     const row = document.createElement('tr');
-    row.classList.toggle('earnings-review-row-selected', earningsReviewSelectedSymbol === item.symbol);
     row.innerHTML = `
       <td><button class="symbol-link earnings-select-btn" data-symbol="${item.symbol}">${item.symbol}</button></td>
       <td>${item.company_name || 'N/A'}</td>
@@ -1485,8 +1509,10 @@ async function openEarningsReviewSymbol(symbol) {
   const normalized = (symbol || '').trim().toUpperCase();
   if (!normalized) return;
   earningsReviewSelectedSymbol = normalized;
-  renderEarningsReviewList();
+  showEarningsReviewDetail();
+  setEarningsReviewHash(normalized);
   earningsReviewDetailTitleEl.textContent = `Loading ${normalized}…`;
+  earningsReviewDetailHeaderEl.textContent = `Loading ${normalized}…`;
   earningsReviewDetailMetaEl.textContent = 'Loading symbol details…';
   earningsReviewDetailMetaEl.className = 'status';
   earningsReviewGenerateBtn.disabled = true;
@@ -1498,7 +1524,8 @@ async function openEarningsReviewSymbol(symbol) {
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review symbol details.'));
     const item = payload.item || {};
-    earningsReviewDetailTitleEl.textContent = `${item.symbol || normalized} — ${item.company_name || 'Unknown company'}`;
+    earningsReviewDetailTitleEl.textContent = `Earnings Review: ${item.symbol || normalized}`;
+    earningsReviewDetailHeaderEl.textContent = `${item.symbol || normalized} — ${item.company_name || 'Unknown company'}`;
     earningsReviewDetailMetaEl.textContent = `Rating: ${item.rating || 'N/A'} • Last Analysis Update: ${formatDateTime(item.last_analysis_update)} • Watchpoints: ${item.watchpoints_status || 'Not generated'}${item.watchpoints_generated_at ? ` (${formatDateTime(item.watchpoints_generated_at)})` : ''}`;
     const hasWatchpoints = Array.isArray(item.watchpoints_by_variable) && item.watchpoints_by_variable.length > 0;
     earningsReviewGenerateBtn.textContent = hasWatchpoints
@@ -1513,28 +1540,26 @@ async function openEarningsReviewSymbol(symbol) {
   }
 }
 
+async function refreshEarningsReviewListOnly() {
+  const response = await fetch('/api/earnings-review');
+  const payload = await response.json();
+  if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review list.'));
+  earningsReviewItems = Array.isArray(payload.items) ? payload.items : [];
+  renderEarningsReviewList();
+}
+
 async function loadEarningsReview() {
+  showEarningsReviewList();
   earningsReviewStatusEl.textContent = 'Loading symbols…';
   earningsReviewStatusEl.className = 'status';
   earningsReviewGenerateBtn.disabled = true;
   try {
-    const response = await fetch('/api/earnings-review');
-    const payload = await response.json();
-    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review list.'));
-    earningsReviewItems = Array.isArray(payload.items) ? payload.items : [];
-    renderEarningsReviewList();
+    await refreshEarningsReviewListOnly();
     if (!earningsReviewItems.length) {
       earningsReviewStatusEl.textContent = 'No analysis symbols found. Add symbols in Analysis first.';
-      earningsReviewDetailTitleEl.textContent = 'Select a symbol';
-      earningsReviewDetailMetaEl.textContent = 'No symbols are available yet.';
-      earningsReviewKeyVariablesBody.innerHTML = '';
-      earningsReviewWatchpointsEl.innerHTML = '<p class="status">No symbols available yet.</p>';
       return;
     }
     earningsReviewStatusEl.textContent = `Loaded ${earningsReviewItems.length} symbol(s).`;
-    const selectedStillExists = earningsReviewItems.some((item) => item.symbol === earningsReviewSelectedSymbol);
-    const targetSymbol = selectedStillExists ? earningsReviewSelectedSymbol : earningsReviewItems[0].symbol;
-    await openEarningsReviewSymbol(targetSymbol);
   } catch (error) {
     earningsReviewStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewStatusEl.className = 'status error';
@@ -1543,17 +1568,19 @@ async function loadEarningsReview() {
 
 async function generateEarningsWatchpoints() {
   if (!earningsReviewSelectedSymbol) return;
+  const targetSymbol = earningsReviewSelectedSymbol;
   earningsReviewGenerateBtn.disabled = true;
-  earningsReviewDetailMetaEl.textContent = `Generating earnings watchpoints for ${earningsReviewSelectedSymbol}…`;
+  earningsReviewDetailMetaEl.textContent = `Generating earnings watchpoints for ${targetSymbol}…`;
   earningsReviewDetailMetaEl.className = 'status';
   try {
-    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/generate`, {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(targetSymbol)}/generate`, {
       method: 'POST',
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to generate earnings watchpoints.'));
     earningsReviewDetailMetaEl.textContent = 'Earnings watchpoints generated successfully.';
-    await loadEarningsReview();
+    await refreshEarningsReviewListOnly();
+    await openEarningsReviewSymbol(targetSymbol);
   } catch (error) {
     earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
     earningsReviewDetailMetaEl.className = 'status error';
@@ -2005,6 +2032,10 @@ promptResetBtn.addEventListener('click', resetPromptConfiguration);
 promptPreviewBtn.addEventListener('click', previewPromptConfiguration);
 promptPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') previewPromptConfiguration(); });
 earningsReviewGenerateBtn.addEventListener('click', generateEarningsWatchpoints);
+earningsReviewBackBtn.addEventListener('click', async () => {
+  setEarningsReviewHash(null);
+  await loadEarningsReview();
+});
 configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
 configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
@@ -2019,4 +2050,42 @@ setRatingFilterOpen(false);
 setSelectedPositionRatings(getAllRatingFilterKeys());
 setPositionsRatingFilterOpen(false);
 loadTwsDataToggleState();
-setView('analysis');
+
+async function handleInitialRoute() {
+  const hash = (window.location.hash || '').replace(/^#/, '');
+  if (hash === 'earnings-review') {
+    setView('earnings-review');
+    return;
+  }
+  if (hash.startsWith('earnings-review/')) {
+    const symbol = decodeURIComponent(hash.split('/')[1] || '').trim().toUpperCase();
+    if (symbol) {
+      setView('earnings-review');
+      await openEarningsReviewSymbol(symbol);
+      return;
+    }
+  }
+  setView('analysis');
+}
+
+window.addEventListener('hashchange', async () => {
+  const hash = (window.location.hash || '').replace(/^#/, '');
+  if (hash === 'earnings-review') {
+    if (document.getElementById('earnings-review').classList.contains('active')) {
+      await loadEarningsReview();
+    } else {
+      setView('earnings-review');
+    }
+    return;
+  }
+  if (hash.startsWith('earnings-review/')) {
+    const symbol = decodeURIComponent(hash.split('/')[1] || '').trim().toUpperCase();
+    if (!symbol) return;
+    if (!document.getElementById('earnings-review').classList.contains('active')) {
+      setView('earnings-review');
+    }
+    await openEarningsReviewSymbol(symbol);
+  }
+});
+
+handleInitialRoute();

@@ -172,11 +172,11 @@
         </section>
 
         <section id="earnings-review" class="view">
-          <div class="view-header">
-            <h2>Earnings Review</h2>
-          </div>
-          <p id="earnings-review-status" class="status">Loading symbols…</p>
-          <div class="detail-panels earnings-review-layout">
+          <div id="earnings-review-list-view" class="analysis-screen">
+            <div class="view-header">
+              <h2>Earnings Review</h2>
+            </div>
+            <p id="earnings-review-status" class="status">Loading symbols…</p>
             <section class="detail-card earnings-review-list-card">
               <div class="table-wrap">
                 <table id="earnings-review-table">
@@ -194,9 +194,16 @@
                 </table>
               </div>
             </section>
+          </div>
+
+          <div id="earnings-review-detail-view" class="analysis-screen hidden">
+            <div class="view-header">
+              <button id="earnings-review-back-btn">← Back to Earnings Review</button>
+              <h2 id="earnings-review-detail-title">Earnings Review Detail</h2>
+            </div>
             <section class="detail-card earnings-review-detail-card">
               <div class="view-header">
-                <h3 id="earnings-review-detail-title">Select a symbol</h3>
+                <h3 id="earnings-review-detail-header">Select a symbol</h3>
                 <button id="earnings-review-generate-btn" disabled>Generate Earnings Watchpoints from Key Variables</button>
               </div>
               <p id="earnings-review-detail-meta" class="status">Select a symbol from the list to view details.</p>

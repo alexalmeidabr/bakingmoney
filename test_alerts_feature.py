@@ -891,6 +891,22 @@ class AlertsUiStructureTests(unittest.TestCase):
         positions = [html.index(fragment) for fragment in expected]
         self.assertEqual(positions, sorted(positions))
 
+    def test_earnings_review_has_separate_list_and_detail_views(self):
+        from pathlib import Path
+        html = Path('static/index.html').read_text(encoding='utf-8')
+        self.assertIn('id="earnings-review-list-view"', html)
+        self.assertIn('id="earnings-review-detail-view"', html)
+        self.assertIn('id="earnings-review-back-btn"', html)
+        self.assertIn('id="earnings-review-detail-header"', html)
+
+    def test_earnings_review_navigation_uses_view_state_and_hash(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn('function showEarningsReviewList()', js)
+        self.assertIn('function showEarningsReviewDetail()', js)
+        self.assertIn('function setEarningsReviewHash(symbol)', js)
+        self.assertIn('window.addEventListener(\'hashchange\'', js)
+
 
 class EarningsReviewTests(unittest.TestCase):
     def _seed_analysis(self, conn, symbol="MSFT"):

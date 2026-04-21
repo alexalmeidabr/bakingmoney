@@ -900,10 +900,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="earnings-review-back-btn"', html)
         self.assertIn('id="earnings-review-symbol-back-btn"', html)
         self.assertIn('id="earnings-review-detail-header"', html)
-        self.assertIn('id="earnings-review-status-filter"', html)
-        self.assertIn('<option value="All" selected>All</option>', html)
-        self.assertIn('<option value="Not generated">Not generated</option>', html)
-        self.assertIn('<option value="Generated">Generated</option>', html)
+        self.assertIn('id="earnings-review-add-symbol"', html)
+        self.assertIn('id="earnings-review-add-btn"', html)
+        self.assertIn('<th>Portfolio</th>', html)
+        self.assertIn('<th>Latest Quarter</th>', html)
         self.assertIn('<th>Delete</th>', html)
 
     def test_earnings_review_navigation_uses_view_state_and_hash(self):
@@ -914,9 +914,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function setEarningsReviewHash(symbol, reviewId = null)', js)
         self.assertIn('function openEarningsReviewSymbolHistory(symbol)', js)
         self.assertIn('function openEarningsReviewRecordDetail(symbol, reviewId)', js)
-        self.assertIn('const EARNINGS_REVIEW_STATUS_FILTER_OPTIONS = [\'All\', \'Not generated\', \'Generated\'];', js)
-        self.assertIn('function getFilteredEarningsReviewItems()', js)
-        self.assertIn('earningsReviewStatusFilterEl.addEventListener(\'change\'', js)
+        self.assertIn('function addEarningsReviewSymbol()', js)
+        self.assertIn('earningsReviewAddBtn.addEventListener(\'click\', addEarningsReviewSymbol);', js)
         self.assertIn('function deleteEarningsReviewRecord(', js)
         self.assertIn('earnings-record-delete-btn', js)
         self.assertIn('window.addEventListener(\'hashchange\'', js)
@@ -983,6 +982,8 @@ class EarningsReviewTests(unittest.TestCase):
                 conn = web_server.get_db_connection()
                 try:
                     self._seed_analysis(conn, symbol="MSFT")
+                    self._seed_analysis(conn, symbol="AAPL")
+                    web_server.add_earnings_review_symbol(conn, "MSFT")
                     created = web_server.create_earnings_review_record(conn, "MSFT", fiscal_year=2026, fiscal_quarter="Q1")
                     review_id = created["id"]
                     first_response = {
@@ -1022,9 +1023,54 @@ class EarningsReviewTests(unittest.TestCase):
                     self.assertEqual(rows[0]["key_variable_text"], "Gross margin pressure")
 
                     list_items = web_server.list_earnings_review_symbols(conn)
-                    msft_row = next(item for item in list_items if item["symbol"] == "MSFT")
+                    self.assertEqual(len(list_items), 1)
+                    msft_row = list_items[0]
+                    self.assertEqual(msft_row["symbol"], "MSFT")
                     self.assertEqual(msft_row["latest_review_status"], web_server.EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED)
-                    self.assertEqual(msft_row["reviews_count"], 1)
+                    self.assertEqual(msft_row["latest_quarter"], "FY2026 Q1")
+                    self.assertFalse(msft_row["in_portfolio"])
+                finally:
+                    conn.close()
+
+    def test_add_earnings_review_symbol_requires_analysis_and_prevents_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="TSLA")
+                    added = web_server.add_earnings_review_symbol(conn, "tsla")
+                    self.assertEqual(added, "TSLA")
+                    with self.assertRaisesRegex(ValueError, "already exists"):
+                        web_server.add_earnings_review_symbol(conn, "TSLA")
+                    with self.assertRaisesRegex(ValueError, "not found in Analysis"):
+                        web_server.add_earnings_review_symbol(conn, "ABCD")
+                finally:
+                    conn.close()
+
+    def test_init_db_seeds_earnings_review_symbols_from_existing_reviews(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="CRM")
+                    web_server.create_earnings_review_record(conn, "CRM", fiscal_year=2025, fiscal_quarter="Q4")
+                    conn.execute("DELETE FROM earnings_review_symbols WHERE symbol = ?", ("CRM",))
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    seeded = conn.execute(
+                        "SELECT COUNT(*) AS c FROM earnings_review_symbols WHERE symbol = ?",
+                        ("CRM",),
+                    ).fetchone()["c"]
+                    self.assertEqual(seeded, 1)
                 finally:
                     conn.close()
 

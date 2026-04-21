@@ -142,7 +142,8 @@ const earningsReviewListView = document.getElementById('earnings-review-list-vie
 const earningsReviewSymbolView = document.getElementById('earnings-review-symbol-view');
 const earningsReviewDetailView = document.getElementById('earnings-review-detail-view');
 const earningsReviewBackBtn = document.getElementById('earnings-review-back-btn');
-const earningsReviewStatusFilterEl = document.getElementById('earnings-review-status-filter');
+const earningsReviewAddSymbolEl = document.getElementById('earnings-review-add-symbol');
+const earningsReviewAddBtn = document.getElementById('earnings-review-add-btn');
 const earningsReviewSymbolBackBtn = document.getElementById('earnings-review-symbol-back-btn');
 const earningsReviewSymbolTitleEl = document.getElementById('earnings-review-symbol-title');
 const earningsReviewSymbolHeaderEl = document.getElementById('earnings-review-symbol-header');
@@ -179,13 +180,8 @@ let currentAlertDetailSymbol = null;
 let isUpdatingTwsDataToggle = false;
 let earningsReviewItems = [];
 let earningsReviewSelectedSymbol = null;
-let earningsReviewStatusFilter = 'All';
 let earningsReviewSelectedRecordId = null;
 let earningsReviewSymbolHistory = null;
-
-const EARNINGS_REVIEW_STATUS_FILTER_OPTIONS = ['All', 'Not generated', 'Generated'];
-const EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED = 'Watchpoints generated';
-
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
   hybrid_ai_weight: 0.70,
@@ -1486,47 +1482,55 @@ async function updateAlertStatus(alertId, status, options = {}) {
 }
 
 function renderEarningsReviewList() {
-  const visibleItems = getFilteredEarningsReviewItems();
   earningsReviewTableBody.innerHTML = '';
-  visibleItems.forEach((item) => {
+  earningsReviewItems.forEach((item) => {
     const row = document.createElement('tr');
     row.innerHTML = `
       <td><button class="symbol-link earnings-select-btn" data-symbol="${item.symbol}">${item.symbol}</button></td>
-      <td>${item.company_name || 'N/A'}</td>
+      <td>${item.in_portfolio ? 'Yes' : 'No'}</td>
       <td>${item.rating || 'N/A'}</td>
-      <td>${formatDateTime(item.last_analysis_update)}</td>
-      <td>${item.latest_review_status || '—'}</td>
-      <td>${typeof item.reviews_count === 'number' ? item.reviews_count : 0}</td>
+      <td>${item.latest_quarter || 'N/A'}</td>
+      <td>${item.latest_review_status || 'No review yet'}</td>
     `;
     earningsReviewTableBody.appendChild(row);
   });
   earningsReviewTableBody.querySelectorAll('.earnings-select-btn').forEach((btn) => {
     btn.addEventListener('click', () => openEarningsReviewSymbolHistory(btn.dataset.symbol));
   });
-  if (!visibleItems.length && earningsReviewItems.length) {
-    earningsReviewStatusEl.textContent = `No symbols match status filter: ${earningsReviewStatusFilter}.`;
-    earningsReviewStatusEl.className = 'status';
-  } else if (earningsReviewItems.length) {
-    earningsReviewStatusEl.textContent = `Showing ${visibleItems.length} of ${earningsReviewItems.length} symbol(s).`;
+  if (earningsReviewItems.length) {
+    earningsReviewStatusEl.textContent = `Showing ${earningsReviewItems.length} symbol(s).`;
     earningsReviewStatusEl.className = 'status';
   }
 }
 
-function getFilteredEarningsReviewItems() {
-  if (earningsReviewStatusFilter === 'All') return earningsReviewItems;
-  return earningsReviewItems.filter((item) => {
-    const normalizedStatus = (item.latest_review_status || '').trim();
-    const effective = normalizedStatus
-      ? (normalizedStatus === EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED ? 'Generated' : 'Not generated')
-      : 'Not generated';
-    return effective === earningsReviewStatusFilter;
-  });
-}
-
-function setEarningsReviewStatusFilter(value) {
-  earningsReviewStatusFilter = EARNINGS_REVIEW_STATUS_FILTER_OPTIONS.includes(value) ? value : 'All';
-  if (earningsReviewStatusFilterEl) {
-    earningsReviewStatusFilterEl.value = earningsReviewStatusFilter;
+async function addEarningsReviewSymbol() {
+  const raw = earningsReviewAddSymbolEl.value || '';
+  const normalized = raw.trim().toUpperCase();
+  if (!normalized) {
+    earningsReviewStatusEl.textContent = 'Please enter a symbol.';
+    earningsReviewStatusEl.className = 'status error';
+    return;
+  }
+  earningsReviewStatusEl.textContent = `Adding ${normalized}…`;
+  earningsReviewStatusEl.className = 'status';
+  earningsReviewAddBtn.disabled = true;
+  try {
+    const response = await fetch('/api/earnings-review/symbols', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: normalized }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to add symbol.'));
+    earningsReviewAddSymbolEl.value = '';
+    await refreshEarningsReviewListOnly();
+    earningsReviewStatusEl.textContent = `Added ${normalized} to Earnings Review.`;
+    earningsReviewStatusEl.className = 'status';
+  } catch (error) {
+    earningsReviewStatusEl.textContent = `Error: ${error.message}`;
+    earningsReviewStatusEl.className = 'status error';
+  } finally {
+    earningsReviewAddBtn.disabled = false;
   }
 }
 
@@ -1647,7 +1651,7 @@ async function loadEarningsReview() {
   try {
     await refreshEarningsReviewListOnly();
     if (!earningsReviewItems.length) {
-      earningsReviewStatusEl.textContent = 'No analysis symbols found. Add symbols in Analysis first.';
+      earningsReviewStatusEl.textContent = 'No symbols in Earnings Review yet. Add a symbol to begin.';
       return;
     }
   } catch (error) {
@@ -2253,9 +2257,12 @@ earningsReviewSymbolBackBtn.addEventListener('click', async () => {
   setEarningsReviewHash(null);
   await loadEarningsReview();
 });
-earningsReviewStatusFilterEl.addEventListener('change', () => {
-  setEarningsReviewStatusFilter(earningsReviewStatusFilterEl.value);
-  renderEarningsReviewList();
+earningsReviewAddBtn.addEventListener('click', addEarningsReviewSymbol);
+earningsReviewAddSymbolEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    addEarningsReviewSymbol();
+  }
 });
 earningsReviewCreateBtn.addEventListener('click', () => toggleEarningsReviewCreateForm(true));
 earningsReviewCreateCancelBtn.addEventListener('click', () => toggleEarningsReviewCreateForm(false));
@@ -2269,7 +2276,6 @@ backupImportBtn.addEventListener('click', restoreBackupFile);
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();
-setEarningsReviewStatusFilter('All');
 setSelectedRatings(getAllRatingFilterKeys());
 setRatingFilterOpen(false);
 setSelectedPositionRatings(getAllRatingFilterKeys());

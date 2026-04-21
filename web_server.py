@@ -55,6 +55,7 @@ BACKUP_REQUIRED_TABLES = (
     "analysis_business_summary_edits",
     "earnings_watchpoint_sets",
     "earnings_watchpoints",
+    "earnings_review_symbols",
     "earnings_reviews",
     "earnings_review_watchpoints",
     "app_settings",
@@ -1639,6 +1640,17 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS earnings_review_symbols (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              symbol TEXT NOT NULL UNIQUE,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (symbol) REFERENCES analysis_roots(symbol) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS earnings_review_watchpoints (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               earnings_review_id INTEGER NOT NULL,
@@ -1658,6 +1670,17 @@ def init_db():
             CREATE UNIQUE INDEX IF NOT EXISTS idx_earnings_review_watchpoints_unique
             ON earnings_review_watchpoints(earnings_review_id, key_variable_text)
             """
+        )
+        conn.execute(
+            """
+            INSERT INTO earnings_review_symbols (symbol, created_at, updated_at)
+            SELECT DISTINCT er.symbol, ?, ?
+            FROM earnings_reviews er
+            WHERE NOT EXISTS (
+                SELECT 1 FROM earnings_review_symbols ers WHERE ers.symbol = er.symbol
+            )
+            """,
+            (utc_now_iso(), utc_now_iso()),
         )
         conn.execute(
             """
@@ -3875,46 +3898,67 @@ def _replace_earnings_review_watchpoints(conn, earnings_review_id, watchpoints_b
 
 
 def list_earnings_review_symbols(conn):
-    rows = list_analysis_symbols(conn)
-    reviews = {
-        row["symbol"]: row
-        for row in conn.execute(
-            """
-            SELECT symbol,
-                   COUNT(*) AS review_count,
-                   MAX(updated_at) AS latest_review_updated_at
-            FROM earnings_reviews
-            GROUP BY symbol
-            """
-        ).fetchall()
+    rows = conn.execute(
+        """
+        SELECT symbol
+        FROM earnings_review_symbols
+        ORDER BY symbol ASC
+        """
+    ).fetchall()
+    analysis_by_symbol = {row["symbol"]: row for row in list_analysis_symbols(conn)}
+    position_symbols = {
+        normalize_symbol(item.get("symbol"))
+        for item in load_positions_cache(conn)
+        if abs(safe_number(item.get("position")) or 0.0) > 0
     }
     items = []
     for row in rows:
-        symbol = row.get("symbol")
-        info = reviews.get(symbol)
-        review_count = int(info["review_count"]) if info and info["review_count"] is not None else 0
+        symbol = row["symbol"]
+        analysis = analysis_by_symbol.get(symbol) or {}
         latest_status_row = conn.execute(
             """
-            SELECT status, updated_at
+            SELECT fiscal_year, fiscal_quarter, status
             FROM earnings_reviews
             WHERE symbol = ?
-            ORDER BY fiscal_year DESC, fiscal_quarter DESC, id DESC
+            ORDER BY fiscal_year DESC,
+                     CASE fiscal_quarter WHEN 'Q4' THEN 4 WHEN 'Q3' THEN 3 WHEN 'Q2' THEN 2 ELSE 1 END DESC,
+                     id DESC
             LIMIT 1
             """,
             (symbol,),
         ).fetchone()
+        latest_quarter = None
+        if latest_status_row:
+            latest_quarter = f"FY{latest_status_row['fiscal_year']} {latest_status_row['fiscal_quarter']}"
         items.append(
             {
                 "symbol": symbol,
-                "company_name": row.get("company_name"),
-                "rating": row.get("rating"),
-                "last_analysis_update": row.get("updated_at"),
-                "reviews_count": review_count,
+                "in_portfolio": symbol in position_symbols,
+                "rating": analysis.get("rating"),
+                "latest_quarter": latest_quarter,
                 "latest_review_status": latest_status_row["status"] if latest_status_row else None,
-                "latest_review_updated_at": latest_status_row["updated_at"] if latest_status_row else None,
             }
         )
     return items
+
+
+def add_earnings_review_symbol(conn, symbol):
+    normalized = normalize_symbol(symbol)
+    if not normalized:
+        raise ValueError("Symbol is required.")
+    exists = conn.execute("SELECT 1 FROM analysis_roots WHERE symbol = ?", (normalized,)).fetchone()
+    if not exists:
+        raise ValueError("Symbol not found in Analysis.")
+    duplicate = conn.execute("SELECT 1 FROM earnings_review_symbols WHERE symbol = ?", (normalized,)).fetchone()
+    if duplicate:
+        raise ValueError("Symbol already exists in Earnings Review.")
+    now = utc_now_iso()
+    conn.execute(
+        "INSERT INTO earnings_review_symbols (symbol, created_at, updated_at) VALUES (?, ?, ?)",
+        (normalized, now, now),
+    )
+    conn.commit()
+    return normalized
 
 
 def get_earnings_review_symbol_history(conn, symbol):
@@ -4741,6 +4785,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_rerun_scenarios(symbol)
         if path == "/api/analysis/import-from-positions":
             return self.handle_analysis_import_positions()
+        if path == "/api/earnings-review/symbols":
+            return self.handle_earnings_review_symbol_add()
         if path.startswith("/api/earnings-review/"):
             suffix = path[len("/api/earnings-review/") :]
             parts = [item for item in suffix.split("/") if item]
@@ -5105,6 +5151,24 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to load earnings review symbols.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_symbol_add(self):
+        payload = self._read_json_body() or {}
+        conn = get_db_connection()
+        try:
+            symbol = add_earnings_review_symbol(conn, payload.get("symbol"))
+            self._send_json({"symbol": symbol}, status=201)
+        except ValueError as exc:
+            status = 409 if "already exists" in str(exc).lower() else 400
+            self._send_json({"error": str(exc)}, status=status)
+        except Exception as exc:
+            logger.exception("Unable to add earnings review symbol")
+            self._send_json(
+                {"error": "Unable to add earnings review symbol.", "details": str(exc)},
                 status=500,
             )
         finally:

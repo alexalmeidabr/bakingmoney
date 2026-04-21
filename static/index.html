@@ -176,12 +176,9 @@
             <div class="view-header">
               <h2>Earnings Review</h2>
               <div class="table-actions">
-                <label for="earnings-review-status-filter" class="inline-control-label">Status</label>
-                <select id="earnings-review-status-filter">
-                  <option value="All" selected>All</option>
-                  <option value="Not generated">Not generated</option>
-                  <option value="Generated">Generated</option>
-                </select>
+                <label for="earnings-review-add-symbol" class="inline-control-label">Enter symbol</label>
+                <input id="earnings-review-add-symbol" type="text" placeholder="Enter symbol" maxlength="15" />
+                <button id="earnings-review-add-btn">Add</button>
               </div>
             </div>
             <p id="earnings-review-status" class="status">Loading symbols…</p>
@@ -191,11 +188,10 @@
                   <thead>
                     <tr>
                       <th>Symbol</th>
-                      <th>Company</th>
+                      <th>Portfolio</th>
                       <th>Rating</th>
-                      <th>Last Analysis Update</th>
-                      <th>Latest Status</th>
-                      <th>Reviews Count</th>
+                      <th>Latest Quarter</th>
+                      <th>Status</th>
                     </tr>
                   </thead>
                   <tbody></tbody>

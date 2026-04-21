@@ -157,6 +157,11 @@ const earningsReviewCreateReleaseDateEl = document.getElementById('earnings-revi
 const earningsReviewCreateSubmitBtn = document.getElementById('earnings-review-create-submit-btn');
 const earningsReviewCreateCancelBtn = document.getElementById('earnings-review-create-cancel-btn');
 const earningsReviewSnapshotSummaryEl = document.getElementById('earnings-review-snapshot-summary');
+const earningsReviewDocumentTypeEl = document.getElementById('earnings-review-document-type');
+const earningsReviewDocumentFileEl = document.getElementById('earnings-review-document-file');
+const earningsReviewDocumentUploadBtn = document.getElementById('earnings-review-document-upload-btn');
+const earningsReviewDocumentsStatusEl = document.getElementById('earnings-review-documents-status');
+const earningsReviewDocumentsTableBody = document.querySelector('#earnings-review-documents-table tbody');
 
 let latestPositions = [];
 let positionSort = { key: 'marketValue', direction: 'desc' };
@@ -1534,6 +1539,91 @@ async function addEarningsReviewSymbol() {
   }
 }
 
+function renderEarningsReviewDocuments(documents) {
+  earningsReviewDocumentsTableBody.innerHTML = '';
+  (documents || []).forEach((doc) => {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${doc.original_file_name || 'N/A'}</td>
+      <td>${doc.document_type || 'Other'}</td>
+      <td>${formatDateTime(doc.uploaded_at)}</td>
+      <td><button class="symbol-link earnings-document-open-btn" data-doc-id="${doc.id}">Open</button></td>
+      <td><button class="remove-btn earnings-document-delete-btn" data-doc-id="${doc.id}" data-name="${doc.original_file_name || ''}">Delete</button></td>
+    `;
+    earningsReviewDocumentsTableBody.appendChild(row);
+  });
+  earningsReviewDocumentsTableBody.querySelectorAll('.earnings-document-open-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId) return;
+      const url = `/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(earningsReviewSelectedRecordId)}/documents/${encodeURIComponent(btn.dataset.docId)}/download`;
+      window.open(url, '_blank');
+    });
+  });
+  earningsReviewDocumentsTableBody.querySelectorAll('.earnings-document-delete-btn').forEach((btn) => {
+    btn.addEventListener('click', () => deleteEarningsReviewDocument(btn.dataset.docId, btn.dataset.name));
+  });
+  earningsReviewDocumentsStatusEl.textContent = (documents || []).length
+    ? `Showing ${(documents || []).length} document(s).`
+    : 'No earnings documents uploaded yet.';
+  earningsReviewDocumentsStatusEl.className = 'status';
+}
+
+async function uploadEarningsReviewDocument() {
+  if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId) return;
+  const file = earningsReviewDocumentFileEl.files && earningsReviewDocumentFileEl.files[0];
+  if (!file) {
+    earningsReviewDocumentsStatusEl.textContent = 'Please choose a file to upload.';
+    earningsReviewDocumentsStatusEl.className = 'status error';
+    return;
+  }
+  const formData = new FormData();
+  formData.append('document_type', earningsReviewDocumentTypeEl.value);
+  formData.append('file', file);
+  earningsReviewDocumentUploadBtn.disabled = true;
+  earningsReviewDocumentsStatusEl.textContent = 'Uploading document…';
+  earningsReviewDocumentsStatusEl.className = 'status';
+  try {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(earningsReviewSelectedRecordId)}/documents`, {
+      method: 'POST',
+      body: formData,
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to upload earnings document.'));
+    earningsReviewDocumentFileEl.value = '';
+    earningsReviewDocumentsStatusEl.textContent = 'Document uploaded successfully.';
+    await refreshEarningsReviewListOnly();
+    await openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, earningsReviewSelectedRecordId);
+  } catch (error) {
+    earningsReviewDocumentsStatusEl.textContent = `Error: ${error.message}`;
+    earningsReviewDocumentsStatusEl.className = 'status error';
+  } finally {
+    earningsReviewDocumentUploadBtn.disabled = false;
+  }
+}
+
+async function deleteEarningsReviewDocument(documentId, fileName) {
+  if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId || !documentId) return;
+  const confirmed = window.confirm(
+    `Delete Earnings Document\n\nAre you sure you want to delete this document${fileName ? ` (${fileName})` : ''}? This action cannot be undone.`
+  );
+  if (!confirmed) return;
+  earningsReviewDocumentsStatusEl.textContent = 'Deleting document…';
+  earningsReviewDocumentsStatusEl.className = 'status';
+  try {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(earningsReviewSelectedRecordId)}/documents/${encodeURIComponent(documentId)}`, {
+      method: 'DELETE',
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to delete earnings document.'));
+    earningsReviewDocumentsStatusEl.textContent = 'Document deleted successfully.';
+    await refreshEarningsReviewListOnly();
+    await openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, earningsReviewSelectedRecordId);
+  } catch (error) {
+    earningsReviewDocumentsStatusEl.textContent = `Error: ${error.message}`;
+    earningsReviewDocumentsStatusEl.className = 'status error';
+  }
+}
+
 function renderEarningsKeyVariables(variables) {
   earningsReviewKeyVariablesBody.innerHTML = '';
   (variables || []).forEach((item) => {
@@ -1751,10 +1841,14 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
   earningsReviewDetailTitleEl.textContent = `Loading ${normalized} review…`;
   earningsReviewDetailHeaderEl.textContent = `Loading review detail…`;
   earningsReviewDetailMetaEl.textContent = 'Loading earnings review record…';
+  earningsReviewDetailMetaEl.className = 'status';
   earningsReviewGenerateBtn.disabled = true;
   earningsReviewKeyVariablesBody.innerHTML = '';
   earningsReviewWatchpointsEl.innerHTML = '';
   earningsReviewSnapshotSummaryEl.innerHTML = '';
+  earningsReviewDocumentsTableBody.innerHTML = '';
+  earningsReviewDocumentsStatusEl.textContent = 'Loading documents…';
+  earningsReviewDocumentsStatusEl.className = 'status';
   try {
     const response = await fetch(`/api/earnings-review/${encodeURIComponent(normalized)}/${encodeURIComponent(earningsReviewSelectedRecordId)}`);
     const payload = await response.json();
@@ -1772,9 +1866,12 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
     renderEarningsSnapshotSummary(snapshot, item);
     renderEarningsKeyVariables(item.key_variables_snapshot || []);
     renderEarningsWatchpoints(item.watchpoints_by_variable || []);
+    renderEarningsReviewDocuments(item.documents || []);
   } catch (error) {
     earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
     earningsReviewDetailMetaEl.className = 'status error';
+    earningsReviewDocumentsStatusEl.textContent = `Error: ${error.message}`;
+    earningsReviewDocumentsStatusEl.className = 'status error';
   }
 }
 
@@ -2267,6 +2364,7 @@ earningsReviewAddSymbolEl.addEventListener('keydown', (event) => {
 earningsReviewCreateBtn.addEventListener('click', () => toggleEarningsReviewCreateForm(true));
 earningsReviewCreateCancelBtn.addEventListener('click', () => toggleEarningsReviewCreateForm(false));
 earningsReviewCreateSubmitBtn.addEventListener('click', createEarningsReviewRecord);
+earningsReviewDocumentUploadBtn.addEventListener('click', uploadEarningsReviewDocument);
 configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
 configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);

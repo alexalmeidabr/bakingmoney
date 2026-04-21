@@ -1,4 +1,5 @@
 import asyncio
+import cgi
 import json
 import logging
 import math
@@ -7,6 +8,7 @@ import shutil
 import sqlite3
 import statistics
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -36,6 +38,7 @@ STATIC_DIR = BASE_DIR / "static"
 DB_PATH = BASE_DIR / "bakingmoney.db"
 ENV_PATH = BASE_DIR / ".env"
 BACKUP_DIR = BASE_DIR / "backups"
+UPLOADS_DIR = BASE_DIR / "uploads"
 BACKUP_IMPORT_MAX_BYTES = 100 * 1024 * 1024
 BACKUP_EXPORT_FILENAME_PREFIX = "bakingmoney-backup"
 BACKUP_PACKAGE_DB_FILENAME = "bakingmoney.db"
@@ -58,6 +61,7 @@ BACKUP_REQUIRED_TABLES = (
     "earnings_review_symbols",
     "earnings_reviews",
     "earnings_review_watchpoints",
+    "earnings_review_documents",
     "app_settings",
     "positions_cache",
     "thesis_review_alerts",
@@ -83,6 +87,17 @@ ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK = "analysis_prompt_recent_event_c
 ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINTS = "earnings_watchpoints"
 EARNINGS_REVIEW_STATUS_DRAFT = "Draft"
 EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED = "Watchpoints generated"
+EARNINGS_REVIEW_STATUS_DOCUMENTS_UPLOADED = "Documents uploaded"
+EARNINGS_REVIEW_ALLOWED_DOCUMENT_TYPES = (
+    "Earnings Release",
+    "Shareholder Letter",
+    "Presentation",
+    "Transcript",
+    "Supplemental",
+    "Other",
+)
+EARNINGS_REVIEW_ALLOWED_FILE_EXTENSIONS = {".pdf", ".txt", ".docx", ".csv", ".xlsx", ".html"}
+EARNINGS_REVIEW_MAX_DOCUMENT_BYTES = 15 * 1024 * 1024
 ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
 ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
 ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
@@ -1669,6 +1684,23 @@ def init_db():
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_earnings_review_watchpoints_unique
             ON earnings_review_watchpoints(earnings_review_id, key_variable_text)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS earnings_review_documents (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              earnings_review_id INTEGER NOT NULL,
+              original_file_name TEXT NOT NULL,
+              storage_path TEXT NOT NULL,
+              document_type TEXT NOT NULL,
+              mime_type TEXT,
+              file_size INTEGER,
+              uploaded_at TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (earnings_review_id) REFERENCES earnings_reviews(id) ON DELETE CASCADE
+            )
             """
         )
         conn.execute(
@@ -3897,6 +3929,166 @@ def _replace_earnings_review_watchpoints(conn, earnings_review_id, watchpoints_b
         )
 
 
+def _safe_upload_filename(filename):
+    candidate = Path(filename or "").name.strip()
+    if not candidate:
+        candidate = "document"
+    return "".join(ch if (ch.isalnum() or ch in {"-", "_", "."}) else "_" for ch in candidate)
+
+
+def _ensure_earnings_review_record(conn, symbol, review_id):
+    row = conn.execute(
+        "SELECT id, symbol FROM earnings_reviews WHERE id = ? AND symbol = ?",
+        (review_id, symbol),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Earnings review record {review_id} not found for symbol {symbol}")
+    return row
+
+
+def list_earnings_review_documents(conn, symbol, review_id):
+    _ensure_earnings_review_record(conn, symbol, review_id)
+    rows = conn.execute(
+        """
+        SELECT id, original_file_name, document_type, mime_type, file_size, uploaded_at, created_at, updated_at
+        FROM earnings_review_documents
+        WHERE earnings_review_id = ?
+        ORDER BY uploaded_at DESC, id DESC
+        """,
+        (review_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def recalculate_earnings_review_status(conn, review_id):
+    documents_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM earnings_review_documents WHERE earnings_review_id = ?",
+        (review_id,),
+    ).fetchone()["c"]
+    if int(documents_count or 0) > 0:
+        new_status = EARNINGS_REVIEW_STATUS_DOCUMENTS_UPLOADED
+    else:
+        watchpoints_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM earnings_review_watchpoints WHERE earnings_review_id = ?",
+            (review_id,),
+        ).fetchone()["c"]
+        new_status = (
+            EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED
+            if int(watchpoints_count or 0) > 0
+            else EARNINGS_REVIEW_STATUS_DRAFT
+        )
+    conn.execute(
+        "UPDATE earnings_reviews SET status = ?, updated_at = ? WHERE id = ?",
+        (new_status, utc_now_iso(), review_id),
+    )
+    conn.commit()
+    return new_status
+
+
+def save_earnings_review_document(
+    conn,
+    symbol,
+    review_id,
+    document_type,
+    original_file_name,
+    payload,
+    mime_type=None,
+):
+    _ensure_earnings_review_record(conn, symbol, review_id)
+    if document_type not in EARNINGS_REVIEW_ALLOWED_DOCUMENT_TYPES:
+        raise ValueError("Invalid document type.")
+    safe_original_name = _safe_upload_filename(original_file_name)
+    extension = Path(safe_original_name).suffix.lower()
+    if extension not in EARNINGS_REVIEW_ALLOWED_FILE_EXTENSIONS:
+        raise ValueError("Unsupported file type. Allowed: pdf, txt, docx, csv, xlsx, html.")
+    if payload is None or len(payload) <= 0:
+        raise ValueError("A file is required.")
+    if len(payload) > EARNINGS_REVIEW_MAX_DOCUMENT_BYTES:
+        raise ValueError("File is too large. Maximum size is 15 MB.")
+
+    review_dir = UPLOADS_DIR / "earnings_reviews" / str(review_id)
+    review_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}{extension}"
+    storage_path = review_dir / stored_name
+    storage_path.write_bytes(payload)
+    now = utc_now_iso()
+    cursor = conn.execute(
+        """
+        INSERT INTO earnings_review_documents (
+          earnings_review_id, original_file_name, storage_path, document_type,
+          mime_type, file_size, uploaded_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            review_id,
+            safe_original_name,
+            str(storage_path),
+            document_type,
+            (mime_type or "").strip() or None,
+            len(payload),
+            now,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    recalculate_earnings_review_status(conn, review_id)
+    row = conn.execute(
+        """
+        SELECT id, original_file_name, document_type, mime_type, file_size, uploaded_at, created_at, updated_at
+        FROM earnings_review_documents
+        WHERE id = ?
+        """,
+        (cursor.lastrowid,),
+    ).fetchone()
+    return dict(row)
+
+
+def delete_earnings_review_document(conn, symbol, review_id, document_id):
+    _ensure_earnings_review_record(conn, symbol, review_id)
+    row = conn.execute(
+        """
+        SELECT id, storage_path
+        FROM earnings_review_documents
+        WHERE id = ? AND earnings_review_id = ?
+        """,
+        (document_id, review_id),
+    ).fetchone()
+    if not row:
+        raise ValueError("Document not found.")
+    storage_path = Path(row["storage_path"])
+    if not storage_path.is_absolute():
+        storage_path = BASE_DIR / storage_path
+    conn.execute("DELETE FROM earnings_review_documents WHERE id = ? AND earnings_review_id = ?", (document_id, review_id))
+    conn.commit()
+    try:
+        if storage_path.exists():
+            storage_path.unlink()
+    except OSError:
+        logger.warning("Unable to remove earnings review document file %s", storage_path)
+    recalculate_earnings_review_status(conn, review_id)
+
+
+def get_earnings_review_document_download(conn, symbol, review_id, document_id):
+    _ensure_earnings_review_record(conn, symbol, review_id)
+    row = conn.execute(
+        """
+        SELECT id, original_file_name, storage_path, mime_type
+        FROM earnings_review_documents
+        WHERE id = ? AND earnings_review_id = ?
+        """,
+        (document_id, review_id),
+    ).fetchone()
+    if not row:
+        raise ValueError("Document not found.")
+    file_path = Path(row["storage_path"])
+    if not file_path.is_absolute():
+        file_path = BASE_DIR / file_path
+    if not file_path.exists():
+        raise ValueError("Document file is missing.")
+    return dict(row), file_path
+
+
 def list_earnings_review_symbols(conn):
     rows = conn.execute(
         """
@@ -4058,6 +4250,7 @@ def get_earnings_review_record_detail(conn, symbol, review_id):
     except Exception:
         snapshot = {}
     watchpoints = get_earnings_review_watchpoints(conn, row["id"])
+    documents = list_earnings_review_documents(conn, symbol, row["id"])
     normalized_snapshot_key_variables = []
     for item in snapshot.get("key_variables") or []:
         if not isinstance(item, dict):
@@ -4095,6 +4288,7 @@ def get_earnings_review_record_detail(conn, symbol, review_id):
         "thesis_snapshot": snapshot,
         "key_variables_snapshot": normalized_snapshot_key_variables,
         "watchpoints_by_variable": watchpoints,
+        "documents": documents,
     }
 
 
@@ -4132,11 +4326,10 @@ def generate_earnings_watchpoints_for_review(conn, symbol, review_id):
     conn.execute(
         """
         UPDATE earnings_reviews
-        SET status = ?, watchpoints_generated_at = ?, updated_at = ?
+        SET watchpoints_generated_at = ?, updated_at = ?
         WHERE id = ? AND symbol = ?
         """,
         (
-            EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED,
             now,
             now,
             review_id,
@@ -4151,6 +4344,7 @@ def generate_earnings_watchpoints_for_review(conn, symbol, review_id):
         len(normalized_items),
     )
     conn.commit()
+    recalculate_earnings_review_status(conn, review_id)
     return get_earnings_review_record_detail(conn, symbol, review_id)
 
 
@@ -4688,6 +4882,18 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         except Exception:
             return None
 
+    def _read_multipart_form(self):
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type.lower():
+            return None
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
+            keep_blank_values=True,
+        )
+        return form
+
     def _send_file(self, file_path, download_name):
         with open(file_path, "rb") as handle:
             payload = handle.read()
@@ -4721,6 +4927,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 if not symbol or not parts[1].isdigit():
                     return self._send_json({"error": "Invalid earnings review path"}, status=400)
                 return self.handle_earnings_review_record_get(symbol, int(parts[1]))
+            if len(parts) == 3 and parts[2] == "documents":
+                symbol = normalize_symbol(parts[0])
+                if not symbol or not parts[1].isdigit():
+                    return self._send_json({"error": "Invalid earnings review documents path"}, status=400)
+                return self.handle_earnings_review_documents_get(symbol, int(parts[1]))
+            if len(parts) == 5 and parts[2] == "documents" and parts[4] == "download":
+                symbol = normalize_symbol(parts[0])
+                if not symbol or not parts[1].isdigit() or not parts[3].isdigit():
+                    return self._send_json({"error": "Invalid earnings review document download path"}, status=400)
+                return self.handle_earnings_review_document_download(symbol, int(parts[1]), int(parts[3]))
         if path.startswith("/api/analysis/"):
             symbol = normalize_symbol(path[len("/api/analysis/") :])
             if not symbol:
@@ -4800,6 +5016,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 if not symbol or not parts[1].isdigit():
                     return self._send_json({"error": "Invalid earnings review generate path"}, status=400)
                 return self.handle_earnings_review_generate_watchpoints(symbol, int(parts[1]))
+            if len(parts) == 3 and parts[2] == "documents":
+                symbol = normalize_symbol(parts[0])
+                if not symbol or not parts[1].isdigit():
+                    return self._send_json({"error": "Invalid earnings review documents upload path"}, status=400)
+                return self.handle_earnings_review_document_upload(symbol, int(parts[1]))
         if path == "/api/configuration/prompts/preview":
             return self.handle_configuration_prompts_preview()
         if path == "/api/configuration/prompts/reset":
@@ -4833,6 +5054,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 if not symbol or not parts[1].isdigit():
                     return self._send_json({"error": "Invalid earnings review delete path"}, status=400)
                 return self.handle_earnings_review_delete(symbol, int(parts[1]))
+            if len(parts) == 4 and parts[2] == "documents":
+                symbol = normalize_symbol(parts[0])
+                if not symbol or not parts[1].isdigit() or not parts[3].isdigit():
+                    return self._send_json({"error": "Invalid earnings review document delete path"}, status=400)
+                return self.handle_earnings_review_document_delete(symbol, int(parts[1]), int(parts[3]))
             return self._send_json({"error": "Invalid earnings review delete path"}, status=400)
 
         analysis_prefix = "/api/analysis/"
@@ -4855,10 +5081,96 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 return self._send_json({"error": "Earnings review record not found"}, status=404)
             conn.execute("DELETE FROM earnings_reviews WHERE id = ? AND symbol = ?", (review_id, symbol))
             conn.commit()
+            review_dir = UPLOADS_DIR / "earnings_reviews" / str(review_id)
+            if review_dir.exists():
+                shutil.rmtree(review_dir, ignore_errors=True)
             self._send_json({"ok": True, "deleted_review_id": review_id, "symbol": symbol})
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to delete earnings review record.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_documents_get(self, symbol, review_id):
+        conn = get_db_connection()
+        try:
+            self._send_json({"items": list_earnings_review_documents(conn, symbol, review_id)})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to load earnings review documents.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_document_upload(self, symbol, review_id):
+        conn = get_db_connection()
+        try:
+            form = self._read_multipart_form()
+            if form is None:
+                raise ValueError("Expected multipart/form-data.")
+            document_type = (form.getfirst("document_type") or "").strip()
+            file_item = form["file"] if "file" in form else None
+            if isinstance(file_item, list):
+                file_item = file_item[0] if file_item else None
+            if file_item is None or not getattr(file_item, "file", None):
+                raise ValueError("A file is required.")
+            item = save_earnings_review_document(
+                conn=conn,
+                symbol=symbol,
+                review_id=review_id,
+                document_type=document_type,
+                original_file_name=(getattr(file_item, "filename", "") or "document"),
+                payload=file_item.file.read(),
+                mime_type=getattr(file_item, "type", None),
+            )
+            self._send_json({"item": item}, status=201)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to upload earnings review document")
+            self._send_json(
+                {"error": "Unable to upload earnings document.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_document_download(self, symbol, review_id, document_id):
+        conn = get_db_connection()
+        try:
+            item, file_path = get_earnings_review_document_download(conn, symbol, review_id, document_id)
+            self.send_response(200)
+            self.send_header("Content-Type", item.get("mime_type") or "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{item["original_file_name"]}"')
+            self.send_header("Content-Length", str(file_path.stat().st_size))
+            self.end_headers()
+            with open(file_path, "rb") as handle:
+                self.wfile.write(handle.read())
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to download earnings document.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_document_delete(self, symbol, review_id, document_id):
+        conn = get_db_connection()
+        try:
+            delete_earnings_review_document(conn, symbol, review_id, document_id)
+            self._send_json({"ok": True})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to delete earnings document.", "details": str(exc)},
                 status=500,
             )
         finally:

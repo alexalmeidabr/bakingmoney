@@ -904,6 +904,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="earnings-review-add-btn"', html)
         self.assertIn('<th>Portfolio</th>', html)
         self.assertIn('<th>Latest Quarter</th>', html)
+        self.assertIn('id="earnings-review-document-type"', html)
+        self.assertIn('id="earnings-review-document-file"', html)
+        self.assertIn('id="earnings-review-document-upload-btn"', html)
+        self.assertIn('id="earnings-review-documents-table"', html)
         self.assertIn('<th>Delete</th>', html)
 
     def test_earnings_review_navigation_uses_view_state_and_hash(self):
@@ -915,6 +919,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function openEarningsReviewSymbolHistory(symbol)', js)
         self.assertIn('function openEarningsReviewRecordDetail(symbol, reviewId)', js)
         self.assertIn('function addEarningsReviewSymbol()', js)
+        self.assertIn('function uploadEarningsReviewDocument()', js)
+        self.assertIn('function deleteEarningsReviewDocument(', js)
+        self.assertIn('function renderEarningsReviewDocuments(', js)
         self.assertIn('earningsReviewAddBtn.addEventListener(\'click\', addEarningsReviewSymbol);', js)
         self.assertIn('function deleteEarningsReviewRecord(', js)
         self.assertIn('earnings-record-delete-btn', js)
@@ -1062,7 +1069,6 @@ class EarningsReviewTests(unittest.TestCase):
                     conn.commit()
                 finally:
                     conn.close()
-
                 web_server.init_db()
                 conn = web_server.get_db_connection()
                 try:
@@ -1071,6 +1077,87 @@ class EarningsReviewTests(unittest.TestCase):
                         ("CRM",),
                     ).fetchone()["c"]
                     self.assertEqual(seeded, 1)
+                finally:
+                    conn.close()
+
+    def test_document_upload_status_and_delete_recalculate(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            uploads_dir = Path(tmp) / "uploads"
+            with mock.patch.object(web_server, "DB_PATH", db_path), \
+                 mock.patch.object(web_server, "UPLOADS_DIR", uploads_dir):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="AMD")
+                    web_server.add_earnings_review_symbol(conn, "AMD")
+                    created = web_server.create_earnings_review_record(conn, "AMD", fiscal_year=2026, fiscal_quarter="Q1")
+                    review_id = created["id"]
+                    doc = web_server.save_earnings_review_document(
+                        conn=conn,
+                        symbol="AMD",
+                        review_id=review_id,
+                        document_type="Transcript",
+                        original_file_name="q1-transcript.pdf",
+                        payload=b"pdf-content",
+                        mime_type="application/pdf",
+                    )
+                    detail = web_server.get_earnings_review_record_detail(conn, "AMD", review_id)
+                    self.assertEqual(detail["status"], web_server.EARNINGS_REVIEW_STATUS_DOCUMENTS_UPLOADED)
+                    self.assertEqual(len(detail["documents"]), 1)
+                    self.assertEqual(len(list((uploads_dir / "earnings_reviews" / str(review_id)).glob("*"))), 1)
+
+                    web_server.delete_earnings_review_document(conn, "AMD", review_id, doc["id"])
+                    detail_after_delete = web_server.get_earnings_review_record_detail(conn, "AMD", review_id)
+                    self.assertEqual(detail_after_delete["status"], web_server.EARNINGS_REVIEW_STATUS_DRAFT)
+                    self.assertEqual(len(detail_after_delete["documents"]), 0)
+                finally:
+                    conn.close()
+
+    def test_document_delete_reverts_to_watchpoints_generated_when_watchpoints_exist(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            uploads_dir = Path(tmp) / "uploads"
+            with mock.patch.object(web_server, "DB_PATH", db_path), \
+                 mock.patch.object(web_server, "UPLOADS_DIR", uploads_dir):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="NFLX")
+                    web_server.add_earnings_review_symbol(conn, "NFLX")
+                    created = web_server.create_earnings_review_record(conn, "NFLX", fiscal_year=2026, fiscal_quarter="Q2")
+                    review_id = created["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_review_watchpoints (
+                          earnings_review_id, key_variable_text, key_variable_type, watchpoints_json,
+                          display_order, generated_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+                        """,
+                        (review_id, "Subscriber growth", "Bullish", '["net adds"]', web_server.utc_now_iso(), web_server.utc_now_iso(), web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    web_server.recalculate_earnings_review_status(conn, review_id)
+                    uploaded = web_server.save_earnings_review_document(
+                        conn=conn,
+                        symbol="NFLX",
+                        review_id=review_id,
+                        document_type="Earnings Release",
+                        original_file_name="release.pdf",
+                        payload=b"x",
+                        mime_type="application/pdf",
+                    )
+                    self.assertEqual(
+                        web_server.get_earnings_review_record_detail(conn, "NFLX", review_id)["status"],
+                        web_server.EARNINGS_REVIEW_STATUS_DOCUMENTS_UPLOADED,
+                    )
+                    web_server.delete_earnings_review_document(conn, "NFLX", review_id, uploaded["id"])
+                    self.assertEqual(
+                        web_server.get_earnings_review_record_detail(conn, "NFLX", review_id)["status"],
+                        web_server.EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED,
+                    )
                 finally:
                     conn.close()
 

@@ -898,6 +898,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="earnings-review-detail-view"', html)
         self.assertIn('id="earnings-review-back-btn"', html)
         self.assertIn('id="earnings-review-detail-header"', html)
+        self.assertIn('id="earnings-review-status-filter"', html)
+        self.assertIn('<option value="All" selected>All</option>', html)
+        self.assertIn('<option value="Not generated">Not generated</option>', html)
+        self.assertIn('<option value="Generated">Generated</option>', html)
 
     def test_earnings_review_navigation_uses_view_state_and_hash(self):
         from pathlib import Path
@@ -905,6 +909,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function showEarningsReviewList()', js)
         self.assertIn('function showEarningsReviewDetail()', js)
         self.assertIn('function setEarningsReviewHash(symbol)', js)
+        self.assertIn('const EARNINGS_REVIEW_STATUS_FILTER_OPTIONS = [\'All\', \'Not generated\', \'Generated\'];', js)
+        self.assertIn('function getFilteredEarningsReviewItems()', js)
+        self.assertIn('earningsReviewStatusFilterEl.addEventListener(\'change\'', js)
         self.assertIn('window.addEventListener(\'hashchange\'', js)
 
 

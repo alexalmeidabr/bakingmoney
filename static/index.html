@@ -194,8 +194,53 @@
                       <th>Company</th>
                       <th>Rating</th>
                       <th>Last Analysis Update</th>
+                      <th>Latest Status</th>
+                      <th>Reviews Count</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <div id="earnings-review-symbol-view" class="analysis-screen hidden">
+            <div class="view-header">
+              <button id="earnings-review-symbol-back-btn">← Back to Earnings Review</button>
+              <h2 id="earnings-review-symbol-title">Earnings History</h2>
+            </div>
+            <section class="detail-card">
+              <div class="view-header">
+                <h3 id="earnings-review-symbol-header">Symbol Earnings History</h3>
+                <button id="earnings-review-create-btn">Create New Earnings Review</button>
+              </div>
+              <div id="earnings-review-create-form" class="table-actions hidden">
+                <label>Fiscal Year <input id="earnings-review-create-year" type="number" min="1900" max="2200" step="1" /></label>
+                <label>Fiscal Quarter
+                  <select id="earnings-review-create-quarter">
+                    <option value="Q1">Q1</option>
+                    <option value="Q2">Q2</option>
+                    <option value="Q3">Q3</option>
+                    <option value="Q4">Q4</option>
+                  </select>
+                </label>
+                <label>Release Date <input id="earnings-review-create-release-date" type="date" /></label>
+                <button id="earnings-review-create-submit-btn">Create</button>
+                <button id="earnings-review-create-cancel-btn">Cancel</button>
+              </div>
+              <p id="earnings-review-symbol-status" class="status">Loading earnings history…</p>
+              <div class="table-wrap">
+                <table id="earnings-review-symbol-table">
+                  <thead>
+                    <tr>
+                      <th>Fiscal Year</th>
+                      <th>Fiscal Quarter</th>
+                      <th>Release Date</th>
                       <th>Status</th>
-                      <th>Count</th>
+                      <th>Created At</th>
+                      <th>Updated At</th>
+                      <th>Watchpoints</th>
+                      <th>Open</th>
                     </tr>
                   </thead>
                   <tbody></tbody>
@@ -206,7 +251,7 @@
 
           <div id="earnings-review-detail-view" class="analysis-screen hidden">
             <div class="view-header">
-              <button id="earnings-review-back-btn">← Back to Earnings Review</button>
+              <button id="earnings-review-back-btn">← Back to Symbol Earnings History</button>
               <h2 id="earnings-review-detail-title">Earnings Review Detail</h2>
             </div>
             <section class="detail-card earnings-review-detail-card">
@@ -216,7 +261,11 @@
               </div>
               <p id="earnings-review-detail-meta" class="status">Select a symbol from the list to view details.</p>
               <section class="detail-card">
-                <h4>Current Key Variables</h4>
+                <h4>Thesis Snapshot</h4>
+                <div id="earnings-review-snapshot-summary"></div>
+              </section>
+              <section class="detail-card">
+                <h4>Key Variables Snapshot</h4>
                 <div class="table-wrap">
                   <table id="earnings-review-key-variables-table">
                     <thead>

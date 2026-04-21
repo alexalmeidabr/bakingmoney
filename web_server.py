@@ -55,6 +55,8 @@ BACKUP_REQUIRED_TABLES = (
     "analysis_business_summary_edits",
     "earnings_watchpoint_sets",
     "earnings_watchpoints",
+    "earnings_reviews",
+    "earnings_review_watchpoints",
     "app_settings",
     "positions_cache",
     "thesis_review_alerts",
@@ -78,6 +80,8 @@ ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
 ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE = "analysis_prompt_recent_event_candidate"
 ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK = "analysis_prompt_recent_event_check"
 ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINTS = "earnings_watchpoints"
+EARNINGS_REVIEW_STATUS_DRAFT = "Draft"
+EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED = "Watchpoints generated"
 ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
 ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
 ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
@@ -1612,6 +1616,47 @@ def init_db():
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_earnings_watchpoints_symbol_variable
             ON earnings_watchpoints(symbol, key_variable_text)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS earnings_reviews (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              symbol TEXT NOT NULL,
+              company_name_snapshot TEXT,
+              fiscal_year INTEGER NOT NULL,
+              fiscal_quarter TEXT NOT NULL,
+              release_date TEXT,
+              status TEXT NOT NULL,
+              thesis_snapshot_json TEXT NOT NULL,
+              watchpoints_generated_at TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (symbol) REFERENCES analysis_roots(symbol) ON DELETE CASCADE,
+              UNIQUE(symbol, fiscal_year, fiscal_quarter)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS earnings_review_watchpoints (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              earnings_review_id INTEGER NOT NULL,
+              key_variable_text TEXT NOT NULL,
+              key_variable_type TEXT,
+              watchpoints_json TEXT NOT NULL,
+              display_order INTEGER NOT NULL DEFAULT 0,
+              generated_at TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (earnings_review_id) REFERENCES earnings_reviews(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_earnings_review_watchpoints_unique
+            ON earnings_review_watchpoints(earnings_review_id, key_variable_text)
             """
         )
         conn.execute(
@@ -3712,23 +3757,54 @@ def _build_earnings_watchpoints_schema():
     }
 
 
-def get_earnings_watchpoints_for_symbol(conn, symbol):
-    set_row = conn.execute(
-        """
-        SELECT symbol, generated_at, prompt_key, prompt_source, prompt_used, created_at, updated_at
-        FROM earnings_watchpoint_sets
-        WHERE symbol = ?
-        """,
-        (symbol,),
-    ).fetchone()
+def _parse_release_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d")
+        return parsed.strftime("%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("release_date must be in YYYY-MM-DD format") from exc
+
+
+def _validate_fiscal_quarter(value):
+    quarter = str(value or "").strip().upper()
+    if quarter not in {"Q1", "Q2", "Q3", "Q4"}:
+        raise ValueError("fiscal_quarter must be one of: Q1, Q2, Q3, Q4")
+    return quarter
+
+
+def _build_earnings_review_thesis_snapshot(conn, symbol):
+    detail = get_analysis_detail(conn, symbol)
+    if not detail:
+        raise ValueError(f"Analysis for symbol {symbol} not found")
+    version = detail.get("version") or {}
+    return {
+        "symbol": symbol,
+        "company_name": version.get("company_name") or symbol,
+        "rating": version.get("rating"),
+        "current_price": version.get("current_price"),
+        "expected_price": version.get("expected_price"),
+        "upside": version.get("upside"),
+        "business_model": version.get("business_model") or "",
+        "business_summary": version.get("business_summary") or "",
+        "key_variables": version.get("key_variables") or [],
+        "scenarios": version.get("scenarios") or [],
+        "analysis_version_id": version.get("id"),
+        "analysis_version_created_at": version.get("created_at"),
+    }
+
+
+def get_earnings_review_watchpoints(conn, earnings_review_id):
     rows = conn.execute(
         """
         SELECT key_variable_text, key_variable_type, watchpoints_json, generated_at, display_order
-        FROM earnings_watchpoints
-        WHERE symbol = ?
+        FROM earnings_review_watchpoints
+        WHERE earnings_review_id = ?
         ORDER BY display_order ASC, id ASC
         """,
-        (symbol,),
+        (earnings_review_id,),
     ).fetchall()
     items = []
     for row in rows:
@@ -3745,32 +3821,22 @@ def get_earnings_watchpoints_for_symbol(conn, symbol):
                 "generated_at": row["generated_at"],
             }
         )
-    metadata = None
-    if set_row:
-        metadata = {
-            "symbol": set_row["symbol"],
-            "generated_at": set_row["generated_at"],
-            "prompt_key": set_row["prompt_key"],
-            "prompt_source": set_row["prompt_source"],
-            "created_at": set_row["created_at"],
-            "updated_at": set_row["updated_at"],
-        }
-    return metadata, items
+    return items
 
 
-def _replace_earnings_watchpoints(conn, symbol, watchpoints_by_variable, prompt_key, prompt_source, prompt_used, raw_response):
+def _replace_earnings_review_watchpoints(conn, earnings_review_id, watchpoints_by_variable):
     now = utc_now_iso()
-    conn.execute("DELETE FROM earnings_watchpoints WHERE symbol = ?", (symbol,))
+    conn.execute("DELETE FROM earnings_review_watchpoints WHERE earnings_review_id = ?", (earnings_review_id,))
     for idx, item in enumerate(watchpoints_by_variable):
         conn.execute(
             """
-            INSERT INTO earnings_watchpoints (
-              symbol, key_variable_text, key_variable_type, watchpoints_json,
+            INSERT INTO earnings_review_watchpoints (
+              earnings_review_id, key_variable_text, key_variable_type, watchpoints_json,
               display_order, generated_at, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                symbol,
+                earnings_review_id,
                 item["key_variable"],
                 item.get("type") or "",
                 json.dumps(item.get("watchpoints") or [], ensure_ascii=False),
@@ -3781,40 +3847,17 @@ def _replace_earnings_watchpoints(conn, symbol, watchpoints_by_variable, prompt_
             ),
         )
 
-    conn.execute(
-        """
-        INSERT INTO earnings_watchpoint_sets (
-          symbol, generated_at, prompt_key, prompt_source, prompt_used, raw_response_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(symbol) DO UPDATE SET
-          generated_at = excluded.generated_at,
-          prompt_key = excluded.prompt_key,
-          prompt_source = excluded.prompt_source,
-          prompt_used = excluded.prompt_used,
-          raw_response_json = excluded.raw_response_json,
-          updated_at = excluded.updated_at
-        """,
-        (
-            symbol,
-            now,
-            prompt_key,
-            prompt_source,
-            prompt_used,
-            json.dumps(raw_response, ensure_ascii=False),
-            now,
-            now,
-        ),
-    )
-
 
 def list_earnings_review_symbols(conn):
     rows = list_analysis_symbols(conn)
-    counts = {
+    reviews = {
         row["symbol"]: row
         for row in conn.execute(
             """
-            SELECT symbol, COUNT(*) AS watchpoint_groups, MAX(generated_at) AS generated_at
-            FROM earnings_watchpoints
+            SELECT symbol,
+                   COUNT(*) AS review_count,
+                   MAX(updated_at) AS latest_review_updated_at
+            FROM earnings_reviews
             GROUP BY symbol
             """
         ).fetchall()
@@ -3822,56 +3865,152 @@ def list_earnings_review_symbols(conn):
     items = []
     for row in rows:
         symbol = row.get("symbol")
-        info = counts.get(symbol)
-        group_count = int(info["watchpoint_groups"]) if info and info["watchpoint_groups"] is not None else 0
+        info = reviews.get(symbol)
+        review_count = int(info["review_count"]) if info and info["review_count"] is not None else 0
+        latest_status_row = conn.execute(
+            """
+            SELECT status, updated_at
+            FROM earnings_reviews
+            WHERE symbol = ?
+            ORDER BY fiscal_year DESC, fiscal_quarter DESC, id DESC
+            LIMIT 1
+            """,
+            (symbol,),
+        ).fetchone()
         items.append(
             {
                 "symbol": symbol,
                 "company_name": row.get("company_name"),
                 "rating": row.get("rating"),
                 "last_analysis_update": row.get("updated_at"),
-                "watchpoints_status": "Generated" if group_count > 0 else "Not generated",
-                "watchpoints_count": group_count,
-                "generated_at": info["generated_at"] if info else None,
+                "reviews_count": review_count,
+                "latest_review_status": latest_status_row["status"] if latest_status_row else None,
+                "latest_review_updated_at": latest_status_row["updated_at"] if latest_status_row else None,
             }
         )
     return items
 
 
-def get_earnings_review_detail(conn, symbol):
-    context = get_latest_analysis_context(conn, symbol)
-    metadata, watchpoints_by_variable = get_earnings_watchpoints_for_symbol(conn, symbol)
-    latest_row = conn.execute(
+def get_earnings_review_symbol_history(conn, symbol):
+    analysis_context = get_latest_analysis_context(conn, symbol)
+    reviews = conn.execute(
         """
-        SELECT v.created_at, v.symbol
-        FROM analysis_roots r
-        JOIN analysis_versions v ON v.analysis_root_id = r.id
-        WHERE r.symbol = ?
-        ORDER BY v.version_number DESC
-        LIMIT 1
+        SELECT id, fiscal_year, fiscal_quarter, release_date, status, watchpoints_generated_at, created_at, updated_at
+        FROM earnings_reviews
+        WHERE symbol = ?
+        ORDER BY fiscal_year DESC, fiscal_quarter DESC, id DESC
         """,
         (symbol,),
-    ).fetchone()
-    rating_row = next((item for item in list_analysis_symbols(conn) if item.get("symbol") == symbol), {})
+    ).fetchall()
+    records = []
+    for row in reviews:
+        count_row = conn.execute(
+            "SELECT COUNT(*) AS count FROM earnings_review_watchpoints WHERE earnings_review_id = ?",
+            (row["id"],),
+        ).fetchone()
+        records.append(
+            {
+                "id": row["id"],
+                "fiscal_year": row["fiscal_year"],
+                "fiscal_quarter": row["fiscal_quarter"],
+                "release_date": row["release_date"],
+                "status": row["status"],
+                "watchpoints_generated_at": row["watchpoints_generated_at"],
+                "watchpoints_count": int(count_row["count"] or 0),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+
     return {
         "symbol": symbol,
-        "company_name": context.get("company_name") or symbol,
-        "rating": rating_row.get("rating"),
-        "last_analysis_update": latest_row["created_at"] if latest_row else None,
-        "current_key_variables": context.get("key_variables") or [],
-        "watchpoints_status": "Generated" if watchpoints_by_variable else "Not generated",
-        "watchpoints_count": len(watchpoints_by_variable),
-        "watchpoints_generated_at": metadata.get("generated_at") if metadata else None,
-        "watchpoints_prompt_source": metadata.get("prompt_source") if metadata else None,
-        "watchpoints_by_variable": watchpoints_by_variable,
+        "company_name": analysis_context.get("company_name") or symbol,
+        "records": records,
     }
 
 
-def generate_earnings_watchpoints(conn, symbol):
+def create_earnings_review_record(conn, symbol, fiscal_year, fiscal_quarter, release_date=None):
+    now = utc_now_iso()
+    normalized_quarter = _validate_fiscal_quarter(fiscal_quarter)
+    try:
+        year = int(fiscal_year)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("fiscal_year must be a valid integer") from exc
+    if year < 1900 or year > 2200:
+        raise ValueError("fiscal_year must be between 1900 and 2200")
+    normalized_release_date = _parse_release_date(release_date)
+    snapshot = _build_earnings_review_thesis_snapshot(conn, symbol)
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO earnings_reviews (
+              symbol, company_name_snapshot, fiscal_year, fiscal_quarter, release_date,
+              status, thesis_snapshot_json, watchpoints_generated_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            """,
+            (
+                symbol,
+                snapshot.get("company_name") or symbol,
+                year,
+                normalized_quarter,
+                normalized_release_date,
+                EARNINGS_REVIEW_STATUS_DRAFT,
+                json.dumps(snapshot, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(f"Earnings review already exists for {symbol} {year} {normalized_quarter}") from exc
+
+    review_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    conn.commit()
+    return get_earnings_review_record_detail(conn, symbol, review_id)
+
+
+def get_earnings_review_record_detail(conn, symbol, review_id):
+    row = conn.execute(
+        """
+        SELECT id, symbol, company_name_snapshot, fiscal_year, fiscal_quarter, release_date,
+               status, thesis_snapshot_json, watchpoints_generated_at, created_at, updated_at
+        FROM earnings_reviews
+        WHERE id = ? AND symbol = ?
+        """,
+        (review_id, symbol),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Earnings review record not found for symbol={symbol} id={review_id}")
+    try:
+        snapshot = json.loads(row["thesis_snapshot_json"] or "{}")
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+    except Exception:
+        snapshot = {}
+    watchpoints = get_earnings_review_watchpoints(conn, row["id"])
+    return {
+        "id": row["id"],
+        "symbol": row["symbol"],
+        "company_name_snapshot": row["company_name_snapshot"] or snapshot.get("company_name") or row["symbol"],
+        "fiscal_year": row["fiscal_year"],
+        "fiscal_quarter": row["fiscal_quarter"],
+        "release_date": row["release_date"],
+        "status": row["status"],
+        "watchpoints_generated_at": row["watchpoints_generated_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "thesis_snapshot": snapshot,
+        "key_variables_snapshot": snapshot.get("key_variables") or [],
+        "watchpoints_by_variable": watchpoints,
+    }
+
+
+def generate_earnings_watchpoints_for_review(conn, symbol, review_id):
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is required for earnings watchpoint generation")
 
-    context = get_latest_analysis_context(conn, symbol)
+    detail = get_earnings_review_record_detail(conn, symbol, review_id)
+    snapshot = detail.get("thesis_snapshot") or {}
     templates, sources = get_prompt_templates_for_keys(
         conn,
         EARNINGS_REVIEW_WORKFLOW_PROMPT_KEYS,
@@ -3880,12 +4019,12 @@ def generate_earnings_watchpoints(conn, symbol):
     template = templates[ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINTS]
     template_source = sources[ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINTS]
     prompt_context = build_prompt_context(
-        symbol=context["symbol"],
-        price=context["current_price"],
-        company_name=context["company_name"],
-        business_model=context["business_model"],
-        business_summary=context["business_summary"],
-        key_variables=context["key_variables"],
+        symbol=snapshot.get("symbol") or symbol,
+        price=snapshot.get("current_price"),
+        company_name=snapshot.get("company_name") or detail.get("company_name_snapshot") or symbol,
+        business_model=snapshot.get("business_model") or "",
+        business_summary=snapshot.get("business_summary") or "",
+        key_variables=snapshot.get("key_variables") or [],
     )
     prompt_text = render_prompt_template(template, prompt_context)
     response = request_ai_step("earnings_watchpoints", prompt_text, _build_earnings_watchpoints_schema())
@@ -3895,17 +4034,48 @@ def generate_earnings_watchpoints(conn, symbol):
     normalized_items = [item for item in (_normalize_earnings_watchpoint_item(raw) for raw in raw_items) if item]
     if not normalized_items:
         raise AnalysisValidationError("No valid watchpoints_by_variable entries were returned by AI")
-    _replace_earnings_watchpoints(
-        conn=conn,
-        symbol=symbol,
-        watchpoints_by_variable=normalized_items,
-        prompt_key=ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINTS,
-        prompt_source=template_source,
-        prompt_used=prompt_text,
-        raw_response=response,
+    _replace_earnings_review_watchpoints(conn=conn, earnings_review_id=review_id, watchpoints_by_variable=normalized_items)
+    now = utc_now_iso()
+    conn.execute(
+        """
+        UPDATE earnings_reviews
+        SET status = ?, watchpoints_generated_at = ?, updated_at = ?
+        WHERE id = ? AND symbol = ?
+        """,
+        (
+            EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED,
+            now,
+            now,
+            review_id,
+            symbol,
+        ),
+    )
+    logger.info(
+        "Generated earnings watchpoints review_id=%s symbol=%s prompt_source=%s groups=%s",
+        review_id,
+        symbol,
+        template_source,
+        len(normalized_items),
     )
     conn.commit()
-    return get_earnings_review_detail(conn, symbol)
+    return get_earnings_review_record_detail(conn, symbol, review_id)
+
+
+def generate_earnings_watchpoints(conn, symbol):
+    """Backward-compatible helper: generate for the latest review record of a symbol."""
+    latest = conn.execute(
+        """
+        SELECT id
+        FROM earnings_reviews
+        WHERE symbol = ?
+        ORDER BY fiscal_year DESC, fiscal_quarter DESC, id DESC
+        LIMIT 1
+        """,
+        (symbol,),
+    ).fetchone()
+    if not latest:
+        raise ValueError(f"No earnings review record exists for symbol {symbol}")
+    return generate_earnings_watchpoints_for_review(conn, symbol, int(latest["id"]))
 
 
 def _parse_iso_datetime(value):
@@ -4446,10 +4616,18 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         if path == "/api/earnings-review":
             return self.handle_earnings_review_get()
         if path.startswith("/api/earnings-review/"):
-            symbol = normalize_symbol(path[len("/api/earnings-review/") :])
-            if not symbol:
-                return self._send_json({"error": "Invalid symbol"}, status=400)
-            return self.handle_earnings_review_detail_get(symbol)
+            suffix = path[len("/api/earnings-review/") :]
+            parts = [item for item in suffix.split("/") if item]
+            if len(parts) == 1:
+                symbol = normalize_symbol(parts[0])
+                if not symbol:
+                    return self._send_json({"error": "Invalid symbol"}, status=400)
+                return self.handle_earnings_review_symbol_get(symbol)
+            if len(parts) == 2:
+                symbol = normalize_symbol(parts[0])
+                if not symbol or not parts[1].isdigit():
+                    return self._send_json({"error": "Invalid earnings review path"}, status=400)
+                return self.handle_earnings_review_record_get(symbol, int(parts[1]))
         if path.startswith("/api/analysis/"):
             symbol = normalize_symbol(path[len("/api/analysis/") :])
             if not symbol:
@@ -4514,11 +4692,19 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_rerun_scenarios(symbol)
         if path == "/api/analysis/import-from-positions":
             return self.handle_analysis_import_positions()
-        if path.startswith("/api/earnings-review/") and path.endswith("/generate"):
-            symbol = normalize_symbol(path[len("/api/earnings-review/") : -len("/generate")])
-            if not symbol:
-                return self._send_json({"error": "Invalid symbol"}, status=400)
-            return self.handle_earnings_review_generate(symbol)
+        if path.startswith("/api/earnings-review/"):
+            suffix = path[len("/api/earnings-review/") :]
+            parts = [item for item in suffix.split("/") if item]
+            if len(parts) == 1:
+                symbol = normalize_symbol(parts[0])
+                if not symbol:
+                    return self._send_json({"error": "Invalid symbol"}, status=400)
+                return self.handle_earnings_review_create(symbol)
+            if len(parts) == 3 and parts[2] == "generate-watchpoints":
+                symbol = normalize_symbol(parts[0])
+                if not symbol or not parts[1].isdigit():
+                    return self._send_json({"error": "Invalid earnings review generate path"}, status=400)
+                return self.handle_earnings_review_generate_watchpoints(symbol, int(parts[1]))
         if path == "/api/configuration/prompts/preview":
             return self.handle_configuration_prompts_preview()
         if path == "/api/configuration/prompts/reset":
@@ -4845,25 +5031,61 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_earnings_review_detail_get(self, symbol):
+    def handle_earnings_review_symbol_get(self, symbol):
         conn = get_db_connection()
         try:
-            detail = get_earnings_review_detail(conn, symbol)
-            self._send_json({"item": detail})
+            self._send_json({"item": get_earnings_review_symbol_history(conn, symbol)})
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=404)
         except Exception as exc:
             self._send_json(
-                {"error": "Unable to load earnings review detail.", "details": str(exc)},
+                {"error": "Unable to load earnings review symbol history.", "details": str(exc)},
                 status=500,
             )
         finally:
             conn.close()
 
-    def handle_earnings_review_generate(self, symbol):
+    def handle_earnings_review_create(self, symbol):
+        payload = self._read_json_body() or {}
         conn = get_db_connection()
         try:
-            detail = generate_earnings_watchpoints(conn, symbol)
+            detail = create_earnings_review_record(
+                conn=conn,
+                symbol=symbol,
+                fiscal_year=payload.get("fiscal_year"),
+                fiscal_quarter=payload.get("fiscal_quarter"),
+                release_date=payload.get("release_date"),
+            )
+            self._send_json({"ok": True, "item": detail}, status=201)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to create earnings review for symbol %s", symbol)
+            self._send_json(
+                {"error": "Unable to create earnings review.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_record_get(self, symbol, review_id):
+        conn = get_db_connection()
+        try:
+            self._send_json({"item": get_earnings_review_record_detail(conn, symbol, review_id)})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to load earnings review record detail.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_generate_watchpoints(self, symbol, review_id):
+        conn = get_db_connection()
+        try:
+            detail = generate_earnings_watchpoints_for_review(conn, symbol, review_id)
             self._send_json({"ok": True, "item": detail}, status=201)
         except AnalysisValidationError as exc:
             self._send_json({"error": "AI response validation failed.", "details": str(exc)}, status=422)

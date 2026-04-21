@@ -895,8 +895,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         from pathlib import Path
         html = Path('static/index.html').read_text(encoding='utf-8')
         self.assertIn('id="earnings-review-list-view"', html)
+        self.assertIn('id="earnings-review-symbol-view"', html)
         self.assertIn('id="earnings-review-detail-view"', html)
         self.assertIn('id="earnings-review-back-btn"', html)
+        self.assertIn('id="earnings-review-symbol-back-btn"', html)
         self.assertIn('id="earnings-review-detail-header"', html)
         self.assertIn('id="earnings-review-status-filter"', html)
         self.assertIn('<option value="All" selected>All</option>', html)
@@ -908,7 +910,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         js = Path('static/app.js').read_text(encoding='utf-8')
         self.assertIn('function showEarningsReviewList()', js)
         self.assertIn('function showEarningsReviewDetail()', js)
-        self.assertIn('function setEarningsReviewHash(symbol)', js)
+        self.assertIn('function setEarningsReviewHash(symbol, reviewId = null)', js)
+        self.assertIn('function openEarningsReviewSymbolHistory(symbol)', js)
+        self.assertIn('function openEarningsReviewRecordDetail(symbol, reviewId)', js)
         self.assertIn('const EARNINGS_REVIEW_STATUS_FILTER_OPTIONS = [\'All\', \'Not generated\', \'Generated\'];', js)
         self.assertIn('function getFilteredEarningsReviewItems()', js)
         self.assertIn('earningsReviewStatusFilterEl.addEventListener(\'change\'', js)
@@ -976,6 +980,8 @@ class EarningsReviewTests(unittest.TestCase):
                 conn = web_server.get_db_connection()
                 try:
                     self._seed_analysis(conn, symbol="MSFT")
+                    created = web_server.create_earnings_review_record(conn, "MSFT", fiscal_year=2026, fiscal_quarter="Q1")
+                    review_id = created["id"]
                     first_response = {
                         "watchpoints_by_variable": [
                             {
@@ -997,25 +1003,25 @@ class EarningsReviewTests(unittest.TestCase):
 
                     with mock.patch.object(web_server, "OPENAI_API_KEY", "test"), \
                          mock.patch.object(web_server, "request_ai_step", side_effect=[first_response, second_response]):
-                        detail_first = web_server.generate_earnings_watchpoints(conn, "MSFT")
-                        detail_second = web_server.generate_earnings_watchpoints(conn, "MSFT")
+                        detail_first = web_server.generate_earnings_watchpoints_for_review(conn, "MSFT", review_id)
+                        detail_second = web_server.generate_earnings_watchpoints_for_review(conn, "MSFT", review_id)
 
-                    self.assertEqual(detail_first["watchpoints_status"], "Generated")
-                    self.assertEqual(detail_second["watchpoints_status"], "Generated")
+                    self.assertEqual(detail_first["status"], web_server.EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED)
+                    self.assertEqual(detail_second["status"], web_server.EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED)
                     self.assertEqual(len(detail_second["watchpoints_by_variable"]), 1)
                     self.assertEqual(detail_second["watchpoints_by_variable"][0]["key_variable"], "Gross margin pressure")
 
                     rows = conn.execute(
-                        "SELECT key_variable_text FROM earnings_watchpoints WHERE symbol = ? ORDER BY id ASC",
-                        ("MSFT",),
+                        "SELECT key_variable_text FROM earnings_review_watchpoints WHERE earnings_review_id = ? ORDER BY id ASC",
+                        (review_id,),
                     ).fetchall()
                     self.assertEqual(len(rows), 1)
                     self.assertEqual(rows[0]["key_variable_text"], "Gross margin pressure")
 
                     list_items = web_server.list_earnings_review_symbols(conn)
                     msft_row = next(item for item in list_items if item["symbol"] == "MSFT")
-                    self.assertEqual(msft_row["watchpoints_status"], "Generated")
-                    self.assertEqual(msft_row["watchpoints_count"], 1)
+                    self.assertEqual(msft_row["latest_review_status"], web_server.EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED)
+                    self.assertEqual(msft_row["reviews_count"], 1)
                 finally:
                     conn.close()
 

@@ -3,12 +3,14 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import sqlite3
 import statistics
 import tempfile
 import uuid
 import zipfile
+from html import unescape
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from io import BytesIO
@@ -486,6 +488,8 @@ Instructions:
 - Use “Not addressed” when the documents do not meaningfully discuss the watchpoint.
 - Use “Unclear” when the documents contain related information but the signal is too ambiguous or mixed to classify confidently.
 - Use “Partially confirmed” when the documents support only part of the watchpoint or support it with important caveats.
+- Do not use “Unclear” because document text is unreadable or missing.
+- If documents are unreadable, the system should fail before analysis.
 - Keep result_text concise, practical, and easy to scan in the UI.
 - Do not include long explanations.
 - Do not quote the documents.
@@ -3953,12 +3957,53 @@ def _read_earnings_document_text(storage_path):
     if not file_path.exists():
         return ""
     suffix = file_path.suffix.lower()
-    if suffix not in {".txt", ".csv", ".html"}:
-        return ""
     try:
-        return file_path.read_text(encoding="utf-8", errors="replace")
+        if suffix in {".txt", ".csv", ".html"}:
+            return file_path.read_text(encoding="utf-8", errors="replace")
+        if suffix == ".docx":
+            with zipfile.ZipFile(file_path) as archive:
+                xml_text = archive.read("word/document.xml").decode("utf-8", errors="replace")
+            text = re.sub(r"<[^>]+>", " ", xml_text)
+            return unescape(re.sub(r"\s+", " ", text)).strip()
+        if suffix == ".xlsx":
+            with zipfile.ZipFile(file_path) as archive:
+                parts = []
+                for name in archive.namelist():
+                    if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                        parts.append(archive.read(name).decode("utf-8", errors="replace"))
+                    if name == "xl/sharedStrings.xml":
+                        parts.append(archive.read(name).decode("utf-8", errors="replace"))
+            text = " ".join(parts)
+            text = re.sub(r"<[^>]+>", " ", text)
+            return unescape(re.sub(r"\s+", " ", text)).strip()
+        if suffix == ".pdf":
+            try:
+                from pypdf import PdfReader  # type: ignore
+
+                reader = PdfReader(str(file_path))
+                texts = [(page.extract_text() or "") for page in reader.pages]
+                return "\n".join(texts).strip()
+            except Exception:
+                raw = file_path.read_bytes()
+                fragments = re.findall(rb"\(([^()]*)\)", raw)
+                decoded = []
+                for fragment in fragments:
+                    text = fragment.decode("latin-1", errors="ignore")
+                    text = re.sub(r"\\[nrt]", " ", text)
+                    text = text.replace("\\(", "(").replace("\\)", ")").replace("\\\\", "\\")
+                    decoded.append(text)
+                return re.sub(r"\s+", " ", " ".join(decoded)).strip()
     except Exception:
         return ""
+    return ""
+
+
+def _is_meaningful_extracted_text(text):
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(normalized) < 40:
+        return False
+    letters = re.sub(r"[^A-Za-z0-9]", "", normalized)
+    return len(letters) >= 30
 
 
 def _format_earnings_watchpoints_for_prompt(watchpoints_by_variable):
@@ -3974,12 +4019,23 @@ def _format_earnings_watchpoints_for_prompt(watchpoints_by_variable):
 
 def _format_earnings_documents_for_prompt(document_rows):
     blocks = []
+    readable_count = 0
+    diagnostics = []
     for row in document_rows or []:
         text = _read_earnings_document_text(row["storage_path"])
-        if text:
-            text = text[:12000]
-        else:
-            text = "[Text extraction unavailable for this file type in current implementation.]"
+        meaningful = _is_meaningful_extracted_text(text)
+        diagnostics.append(
+            {
+                "file_name": row.get("original_file_name"),
+                "document_type": row.get("document_type"),
+                "extracted_chars": len(text or ""),
+                "readable": meaningful,
+            }
+        )
+        if not meaningful:
+            continue
+        readable_count += 1
+        text = re.sub(r"\s+", " ", text).strip()[:12000]
         blocks.append(
             "\n".join(
                 [
@@ -3989,7 +4045,7 @@ def _format_earnings_documents_for_prompt(document_rows):
                 ]
             )
         )
-    return "\n\n---\n\n".join(blocks)
+    return "\n\n---\n\n".join(blocks), readable_count, diagnostics
 
 def _parse_release_date(value):
     text = str(value or "").strip()
@@ -4589,6 +4645,18 @@ def analyze_earnings_watchpoints_for_review(conn, symbol, review_id):
     )
     template = templates[ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINT_ANALYSIS]
     template_source = sources[ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINT_ANALYSIS]
+    documents_text, readable_count, diagnostics = _format_earnings_documents_for_prompt(documents)
+    logger.info(
+        "Earnings document extraction summary review_id=%s symbol=%s total=%s readable=%s diagnostics=%s",
+        review_id,
+        symbol,
+        len(documents),
+        readable_count,
+        diagnostics,
+    )
+    if readable_count <= 0 or not documents_text.strip():
+        raise ValueError("Analysis could not run because no readable text could be extracted from the uploaded documents.")
+
     prompt_context = build_prompt_context(
         symbol=snapshot.get("symbol") or symbol,
         company_name=snapshot.get("company_name") or detail.get("company_name_snapshot") or symbol,
@@ -4596,7 +4664,7 @@ def analyze_earnings_watchpoints_for_review(conn, symbol, review_id):
         business_summary=snapshot.get("business_summary") or "",
         key_variables=snapshot.get("key_variables") or [],
         earnings_watchpoints=_format_earnings_watchpoints_for_prompt(watchpoints_by_variable),
-        earnings_documents=_format_earnings_documents_for_prompt(documents),
+        earnings_documents=documents_text,
     )
     prompt_text = render_prompt_template(template, prompt_context)
     response = request_ai_step(

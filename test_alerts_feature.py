@@ -1267,6 +1267,59 @@ class EarningsReviewTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_analyse_watchpoints_fails_when_no_readable_document_text_and_keeps_previous_results(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            uploads_dir = Path(tmp) / "uploads"
+            with mock.patch.object(web_server, "DB_PATH", db_path), \
+                 mock.patch.object(web_server, "UPLOADS_DIR", uploads_dir):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="SHOP")
+                    web_server.add_earnings_review_symbol(conn, "SHOP")
+                    created = web_server.create_earnings_review_record(conn, "SHOP", fiscal_year=2026, fiscal_quarter="Q4")
+                    review_id = created["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_review_watchpoints (
+                          earnings_review_id, key_variable_text, key_variable_type, watchpoints_json,
+                          display_order, generated_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+                        """,
+                        (review_id, "GMV growth", "Bullish", json.dumps(["Merchant growth"]), web_server.utc_now_iso(), web_server.utc_now_iso(), web_server.utc_now_iso()),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_review_watchpoint_results (
+                          earnings_review_id, key_variable_text, watchpoint_text, status, result_text, analysed_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (review_id, "GMV growth", "Merchant growth", "Confirmed", "Prior valid result", web_server.utc_now_iso(), web_server.utc_now_iso(), web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    web_server.save_earnings_review_document(
+                        conn=conn,
+                        symbol="SHOP",
+                        review_id=review_id,
+                        document_type="Presentation",
+                        original_file_name="deck.pdf",
+                        payload=b"%PDF-1.4 \x00\x01\x02",
+                        mime_type="application/pdf",
+                    )
+                    with mock.patch.object(web_server, "OPENAI_API_KEY", "x"), \
+                         mock.patch.object(web_server, "request_ai_step", return_value={"watchpoint_results": []}):
+                        with self.assertRaisesRegex(ValueError, "no readable text"):
+                            web_server.analyze_earnings_watchpoints_for_review(conn, "SHOP", review_id)
+                    row = conn.execute(
+                        "SELECT result_text FROM earnings_review_watchpoint_results WHERE earnings_review_id = ? AND watchpoint_text = ?",
+                        (review_id, "Merchant growth"),
+                    ).fetchone()
+                    self.assertEqual(row["result_text"], "Prior valid result")
+                finally:
+                    conn.close()
+
     def test_created_review_snapshot_normalizes_key_variable_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")

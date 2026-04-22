@@ -159,6 +159,8 @@ const earningsReviewCreateCancelBtn = document.getElementById('earnings-review-c
 const earningsReviewSnapshotSummaryEl = document.getElementById('earnings-review-snapshot-summary');
 const earningsReviewDocumentTypeEl = document.getElementById('earnings-review-document-type');
 const earningsReviewDocumentFileEl = document.getElementById('earnings-review-document-file');
+const earningsReviewDocumentChooseBtn = document.getElementById('earnings-review-document-choose-btn');
+const earningsReviewDocumentFileNameEl = document.getElementById('earnings-review-document-file-name');
 const earningsReviewDocumentUploadBtn = document.getElementById('earnings-review-document-upload-btn');
 const earningsReviewDocumentsStatusEl = document.getElementById('earnings-review-documents-status');
 const earningsReviewDocumentsTableBody = document.querySelector('#earnings-review-documents-table tbody');
@@ -1590,6 +1592,7 @@ async function uploadEarningsReviewDocument() {
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to upload earnings document.'));
     earningsReviewDocumentFileEl.value = '';
+    earningsReviewDocumentFileNameEl.textContent = 'No file chosen';
     earningsReviewDocumentsStatusEl.textContent = 'Document uploaded successfully.';
     await refreshEarningsReviewListOnly();
     await openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, earningsReviewSelectedRecordId);
@@ -1849,6 +1852,8 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
   earningsReviewDocumentsTableBody.innerHTML = '';
   earningsReviewDocumentsStatusEl.textContent = 'Loading documents…';
   earningsReviewDocumentsStatusEl.className = 'status';
+  earningsReviewDocumentFileEl.value = '';
+  earningsReviewDocumentFileNameEl.textContent = 'No file chosen';
   try {
     const response = await fetch(`/api/earnings-review/${encodeURIComponent(normalized)}/${encodeURIComponent(earningsReviewSelectedRecordId)}`);
     const payload = await response.json();
@@ -2364,6 +2369,11 @@ earningsReviewAddSymbolEl.addEventListener('keydown', (event) => {
 earningsReviewCreateBtn.addEventListener('click', () => toggleEarningsReviewCreateForm(true));
 earningsReviewCreateCancelBtn.addEventListener('click', () => toggleEarningsReviewCreateForm(false));
 earningsReviewCreateSubmitBtn.addEventListener('click', createEarningsReviewRecord);
+earningsReviewDocumentChooseBtn.addEventListener('click', () => earningsReviewDocumentFileEl.click());
+earningsReviewDocumentFileEl.addEventListener('change', () => {
+  const file = earningsReviewDocumentFileEl.files && earningsReviewDocumentFileEl.files[0];
+  earningsReviewDocumentFileNameEl.textContent = file?.name || 'No file chosen';
+});
 earningsReviewDocumentUploadBtn.addEventListener('click', uploadEarningsReviewDocument);
 configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);

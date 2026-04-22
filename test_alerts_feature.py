@@ -906,9 +906,12 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('<th>Latest Quarter</th>', html)
         self.assertIn('id="earnings-review-document-type"', html)
         self.assertIn('id="earnings-review-document-file"', html)
+        self.assertIn('id="earnings-review-document-choose-btn"', html)
+        self.assertIn('id="earnings-review-document-file-name"', html)
         self.assertIn('id="earnings-review-document-upload-btn"', html)
         self.assertIn('id="earnings-review-documents-table"', html)
         self.assertIn('<th>Delete</th>', html)
+        self.assertLess(html.index('<h4>Earnings Documents</h4>'), html.index('<h4>Key Variables Snapshot</h4>'))
 
     def test_earnings_review_navigation_uses_view_state_and_hash(self):
         from pathlib import Path
@@ -922,6 +925,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function uploadEarningsReviewDocument()', js)
         self.assertIn('function deleteEarningsReviewDocument(', js)
         self.assertIn('function renderEarningsReviewDocuments(', js)
+        self.assertIn('earningsReviewDocumentChooseBtn.addEventListener(\'click\'', js)
+        self.assertIn('earningsReviewDocumentFileEl.addEventListener(\'change\'', js)
         self.assertIn('earningsReviewAddBtn.addEventListener(\'click\', addEarningsReviewSymbol);', js)
         self.assertIn('function deleteEarningsReviewRecord(', js)
         self.assertIn('earnings-record-delete-btn', js)

@@ -112,6 +112,22 @@ body {
   min-width: 160px;
 }
 
+.table-actions select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 160px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.table-actions select:focus,
+.table-actions input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(46, 144, 250, 0.12);
+}
+
 button {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -236,6 +252,54 @@ th.sortable[data-sort-direction='desc']::after {
 
 .detail-card h3 {
   margin-top: 0;
+}
+
+.earnings-doc-upload-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.earnings-doc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.earnings-doc-field select {
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+}
+
+.earnings-doc-file-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 300px;
+}
+
+.earnings-doc-file-input {
+  display: none;
+}
+
+.earnings-doc-file-name {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: #f9fafb;
+  min-width: 190px;
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .summary-grid {

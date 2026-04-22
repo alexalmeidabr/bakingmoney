@@ -262,6 +262,42 @@
                 <div id="earnings-review-snapshot-summary"></div>
               </section>
               <section class="detail-card">
+                <h4>Earnings Documents</h4>
+                <div id="earnings-review-documents-upload" class="earnings-doc-upload-row">
+                  <label class="earnings-doc-field">Document Type
+                    <select id="earnings-review-document-type">
+                      <option value="Earnings Release">Earnings Release</option>
+                      <option value="Shareholder Letter">Shareholder Letter</option>
+                      <option value="Presentation">Presentation</option>
+                      <option value="Transcript">Transcript</option>
+                      <option value="Supplemental">Supplemental</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </label>
+                  <div class="earnings-doc-file-picker">
+                    <input id="earnings-review-document-file" type="file" class="earnings-doc-file-input" />
+                    <button id="earnings-review-document-choose-btn" type="button">Choose File</button>
+                    <span id="earnings-review-document-file-name" class="earnings-doc-file-name">No file chosen</span>
+                  </div>
+                  <button id="earnings-review-document-upload-btn" type="button">Upload</button>
+                </div>
+                <p id="earnings-review-documents-status" class="status">No earnings documents uploaded yet.</p>
+                <div class="table-wrap">
+                  <table id="earnings-review-documents-table">
+                    <thead>
+                      <tr>
+                        <th>File Name</th>
+                        <th>Type</th>
+                        <th>Uploaded At</th>
+                        <th>Open</th>
+                        <th>Delete</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </section>
+              <section class="detail-card">
                 <h4>Key Variables Snapshot</h4>
                 <div class="table-wrap">
                   <table id="earnings-review-key-variables-table">
@@ -280,38 +316,6 @@
               <section class="detail-card">
                 <h4>Earnings Watchpoints</h4>
                 <div id="earnings-review-watchpoints" class="watchpoints-groups"></div>
-              </section>
-              <section class="detail-card">
-                <h4>Earnings Documents</h4>
-                <div id="earnings-review-documents-upload" class="table-actions">
-                  <label>Document Type
-                    <select id="earnings-review-document-type">
-                      <option value="Earnings Release">Earnings Release</option>
-                      <option value="Shareholder Letter">Shareholder Letter</option>
-                      <option value="Presentation">Presentation</option>
-                      <option value="Transcript">Transcript</option>
-                      <option value="Supplemental">Supplemental</option>
-                      <option value="Other">Other</option>
-                    </select>
-                  </label>
-                  <label>File <input id="earnings-review-document-file" type="file" /></label>
-                  <button id="earnings-review-document-upload-btn">Upload</button>
-                </div>
-                <p id="earnings-review-documents-status" class="status">No earnings documents uploaded yet.</p>
-                <div class="table-wrap">
-                  <table id="earnings-review-documents-table">
-                    <thead>
-                      <tr>
-                        <th>File Name</th>
-                        <th>Type</th>
-                        <th>Uploaded At</th>
-                        <th>Open</th>
-                        <th>Delete</th>
-                      </tr>
-                    </thead>
-                    <tbody></tbody>
-                  </table>
-                </div>
               </section>
             </section>
           </div>

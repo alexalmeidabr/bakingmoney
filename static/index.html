@@ -254,7 +254,6 @@
             <section class="detail-card earnings-review-detail-card">
               <div class="view-header">
                 <h3 id="earnings-review-detail-header">Select a symbol</h3>
-                <button id="earnings-review-generate-btn" disabled>Generate Earnings Watchpoints from Key Variables</button>
               </div>
               <p id="earnings-review-detail-meta" class="status">Select a symbol from the list to view details.</p>
               <section class="detail-card">
@@ -262,7 +261,10 @@
                 <div id="earnings-review-snapshot-summary"></div>
               </section>
               <section class="detail-card">
-                <h4>Earnings Documents</h4>
+                <div class="view-header">
+                  <h4>Earnings Documents</h4>
+                  <button id="earnings-review-analyse-btn" disabled>Analyse Earnings Watchpoints</button>
+                </div>
                 <div id="earnings-review-documents-upload" class="earnings-doc-upload-row">
                   <label class="earnings-doc-field">Document Type
                     <select id="earnings-review-document-type">
@@ -314,7 +316,10 @@
                 </div>
               </section>
               <section class="detail-card">
-                <h4>Earnings Watchpoints</h4>
+                <div class="view-header">
+                  <h4>Earnings Watchpoints</h4>
+                  <button id="earnings-review-generate-btn" disabled>Generate Earnings Watchpoints from Key Variables</button>
+                </div>
                 <div id="earnings-review-watchpoints" class="watchpoints-groups"></div>
               </section>
             </section>
@@ -363,6 +368,12 @@
             <h3>Earnings Watchpoints Prompt</h3>
             <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$BusinessModel</strong> (required), <strong>$KeyVariables</strong> (required)</p>
             <textarea id="prompt-earnings-watchpoints" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Earnings Watchpoint Analysis Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$BusinessModel</strong> (required), <strong>$KeyVariables</strong> (required), <strong>$EarningsWatchpoints</strong> (required), <strong>$EarningsDocuments</strong> (required)</p>
+            <textarea id="prompt-earnings-watchpoint-analysis" class="config-textarea" rows="14"></textarea>
             <div class="table-actions config-actions">
               <button id="prompt-save-btn">Save Prompts</button>
               <button id="prompt-reset-btn">Restore Default Prompts</button>

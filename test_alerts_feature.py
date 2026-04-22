@@ -908,10 +908,12 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="earnings-review-document-file"', html)
         self.assertIn('id="earnings-review-document-choose-btn"', html)
         self.assertIn('id="earnings-review-document-file-name"', html)
+        self.assertIn('id="earnings-review-analyse-btn"', html)
         self.assertIn('id="earnings-review-document-upload-btn"', html)
         self.assertIn('id="earnings-review-documents-table"', html)
         self.assertIn('<th>Delete</th>', html)
         self.assertLess(html.index('<h4>Earnings Documents</h4>'), html.index('<h4>Key Variables Snapshot</h4>'))
+        self.assertIn('id="prompt-earnings-watchpoint-analysis"', html)
 
     def test_earnings_review_navigation_uses_view_state_and_hash(self):
         from pathlib import Path
@@ -925,8 +927,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function uploadEarningsReviewDocument()', js)
         self.assertIn('function deleteEarningsReviewDocument(', js)
         self.assertIn('function renderEarningsReviewDocuments(', js)
+        self.assertIn('function analyseEarningsWatchpoints()', js)
         self.assertIn('earningsReviewDocumentChooseBtn.addEventListener(\'click\'', js)
         self.assertIn('earningsReviewDocumentFileEl.addEventListener(\'change\'', js)
+        self.assertIn('earningsReviewAnalyseBtn.addEventListener(\'click\', analyseEarningsWatchpoints);', js)
         self.assertIn('earningsReviewAddBtn.addEventListener(\'click\', addEarningsReviewSymbol);', js)
         self.assertIn('function deleteEarningsReviewRecord(', js)
         self.assertIn('earnings-record-delete-btn', js)
@@ -1163,6 +1167,103 @@ class EarningsReviewTests(unittest.TestCase):
                         web_server.get_earnings_review_record_detail(conn, "NFLX", review_id)["status"],
                         web_server.EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED,
                     )
+                finally:
+                    conn.close()
+
+    def test_analyse_watchpoints_persists_results_and_updates_status(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            uploads_dir = Path(tmp) / "uploads"
+            with mock.patch.object(web_server, "DB_PATH", db_path), \
+                 mock.patch.object(web_server, "UPLOADS_DIR", uploads_dir):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="INTC")
+                    web_server.add_earnings_review_symbol(conn, "INTC")
+                    created = web_server.create_earnings_review_record(conn, "INTC", fiscal_year=2026, fiscal_quarter="Q1")
+                    review_id = created["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_review_watchpoints (
+                          earnings_review_id, key_variable_text, key_variable_type, watchpoints_json,
+                          display_order, generated_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+                        """,
+                        (review_id, "PC demand", "Bullish", json.dumps(["OEM channel restocking"]), web_server.utc_now_iso(), web_server.utc_now_iso(), web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    web_server.recalculate_earnings_review_status(conn, review_id)
+                    web_server.save_earnings_review_document(
+                        conn=conn,
+                        symbol="INTC",
+                        review_id=review_id,
+                        document_type="Transcript",
+                        original_file_name="call.txt",
+                        payload=b"Management discussed OEM channel restocking.",
+                        mime_type="text/plain",
+                    )
+                    ai_response = {
+                        "watchpoint_results": [
+                            {
+                                "key_variable": "PC demand",
+                                "watchpoint": "OEM channel restocking",
+                                "status": "Confirmed",
+                                "result_text": "Management commentary indicates ongoing restocking in OEM channels.",
+                            }
+                        ]
+                    }
+                    with mock.patch.object(web_server, "OPENAI_API_KEY", "x"), \
+                         mock.patch.object(web_server, "request_ai_step", return_value=ai_response):
+                        detail = web_server.analyze_earnings_watchpoints_for_review(conn, "INTC", review_id)
+                    self.assertEqual(detail["status"], web_server.EARNINGS_REVIEW_STATUS_WATCHPOINTS_ANALYSED)
+                    self.assertEqual(len(detail["watchpoint_results"]), 1)
+                    self.assertEqual(detail["watchpoint_results"][0]["status"], "Confirmed")
+                finally:
+                    conn.close()
+
+    def test_generate_watchpoints_clears_existing_analysis_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="ORCL")
+                    web_server.add_earnings_review_symbol(conn, "ORCL")
+                    created = web_server.create_earnings_review_record(conn, "ORCL", fiscal_year=2026, fiscal_quarter="Q3")
+                    review_id = created["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_review_watchpoints (
+                          earnings_review_id, key_variable_text, key_variable_type, watchpoints_json,
+                          display_order, generated_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+                        """,
+                        (review_id, "Cloud growth", "Bullish", json.dumps(["Consumption trend"]), web_server.utc_now_iso(), web_server.utc_now_iso(), web_server.utc_now_iso()),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_review_watchpoint_results (
+                          earnings_review_id, key_variable_text, watchpoint_text, status, result_text, analysed_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (review_id, "Cloud growth", "Consumption trend", "Unclear", "Mixed signal", web_server.utc_now_iso(), web_server.utc_now_iso(), web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    with mock.patch.object(web_server, "OPENAI_API_KEY", "test"), \
+                         mock.patch.object(web_server, "request_ai_step", return_value={
+                             "watchpoints_by_variable": [
+                                 {"key_variable": "Cloud growth", "type": "Bullish", "watchpoints": ["Bookings momentum"]}
+                             ]
+                         }):
+                        web_server.generate_earnings_watchpoints_for_review(conn, "ORCL", review_id)
+                    count = conn.execute(
+                        "SELECT COUNT(*) AS c FROM earnings_review_watchpoint_results WHERE earnings_review_id = ?",
+                        (review_id,),
+                    ).fetchone()["c"]
+                    self.assertEqual(count, 0)
                 finally:
                     conn.close()
 

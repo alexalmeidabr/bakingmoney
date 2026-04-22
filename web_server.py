@@ -61,6 +61,7 @@ BACKUP_REQUIRED_TABLES = (
     "earnings_reviews",
     "earnings_review_watchpoints",
     "earnings_review_documents",
+    "earnings_review_watchpoint_results",
     "app_settings",
     "positions_cache",
     "thesis_review_alerts",
@@ -84,9 +85,11 @@ ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
 ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE = "analysis_prompt_recent_event_candidate"
 ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK = "analysis_prompt_recent_event_check"
 ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINTS = "earnings_watchpoints"
+ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINT_ANALYSIS = "earnings_watchpoint_analysis"
 EARNINGS_REVIEW_STATUS_DRAFT = "Draft"
 EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED = "Watchpoints generated"
 EARNINGS_REVIEW_STATUS_DOCUMENTS_UPLOADED = "Documents uploaded"
+EARNINGS_REVIEW_STATUS_WATCHPOINTS_ANALYSED = "Watchpoints analysed"
 EARNINGS_REVIEW_ALLOWED_DOCUMENT_TYPES = (
     "Earnings Release",
     "Shareholder Letter",
@@ -97,6 +100,13 @@ EARNINGS_REVIEW_ALLOWED_DOCUMENT_TYPES = (
 )
 EARNINGS_REVIEW_ALLOWED_FILE_EXTENSIONS = {".pdf", ".txt", ".docx", ".csv", ".xlsx", ".html"}
 EARNINGS_REVIEW_MAX_DOCUMENT_BYTES = 15 * 1024 * 1024
+EARNINGS_WATCHPOINT_ANALYSIS_ALLOWED_STATUSES = {
+    "Confirmed",
+    "Partially confirmed",
+    "Contradicted",
+    "Not addressed",
+    "Unclear",
+}
 ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
 ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
 ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
@@ -449,6 +459,62 @@ Rules:
 - Ensure each watchpoint is concrete enough to be useful during earnings review.
 - Make sure the output is specific to the company and thesis provided."""
 
+DEFAULT_PROMPT_EARNINGS_WATCHPOINT_ANALYSIS = """You are reviewing an investment thesis after an earnings release.
+
+Your task is to evaluate the existing Earnings Watchpoints for $Symbol ($CompanyName) using the uploaded earnings documents.
+
+Business context:
+$BusinessModel
+
+Key variables:
+$KeyVariables
+
+Earnings watchpoints:
+$EarningsWatchpoints
+
+Uploaded earnings documents:
+$EarningsDocuments
+
+Instructions:
+- Evaluate each watchpoint using only the information available in the uploaded earnings documents.
+- For each watchpoint, assign exactly one of these statuses:
+  - Confirmed
+  - Partially confirmed
+  - Contradicted
+  - Not addressed
+  - Unclear
+- Use “Not addressed” when the documents do not meaningfully discuss the watchpoint.
+- Use “Unclear” when the documents contain related information but the signal is too ambiguous or mixed to classify confidently.
+- Use “Partially confirmed” when the documents support only part of the watchpoint or support it with important caveats.
+- Keep result_text concise, practical, and easy to scan in the UI.
+- Do not include long explanations.
+- Do not quote the documents.
+- Do not include evidence excerpts or document source references.
+- Do not re-evaluate the key variables yet.
+- Do not re-run scenarios.
+- Focus only on evaluating the watchpoints.
+
+Output requirements:
+- Return valid JSON only.
+- Use this structure:
+
+{
+  "watchpoint_results": [
+    {
+      "key_variable": "exact key variable text",
+      "watchpoint": "exact watchpoint text",
+      "status": "Confirmed",
+      "result_text": "Short evaluation text explaining the outcome."
+    }
+  ]
+}
+
+Rules:
+- Preserve the exact watchpoint text when possible.
+- Keep result_text concise, ideally 1 to 3 sentences.
+- Make sure every existing watchpoint receives one result.
+- Do not invent data not present in the uploaded documents."""
+
 
 ALLOWED_ALERT_TYPES = {
     "Strengthens existing variable",
@@ -482,6 +548,17 @@ PROMPT_TEMPLATE_CONFIG = {
         "default": DEFAULT_PROMPT_EARNINGS_WATCHPOINTS,
         "required_vars": ["$Symbol", "$CompanyName", "$BusinessModel", "$KeyVariables"],
     },
+    ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINT_ANALYSIS: {
+        "default": DEFAULT_PROMPT_EARNINGS_WATCHPOINT_ANALYSIS,
+        "required_vars": [
+            "$Symbol",
+            "$CompanyName",
+            "$BusinessModel",
+            "$KeyVariables",
+            "$EarningsWatchpoints",
+            "$EarningsDocuments",
+        ],
+    },
 }
 
 ANALYSIS_WORKFLOW_PROMPT_KEYS = (
@@ -497,6 +574,7 @@ RECENT_EVENT_WORKFLOW_PROMPT_KEYS = (
 
 EARNINGS_REVIEW_WORKFLOW_PROMPT_KEYS = (
     ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINTS,
+    ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINT_ANALYSIS,
 )
 
 
@@ -1398,7 +1476,18 @@ def build_business_model_prompt_value(business_model="", business_summary=""):
     return ""
 
 
-def build_prompt_context(symbol, price=None, company_name="", business_model="", business_summary="", key_variables=None, event_search_cutoff="", event_candidates=""):
+def build_prompt_context(
+    symbol,
+    price=None,
+    company_name="",
+    business_model="",
+    business_summary="",
+    key_variables=None,
+    event_search_cutoff="",
+    event_candidates="",
+    earnings_watchpoints="",
+    earnings_documents="",
+):
 
     symbol_value = symbol or "unknown"
     price_value = f"{price:.2f}" if isinstance(price, (int, float)) and math.isfinite(price) else "unknown"
@@ -1416,6 +1505,8 @@ def build_prompt_context(symbol, price=None, company_name="", business_model="",
         "$KeyVariables": key_vars_value,
         "$EventSearchCutoff": str(event_search_cutoff or ""),
         "$EventCandidates": event_candidates_value,
+        "$EarningsWatchpoints": str(earnings_watchpoints or ""),
+        "$EarningsDocuments": str(earnings_documents or ""),
     }
 
 
@@ -1699,6 +1790,23 @@ def init_db():
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               FOREIGN KEY (earnings_review_id) REFERENCES earnings_reviews(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS earnings_review_watchpoint_results (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              earnings_review_id INTEGER NOT NULL,
+              key_variable_text TEXT NOT NULL,
+              watchpoint_text TEXT NOT NULL,
+              status TEXT NOT NULL,
+              result_text TEXT NOT NULL,
+              analysed_at TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (earnings_review_id) REFERENCES earnings_reviews(id) ON DELETE CASCADE,
+              UNIQUE(earnings_review_id, key_variable_text, watchpoint_text)
             )
             """
         )
@@ -3811,6 +3919,78 @@ def _build_earnings_watchpoints_schema():
     }
 
 
+def _build_earnings_watchpoint_analysis_schema():
+    return {
+        "name": "earnings_watchpoint_analysis",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "watchpoint_results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "key_variable": {"type": "string"},
+                            "watchpoint": {"type": "string"},
+                            "status": {"type": "string"},
+                            "result_text": {"type": "string"},
+                        },
+                        "required": ["key_variable", "watchpoint", "status", "result_text"],
+                    },
+                }
+            },
+            "required": ["watchpoint_results"],
+        },
+    }
+
+
+def _read_earnings_document_text(storage_path):
+    file_path = Path(storage_path)
+    if not file_path.is_absolute():
+        file_path = BASE_DIR / file_path
+    if not file_path.exists():
+        return ""
+    suffix = file_path.suffix.lower()
+    if suffix not in {".txt", ".csv", ".html"}:
+        return ""
+    try:
+        return file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _format_earnings_watchpoints_for_prompt(watchpoints_by_variable):
+    lines = []
+    for group in watchpoints_by_variable or []:
+        key_variable = str(group.get("key_variable") or "").strip() or "Unknown variable"
+        group_type = str(group.get("type") or "").strip()
+        lines.append(f"Key Variable: {key_variable}{f' ({group_type})' if group_type else ''}")
+        for watchpoint in group.get("watchpoints") or []:
+            lines.append(f"- {watchpoint}")
+    return "\n".join(lines)
+
+
+def _format_earnings_documents_for_prompt(document_rows):
+    blocks = []
+    for row in document_rows or []:
+        text = _read_earnings_document_text(row["storage_path"])
+        if text:
+            text = text[:12000]
+        else:
+            text = "[Text extraction unavailable for this file type in current implementation.]"
+        blocks.append(
+            "\n".join(
+                [
+                    f"Document: {row['original_file_name']}",
+                    f"Type: {row.get('document_type') or 'Other'}",
+                    f"Content:\n{text}",
+                ]
+            )
+        )
+    return "\n\n---\n\n".join(blocks)
+
 def _parse_release_date(value):
     text = str(value or "").strip()
     if not text:
@@ -3957,6 +4137,37 @@ def list_earnings_review_documents(conn, symbol, review_id):
         (review_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _list_earnings_review_documents_with_storage(conn, review_id):
+    rows = conn.execute(
+        """
+        SELECT id, original_file_name, storage_path, document_type, mime_type, file_size, uploaded_at
+        FROM earnings_review_documents
+        WHERE earnings_review_id = ?
+        ORDER BY uploaded_at DESC, id DESC
+        """,
+        (review_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_earnings_review_watchpoint_results(conn, review_id):
+    rows = conn.execute(
+        """
+        SELECT key_variable_text, watchpoint_text, status, result_text, analysed_at, updated_at
+        FROM earnings_review_watchpoint_results
+        WHERE earnings_review_id = ?
+        ORDER BY id ASC
+        """,
+        (review_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def clear_earnings_review_watchpoint_results(conn, review_id):
+    conn.execute("DELETE FROM earnings_review_watchpoint_results WHERE earnings_review_id = ?", (review_id,))
+    conn.commit()
 
 
 def recalculate_earnings_review_status(conn, review_id):
@@ -4250,6 +4461,7 @@ def get_earnings_review_record_detail(conn, symbol, review_id):
         snapshot = {}
     watchpoints = get_earnings_review_watchpoints(conn, row["id"])
     documents = list_earnings_review_documents(conn, symbol, row["id"])
+    watchpoint_results = list_earnings_review_watchpoint_results(conn, row["id"])
     normalized_snapshot_key_variables = []
     for item in snapshot.get("key_variables") or []:
         if not isinstance(item, dict):
@@ -4287,6 +4499,7 @@ def get_earnings_review_record_detail(conn, symbol, review_id):
         "thesis_snapshot": snapshot,
         "key_variables_snapshot": normalized_snapshot_key_variables,
         "watchpoints_by_variable": watchpoints,
+        "watchpoint_results": watchpoint_results,
         "documents": documents,
     }
 
@@ -4321,6 +4534,7 @@ def generate_earnings_watchpoints_for_review(conn, symbol, review_id):
     if not normalized_items:
         raise AnalysisValidationError("No valid watchpoints_by_variable entries were returned by AI")
     _replace_earnings_review_watchpoints(conn=conn, earnings_review_id=review_id, watchpoints_by_variable=normalized_items)
+    clear_earnings_review_watchpoint_results(conn, review_id)
     now = utc_now_iso()
     conn.execute(
         """
@@ -4344,6 +4558,104 @@ def generate_earnings_watchpoints_for_review(conn, symbol, review_id):
     )
     conn.commit()
     recalculate_earnings_review_status(conn, review_id)
+    return get_earnings_review_record_detail(conn, symbol, review_id)
+
+
+def analyze_earnings_watchpoints_for_review(conn, symbol, review_id):
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is required for earnings watchpoint analysis")
+    detail = get_earnings_review_record_detail(conn, symbol, review_id)
+    watchpoints_by_variable = detail.get("watchpoints_by_variable") or []
+    if not watchpoints_by_variable:
+        raise ValueError("Generate earnings watchpoints before analysing them.")
+    documents = _list_earnings_review_documents_with_storage(conn, review_id)
+    if not documents:
+        raise ValueError("Upload at least one earnings document before analysing watchpoints.")
+
+    expected_pairs = {
+        (str(group.get("key_variable") or "").strip(), str(watchpoint).strip())
+        for group in watchpoints_by_variable
+        for watchpoint in (group.get("watchpoints") or [])
+        if str(group.get("key_variable") or "").strip() and str(watchpoint).strip()
+    }
+    if not expected_pairs:
+        raise ValueError("Generate earnings watchpoints before analysing them.")
+
+    snapshot = detail.get("thesis_snapshot") or {}
+    templates, sources = get_prompt_templates_for_keys(
+        conn,
+        EARNINGS_REVIEW_WORKFLOW_PROMPT_KEYS,
+        purpose="earnings_watchpoint_analysis",
+    )
+    template = templates[ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINT_ANALYSIS]
+    template_source = sources[ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINT_ANALYSIS]
+    prompt_context = build_prompt_context(
+        symbol=snapshot.get("symbol") or symbol,
+        company_name=snapshot.get("company_name") or detail.get("company_name_snapshot") or symbol,
+        business_model=snapshot.get("business_model") or "",
+        business_summary=snapshot.get("business_summary") or "",
+        key_variables=snapshot.get("key_variables") or [],
+        earnings_watchpoints=_format_earnings_watchpoints_for_prompt(watchpoints_by_variable),
+        earnings_documents=_format_earnings_documents_for_prompt(documents),
+    )
+    prompt_text = render_prompt_template(template, prompt_context)
+    response = request_ai_step(
+        "earnings_watchpoint_analysis",
+        prompt_text,
+        _build_earnings_watchpoint_analysis_schema(),
+    )
+    raw_items = response.get("watchpoint_results") if isinstance(response, dict) else None
+    if not isinstance(raw_items, list):
+        raise AnalysisValidationError("earnings_watchpoint_analysis.watchpoint_results must be an array")
+
+    normalized_results = []
+    seen_pairs = set()
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        key_variable = str(raw.get("key_variable") or "").strip()
+        watchpoint = str(raw.get("watchpoint") or "").strip()
+        status = str(raw.get("status") or "").strip()
+        result_text = str(raw.get("result_text") or "").strip()
+        pair = (key_variable, watchpoint)
+        if pair not in expected_pairs:
+            continue
+        if status not in EARNINGS_WATCHPOINT_ANALYSIS_ALLOWED_STATUSES:
+            continue
+        if not result_text:
+            continue
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        normalized_results.append((key_variable, watchpoint, status, result_text))
+
+    if len(normalized_results) != len(expected_pairs):
+        raise AnalysisValidationError("AI output did not return valid analysis for every watchpoint.")
+
+    now = utc_now_iso()
+    conn.execute("DELETE FROM earnings_review_watchpoint_results WHERE earnings_review_id = ?", (review_id,))
+    for key_variable, watchpoint, status, result_text in normalized_results:
+        conn.execute(
+            """
+            INSERT INTO earnings_review_watchpoint_results (
+              earnings_review_id, key_variable_text, watchpoint_text, status, result_text,
+              analysed_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (review_id, key_variable, watchpoint, status, result_text, now, now, now),
+        )
+    conn.execute(
+        "UPDATE earnings_reviews SET status = ?, updated_at = ? WHERE id = ? AND symbol = ?",
+        (EARNINGS_REVIEW_STATUS_WATCHPOINTS_ANALYSED, now, review_id, symbol),
+    )
+    logger.info(
+        "Analysed earnings watchpoints review_id=%s symbol=%s prompt_source=%s results=%s",
+        review_id,
+        symbol,
+        template_source,
+        len(normalized_results),
+    )
+    conn.commit()
     return get_earnings_review_record_detail(conn, symbol, review_id)
 
 
@@ -5046,6 +5358,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 if not symbol or not parts[1].isdigit():
                     return self._send_json({"error": "Invalid earnings review generate path"}, status=400)
                 return self.handle_earnings_review_generate_watchpoints(symbol, int(parts[1]))
+            if len(parts) == 3 and parts[2] == "analyse-watchpoints":
+                symbol = normalize_symbol(parts[0])
+                if not symbol or not parts[1].isdigit():
+                    return self._send_json({"error": "Invalid earnings review analyse path"}, status=400)
+                return self.handle_earnings_review_analyse_watchpoints(symbol, int(parts[1]))
             if len(parts) == 3 and parts[2] == "documents":
                 symbol = normalize_symbol(parts[0])
                 if not symbol or not parts[1].isdigit():
@@ -5578,6 +5895,24 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             logger.exception("Unable to generate earnings watchpoints for symbol %s", symbol)
             self._send_json(
                 {"error": "Unable to generate earnings watchpoints.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_analyse_watchpoints(self, symbol, review_id):
+        conn = get_db_connection()
+        try:
+            detail = analyze_earnings_watchpoints_for_review(conn, symbol, review_id)
+            self._send_json({"ok": True, "item": detail}, status=201)
+        except AnalysisValidationError as exc:
+            self._send_json({"error": "AI response validation failed.", "details": str(exc)}, status=422)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to analyse earnings watchpoints for symbol %s", symbol)
+            self._send_json(
+                {"error": "Unable to analyse earnings watchpoints.", "details": str(exc)},
                 status=500,
             )
         finally:

@@ -302,6 +302,48 @@ th.sortable[data-sort-direction='desc']::after {
   text-overflow: ellipsis;
 }
 
+.watchpoint-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: #fcfcfd;
+}
+
+.watchpoint-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.watchpoint-text {
+  white-space: normal;
+}
+
+.watchpoint-result-text {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  white-space: normal;
+}
+
+.watchpoint-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.watchpoint-badge.confirmed { background: #ecfdf3; color: #027a48; border-color: #abefc6; }
+.watchpoint-badge.partially-confirmed { background: #fffaeb; color: #b54708; border-color: #fedf89; }
+.watchpoint-badge.contradicted { background: #fef3f2; color: #b42318; border-color: #fecdca; }
+.watchpoint-badge.not-addressed { background: #f2f4f7; color: #344054; border-color: #d0d5dd; }
+.watchpoint-badge.unclear { background: #eef4ff; color: #175cd3; border-color: #b2ccff; }
+
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

@@ -62,6 +62,7 @@ const promptScenariosEl = document.getElementById('prompt-scenarios');
 const promptRecentEventCandidatesEl = document.getElementById('prompt-recent-event-candidates');
 const promptRecentEventsEl = document.getElementById('prompt-recent-events');
 const promptEarningsWatchpointsEl = document.getElementById('prompt-earnings-watchpoints');
+const promptEarningsWatchpointAnalysisEl = document.getElementById('prompt-earnings-watchpoint-analysis');
 const promptSaveBtn = document.getElementById('prompt-save-btn');
 const promptResetBtn = document.getElementById('prompt-reset-btn');
 const promptPreviewSymbolInput = document.getElementById('prompt-preview-symbol-input');
@@ -136,6 +137,7 @@ const earningsReviewDetailTitleEl = document.getElementById('earnings-review-det
 const earningsReviewDetailHeaderEl = document.getElementById('earnings-review-detail-header');
 const earningsReviewDetailMetaEl = document.getElementById('earnings-review-detail-meta');
 const earningsReviewGenerateBtn = document.getElementById('earnings-review-generate-btn');
+const earningsReviewAnalyseBtn = document.getElementById('earnings-review-analyse-btn');
 const earningsReviewKeyVariablesBody = document.querySelector('#earnings-review-key-variables-table tbody');
 const earningsReviewWatchpointsEl = document.getElementById('earnings-review-watchpoints');
 const earningsReviewListView = document.getElementById('earnings-review-list-view');
@@ -1641,17 +1643,49 @@ function renderEarningsKeyVariables(variables) {
   });
 }
 
-function renderEarningsWatchpoints(groups) {
+function getWatchpointResultMap(results) {
+  const mapped = new Map();
+  (results || []).forEach((item) => {
+    const key = `${item.key_variable_text || ''}::${item.watchpoint_text || ''}`;
+    mapped.set(key, item);
+  });
+  return mapped;
+}
+
+function statusBadgeClass(status) {
+  if (status === 'Confirmed') return 'watchpoint-badge confirmed';
+  if (status === 'Partially confirmed') return 'watchpoint-badge partially-confirmed';
+  if (status === 'Contradicted') return 'watchpoint-badge contradicted';
+  if (status === 'Not addressed') return 'watchpoint-badge not-addressed';
+  return 'watchpoint-badge unclear';
+}
+
+function renderEarningsWatchpoints(groups, results) {
   earningsReviewWatchpointsEl.innerHTML = '';
   if (!Array.isArray(groups) || groups.length === 0) {
     earningsReviewWatchpointsEl.innerHTML = '<p class="status">No earnings watchpoints generated yet for this symbol.</p>';
     return;
   }
+  const resultMap = getWatchpointResultMap(results);
   groups.forEach((group) => {
     const card = document.createElement('div');
     card.className = 'watchpoint-group';
     const watchpoints = Array.isArray(group.watchpoints) ? group.watchpoints : [];
-    const listHtml = watchpoints.map((item) => `<li>${item}</li>`).join('');
+    const listHtml = watchpoints.map((item) => {
+      const result = resultMap.get(`${group.key_variable || ''}::${item}`);
+      if (!result) {
+        return `<li class="watchpoint-item"><div class="watchpoint-text">${item}</div></li>`;
+      }
+      return `
+        <li class="watchpoint-item">
+          <div class="watchpoint-row">
+            <div class="watchpoint-text">${item}</div>
+            <span class="${statusBadgeClass(result.status)}">${result.status}</span>
+          </div>
+          <div class="watchpoint-result-text">${result.result_text || ''}</div>
+        </li>
+      `;
+    }).join('');
     card.innerHTML = `
       <h5>Key Variable: ${group.key_variable || 'N/A'}</h5>
       <p class="status">Type: ${group.type || 'N/A'}</p>
@@ -1846,6 +1880,7 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
   earningsReviewDetailMetaEl.textContent = 'Loading earnings review record…';
   earningsReviewDetailMetaEl.className = 'status';
   earningsReviewGenerateBtn.disabled = true;
+  earningsReviewAnalyseBtn.disabled = true;
   earningsReviewKeyVariablesBody.innerHTML = '';
   earningsReviewWatchpointsEl.innerHTML = '';
   earningsReviewSnapshotSummaryEl.innerHTML = '';
@@ -1864,13 +1899,15 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
     earningsReviewDetailHeaderEl.textContent = `${item.symbol} — ${item.company_name_snapshot || snapshot.company_name || item.symbol}`;
     earningsReviewDetailMetaEl.textContent = `Status: ${item.status || 'Draft'} • Release Date: ${item.release_date || 'N/A'} • Watchpoints generated: ${item.watchpoints_generated_at ? formatDateTime(item.watchpoints_generated_at) : 'Not yet generated'} • Updated: ${formatDateTime(item.updated_at)}`;
     const hasWatchpoints = Array.isArray(item.watchpoints_by_variable) && item.watchpoints_by_variable.length > 0;
+    const hasDocuments = Array.isArray(item.documents) && item.documents.length > 0;
     earningsReviewGenerateBtn.textContent = hasWatchpoints
       ? 'Regenerate Earnings Watchpoints from Key Variables'
       : 'Generate Earnings Watchpoints from Key Variables';
     earningsReviewGenerateBtn.disabled = false;
+    earningsReviewAnalyseBtn.disabled = !(hasWatchpoints && hasDocuments);
     renderEarningsSnapshotSummary(snapshot, item);
     renderEarningsKeyVariables(item.key_variables_snapshot || []);
-    renderEarningsWatchpoints(item.watchpoints_by_variable || []);
+    renderEarningsWatchpoints(item.watchpoints_by_variable || [], item.watchpoint_results || []);
     renderEarningsReviewDocuments(item.documents || []);
   } catch (error) {
     earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
@@ -1903,6 +1940,29 @@ async function generateEarningsWatchpoints() {
   }
 }
 
+async function analyseEarningsWatchpoints() {
+  if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId) return;
+  const targetSymbol = earningsReviewSelectedSymbol;
+  const targetReviewId = earningsReviewSelectedRecordId;
+  earningsReviewAnalyseBtn.disabled = true;
+  earningsReviewDetailMetaEl.textContent = `Analysing earnings watchpoints for ${targetSymbol} ${targetReviewId}…`;
+  earningsReviewDetailMetaEl.className = 'status';
+  try {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(targetSymbol)}/${encodeURIComponent(targetReviewId)}/analyse-watchpoints`, {
+      method: 'POST',
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to analyse earnings watchpoints.'));
+    earningsReviewDetailMetaEl.textContent = 'Earnings watchpoints analysed successfully.';
+    await refreshEarningsReviewListOnly();
+    await openEarningsReviewRecordDetail(targetSymbol, targetReviewId);
+  } catch (error) {
+    earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
+    earningsReviewDetailMetaEl.className = 'status error';
+    earningsReviewAnalyseBtn.disabled = false;
+  }
+}
+
 
 async function loadPromptConfiguration() {
   promptStatusEl.textContent = 'Loading prompt configuration…';
@@ -1915,13 +1975,14 @@ async function loadPromptConfiguration() {
     promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || '';
     promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || '';
     promptEarningsWatchpointsEl.value = templates.earnings_watchpoints || '';
-    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}, recent-event-candidates=${sources.analysis_prompt_recent_event_candidate || 'default'}, recent-events=${sources.analysis_prompt_recent_event_check || 'default'}, earnings-watchpoints=${sources.earnings_watchpoints || 'default'}).`;
+    promptEarningsWatchpointAnalysisEl.value = templates.earnings_watchpoint_analysis || '';
+    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}, recent-event-candidates=${sources.analysis_prompt_recent_event_candidate || 'default'}, recent-events=${sources.analysis_prompt_recent_event_check || 'default'}, earnings-watchpoints=${sources.earnings_watchpoints || 'default'}, earnings-watchpoint-analysis=${sources.earnings_watchpoint_analysis || 'default'}).`;
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
 async function savePromptConfiguration() {
   promptStatusEl.textContent = 'Saving prompts…'; promptStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value, analysis_prompt_recent_event_candidate: promptRecentEventCandidatesEl.value.trim(), analysis_prompt_recent_event_check: promptRecentEventsEl.value.trim(), earnings_watchpoints: promptEarningsWatchpointsEl.value.trim() } }) });
+  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value, analysis_prompt_recent_event_candidate: promptRecentEventCandidatesEl.value.trim(), analysis_prompt_recent_event_check: promptRecentEventsEl.value.trim(), earnings_watchpoints: promptEarningsWatchpointsEl.value.trim(), earnings_watchpoint_analysis: promptEarningsWatchpointAnalysisEl.value.trim() } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save prompts')); promptStatusEl.textContent = 'Prompts saved.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -1929,7 +1990,7 @@ async function savePromptConfiguration() {
 async function resetPromptConfiguration() {
   promptStatusEl.textContent = 'Restoring default prompts…'; promptStatusEl.className = 'status';
   try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset prompts'));
-    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || ''; promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || ''; promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || ''; promptEarningsWatchpointsEl.value = templates.earnings_watchpoints || '';
+    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || ''; promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || ''; promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || ''; promptEarningsWatchpointsEl.value = templates.earnings_watchpoints || ''; promptEarningsWatchpointAnalysisEl.value = templates.earnings_watchpoint_analysis || '';
     promptStatusEl.textContent = 'Default prompts restored.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -1958,7 +2019,10 @@ ${rendered.analysis_prompt_recent_event_candidate || ''}
 ${rendered.analysis_prompt_recent_event_check || ''}
 
 [Earnings Watchpoints Prompt]
-${rendered.earnings_watchpoints || ''}`;
+${rendered.earnings_watchpoints || ''}
+
+[Earnings Watchpoint Analysis Prompt]
+${rendered.earnings_watchpoint_analysis || ''}`;
   } catch (error) { promptPreviewOutput.textContent = `Error: ${error.message}`; }
 }
 
@@ -2347,6 +2411,7 @@ promptResetBtn.addEventListener('click', resetPromptConfiguration);
 promptPreviewBtn.addEventListener('click', previewPromptConfiguration);
 promptPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') previewPromptConfiguration(); });
 earningsReviewGenerateBtn.addEventListener('click', generateEarningsWatchpoints);
+earningsReviewAnalyseBtn.addEventListener('click', analyseEarningsWatchpoints);
 earningsReviewBackBtn.addEventListener('click', async () => {
   if (earningsReviewSelectedSymbol) {
     await openEarningsReviewSymbolHistory(earningsReviewSelectedSymbol);

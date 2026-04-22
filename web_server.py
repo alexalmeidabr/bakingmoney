@@ -1,5 +1,4 @@
 import asyncio
-import cgi
 import json
 import logging
 import math
@@ -4886,13 +4885,44 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in content_type.lower():
             return None
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
-            keep_blank_values=True,
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return None
+        if length <= 0:
+            return None
+        body = self.rfile.read(length)
+        from email.parser import BytesParser
+        from email.policy import default
+
+        message = BytesParser(policy=default).parsebytes(
+            f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
         )
-        return form
+        if not message.is_multipart():
+            return None
+        fields = {}
+        files = {}
+        for part in message.iter_parts():
+            disposition = part.get("Content-Disposition", "")
+            if "form-data" not in disposition:
+                continue
+            name = part.get_param("name", header="content-disposition")
+            if not name:
+                continue
+            filename = part.get_filename()
+            payload = part.get_payload(decode=True) or b""
+            if filename is None:
+                charset = part.get_content_charset() or "utf-8"
+                fields[name] = payload.decode(charset, errors="replace")
+                continue
+            files.setdefault(name, []).append(
+                {
+                    "filename": filename,
+                    "content": payload,
+                    "content_type": part.get_content_type(),
+                }
+            )
+        return {"fields": fields, "files": files}
 
     def _send_file(self, file_path, download_name):
         with open(file_path, "rb") as handle:
@@ -5113,20 +5143,18 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             form = self._read_multipart_form()
             if form is None:
                 raise ValueError("Expected multipart/form-data.")
-            document_type = (form.getfirst("document_type") or "").strip()
-            file_item = form["file"] if "file" in form else None
-            if isinstance(file_item, list):
-                file_item = file_item[0] if file_item else None
-            if file_item is None or not getattr(file_item, "file", None):
+            document_type = (form.get("fields", {}).get("document_type") or "").strip()
+            file_item = (form.get("files", {}).get("file") or [None])[0]
+            if file_item is None:
                 raise ValueError("A file is required.")
             item = save_earnings_review_document(
                 conn=conn,
                 symbol=symbol,
                 review_id=review_id,
                 document_type=document_type,
-                original_file_name=(getattr(file_item, "filename", "") or "document"),
-                payload=file_item.file.read(),
-                mime_type=getattr(file_item, "type", None),
+                original_file_name=file_item.get("filename") or "document",
+                payload=file_item.get("content"),
+                mime_type=file_item.get("content_type"),
             )
             self._send_json({"item": item}, status=201)
         except ValueError as exc:

@@ -80,6 +80,9 @@ OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
 OPENAI_WEB_SEARCH_TOOL_CANDIDATES = ("web_search", "web_search_preview")
 OPENAI_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "60"))
 OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS", "120"))
+OPENAI_STEP_TIMEOUT_OVERRIDES = {
+    "earnings_watchpoint_analysis": {1: 120.0, 2: 180.0},
+}
 NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
@@ -2215,13 +2218,21 @@ def _looks_like_unsupported_web_tool_error(response_text):
     return "tool" in lower and ("unsupported" in lower or "unknown" in lower or "invalid" in lower) and "web_search" in lower
 
 
-def get_openai_timeout_seconds_for_step(step_name):
+def get_ai_step_timeout(step_name, attempt=1):
+    override = OPENAI_STEP_TIMEOUT_OVERRIDES.get(step_name, {})
+    if attempt in override:
+        return max(10.0, float(override[attempt]))
     if step_name in {"recent_event_check", "recent_event_candidates"}:
         return max(10.0, OPENAI_RECENT_EVENT_REQUEST_TIMEOUT_SECONDS)
     return max(10.0, OPENAI_REQUEST_TIMEOUT_SECONDS)
 
 
-def request_ai_step(step_name, prompt_text, json_schema):
+def get_openai_timeout_seconds_for_step(step_name):
+    # Backward compatible shim.
+    return get_ai_step_timeout(step_name, attempt=1)
+
+
+def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
     temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
     reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
     supports_temperature = model_supports_temperature(OPENAI_MODEL)
@@ -2236,7 +2247,7 @@ def request_ai_step(step_name, prompt_text, json_schema):
 
     tool_candidates = list(OPENAI_WEB_SEARCH_TOOL_CANDIDATES)
     last_exc = None
-    request_timeout_seconds = get_openai_timeout_seconds_for_step(step_name)
+    request_timeout_seconds = get_ai_step_timeout(step_name, attempt=attempt)
 
     for idx, tool_type in enumerate(tool_candidates):
         body = build_openai_request_body(
@@ -2249,7 +2260,12 @@ def request_ai_step(step_name, prompt_text, json_schema):
         )
         logger.info("OpenAI Analysis request includes web search tool")
         logger.info("OpenAI web search tool type: %s", tool_type)
-        logger.info("OpenAI request timeout seconds for step=%s: %.1f", step_name, request_timeout_seconds)
+        logger.info(
+            "OpenAI request timeout seconds for step=%s attempt=%s: %.1f",
+            step_name,
+            attempt,
+            request_timeout_seconds,
+        )
 
         request = Request(
             "https://api.openai.com/v1/responses",
@@ -2296,7 +2312,7 @@ def request_ai_step(step_name, prompt_text, json_schema):
             raise last_exc from exc
         except TimeoutError as exc:
             last_exc = RuntimeError(
-                f"OpenAI request timed out on step {step_name} after {request_timeout_seconds:.1f}s"
+                f"OpenAI request timed out on step {step_name} attempt {attempt} after {request_timeout_seconds:.1f}s"
             )
             raise last_exc from exc
 
@@ -4017,6 +4033,23 @@ def _format_earnings_watchpoints_for_prompt(watchpoints_by_variable):
     return "\n".join(lines)
 
 
+def chunk_watchpoints(items, batch_size):
+    effective_size = max(1, int(batch_size or 1))
+    return [items[idx: idx + effective_size] for idx in range(0, len(items), effective_size)]
+
+
+def _format_earnings_watchpoint_batch_for_prompt(batch_items):
+    grouped = {}
+    for item in batch_items:
+        key = item["key_variable"]
+        grouped.setdefault(
+            key,
+            {"key_variable": key, "type": item.get("type") or "", "watchpoints": []},
+        )
+        grouped[key]["watchpoints"].append(item["watchpoint"])
+    return _format_earnings_watchpoints_for_prompt(list(grouped.values()))
+
+
 def _format_earnings_documents_for_prompt(document_rows):
     blocks = []
     readable_count = 0
@@ -4628,13 +4661,25 @@ def analyze_earnings_watchpoints_for_review(conn, symbol, review_id):
     if not documents:
         raise ValueError("Upload at least one earnings document before analysing watchpoints.")
 
-    expected_pairs = {
-        (str(group.get("key_variable") or "").strip(), str(watchpoint).strip())
-        for group in watchpoints_by_variable
-        for watchpoint in (group.get("watchpoints") or [])
-        if str(group.get("key_variable") or "").strip() and str(watchpoint).strip()
-    }
-    if not expected_pairs:
+    watchpoint_items = []
+    for group in watchpoints_by_variable:
+        key_variable = str(group.get("key_variable") or "").strip()
+        group_type = str(group.get("type") or "").strip()
+        if not key_variable:
+            continue
+        for watchpoint in (group.get("watchpoints") or []):
+            normalized_watchpoint = str(watchpoint).strip()
+            if not normalized_watchpoint:
+                continue
+            watchpoint_items.append(
+                {
+                    "key_variable": key_variable,
+                    "type": group_type,
+                    "watchpoint": normalized_watchpoint,
+                }
+            )
+    expected_pairs = {(item["key_variable"], item["watchpoint"]) for item in watchpoint_items}
+    if not watchpoint_items:
         raise ValueError("Generate earnings watchpoints before analysing them.")
 
     snapshot = detail.get("thesis_snapshot") or {}
@@ -4657,46 +4702,102 @@ def analyze_earnings_watchpoints_for_review(conn, symbol, review_id):
     if readable_count <= 0 or not documents_text.strip():
         raise ValueError("Analysis could not run because no readable text could be extracted from the uploaded documents.")
 
-    prompt_context = build_prompt_context(
-        symbol=snapshot.get("symbol") or symbol,
-        company_name=snapshot.get("company_name") or detail.get("company_name_snapshot") or symbol,
-        business_model=snapshot.get("business_model") or "",
-        business_summary=snapshot.get("business_summary") or "",
-        key_variables=snapshot.get("key_variables") or [],
-        earnings_watchpoints=_format_earnings_watchpoints_for_prompt(watchpoints_by_variable),
-        earnings_documents=documents_text,
-    )
-    prompt_text = render_prompt_template(template, prompt_context)
-    response = request_ai_step(
-        "earnings_watchpoint_analysis",
-        prompt_text,
-        _build_earnings_watchpoint_analysis_schema(),
-    )
-    raw_items = response.get("watchpoint_results") if isinstance(response, dict) else None
-    if not isinstance(raw_items, list):
-        raise AnalysisValidationError("earnings_watchpoint_analysis.watchpoint_results must be an array")
+    all_results_by_pair = {}
+    batches = chunk_watchpoints(watchpoint_items, batch_size=4)
+    for batch_index, batch in enumerate(batches, start=1):
+        batch_pairs = {(item["key_variable"], item["watchpoint"]) for item in batch}
+        prompt_context = build_prompt_context(
+            symbol=snapshot.get("symbol") or symbol,
+            company_name=snapshot.get("company_name") or detail.get("company_name_snapshot") or symbol,
+            business_model=snapshot.get("business_model") or "",
+            business_summary=snapshot.get("business_summary") or "",
+            key_variables=snapshot.get("key_variables") or [],
+            earnings_watchpoints=_format_earnings_watchpoint_batch_for_prompt(batch),
+            earnings_documents=documents_text,
+        )
+        prompt_text = render_prompt_template(template, prompt_context)
+        attempts = (1, 2)
+        response = None
+        last_timeout_exc = None
+        for attempt in attempts:
+            timeout_seconds = get_ai_step_timeout("earnings_watchpoint_analysis", attempt=attempt)
+            logger.info(
+                "Earnings watchpoint analysis attempt symbol=%s review_id=%s batch=%s/%s attempt=%s watchpoints=%s documents=%s extracted_chars=%s prompt_chars=%s timeout=%.1f",
+                symbol,
+                review_id,
+                batch_index,
+                len(batches),
+                attempt,
+                len(batch),
+                len(documents),
+                len(documents_text),
+                len(prompt_text),
+                timeout_seconds,
+            )
+            try:
+                response = request_ai_step(
+                    "earnings_watchpoint_analysis",
+                    prompt_text,
+                    _build_earnings_watchpoint_analysis_schema(),
+                    attempt=attempt,
+                )
+                break
+            except RuntimeError as exc:
+                is_timeout = "timed out on step earnings_watchpoint_analysis" in str(exc).lower()
+                if is_timeout and attempt == 1:
+                    last_timeout_exc = exc
+                    logger.warning(
+                        "Earnings watchpoint analysis timeout on batch %s/%s. Retrying once with longer timeout.",
+                        batch_index,
+                        len(batches),
+                    )
+                    continue
+                if is_timeout:
+                    last_timeout_exc = exc
+                logger.exception(
+                    "Earnings watchpoint analysis failed on batch %s/%s attempt %s",
+                    batch_index,
+                    len(batches),
+                    attempt,
+                )
+                raise ValueError(
+                    f"Earnings watchpoint analysis failed on batch {batch_index}/{len(batches)}."
+                ) from exc
+        if response is None and last_timeout_exc is not None:
+            raise RuntimeError(
+                f"Earnings watchpoint analysis timed out on batch {batch_index}/{len(batches)} after retry."
+            ) from last_timeout_exc
 
-    normalized_results = []
-    seen_pairs = set()
-    for raw in raw_items:
-        if not isinstance(raw, dict):
-            continue
-        key_variable = str(raw.get("key_variable") or "").strip()
-        watchpoint = str(raw.get("watchpoint") or "").strip()
-        status = str(raw.get("status") or "").strip()
-        result_text = str(raw.get("result_text") or "").strip()
-        pair = (key_variable, watchpoint)
-        if pair not in expected_pairs:
-            continue
-        if status not in EARNINGS_WATCHPOINT_ANALYSIS_ALLOWED_STATUSES:
-            continue
-        if not result_text:
-            continue
-        if pair in seen_pairs:
-            continue
-        seen_pairs.add(pair)
-        normalized_results.append((key_variable, watchpoint, status, result_text))
+        raw_items = response.get("watchpoint_results") if isinstance(response, dict) else None
+        if not isinstance(raw_items, list):
+            raise AnalysisValidationError(
+                f"earnings_watchpoint_analysis.watchpoint_results must be an array for batch {batch_index}/{len(batches)}"
+            )
+        batch_results = {}
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            key_variable = str(raw.get("key_variable") or "").strip()
+            watchpoint = str(raw.get("watchpoint") or "").strip()
+            status = str(raw.get("status") or "").strip()
+            result_text = str(raw.get("result_text") or "").strip()
+            pair = (key_variable, watchpoint)
+            if pair not in batch_pairs:
+                continue
+            if status not in EARNINGS_WATCHPOINT_ANALYSIS_ALLOWED_STATUSES or not result_text:
+                continue
+            batch_results[pair] = (key_variable, watchpoint, status, result_text)
+        if len(batch_results) != len(batch_pairs):
+            raise AnalysisValidationError(
+                f"AI output did not return valid analysis for every watchpoint in batch {batch_index}/{len(batches)}."
+            )
+        all_results_by_pair.update(batch_results)
 
+    normalized_results = [
+        all_results_by_pair[(item["key_variable"], item["watchpoint"])]
+        for item in watchpoint_items
+        if (item["key_variable"], item["watchpoint"]) in all_results_by_pair
+    ]
     if len(normalized_results) != len(expected_pairs):
         raise AnalysisValidationError("AI output did not return valid analysis for every watchpoint.")
 
@@ -5977,6 +6078,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "AI response validation failed.", "details": str(exc)}, status=422)
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=400)
+        except RuntimeError as exc:
+            self._send_json(
+                {"error": "Earnings watchpoint analysis timed out. Please try again.", "details": str(exc)},
+                status=503,
+            )
         except Exception as exc:
             logger.exception("Unable to analyse earnings watchpoints for symbol %s", symbol)
             self._send_json(

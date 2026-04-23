@@ -1320,6 +1320,71 @@ class EarningsReviewTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_ai_step_timeout_override_for_earnings_watchpoint_analysis(self):
+        self.assertEqual(web_server.get_ai_step_timeout("business_model", attempt=1), max(10.0, web_server.OPENAI_REQUEST_TIMEOUT_SECONDS))
+        self.assertEqual(web_server.get_ai_step_timeout("earnings_watchpoint_analysis", attempt=1), 120.0)
+        self.assertEqual(web_server.get_ai_step_timeout("earnings_watchpoint_analysis", attempt=2), 180.0)
+
+    def test_analyse_watchpoints_batches_by_four(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            uploads_dir = Path(tmp) / "uploads"
+            with mock.patch.object(web_server, "DB_PATH", db_path), \
+                 mock.patch.object(web_server, "UPLOADS_DIR", uploads_dir):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="AMZN")
+                    web_server.add_earnings_review_symbol(conn, "AMZN")
+                    created = web_server.create_earnings_review_record(conn, "AMZN", fiscal_year=2026, fiscal_quarter="Q1")
+                    review_id = created["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_review_watchpoints (
+                          earnings_review_id, key_variable_text, key_variable_type, watchpoints_json,
+                          display_order, generated_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+                        """,
+                        (
+                            review_id,
+                            "Retail margin",
+                            "Bullish",
+                            json.dumps(["wp1", "wp2", "wp3", "wp4", "wp5"]),
+                            web_server.utc_now_iso(),
+                            web_server.utc_now_iso(),
+                            web_server.utc_now_iso(),
+                        ),
+                    )
+                    conn.commit()
+                    web_server.save_earnings_review_document(
+                        conn=conn,
+                        symbol="AMZN",
+                        review_id=review_id,
+                        document_type="Transcript",
+                        original_file_name="call.txt",
+                        payload=b"wp1 wp2 wp3 wp4 wp5 discussed in detail across sections.",
+                        mime_type="text/plain",
+                    )
+                    responses = [
+                        {"watchpoint_results": [
+                            {"key_variable": "Retail margin", "watchpoint": "wp1", "status": "Confirmed", "result_text": "ok"},
+                            {"key_variable": "Retail margin", "watchpoint": "wp2", "status": "Not addressed", "result_text": "ok"},
+                            {"key_variable": "Retail margin", "watchpoint": "wp3", "status": "Unclear", "result_text": "ok"},
+                            {"key_variable": "Retail margin", "watchpoint": "wp4", "status": "Contradicted", "result_text": "ok"},
+                        ]},
+                        {"watchpoint_results": [
+                            {"key_variable": "Retail margin", "watchpoint": "wp5", "status": "Partially confirmed", "result_text": "ok"},
+                        ]},
+                    ]
+                    with mock.patch.object(web_server, "OPENAI_API_KEY", "x"), \
+                         mock.patch.object(web_server, "request_ai_step", side_effect=responses) as mocked_step:
+                        detail = web_server.analyze_earnings_watchpoints_for_review(conn, "AMZN", review_id)
+                    self.assertEqual(mocked_step.call_count, 2)
+                    self.assertEqual(len(detail["watchpoint_results"]), 5)
+                finally:
+                    conn.close()
+
     def test_created_review_snapshot_normalizes_key_variable_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")

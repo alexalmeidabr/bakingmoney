@@ -482,6 +482,9 @@ $EarningsDocuments
 
 Instructions:
 - Evaluate each watchpoint using only the information available in the uploaded earnings documents.
+- Return exactly one result for each provided watchpoint_id.
+- Preserve watchpoint_id exactly as provided.
+- Do not omit any watchpoint_id and do not add extra watchpoint_ids.
 - For each watchpoint, assign exactly one of these statuses:
   - Confirmed
   - Partially confirmed
@@ -508,6 +511,7 @@ Output requirements:
 {
   "watchpoint_results": [
     {
+      "watchpoint_id": "exact watchpoint_id from input",
       "key_variable": "exact key variable text",
       "watchpoint": "exact watchpoint text",
       "status": "Confirmed",
@@ -520,6 +524,7 @@ Rules:
 - Preserve the exact watchpoint text when possible.
 - Keep result_text concise, ideally 1 to 3 sentences.
 - Make sure every existing watchpoint receives one result.
+- If evidence is insufficient, still return that watchpoint_id with status Unclear.
 - Do not invent data not present in the uploaded documents."""
 
 
@@ -3952,12 +3957,13 @@ def _build_earnings_watchpoint_analysis_schema():
                         "type": "object",
                         "additionalProperties": False,
                         "properties": {
+                            "watchpoint_id": {"type": "string"},
                             "key_variable": {"type": "string"},
                             "watchpoint": {"type": "string"},
                             "status": {"type": "string"},
                             "result_text": {"type": "string"},
                         },
-                        "required": ["key_variable", "watchpoint", "status", "result_text"],
+                        "required": ["watchpoint_id", "key_variable", "watchpoint", "status", "result_text"],
                     },
                 }
             },
@@ -4039,15 +4045,18 @@ def chunk_watchpoints(items, batch_size):
 
 
 def _format_earnings_watchpoint_batch_for_prompt(batch_items):
+    lines = []
     grouped = {}
     for item in batch_items:
         key = item["key_variable"]
-        grouped.setdefault(
-            key,
-            {"key_variable": key, "type": item.get("type") or "", "watchpoints": []},
-        )
-        grouped[key]["watchpoints"].append(item["watchpoint"])
-    return _format_earnings_watchpoints_for_prompt(list(grouped.values()))
+        grouped.setdefault(key, {"type": item.get("type") or "", "items": []})
+        grouped[key]["items"].append(item)
+    for key_variable, payload in grouped.items():
+        group_type = payload.get("type") or ""
+        lines.append(f"Key Variable: {key_variable}{f' ({group_type})' if group_type else ''}")
+        for item in payload["items"]:
+            lines.append(f"- watchpoint_id={item['watchpoint_id']} | watchpoint={item['watchpoint']}")
+    return "\n".join(lines)
 
 
 def _format_earnings_documents_for_prompt(document_rows):
@@ -4148,7 +4157,7 @@ def _build_earnings_review_thesis_snapshot(conn, symbol):
 def get_earnings_review_watchpoints(conn, earnings_review_id):
     rows = conn.execute(
         """
-        SELECT key_variable_text, key_variable_type, watchpoints_json, generated_at, display_order
+        SELECT id, key_variable_text, key_variable_type, watchpoints_json, generated_at, display_order
         FROM earnings_review_watchpoints
         WHERE earnings_review_id = ?
         ORDER BY display_order ASC, id ASC
@@ -4164,9 +4173,11 @@ def get_earnings_review_watchpoints(conn, earnings_review_id):
             watchpoints = []
         items.append(
             {
+                "id": row["id"],
                 "key_variable": row["key_variable_text"],
                 "type": row["key_variable_type"] or "",
                 "watchpoints": watchpoints,
+                "watchpoint_ids": [f"{row['id']}:{idx}" for idx, _ in enumerate(watchpoints)],
                 "generated_at": row["generated_at"],
             }
         )
@@ -4665,20 +4676,25 @@ def analyze_earnings_watchpoints_for_review(conn, symbol, review_id):
     for group in watchpoints_by_variable:
         key_variable = str(group.get("key_variable") or "").strip()
         group_type = str(group.get("type") or "").strip()
+        group_id = str(group.get("id") or "").strip()
+        group_watchpoint_ids = group.get("watchpoint_ids") or []
         if not key_variable:
             continue
-        for watchpoint in (group.get("watchpoints") or []):
+        for idx, watchpoint in enumerate(group.get("watchpoints") or []):
             normalized_watchpoint = str(watchpoint).strip()
             if not normalized_watchpoint:
                 continue
+            watchpoint_id = str(group_watchpoint_ids[idx] if idx < len(group_watchpoint_ids) else "").strip()
+            if not watchpoint_id:
+                watchpoint_id = f"{group_id or key_variable}:{idx}"
             watchpoint_items.append(
                 {
+                    "watchpoint_id": watchpoint_id,
                     "key_variable": key_variable,
                     "type": group_type,
                     "watchpoint": normalized_watchpoint,
                 }
             )
-    expected_pairs = {(item["key_variable"], item["watchpoint"]) for item in watchpoint_items}
     if not watchpoint_items:
         raise ValueError("Generate earnings watchpoints before analysing them.")
 
@@ -4702,10 +4718,11 @@ def analyze_earnings_watchpoints_for_review(conn, symbol, review_id):
     if readable_count <= 0 or not documents_text.strip():
         raise ValueError("Analysis could not run because no readable text could be extracted from the uploaded documents.")
 
-    all_results_by_pair = {}
+    all_results_by_id = {}
     batches = chunk_watchpoints(watchpoint_items, batch_size=4)
     for batch_index, batch in enumerate(batches, start=1):
-        batch_pairs = {(item["key_variable"], item["watchpoint"]) for item in batch}
+        batch_by_id = {item["watchpoint_id"]: item for item in batch}
+        expected_ids = set(batch_by_id.keys())
         prompt_context = build_prompt_context(
             symbol=snapshot.get("symbol") or symbol,
             company_name=snapshot.get("company_name") or detail.get("company_name_snapshot") or symbol,
@@ -4716,89 +4733,146 @@ def analyze_earnings_watchpoints_for_review(conn, symbol, review_id):
             earnings_documents=documents_text,
         )
         prompt_text = render_prompt_template(template, prompt_context)
-        attempts = (1, 2)
-        response = None
-        last_timeout_exc = None
-        for attempt in attempts:
-            timeout_seconds = get_ai_step_timeout("earnings_watchpoint_analysis", attempt=attempt)
-            logger.info(
-                "Earnings watchpoint analysis attempt symbol=%s review_id=%s batch=%s/%s attempt=%s watchpoints=%s documents=%s extracted_chars=%s prompt_chars=%s timeout=%.1f",
-                symbol,
-                review_id,
-                batch_index,
-                len(batches),
-                attempt,
-                len(batch),
-                len(documents),
-                len(documents_text),
-                len(prompt_text),
-                timeout_seconds,
-            )
-            try:
-                response = request_ai_step(
-                    "earnings_watchpoint_analysis",
-                    prompt_text,
-                    _build_earnings_watchpoint_analysis_schema(),
-                    attempt=attempt,
-                )
-                break
-            except RuntimeError as exc:
-                is_timeout = "timed out on step earnings_watchpoint_analysis" in str(exc).lower()
-                if is_timeout and attempt == 1:
-                    last_timeout_exc = exc
-                    logger.warning(
-                        "Earnings watchpoint analysis timeout on batch %s/%s. Retrying once with longer timeout.",
-                        batch_index,
-                        len(batches),
-                    )
-                    continue
-                if is_timeout:
-                    last_timeout_exc = exc
-                logger.exception(
-                    "Earnings watchpoint analysis failed on batch %s/%s attempt %s",
+        def _run_batch_request(batch_prompt_text):
+            attempts = (1, 2)
+            response_payload = None
+            last_timeout_exc = None
+            for attempt in attempts:
+                timeout_seconds = get_ai_step_timeout("earnings_watchpoint_analysis", attempt=attempt)
+                logger.info(
+                    "Earnings watchpoint analysis attempt symbol=%s review_id=%s batch=%s/%s attempt=%s watchpoints=%s documents=%s extracted_chars=%s prompt_chars=%s timeout=%.1f",
+                    symbol,
+                    review_id,
                     batch_index,
                     len(batches),
                     attempt,
+                    len(batch),
+                    len(documents),
+                    len(documents_text),
+                    len(batch_prompt_text),
+                    timeout_seconds,
                 )
-                raise ValueError(
-                    f"Earnings watchpoint analysis failed on batch {batch_index}/{len(batches)}."
-                ) from exc
-        if response is None and last_timeout_exc is not None:
-            raise RuntimeError(
-                f"Earnings watchpoint analysis timed out on batch {batch_index}/{len(batches)} after retry."
-            ) from last_timeout_exc
+                try:
+                    response_payload = request_ai_step(
+                        "earnings_watchpoint_analysis",
+                        batch_prompt_text,
+                        _build_earnings_watchpoint_analysis_schema(),
+                        attempt=attempt,
+                    )
+                    break
+                except RuntimeError as exc:
+                    is_timeout = "timed out on step earnings_watchpoint_analysis" in str(exc).lower()
+                    if is_timeout and attempt == 1:
+                        last_timeout_exc = exc
+                        logger.warning(
+                            "Earnings watchpoint analysis timeout on batch %s/%s. Retrying once with longer timeout.",
+                            batch_index,
+                            len(batches),
+                        )
+                        continue
+                    if is_timeout:
+                        last_timeout_exc = exc
+                    logger.exception(
+                        "Earnings watchpoint analysis failed on batch %s/%s attempt %s",
+                        batch_index,
+                        len(batches),
+                        attempt,
+                    )
+                    raise ValueError(
+                        f"Earnings watchpoint analysis failed on batch {batch_index}/{len(batches)}."
+                    ) from exc
+            if response_payload is None and last_timeout_exc is not None:
+                raise RuntimeError(
+                    f"Earnings watchpoint analysis timed out on batch {batch_index}/{len(batches)} after retry."
+                ) from last_timeout_exc
+            return response_payload
 
-        raw_items = response.get("watchpoint_results") if isinstance(response, dict) else None
-        if not isinstance(raw_items, list):
-            raise AnalysisValidationError(
-                f"earnings_watchpoint_analysis.watchpoint_results must be an array for batch {batch_index}/{len(batches)}"
+        def _validate_batch_response(response_payload):
+            raw_items = response_payload.get("watchpoint_results") if isinstance(response_payload, dict) else None
+            if not isinstance(raw_items, list):
+                raise AnalysisValidationError(
+                    f"earnings_watchpoint_analysis.watchpoint_results must be an array for batch {batch_index}/{len(batches)}"
+                )
+            returned_ids = []
+            duplicates = set()
+            batch_results = {}
+            for raw in raw_items:
+                if not isinstance(raw, dict):
+                    continue
+                watchpoint_id = str(raw.get("watchpoint_id") or "").strip()
+                key_variable = str(raw.get("key_variable") or "").strip()
+                watchpoint = str(raw.get("watchpoint") or "").strip()
+                status = str(raw.get("status") or "").strip()
+                result_text = str(raw.get("result_text") or "").strip()
+                if not watchpoint_id:
+                    continue
+                if watchpoint_id in returned_ids:
+                    duplicates.add(watchpoint_id)
+                returned_ids.append(watchpoint_id)
+                if watchpoint_id not in expected_ids:
+                    continue
+                if status not in EARNINGS_WATCHPOINT_ANALYSIS_ALLOWED_STATUSES or not result_text:
+                    continue
+                batch_results[watchpoint_id] = (key_variable, watchpoint, status, result_text)
+
+            returned_ids_set = set(returned_ids)
+            missing_ids = sorted(expected_ids - returned_ids_set)
+            extra_ids = sorted(returned_ids_set - expected_ids)
+            duplicate_ids = sorted(duplicates)
+            logger.info(
+                "Earnings watchpoint batch validation review_id=%s symbol=%s batch=%s/%s expected_ids=%s returned_ids=%s missing_ids=%s duplicate_ids=%s extra_ids=%s",
+                review_id,
+                symbol,
+                batch_index,
+                len(batches),
+                sorted(expected_ids),
+                sorted(returned_ids_set),
+                missing_ids,
+                duplicate_ids,
+                extra_ids,
             )
-        batch_results = {}
-        for raw in raw_items:
-            if not isinstance(raw, dict):
-                continue
-            key_variable = str(raw.get("key_variable") or "").strip()
-            watchpoint = str(raw.get("watchpoint") or "").strip()
-            status = str(raw.get("status") or "").strip()
-            result_text = str(raw.get("result_text") or "").strip()
-            pair = (key_variable, watchpoint)
-            if pair not in batch_pairs:
-                continue
-            if status not in EARNINGS_WATCHPOINT_ANALYSIS_ALLOWED_STATUSES or not result_text:
-                continue
-            batch_results[pair] = (key_variable, watchpoint, status, result_text)
-        if len(batch_results) != len(batch_pairs):
-            raise AnalysisValidationError(
-                f"AI output did not return valid analysis for every watchpoint in batch {batch_index}/{len(batches)}."
+            is_valid = not missing_ids and not duplicate_ids and not extra_ids and len(batch_results) == len(expected_ids)
+            return is_valid, batch_results, missing_ids, duplicate_ids, extra_ids
+
+        response = _run_batch_request(prompt_text)
+        is_valid, batch_results, missing_ids, duplicate_ids, extra_ids = _validate_batch_response(response)
+        if not is_valid:
+            repair_prompt = (
+                f"{prompt_text}\n\nSTRICT RETRY INSTRUCTIONS:\n"
+                "- Return exactly one item for every watchpoint_id in this batch.\n"
+                "- Preserve each watchpoint_id exactly.\n"
+                "- Do not add any extra watchpoint_id.\n"
+                "- If evidence is insufficient, still return that watchpoint_id with status Unclear.\n"
+                "- Output must be valid JSON matching schema."
             )
-        all_results_by_pair.update(batch_results)
+            logger.warning(
+                "Retrying batch %s/%s due to incomplete/invalid ID mapping. missing=%s duplicate=%s extra=%s",
+                batch_index,
+                len(batches),
+                missing_ids,
+                duplicate_ids,
+                extra_ids,
+            )
+            response = _run_batch_request(repair_prompt)
+            is_valid, batch_results, missing_ids, duplicate_ids, extra_ids = _validate_batch_response(response)
+            if not is_valid:
+                raise AnalysisValidationError(
+                    f"AI output did not return valid analysis for every watchpoint_id in batch {batch_index}/{len(batches)}."
+                )
+
+        all_results_by_id.update(batch_results)
 
     normalized_results = [
-        all_results_by_pair[(item["key_variable"], item["watchpoint"])]
+        (
+            item["key_variable"],
+            item["watchpoint"],
+            all_results_by_id[item["watchpoint_id"]][2],
+            all_results_by_id[item["watchpoint_id"]][3],
+        )
         for item in watchpoint_items
-        if (item["key_variable"], item["watchpoint"]) in all_results_by_pair
+        if item["watchpoint_id"] in all_results_by_id
     ]
-    if len(normalized_results) != len(expected_pairs):
+    if len(normalized_results) != len(watchpoint_items):
         raise AnalysisValidationError("AI output did not return valid analysis for every watchpoint.")
 
     now = utc_now_iso()

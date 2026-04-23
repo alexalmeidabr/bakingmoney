@@ -1204,9 +1204,11 @@ class EarningsReviewTests(unittest.TestCase):
                         payload=b"Management discussed OEM channel restocking.",
                         mime_type="text/plain",
                     )
+                    watchpoint_id = web_server.get_earnings_review_record_detail(conn, "INTC", review_id)["watchpoints_by_variable"][0]["watchpoint_ids"][0]
                     ai_response = {
                         "watchpoint_results": [
                             {
+                                "watchpoint_id": watchpoint_id,
                                 "key_variable": "PC demand",
                                 "watchpoint": "OEM channel restocking",
                                 "status": "Confirmed",
@@ -1366,15 +1368,16 @@ class EarningsReviewTests(unittest.TestCase):
                         payload=b"wp1 wp2 wp3 wp4 wp5 discussed in detail across sections.",
                         mime_type="text/plain",
                     )
+                    wp_ids = web_server.get_earnings_review_record_detail(conn, "AMZN", review_id)["watchpoints_by_variable"][0]["watchpoint_ids"]
                     responses = [
                         {"watchpoint_results": [
-                            {"key_variable": "Retail margin", "watchpoint": "wp1", "status": "Confirmed", "result_text": "ok"},
-                            {"key_variable": "Retail margin", "watchpoint": "wp2", "status": "Not addressed", "result_text": "ok"},
-                            {"key_variable": "Retail margin", "watchpoint": "wp3", "status": "Unclear", "result_text": "ok"},
-                            {"key_variable": "Retail margin", "watchpoint": "wp4", "status": "Contradicted", "result_text": "ok"},
+                            {"watchpoint_id": wp_ids[0], "key_variable": "Retail margin", "watchpoint": "wp1", "status": "Confirmed", "result_text": "ok"},
+                            {"watchpoint_id": wp_ids[1], "key_variable": "Retail margin", "watchpoint": "wp2", "status": "Not addressed", "result_text": "ok"},
+                            {"watchpoint_id": wp_ids[2], "key_variable": "Retail margin", "watchpoint": "wp3", "status": "Unclear", "result_text": "ok"},
+                            {"watchpoint_id": wp_ids[3], "key_variable": "Retail margin", "watchpoint": "wp4", "status": "Contradicted", "result_text": "ok"},
                         ]},
                         {"watchpoint_results": [
-                            {"key_variable": "Retail margin", "watchpoint": "wp5", "status": "Partially confirmed", "result_text": "ok"},
+                            {"watchpoint_id": wp_ids[4], "key_variable": "Retail margin", "watchpoint": "wp5", "status": "Partially confirmed", "result_text": "ok"},
                         ]},
                     ]
                     with mock.patch.object(web_server, "OPENAI_API_KEY", "x"), \
@@ -1382,6 +1385,59 @@ class EarningsReviewTests(unittest.TestCase):
                         detail = web_server.analyze_earnings_watchpoints_for_review(conn, "AMZN", review_id)
                     self.assertEqual(mocked_step.call_count, 2)
                     self.assertEqual(len(detail["watchpoint_results"]), 5)
+                finally:
+                    conn.close()
+
+    def test_analyse_watchpoints_retries_once_on_incomplete_batch_output(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            uploads_dir = Path(tmp) / "uploads"
+            with mock.patch.object(web_server, "DB_PATH", db_path), \
+                 mock.patch.object(web_server, "UPLOADS_DIR", uploads_dir):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="META")
+                    web_server.add_earnings_review_symbol(conn, "META")
+                    created = web_server.create_earnings_review_record(conn, "META", fiscal_year=2026, fiscal_quarter="Q2")
+                    review_id = created["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_review_watchpoints (
+                          earnings_review_id, key_variable_text, key_variable_type, watchpoints_json,
+                          display_order, generated_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+                        """,
+                        (review_id, "Ad pricing", "Bullish", json.dumps(["Reels monetization", "Ad load"]), web_server.utc_now_iso(), web_server.utc_now_iso(), web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    web_server.save_earnings_review_document(
+                        conn=conn,
+                        symbol="META",
+                        review_id=review_id,
+                        document_type="Transcript",
+                        original_file_name="call.txt",
+                        payload=b"Reels monetization and ad load commentary were provided.",
+                        mime_type="text/plain",
+                    )
+                    ids = web_server.get_earnings_review_record_detail(conn, "META", review_id)["watchpoints_by_variable"][0]["watchpoint_ids"]
+                    first_invalid = {
+                        "watchpoint_results": [
+                            {"watchpoint_id": ids[0], "key_variable": "Ad pricing", "watchpoint": "Reels monetization", "status": "Confirmed", "result_text": "ok"},
+                        ]
+                    }
+                    second_valid = {
+                        "watchpoint_results": [
+                            {"watchpoint_id": ids[0], "key_variable": "Ad pricing", "watchpoint": "Reels monetization", "status": "Confirmed", "result_text": "ok"},
+                            {"watchpoint_id": ids[1], "key_variable": "Ad pricing", "watchpoint": "Ad load", "status": "Unclear", "result_text": "mixed"},
+                        ]
+                    }
+                    with mock.patch.object(web_server, "OPENAI_API_KEY", "x"), \
+                         mock.patch.object(web_server, "request_ai_step", side_effect=[first_invalid, second_valid]) as mocked:
+                        detail = web_server.analyze_earnings_watchpoints_for_review(conn, "META", review_id)
+                    self.assertEqual(mocked.call_count, 2)
+                    self.assertEqual(len(detail["watchpoint_results"]), 2)
                 finally:
                     conn.close()
 

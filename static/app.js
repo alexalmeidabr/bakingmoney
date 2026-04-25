@@ -535,6 +535,7 @@ function syncSelectAllCheckbox() {
 function showAnalysisList() { analysisListView.classList.remove('hidden'); analysisDetailView.classList.add('hidden'); }
 function setAnalysisDetailBackButton() {
   const fromPositions = analysisDetailOrigin === 'positions';
+  analysisDetailOrigin = fromPositions ? 'positions' : 'analysis';
   analysisBackBtn.textContent = fromPositions ? '← Back to My Positions' : '← Back to Analysis';
 }
 function loadBackupView() {

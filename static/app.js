@@ -540,6 +540,10 @@ function updateAnalysisBackButton() {
     analysisBackBtn.textContent = '← Back to Analysis';
   }
 }
+function showAnalysisDetailFromPositionsOrigin() {
+  views.forEach((view) => view.classList.toggle('active', view.id === 'analysis'));
+  menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === 'positions'));
+}
 function loadBackupView() {
   if (!backupStatusEl) return;
   backupStatusEl.textContent = 'Export a portable backup package (.zip) or restore one from another computer.';
@@ -787,8 +791,7 @@ async function openAnalysisDetailForSymbol(symbol, options = {}) {
   analysisDetailOrigin = origin;
 
   if (origin === 'positions') {
-    views.forEach((view) => view.classList.toggle('active', view.id === 'analysis'));
-    menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === 'positions'));
+    showAnalysisDetailFromPositionsOrigin();
   } else {
     setView('analysis');
   }
@@ -802,6 +805,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   analysisSummary.classList.add('hidden');
   analysisListView.classList.add('hidden');
   analysisDetailView.classList.remove('hidden');
+  if (analysisDetailOrigin === 'positions') showAnalysisDetailFromPositionsOrigin();
   updateAnalysisBackButton();
   isEditingVariables = false;
   isEditingBusinessModel = false;

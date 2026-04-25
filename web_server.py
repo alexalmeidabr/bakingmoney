@@ -2193,8 +2193,8 @@ def init_db():
                             scenario["scenario_name"],
                             scenario["price_low"],
                             scenario["price_high"],
-                            scenario["cagr_low"],
-                            scenario["cagr_high"],
+                            scenario.get("cagr_low"),
+                            scenario.get("cagr_high"),
                             scenario["probability"],
                             scenario["created_at"] or root_created_at,
                         ),
@@ -2593,21 +2593,37 @@ def validate_step2_key_variables(payload):
 
 
 def validate_step3_scenarios(payload, symbol, key_variables):
-    combined = {
-        "symbol": payload.get("symbol", symbol),
-        "assumptions": payload.get("assumptions"),
-        "scenarios": payload.get("scenarios"),
-        "key_variables": [
-            {
-                "variable": item["variable_text"],
-                "type": item["variable_type"],
-                "confidence": item["confidence"],
-                "importance": item["importance"],
-            }
-            for item in key_variables
-        ],
+    validation = validate_scenario_output(payload, symbol, current_price=payload.get("current_price"))
+    if not validation["ok"]:
+        raise AnalysisValidationError(f"step3.scenarios invalid: {validation['reason']}")
+
+    normalized_key_variables = []
+    for item in key_variables:
+        if "variable_text" in item:
+            normalized_key_variables.append(
+                {
+                    "variable_text": item["variable_text"],
+                    "variable_type": item["variable_type"],
+                    "confidence": item["confidence"],
+                    "importance": item["importance"],
+                }
+            )
+        else:
+            normalized_key_variables.append(
+                {
+                    "variable_text": item["variable"],
+                    "variable_type": item["type"],
+                    "confidence": item["confidence"],
+                    "importance": item["importance"],
+                }
+            )
+
+    return {
+        "symbol": symbol,
+        "assumptions": validation["parsed"]["assumptions"],
+        "scenarios": validation["parsed"]["scenarios"],
+        "key_variables": normalized_key_variables,
     }
-    return parse_analysis_payload(combined)
 
 
 def request_ai_analysis(symbol, current_price=None):
@@ -2702,11 +2718,9 @@ def request_ai_analysis(symbol, current_price=None):
                             "name": {"type": "string", "enum": ["Bear", "Base", "Bull"]},
                             "price_low": {"type": "number"},
                             "price_high": {"type": "number"},
-                            "cagr_low": {"type": "number"},
-                            "cagr_high": {"type": "number"},
                             "probability": {"type": "number"},
                         },
-                        "required": ["name", "price_low", "price_high", "cagr_low", "cagr_high", "probability"],
+                        "required": ["name", "price_low", "price_high", "probability"],
                     },
                 },
             },
@@ -2755,10 +2769,12 @@ def request_ai_analysis(symbol, current_price=None):
         prompt_text=prompt3,
         pass_count=pass_count,
         outlier_filter_enabled=scenario_settings["scenario_outlier_filter_enabled"],
+        current_price=effective_price,
     )
     parsed = validate_step3_scenarios(
         {
             "symbol": symbol,
+            "current_price": effective_price,
             "assumptions": scenario_parsed["assumptions"],
             "scenarios": [
                 {
@@ -2842,17 +2858,45 @@ def _build_scenarios_schema():
                             "name": {"type": "string", "enum": ["Bear", "Base", "Bull"]},
                             "price_low": {"type": "number"},
                             "price_high": {"type": "number"},
-                            "cagr_low": {"type": "number"},
-                            "cagr_high": {"type": "number"},
                             "probability": {"type": "number"},
                         },
-                        "required": ["name", "price_low", "price_high", "cagr_low", "cagr_high", "probability"],
+                        "required": ["name", "price_low", "price_high", "probability"],
                     },
                 },
             },
             "required": ["symbol", "assumptions", "scenarios"],
         },
     }
+
+
+def compute_scenario_cagr(price_target, current_price, years=5):
+    try:
+        price = float(price_target)
+        current = float(current_price)
+        years_value = float(years)
+    except (TypeError, ValueError):
+        return None
+
+    if not all(math.isfinite(v) for v in (price, current, years_value)):
+        return None
+    if price <= 0 or current <= 0 or years_value <= 0:
+        return None
+
+    return ((price / current) ** (1 / years_value) - 1) * 100
+
+
+def populate_scenario_cagr_fields(scenarios, current_price, years=5, default_cagr=0.0):
+    populated = []
+    for item in scenarios or []:
+        scenario = dict(item)
+        cagr_low = compute_scenario_cagr(scenario.get("price_low"), current_price, years=years)
+        cagr_high = compute_scenario_cagr(scenario.get("price_high"), current_price, years=years)
+        scenario.update(
+            cagr_low=cagr_low if cagr_low is not None else default_cagr,
+            cagr_high=cagr_high if cagr_high is not None else default_cagr,
+        )
+        populated.append(scenario)
+    return populated
 
 
 def compute_scenario_midpoints(scenarios):
@@ -2874,7 +2918,7 @@ def _normalize_probabilities(scenarios):
     return normalized
 
 
-def validate_scenario_output(payload, symbol):
+def validate_scenario_output(payload, symbol, current_price=None):
     """Validation pipeline specifically for scenario-generation pass outputs."""
     if not isinstance(payload, dict):
         return {"ok": False, "reason": "payload_not_json", "parsed": None}
@@ -2901,42 +2945,38 @@ def validate_scenario_output(payload, symbol):
         try:
             price_low = float(item.get("price_low"))
             price_high = float(item.get("price_high"))
-            cagr_low = float(item.get("cagr_low"))
-            cagr_high = float(item.get("cagr_high"))
             probability = float(item.get("probability"))
         except (TypeError, ValueError):
             return {"ok": False, "reason": "invalid_numeric_field", "parsed": None}
 
-        if not all(math.isfinite(v) for v in [price_low, price_high, cagr_low, cagr_high, probability]):
+        if not all(math.isfinite(v) for v in [price_low, price_high, probability]):
             return {"ok": False, "reason": "non_finite_numeric_field", "parsed": None}
         if price_low <= 0 or price_high <= 0:
             return {"ok": False, "reason": "non_positive_price", "parsed": None}
-        if probability < 0 or probability > 100:
+        probability_normalized = probability / 100.0 if probability > 1 else probability
+        if probability_normalized < 0 or probability_normalized > 1:
             return {"ok": False, "reason": "invalid_probability_range", "parsed": None}
         if price_low > price_high:
             return {"ok": False, "reason": "price_low_gt_price_high", "parsed": None}
-        if cagr_low > cagr_high:
-            return {"ok": False, "reason": "cagr_low_gt_cagr_high", "parsed": None}
 
         seen.add(name)
-        prob_sum_pct += probability
+        prob_sum_pct += probability_normalized
         normalized.append(
             {
                 "scenario_name": name,
                 "price_low": price_low,
                 "price_high": price_high,
-                "cagr_low": cagr_low,
-                "cagr_high": cagr_high,
-                "probability": probability,
+                "probability": probability_normalized,
             }
         )
 
     if seen != {"Bear", "Base", "Bull"}:
         return {"ok": False, "reason": "missing_required_scenarios", "parsed": None}
-    if prob_sum_pct < 90 or prob_sum_pct > 110:
+    if prob_sum_pct < 0.9 or prob_sum_pct > 1.1:
         return {"ok": False, "reason": "probability_total_out_of_range", "parsed": None}
 
     normalized = sorted(normalized, key=lambda s: ["Bear", "Base", "Bull"].index(s["scenario_name"]))
+    normalized = populate_scenario_cagr_fields(normalized, current_price=current_price)
     mids = compute_scenario_midpoints(normalized)
     if not (mids["Bear"] <= mids["Base"] <= mids["Bull"]):
         return {"ok": False, "reason": "scenario_midpoint_order_invalid", "parsed": None}
@@ -2990,7 +3030,7 @@ def filter_outlier_runs(valid_runs, enabled=True):
     return retained if retained else valid_runs
 
 
-def aggregate_scenario_runs(runs, symbol):
+def aggregate_scenario_runs(runs, symbol, current_price=None):
     if not runs:
         raise AnalysisValidationError("No scenario runs available for aggregation")
     if len(runs) == 1:
@@ -3010,13 +3050,12 @@ def aggregate_scenario_runs(runs, symbol):
                 "scenario_name": scenario_name,
                 "price_low": statistics.median([v["price_low"] for v in scenario_values]),
                 "price_high": statistics.median([v["price_high"] for v in scenario_values]),
-                "cagr_low": statistics.median([v["cagr_low"] for v in scenario_values]),
-                "cagr_high": statistics.median([v["cagr_high"] for v in scenario_values]),
                 "probability": sum(v["probability"] for v in scenario_values) / len(scenario_values),
             }
         )
 
     final_scenarios = _normalize_probabilities(final_scenarios)
+    final_scenarios = populate_scenario_cagr_fields(final_scenarios, current_price=current_price)
     best = max(runs, key=lambda r: r.get("quality_score", 0.0))
     return {
         "symbol": symbol,
@@ -3026,7 +3065,7 @@ def aggregate_scenario_runs(runs, symbol):
     }
 
 
-def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count, outlier_filter_enabled):
+def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count, outlier_filter_enabled, current_price=None):
     runs = []
     for idx in range(pass_count):
         run = {
@@ -3043,7 +3082,7 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
             payload = request_ai_step(f"scenarios_pass_{idx + 1}", prompt_text, _build_scenarios_schema())
             run["raw_response_text"] = json.dumps(payload, ensure_ascii=False)
             run["parsed_json"] = payload
-            validation = validate_scenario_output(payload, symbol)
+            validation = validate_scenario_output(payload, symbol, current_price=current_price)
             if validation["ok"]:
                 run["validation_status"] = "valid"
                 run["parsed"] = validation["parsed"]
@@ -3068,7 +3107,7 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
         partially_usable = [r for r in runs if isinstance(r.get("parsed_json"), dict)]
         if partially_usable:
             fallback = partially_usable[0]
-            validation = validate_scenario_output(fallback["parsed_json"], symbol)
+            validation = validate_scenario_output(fallback["parsed_json"], symbol, current_price=current_price)
             if validation["ok"]:
                 fallback["validation_status"] = "valid"
                 fallback["parsed"] = validation["parsed"]
@@ -3087,7 +3126,7 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
     for run in runs:
         run["quality_score"] = score_scenario_run(run, medians=medians)
 
-    aggregated = aggregate_scenario_runs(retained_runs, symbol=symbol)
+    aggregated = aggregate_scenario_runs(retained_runs, symbol=symbol, current_price=current_price)
     return aggregated, runs
 
 
@@ -3481,7 +3520,9 @@ def _insert_analysis_version(
     )
     version_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
-    for scenario in scenarios:
+    scenarios_with_cagr = populate_scenario_cagr_fields(scenarios, current_price=current_price)
+
+    for scenario in scenarios_with_cagr:
         conn.execute(
             """
             INSERT INTO analysis_version_scenarios (
@@ -3494,8 +3535,8 @@ def _insert_analysis_version(
                 scenario["scenario_name"],
                 scenario["price_low"],
                 scenario["price_high"],
-                scenario["cagr_low"],
-                scenario["cagr_high"],
+                scenario.get("cagr_low"),
+                scenario.get("cagr_high"),
                 scenario["probability"],
                 now,
             ),
@@ -3735,10 +3776,12 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
         prompt_text=prompt,
         pass_count=pass_count,
         outlier_filter_enabled=scenario_settings["scenario_outlier_filter_enabled"],
+        current_price=base_version["current_price"],
     )
     parsed = validate_step3_scenarios(
         {
             "symbol": symbol,
+            "current_price": base_version["current_price"],
             "assumptions": scenario_parsed["assumptions"],
             "scenarios": [
                 {
@@ -3852,10 +3895,12 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
         prompt_text=prompt,
         pass_count=pass_count,
         outlier_filter_enabled=scenario_settings["scenario_outlier_filter_enabled"],
+        current_price=base_version["current_price"],
     )
     parsed = validate_step3_scenarios(
         {
             "symbol": symbol,
+            "current_price": base_version["current_price"],
             "assumptions": scenario_parsed["assumptions"],
             "scenarios": [
                 {

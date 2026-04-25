@@ -404,6 +404,50 @@ th.sortable[data-sort-direction='desc']::after {
   width: 100%;
 }
 
+#analysis-variables-table {
+  min-width: 0;
+  table-layout: fixed;
+}
+
+#analysis-variables-table th,
+#analysis-variables-table td {
+  vertical-align: top;
+}
+
+#analysis-variables-table th:nth-child(1),
+#analysis-variables-table td:nth-child(1) {
+  width: 58%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+#analysis-variables-table th:nth-child(2),
+#analysis-variables-table td:nth-child(2) {
+  width: 12%;
+  white-space: nowrap;
+}
+
+#analysis-variables-table th:nth-child(3),
+#analysis-variables-table td:nth-child(3),
+#analysis-variables-table th:nth-child(4),
+#analysis-variables-table td:nth-child(4) {
+  width: 10%;
+  white-space: nowrap;
+  text-align: center;
+}
+
+#analysis-variables-table th:nth-child(5),
+#analysis-variables-table td:nth-child(5) {
+  width: 10%;
+  white-space: nowrap;
+}
+
+#analysis-variables-table .var-text-input {
+  min-width: 0;
+}
+
 #analysis-scenario-info-btn {
   border-radius: 999px;
   width: 22px;
@@ -643,4 +687,25 @@ th.sortable[data-sort-direction='desc']::after {
 
 .watchpoint-group .status {
   margin: 0 0 6px;
+}
+
+@media (max-width: 1100px) {
+  #analysis-variables-table th:nth-child(1),
+  #analysis-variables-table td:nth-child(1) {
+    width: 50%;
+  }
+
+  #analysis-variables-table th:nth-child(2),
+  #analysis-variables-table td:nth-child(2) {
+    width: 14%;
+  }
+
+  #analysis-variables-table th:nth-child(3),
+  #analysis-variables-table td:nth-child(3),
+  #analysis-variables-table th:nth-child(4),
+  #analysis-variables-table td:nth-child(4),
+  #analysis-variables-table th:nth-child(5),
+  #analysis-variables-table td:nth-child(5) {
+    width: 12%;
+  }
 }

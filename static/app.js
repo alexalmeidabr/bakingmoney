@@ -176,7 +176,7 @@ let ratingFilters = new Set();
 let positionRatingFilters = new Set();
 let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
-let analysisDetailNavSource = 'analysis';
+let analysisDetailOrigin = 'analysis';
 let isEditingVariables = false;
 let isEditingBusinessModel = false;
 let isEditingBusinessSummary = false;
@@ -432,7 +432,7 @@ function renderPositions() {
     row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(symbol)}">${escapeHtml(symbol)}</button></td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td class="${expectedCagrClass}">${expectedCagrValue}</td><td>${confidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.costBasis, position.currency)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.unrealizedPnLPercent)}">${formatPercent(position.unrealizedPnLPercent)}</td><td>${formatCurrencyValue(position.price, position.currency)}</td><td>${formatNumber(position.avgCost)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>`;
     positionsTableBody.appendChild(row);
   });
-  positionsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { source: 'positions' })));
+  positionsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'positions' })));
 }
 
 function getFilteredPositions() {
@@ -511,7 +511,7 @@ function renderAnalysisList() {
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
-  analysisTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { switchToAnalysisView: false })));
+  analysisTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'analysis' })));
   analysisTableBody.querySelectorAll('.analysis-row-select').forEach((checkbox) => {
     checkbox.addEventListener('change', () => {
       const symbol = checkbox.dataset.symbol;
@@ -534,7 +534,7 @@ function syncSelectAllCheckbox() {
 
 function showAnalysisList() { analysisListView.classList.remove('hidden'); analysisDetailView.classList.add('hidden'); }
 function setAnalysisDetailBackButton() {
-  const fromPositions = analysisDetailNavSource === 'positions';
+  const fromPositions = analysisDetailOrigin === 'positions';
   analysisBackBtn.textContent = fromPositions ? '← Back to My Positions' : '← Back to Analysis';
 }
 function loadBackupView() {
@@ -780,10 +780,17 @@ function renderVariablesTable() {
 }
 
 async function openAnalysisDetailForSymbol(symbol, options = {}) {
-  const { switchToAnalysisView = true, source = 'analysis' } = options;
-  analysisDetailNavSource = source === 'positions' ? 'positions' : 'analysis';
+  const { origin = 'analysis' } = options;
+  analysisDetailOrigin = origin === 'positions' ? 'positions' : 'analysis';
   setAnalysisDetailBackButton();
-  if (switchToAnalysisView) setView('analysis');
+
+  if (analysisDetailOrigin === 'positions') {
+    views.forEach((view) => view.classList.toggle('active', view.id === 'analysis'));
+    menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === 'positions'));
+  } else {
+    setView('analysis');
+  }
+
   await loadAnalysisDetail(symbol);
 }
 
@@ -2333,12 +2340,11 @@ analysisRerunSelectedBtn.addEventListener('click', rerunSelectedSymbolsScenarios
 analysisCheckEventsBtn.addEventListener('click', checkRecentEventsForSelected);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', () => {
-  if (analysisDetailNavSource === 'positions') {
+  if (analysisDetailOrigin === 'positions') {
     setView('positions');
     return;
   }
   setView('analysis');
-  showAnalysisList();
 });
 alertDetailBackBtn.addEventListener('click', backToAlertsFromDetail);
 alertDetailReviewBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Reviewed', { stayOnDetail: true, advanceAfterUpdate: true }); });
@@ -2359,7 +2365,7 @@ alertDetailAddVarBtn.addEventListener('click', () => {
 alertDetailSaveVarsBtn.addEventListener('click', saveAlertDetailVariables);
 alertDetailOpenAnalysisBtn.addEventListener('click', () => {
   if (!currentAlertDetailSymbol) return;
-  openAnalysisDetailForSymbol(currentAlertDetailSymbol, { switchToAnalysisView: true });
+  openAnalysisDetailForSymbol(currentAlertDetailSymbol, { origin: 'analysis' });
 });
 alertDetailCancelVarsBtn.addEventListener('click', () => {
   alertDetailIsEditingVariables = false;

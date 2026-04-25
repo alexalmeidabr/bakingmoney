@@ -1759,6 +1759,7 @@ def init_db():
               symbol TEXT NOT NULL UNIQUE,
               current_price REAL,
               expected_price REAL NOT NULL,
+              expected_cagr REAL,
               upside REAL,
               overall_confidence REAL,
               assumptions_text TEXT,
@@ -1775,8 +1776,10 @@ def init_db():
               analysis_symbol_id INTEGER NOT NULL,
               scenario_name TEXT NOT NULL,
               price_low REAL NOT NULL,
+              price_mid REAL,
               price_high REAL NOT NULL,
               cagr_low REAL NOT NULL,
+              cagr_mid REAL,
               cagr_high REAL NOT NULL,
               probability REAL NOT NULL,
               created_at TEXT NOT NULL,
@@ -1821,6 +1824,7 @@ def init_db():
               company_name TEXT,
               current_price REAL,
               expected_price REAL NOT NULL,
+              expected_cagr REAL,
               upside REAL,
               confidence_level REAL,
               assumptions_text TEXT,
@@ -1841,8 +1845,10 @@ def init_db():
               analysis_version_id INTEGER NOT NULL,
               scenario_name TEXT NOT NULL,
               price_low REAL NOT NULL,
+              price_mid REAL,
               price_high REAL NOT NULL,
               cagr_low REAL NOT NULL,
+              cagr_mid REAL,
               cagr_high REAL NOT NULL,
               probability REAL NOT NULL,
               created_at TEXT NOT NULL,
@@ -2122,12 +2128,18 @@ def init_db():
         ensure_column_exists(conn, "analysis_symbols", "company_name", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_model_text", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "business_summary_text", "TEXT")
+        ensure_column_exists(conn, "analysis_symbols", "expected_cagr", "REAL")
+        ensure_column_exists(conn, "analysis_versions", "expected_cagr", "REAL")
+        ensure_column_exists(conn, "analysis_scenarios", "price_mid", "REAL")
+        ensure_column_exists(conn, "analysis_scenarios", "cagr_mid", "REAL")
+        ensure_column_exists(conn, "analysis_version_scenarios", "price_mid", "REAL")
+        ensure_column_exists(conn, "analysis_version_scenarios", "cagr_mid", "REAL")
 
         has_roots = conn.execute("SELECT 1 FROM analysis_roots LIMIT 1").fetchone()
         if not has_roots:
             legacy_rows = conn.execute(
                 """
-                SELECT id, symbol, company_name, current_price, expected_price, upside, overall_confidence,
+                SELECT id, symbol, company_name, current_price, expected_price, expected_cagr, upside, overall_confidence,
                        assumptions_text, business_model_text, business_summary_text, raw_ai_response,
                        created_at, updated_at
                 FROM analysis_symbols
@@ -2146,10 +2158,10 @@ def init_db():
                 conn.execute(
                     """
                     INSERT INTO analysis_versions (
-                        analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                        analysis_root_id, version_number, symbol, company_name, current_price, expected_price, expected_cagr,
                         upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
                         raw_ai_response, source_trigger, created_at
-                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'legacy_migration', ?)
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'legacy_migration', ?)
                     """,
                     (
                         root_id,
@@ -2157,6 +2169,7 @@ def init_db():
                         row["company_name"],
                         row["current_price"],
                         row["expected_price"],
+                        row["expected_cagr"],
                         row["upside"],
                         row["overall_confidence"],
                         row["assumptions_text"],
@@ -2173,7 +2186,7 @@ def init_db():
 
                 legacy_scenarios = conn.execute(
                     """
-                    SELECT scenario_name, price_low, price_high, cagr_low, cagr_high, probability, created_at
+                    SELECT scenario_name, price_low, price_mid, price_high, cagr_low, cagr_mid, cagr_high, probability, created_at
                     FROM analysis_scenarios
                     WHERE analysis_symbol_id = ?
                     ORDER BY id ASC
@@ -2181,21 +2194,36 @@ def init_db():
                     (row["id"],),
                 ).fetchall()
                 for scenario in legacy_scenarios:
+                    enriched_scenario = enrich_scenario_with_midpoints(
+                        {
+                            "scenario_name": scenario["scenario_name"],
+                            "price_low": scenario["price_low"],
+                            "price_mid": scenario["price_mid"],
+                            "price_high": scenario["price_high"],
+                            "cagr_low": scenario.get("cagr_low"),
+                            "cagr_mid": scenario.get("cagr_mid"),
+                            "cagr_high": scenario.get("cagr_high"),
+                            "probability": scenario["probability"],
+                        },
+                        current_price=row["current_price"],
+                    )
                     conn.execute(
                         """
                         INSERT INTO analysis_version_scenarios (
-                            analysis_version_id, scenario_name, price_low, price_high, cagr_low,
-                            cagr_high, probability, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            analysis_version_id, scenario_name, price_low, price_mid, price_high, cagr_low,
+                            cagr_mid, cagr_high, probability, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             version_id,
-                            scenario["scenario_name"],
-                            scenario["price_low"],
-                            scenario["price_high"],
-                            scenario.get("cagr_low"),
-                            scenario.get("cagr_high"),
-                            scenario["probability"],
+                            enriched_scenario["scenario_name"],
+                            enriched_scenario["price_low"],
+                            enriched_scenario.get("price_mid"),
+                            enriched_scenario["price_high"],
+                            enriched_scenario.get("cagr_low"),
+                            enriched_scenario.get("cagr_mid"),
+                            enriched_scenario.get("cagr_high"),
+                            enriched_scenario["probability"],
                             scenario["created_at"] or root_created_at,
                         ),
                     )
@@ -2885,18 +2913,65 @@ def compute_scenario_cagr(price_target, current_price, years=5):
     return ((price / current) ** (1 / years_value) - 1) * 100
 
 
-def populate_scenario_cagr_fields(scenarios, current_price, years=5, default_cagr=0.0):
+def compute_price_mid(price_low, price_high):
+    try:
+        low = float(price_low)
+        high = float(price_high)
+    except (TypeError, ValueError):
+        return None
+
+    if not all(math.isfinite(v) for v in (low, high)):
+        return None
+    return (low + high) / 2.0
+
+
+def enrich_scenario_with_midpoints(scenario, current_price, years=5, default_cagr=0.0):
+    normalized = dict(scenario)
+    price_mid = compute_price_mid(normalized.get("price_low"), normalized.get("price_high"))
+    cagr_low = compute_scenario_cagr(normalized.get("price_low"), current_price, years=years)
+    cagr_mid = compute_scenario_cagr(price_mid, current_price, years=years) if price_mid is not None else None
+    cagr_high = compute_scenario_cagr(normalized.get("price_high"), current_price, years=years)
+
+    normalized.update(
+        price_mid=price_mid,
+        cagr_low=cagr_low if cagr_low is not None else default_cagr,
+        cagr_mid=cagr_mid if cagr_mid is not None else default_cagr,
+        cagr_high=cagr_high if cagr_high is not None else default_cagr,
+    )
+    return normalized
+
+
+def enrich_scenarios_with_midpoints(scenarios, current_price, years=5, default_cagr=0.0):
     populated = []
     for item in scenarios or []:
-        scenario = dict(item)
-        cagr_low = compute_scenario_cagr(scenario.get("price_low"), current_price, years=years)
-        cagr_high = compute_scenario_cagr(scenario.get("price_high"), current_price, years=years)
-        scenario.update(
-            cagr_low=cagr_low if cagr_low is not None else default_cagr,
-            cagr_high=cagr_high if cagr_high is not None else default_cagr,
+        populated.append(
+            enrich_scenario_with_midpoints(
+                item,
+                current_price=current_price,
+                years=years,
+                default_cagr=default_cagr,
+            )
         )
-        populated.append(scenario)
     return populated
+
+
+def calculate_expected_cagr(scenarios):
+    weighted = 0.0
+    total_prob = 0.0
+    for scenario in scenarios or []:
+        try:
+            probability = float(scenario.get("probability"))
+            cagr_mid = float(scenario.get("cagr_mid"))
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in (probability, cagr_mid)):
+            continue
+        weighted += cagr_mid * probability
+        total_prob += probability
+
+    if total_prob <= 0:
+        return None
+    return weighted / total_prob
 
 
 def compute_scenario_midpoints(scenarios):
@@ -2976,7 +3051,7 @@ def validate_scenario_output(payload, symbol, current_price=None):
         return {"ok": False, "reason": "probability_total_out_of_range", "parsed": None}
 
     normalized = sorted(normalized, key=lambda s: ["Bear", "Base", "Bull"].index(s["scenario_name"]))
-    normalized = populate_scenario_cagr_fields(normalized, current_price=current_price)
+    normalized = enrich_scenarios_with_midpoints(normalized, current_price=current_price)
     mids = compute_scenario_midpoints(normalized)
     if not (mids["Bear"] <= mids["Base"] <= mids["Bull"]):
         return {"ok": False, "reason": "scenario_midpoint_order_invalid", "parsed": None}
@@ -3036,6 +3111,7 @@ def aggregate_scenario_runs(runs, symbol, current_price=None):
     if len(runs) == 1:
         final = dict(runs[0]["parsed"])
         final["scenarios"] = _normalize_probabilities(final["scenarios"])
+        final["scenarios"] = enrich_scenarios_with_midpoints(final["scenarios"], current_price=current_price)
         return final
 
     final_scenarios = []
@@ -3055,7 +3131,7 @@ def aggregate_scenario_runs(runs, symbol, current_price=None):
         )
 
     final_scenarios = _normalize_probabilities(final_scenarios)
-    final_scenarios = populate_scenario_cagr_fields(final_scenarios, current_price=current_price)
+    final_scenarios = enrich_scenarios_with_midpoints(final_scenarios, current_price=current_price)
     best = max(runs, key=lambda r: r.get("quality_score", 0.0))
     return {
         "symbol": symbol,
@@ -3134,7 +3210,7 @@ def list_analysis_symbols(conn):
     rating_settings = get_rating_settings(conn)
     rows = conn.execute(
         """
-        SELECT r.symbol, v.current_price, v.expected_price, v.upside, v.confidence_level AS overall_confidence,
+        SELECT r.symbol, v.current_price, v.expected_price, v.expected_cagr, v.upside, v.confidence_level AS overall_confidence,
                v.version_number AS analysis_version,
                COALESCE(
                    (
@@ -3286,7 +3362,7 @@ def _normalize_manual_key_variables(raw_key_variables):
 def _version_payload(conn, version_row):
     scenarios = conn.execute(
         """
-        SELECT scenario_name, price_low, price_high, cagr_low, cagr_high, probability
+        SELECT scenario_name, price_low, price_mid, price_high, cagr_low, cagr_mid, cagr_high, probability
         FROM analysis_version_scenarios
         WHERE analysis_version_id = ?
         ORDER BY CASE scenario_name WHEN 'Bear' THEN 1 WHEN 'Base' THEN 2 WHEN 'Bull' THEN 3 ELSE 99 END
@@ -3356,6 +3432,7 @@ def _version_payload(conn, version_row):
         "company_name": version_row["company_name"],
         "current_price": version_row["current_price"],
         "expected_price": version_row["expected_price"],
+        "expected_cagr": version_row["expected_cagr"],
         "upside": version_row["upside"],
         "overall_confidence": version_row["confidence_level"],
         "bullish_confidence": bullish_confidence,
@@ -3489,7 +3566,9 @@ def _insert_analysis_version(
     version_number = latest + 1
     now = utc_now_iso()
 
-    expected_price = calculate_expected_price(scenarios)
+    scenarios_with_cagr = enrich_scenarios_with_midpoints(scenarios, current_price=current_price)
+    expected_price = calculate_expected_price(scenarios_with_cagr)
+    expected_cagr = calculate_expected_cagr(scenarios_with_cagr)
     upside = calculate_upside(expected_price, current_price)
     confidence = calculate_overall_confidence(key_variables)
 
@@ -3497,9 +3576,9 @@ def _insert_analysis_version(
         """
         INSERT INTO analysis_versions (
             analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
-            upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
+            expected_cagr, upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
             raw_ai_response, source_trigger, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             root_id,
@@ -3508,6 +3587,7 @@ def _insert_analysis_version(
             company_name,
             current_price,
             expected_price,
+            expected_cagr,
             upside,
             confidence,
             assumptions,
@@ -3520,22 +3600,22 @@ def _insert_analysis_version(
     )
     version_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
-    scenarios_with_cagr = populate_scenario_cagr_fields(scenarios, current_price=current_price)
-
     for scenario in scenarios_with_cagr:
         conn.execute(
             """
             INSERT INTO analysis_version_scenarios (
-                analysis_version_id, scenario_name, price_low, price_high, cagr_low,
-                cagr_high, probability, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                analysis_version_id, scenario_name, price_low, price_mid, price_high, cagr_low,
+                cagr_mid, cagr_high, probability, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 version_id,
                 scenario["scenario_name"],
                 scenario["price_low"],
+                scenario.get("price_mid"),
                 scenario["price_high"],
                 scenario.get("cagr_low"),
+                scenario.get("cagr_mid"),
                 scenario.get("cagr_high"),
                 scenario["probability"],
                 now,
@@ -3980,6 +4060,7 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
         row = dict(position)
         row["rating"] = analysis.get("rating") if analysis else None
         row["upside"] = analysis.get("upside") if analysis else None
+        row["expected_cagr"] = analysis.get("expected_cagr") if analysis else None
         row["bullish_confidence"] = analysis.get("bullish_confidence") if analysis else None
         row["bearish_confidence"] = analysis.get("bearish_confidence") if analysis else None
         row["confidence_diff"] = analysis.get("confidence_diff") if analysis else None
@@ -4408,6 +4489,7 @@ def _build_earnings_review_thesis_snapshot(conn, symbol):
         "rating": version.get("rating"),
         "current_price": version.get("current_price"),
         "expected_price": version.get("expected_price"),
+        "expected_cagr": version.get("expected_cagr"),
         "upside": version.get("upside"),
         "business_model": version.get("business_model") or "",
         "business_summary": version.get("business_summary") or "",

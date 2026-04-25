@@ -173,7 +173,7 @@ SCENARIO_MAX_AVG_DEVIATION = 0.30
 
 DEFAULT_PROMPT_BUSINESS_MODEL = """You are an equity analyst.
 
-Describe the business model of the publicly traded company below.
+Describe the business model of the publicly traded company below for use in a 5-year stock scenario analysis.
 
 Company context:
 - Symbol: $Symbol
@@ -181,11 +181,24 @@ Company context:
 - Current price: $Price USD
 
 Instructions:
-- Explain what the company does in the real world.
+- Explain what the company does in the real world. 
 - Explain how it makes money.
-- Explain the core economic engine that drives revenue and margins.
+- Explain the core economic engine that drives revenue, margins, and operating leverage.
 - Keep the description practical, concise, and business-focused.
 - Focus on the operating business, not stock valuation.
+- Write the output as an internal analysis input, not as a research report.
+
+Guidance:
+- Focus on:
+  - products and services
+  - customer base
+  - revenue model
+  - main cost structure
+  - the business drivers that matter for future scenarios
+- Prefer plain business language over narrative or promotional wording.
+- Do not include citations, links, source attributions, or markdown references in the output.
+- Do not mention where the information came from.
+- Avoid unnecessary detail that is not useful for scenario building.
 
 Return ONLY valid JSON in this exact structure:
 {
@@ -197,16 +210,16 @@ Return ONLY valid JSON in this exact structure:
 
 Rules:
 - Be specific and practical.
-- business_model should be concise but concrete.
-- business_summary should be short and useful for later analysis.
+- business_model should be concise, concrete, and ideally 5 to 8 sentences.
+- business_summary should be short, useful for later analysis, and ideally 2 to 4 sentences.
+- Do not include links, citations, or source references anywhere in the JSON fields.
 - JSON only.
 - No markdown.
 - No commentary outside JSON."""
 
 DEFAULT_PROMPT_KEY_VARIABLES = """You are an equity analyst.
 
-Using the business model below, identify the few most important company-specific variables that could materially push the stock price up or down over the next 5 years.
-
+Using the Company name and business model below, identify the 6 to 8 most important company-specific key variables that could materially push the stock price up or down over the next 5 years.
 Company context:
 - Symbol: $Symbol
 - Company name: $CompanyName
@@ -218,10 +231,35 @@ Definitions:
 - Confidence means how strong the current evidence is that this variable is acting in that direction now.
 - Importance means how much this variable could influence the stock price over the 5-year horizon.
 
+What makes a strong key variable:
+- specific
+- causal
+- business-relevant
+- material over 5 years
+- clearly Bullish or clearly Bearish
+- useful for scenario building
+
+Preferred structure:
+[specific driver or risk] + [clear business effect]
+
 Guidance:
-- Prefer company-specific drivers such as demand growth, product adoption, pricing power, margins, utilization, capacity expansion, customer concentration, contract pipeline, technology leadership, competitive position, execution risk, capital intensity, or dilution risk when relevant.
-- Avoid generic macro variables such as GDP growth, interest rates, regulation, legal risk, or valuation multiples unless they are truly dominant drivers for this specific company.
-- Focus on the few variables that matter most.
+- Prefer company-specific drivers such as demand growth, product adoption, pricing power, revenue mix, margins, utilization, capacity expansion, customer concentration, contract pipeline, technology execution, competitive position, capital intensity, funding, dilution, or balance-sheet risk when relevant.
+- Focus on variables that are directly tied to the actual business model.
+- Avoid generic macro filler such as GDP, inflation, interest rates, or broad market conditions unless they are clearly central to this company’s economics.
+- Avoid vague sponsor/management language such as “strong positioning”, “innovation leadership”, or “effective management” unless made specific and causal.
+- Avoid variables that are too broad, too trivial, or too thematic without a clear business mechanism.
+- Avoid overlap: each variable should represent a distinct concept, not a reworded version of another variable.
+- Do not mix bullish and bearish directions in the same variable.
+- Most variables should be business drivers or risks, not secondary consequences.
+- Use scoring discipline: do not give too many 10/10 scores, do not make everything highly important, and do not overstate confidence for speculative optionality.
+
+ETF-specific guidance:
+- If the symbol is an ETF, focus mainly on:
+  - what drives the underlying holdings’ earnings, cash flow, or margins
+  - adoption/commercialization of the underlying sector/theme
+  - valuation rerating or derating of the underlying holdings
+  - concentration, liquidity, cyclicality, or funding risk when relevant
+- Do not focus on sponsor economics, fee competitiveness, securities lending, or generic active-management language unless truly central.
 
 Return ONLY valid JSON in this exact structure:
 {
@@ -237,16 +275,22 @@ Return ONLY valid JSON in this exact structure:
 }
 
 Rules:
-- Return at least 6 key variables.
-- Most variables should be company-specific business drivers.
-- type must be exactly Bullish or Bearish.
+- Return 6 to 8 key variables only.
+- Include both Bullish and Bearish variables.
+- The set should focus on the few most material 5-year drivers of the stock.
+- Include only the variables that most likely determine the 5-year outcome, exclude secondary variables unless they are clearly more important than a core driver/risk.
+- Each variable must be specific, causal, and clearly linked to revenue, margins, cash flow, or valuation.
+- Each variable must be clearly and exclusively Bullish or Bearish.
+- Avoid overlap between variables, if two candidate variables describe the same mechanism, keep only the stronger one
+- Keep each variable text concise. Prefer a short phrase or one short sentence, not a full explanation. Do not explicitly include “mechanism:” or “financial consequence:” in the variable text.
 - confidence must be an integer from 0 to 10.
 - importance must be an integer from 0 to 10.
+- Use score discipline: reserve the highest scores for only the most central and well-supported variables.
 - JSON only.
 - No markdown.
 - No commentary outside JSON."""
 
-DEFAULT_PROMPT_SCENARIOS = """You are an equity analyst building a 5-year stock scenario analysis.
+DEFAULT_PROMPT_SCENARIOS = """You are an equity analyst building a disciplined 5-year stock scenario analysis.
 
 Company context:
 - Symbol: $Symbol
@@ -254,9 +298,10 @@ Company context:
 - Current price: $Price USD
 - Business model: $BusinessModel
 - Key variables: $KeyVariables
+- If the $Symbol is an ETF, center the analysis on its top holdings.
 
 Task:
-Build Bear, Base, and Bull stock price scenarios over a 5-year horizon using the business model and key variables above.
+Build Bear, Base, and Bull stock price scenarios over a 5-year horizon using the company name, business model, current price, and key variables above.
 
 Definitions:
 - Bear = pessimistic but plausible outcome
@@ -268,21 +313,54 @@ Return ONLY valid JSON in this exact structure:
   "symbol": "$Symbol",
   "assumptions": "short explanation of the thesis behind the scenarios",
   "scenarios": [
-    {"name": "Bear", "price_low": 0, "price_high": 0, "cagr_low": 0, "cagr_high": 0, "probability": 0},
-    {"name": "Base", "price_low": 0, "price_high": 0, "cagr_low": 0, "cagr_high": 0, "probability": 0},
-    {"name": "Bull", "price_low": 0, "price_high": 0, "cagr_low": 0, "cagr_high": 0, "probability": 0}
+    {"name": "Bear", "price_low": 0, "price_high": 0, "probability": 0},
+    {"name": "Base", "price_low": 0, "price_high": 0, "probability": 0},
+    {"name": "Bull", "price_low": 0, "price_high": 0, "probability": 0}
   ]
 }
 
 Rules:
 - Exactly 3 scenarios in this order: Bear, Base, Bull.
+- Build each scenario primarily from the key variables provided and the business model.
+- The Bear case should reflect stronger materialization of the most important bearish variables.
+- The Bull case should reflect stronger materialization of the most important bullish variables.
+- The Base case must reflect the most likely balance of the variable set and must not simply be a softened Bull case.
 - Probabilities must sum to 100.
-- Use realistic price ranges and CAGR ranges.
-- If current price is known, use it as an anchor, but do not force the Base case too close to the current price if the business profile justifies otherwise.
-- assumptions should be concise and reflect the business model and key variables.
-- JSON only.
-- No markdown.
-- No commentary outside JSON."""
+
+Fresh-information rule:
+Before building scenarios, review the latest company earnings release and guidance, and consider only recent news or analyst commentary that materially changes the company’s key variables, current expectations, or scenario probabilities. Prioritize primary sources and factual updates over sentiment or low-signal market commentary.
+
+The key variables are the primary foundation for the scenario analysis. Build the Bear, Base, and Bull scenarios mainly from the highest-importance and highest-confidence key variables, and ensure that the scenario assumptions, price ranges, and probabilities are directly driven by how those variables could evolve over the next 5 years.
+
+Valuation discipline:
+- A strong business does not automatically imply high stock upside.
+- Current valuation, company size, and already-priced expectations must materially constrain scenario outputs.
+- Do not assume extreme 5-year upside unless clearly supported by multiple high-confidence, high-importance bullish variables and limited material bearish constraints.
+- High-importance bullish and bearish variables must materially affect price ranges and probabilities, not just the written assumptions.
+- If the stock is not obviously expensive relative to its risk, growth profile, and business quality, allow meaningful upside when justified by the variables.
+
+Scenario realism:
+- Use realistic price ranges that reflect both business performance and valuation constraints.
+- Do not let optionality, speculative new products, or long-shot TAM expansion dominate the scenarios unless strongly supported by current evidence.
+- Avoid ultra-optimistic outcomes that require near-perfect execution across multiple variables unless such outcomes are assigned a clearly low probability.
+- Keep Bull plausible, not aspirational.
+- Keep Bear pessimistic, not catastrophic unless the variable set truly supports that.
+- The wider and more uncertain the path, the lower the probability should be.
+- Use latest earnings release / shareholder letter / earnings call guidance and extract only facts that materially affect the 5-year thesis and current scenario framing.
+- Use latest earnings release to understand current company valuation.
+
+Interpretation rules:
+- Distinguish clearly between business quality and stock attractiveness.
+- A company can be excellent while the stock has limited upside.
+- If current price is known, use it as an anchor, but do not force the Base case close to current price when the variable set clearly justifies deviation.
+- Scenario probabilities must reflect the weighted balance of key variables using both importance and confidence.
+- Avoid generic default probability splits unless the evidence is truly balanced.
+- assumptions should be concise and reflect the business model and most important key variables.
+- If the symbol is an ETF, reflect the performance drivers and risks of its top holdings.
+
+JSON only.
+No markdown.
+No commentary outside JSON."""
 
 DEFAULT_PROMPT_RECENT_EVENT_CANDIDATE = """You are an equity analyst assistant preparing candidate recent events for later thesis-review analysis.
 
@@ -429,16 +507,91 @@ Current key variables:
 $KeyVariables
 
 Instructions:
-- For each key variable, generate 4 to 6 concise and specific earnings watchpoints.
-- The watchpoints must be directly linked to that key variable, not generic market commentary.
-- Focus on what should be checked in an earnings release, shareholder letter, management commentary, or guidance to determine whether the key variable is being supported, weakened, or contradicted.
-- Include watchpoints related to metrics, management commentary, demand signals, margin implications, customer/adoption indicators, and forward guidance whenever relevant.
-- Avoid vague filler such as “watch revenue” unless the revenue point is specifically tied to the variable.
+- For each key variable, generate only the most relevant and high-signal earnings watchpoints.
+- The number of watchpoints must vary naturally depending on the variable.
+- Some variables may justify only 1–2 meaningful watchpoints. Others may justify more.
+- Do NOT aim for consistency in count across variables.
+- Do NOT add extra watchpoints for balance or completeness.
+
+Core objective:
+- Generate watchpoints that are easy to evaluate later from earnings materials.
+- Each watchpoint should be designed so that, after earnings, it can realistically be classified as:
+  - Confirmed
+  - Partially confirmed
+  - Contradicted
+  - Not addressed
+  - Unclear
+
+Key watchpoint design rules:
+- Each watchpoint must be directly linked to the specific key variable and reflect how that variable would be validated or challenged during an earnings release.
+- Each watchpoint should represent one main observable signal.
+- Strongly prefer a single clear metric, trend, disclosure, or management commentary topic per watchpoint.
+- Avoid combining multiple independent ideas into one watchpoint.
+- Avoid writing watchpoints that require several separate disclosures to be fully satisfied.
+- If a concept has two or three distinct observable parts, prefer splitting them into separate watchpoints rather than combining them into one.
+- A good watchpoint should be specific enough to evaluate, but not so narrow that it depends on a disclosure the company rarely provides or on a metric being explicitly labeled in a specific way.
+
+- Prefer watchpoints that can be evaluated from either:
+  - directly disclosed earnings metrics, or
+  - simple calculations from standard disclosed earnings data (for example, revenue, deliveries, margins, deployments, customer counts, backlog, guidance tables, or similar standard company-reported operating metrics).
+- Avoid watchpoints that depend on management explicitly presenting a custom metric if the same concept could be tracked through a more standard disclosed signal.
+- When possible, phrase the watchpoint around the underlying business signal rather than requiring a company-specific label.
+
+Use only realistically observable earnings information:
+- Focus ONLY on information that can realistically and consistently be observed in:
+  - earnings releases
+  - shareholder letters
+  - management commentary / earnings calls
+  - company-provided guidance
+  - company-provided tables, KPI summaries, charts, and operating metric disclosures
+
+Strongly prefer watchpoints based on:
+- commonly reported metrics (revenue growth, margins, bookings, ARR, deliveries, deployments, churn/retention, customer counts, etc.)
+- management commentary (demand, pipeline, pricing, customer behavior, deal dynamics, adoption, ramp timing)
+- forward guidance (raised, maintained, lowered expectations)
+- product adoption, commercial rollout, or pricing signals that are typically discussed
+- trends that can be inferred from disclosed operating or financial data
+
+Avoid weak watchpoints:
+- Avoid watchpoints that depend on information companies rarely disclose explicitly (for example: detailed internal splits, exact pipeline composition, precise unit economics, or very specific internal cost allocations).
+- Avoid watchpoints that are too broad to evaluate cleanly.
+- Avoid watchpoints that are too narrow to be realistically discussed in most earnings cycles.
+- Avoid generic items such as “watch revenue” unless clearly tied to the key variable.
 - Avoid repeating the same idea with different wording.
-- Keep the wording concise, practical, and company-specific.
-- Do not generate overall earnings summaries.
-- Do not evaluate outcomes yet.
-- Only generate watchpoints to monitor in a future earnings review.
+- Avoid watchpoints that merely restate the key variable without identifying a concrete earnings signal.
+- Avoid watchpoints that require both an exact metric and a separate explicit management statement if either one alone would already provide a meaningful earnings signal.
+- Avoid writing watchpoints that become untestable unless management discloses a very specific internal breakdown.
+- Prefer observable signals that can be assessed from standard earnings tables, KPI summaries, and guidance disclosures.
+
+Forward-looking emphasis:
+- Include forward-looking elements when relevant, especially:
+  - changes in guidance
+  - management tone about future demand, growth, margins, adoption, or timing
+  - confirmation or revision of previously stated expectations
+- Guidance-related watchpoints are encouraged when they are one of the clearest ways to validate the variable.
+
+Usability requirements:
+- Prefer concise, high-signal wording that is easy to scan in a UI.
+- Prefer fewer, stronger watchpoints over exhaustive coverage.
+- Each watchpoint should be useful later for re-evaluating the related key variable.
+- If a watchpoint would likely lead to a vague later conclusion, do not generate it.
+- If multiple candidate watchpoints are closely related, keep only the strongest one unless separate evaluation would clearly add value.
+
+Examples of strong watchpoint style:
+- a disclosed trend in a key operating metric
+- a change in a directly relevant margin or growth metric
+- management commentary on demand, pricing, adoption, or ramp timing
+- a change in company guidance relevant to the variable
+
+Examples of weak watchpoint style:
+- a watchpoint that asks for three unrelated disclosures at once
+- a watchpoint that depends on a metric rarely disclosed
+- a watchpoint that is so generic it could apply to almost any company
+- a watchpoint that cannot later be evaluated cleanly from earnings materials
+
+Do not generate overall earnings summaries.
+Do not evaluate outcomes yet.
+Only generate watchpoints to monitor in a future earnings review.
 
 Output requirements:
 - Return valid JSON only.
@@ -451,9 +604,7 @@ Output requirements:
       "type": "Bullish or Bearish if known, otherwise empty string",
       "watchpoints": [
         "watchpoint 1",
-        "watchpoint 2",
-        "watchpoint 3",
-        "watchpoint 4"
+        "watchpoint 2"
       ]
     }
   ]
@@ -461,8 +612,15 @@ Output requirements:
 
 Rules:
 - Preserve the exact key variable text when possible.
-- Ensure each watchpoint is concrete enough to be useful during earnings review.
-- Make sure the output is specific to the company and thesis provided."""
+- Ensure each watchpoint is concrete, observable, and realistically checkable in earnings materials.
+- Ensure each watchpoint focuses on one main observable signal.
+- Prefer fewer, stronger watchpoints over exhaustive lists.
+- If only one or two watchpoints truly matter, return only those.
+- Do not force symmetry across variables.
+- Make sure the output is specific to the company and thesis provided.
+- If multiple watchpoints are closely related, consolidate them into a single stronger watchpoint instead of listing them separately.
+- Do not generate a watchpoint that mainly depends on information the company is unlikely to disclose during normal earnings materials.
+- Prefer watchpoints that remain evaluable even if the company provides the relevant signal through standard tables or disclosed inputs rather than through explicit narrative commentary."""
 
 DEFAULT_PROMPT_EARNINGS_WATCHPOINT_ANALYSIS = """You are reviewing an investment thesis after an earnings release.
 
@@ -491,17 +649,72 @@ Instructions:
   - Contradicted
   - Not addressed
   - Unclear
-- Use “Not addressed” when the documents do not meaningfully discuss the watchpoint.
-- Use “Unclear” when the documents contain related information but the signal is too ambiguous or mixed to classify confidently.
-- Use “Partially confirmed” when the documents support only part of the watchpoint or support it with important caveats.
+
+Core interpretation rules:
+- Evaluate each watchpoint based on the substance of the information in the uploaded earnings documents, not exact wording.
+- A watchpoint is considered addressed if the documents provide the underlying metric, fact, trend, table, chart, KPI, management statement, or standard disclosed inputs needed to evaluate it, even if the wording does not exactly match the watchpoint and even if the metric must be directly calculated or inferred from clearly disclosed data.
+- Treat tables, charts, KPI summaries, operating metrics, financial summaries, and management commentary as valid sources for evaluating a watchpoint.
+- Do not require the company to use the same labels or terminology as the watchpoint.
+- If the documents contain enough information to evaluate at least one meaningful part of a watchpoint, do not classify it as “Not addressed” unless the uncovered portion is so material that no meaningful conclusion can be drawn.
+- If a watchpoint asks for multiple elements and one important element is clearly disclosed while other elements are missing, prefer “Partially confirmed” over “Not addressed.”
+- If the documents provide enough information to evaluate the main economic signal of the watchpoint, do not use “Not addressed” just because one secondary sub-element is missing.
+- Use “Not addressed” only when the main economic signal itself cannot be evaluated from the uploaded documents.
+
+Status definitions:
+- Confirmed:
+  The uploaded documents clearly support the watchpoint in substance.
+- Partially confirmed:
+  The uploaded documents support an important part of the watchpoint, but not all of it, or support it with meaningful caveats.
+- Contradicted:
+  The uploaded documents clearly go against the watchpoint in substance.
+- Not addressed:
+  The uploaded documents do not provide enough meaningful information to evaluate the watchpoint in substance.
+- Unclear:
+  The uploaded documents contain related information, but the signal is too ambiguous, mixed, or inconclusive to classify confidently.
+
+Important decision rules:
+- Prefer “Partially confirmed” over “Not addressed” when some meaningful part of the watchpoint is addressed.
+- If a watchpoint contains multiple sub-points, do not classify it as “Not addressed” just because not every sub-point is covered.
+- If one or more important parts are addressed but other parts are missing, use “Partially confirmed.”
+- Use “Not addressed” only when the documents truly do not provide enough meaningful information to assess the watchpoint.
+- Use “Unclear” only when the documents provide related information but the conclusion is genuinely ambiguous or mixed.
 - Do not use “Unclear” because document text is unreadable or missing.
 - If documents are unreadable, the system should fail before analysis.
-- Keep result_text concise, practical, and easy to scan in the UI.
-- Do not include long explanations.
+- Be careful not to confuse “not explicitly labeled” with “not disclosed.” If the necessary business information is present in standard earnings materials, the watchpoint is addressed.
+
+Result text requirements:
+- Keep result_text concise, practical, and useful for later key-variable re-evaluation.
+- result_text must not be generic.
+- When available, include the actual disclosed fact, metric, trend, or management statement that drove the classification.
+- When available, indicate directionality such as up, down, improved, weakened, accelerating, slowing, stronger, or softer.
+- Briefly explain why the disclosed information supports, partially supports, contradicts, or fails to address the watchpoint.
+- Prefer 1 to 2 short sentences.
 - Do not quote the documents.
 - Do not include evidence excerpts or document source references.
+- Do not restate the entire watchpoint unless needed for clarity.
+- When a watchpoint is evaluated using disclosed inputs rather than an explicitly labeled company metric, say so clearly in result_text.
+
+Examples of good result_text:
+- “The company disclosed the relevant operating metric and it improved versus the prior period, which supports this watchpoint.”
+- “Management discussed part of this issue and provided directional commentary, but the documents did not include the full quantitative breakout, so the watchpoint is only partially confirmed.”
+- “The disclosed trend moved in the opposite direction from what this watchpoint expected, so the watchpoint is contradicted.”
+- “The documents did not provide enough meaningful disclosure on this topic to evaluate the watchpoint.”
+- “The documents discussed the topic, but the signals were mixed and not conclusive enough to classify more confidently.”
+- “The company disclosed the underlying revenue and volume inputs, which allow the relevant trend to be calculated even though the metric was not explicitly labeled.”
+- “The documents addressed the main operating signal relevant to this watchpoint, but did not provide all requested sub-details, so the watchpoint is only partially confirmed.”
+
+Examples of bad result_text:
+- “The documents discuss this topic.”
+- “This watchpoint was addressed.”
+- “Metrics were provided.”
+- “Relevant commentary was included.”
+- “The materials mention this area.”
+
+Scope rules:
 - Do not re-evaluate the key variables yet.
 - Do not re-run scenarios.
+- Do not infer beyond what the uploaded documents reasonably support.
+- Do not invent data not present in the uploaded documents.
 - Focus only on evaluating the watchpoints.
 
 Output requirements:
@@ -521,11 +734,17 @@ Output requirements:
 }
 
 Rules:
+- Preserve watchpoint_id exactly as provided.
 - Preserve the exact watchpoint text when possible.
-- Keep result_text concise, ideally 1 to 3 sentences.
-- Make sure every existing watchpoint receives one result.
-- If evidence is insufficient, still return that watchpoint_id with status Unclear.
-- Do not invent data not present in the uploaded documents."""
+- Keep result_text concise, ideally 1 to 2 short sentences.
+- Make sure every existing watchpoint receives exactly one result.
+- Do not omit any watchpoint_id.
+- Do not add extra watchpoint_ids.
+- Do not invent data not present in the uploaded documents.
+- Do not default to “Not addressed” just because the company did not disclose the exact metric wording requested.
+- When the documents provide the underlying fact, trend, table, chart, KPI, or management disclosure needed to assess the watchpoint, treat the watchpoint as addressed.
+- When a watchpoint is classified as Confirmed, Partially confirmed, or Contradicted, make the result_text specific enough to help a later re-evaluation of the related key variable.
+- Do not classify a watchpoint as “Not addressed” when the uploaded documents provide standard disclosed inputs that clearly allow the main trend or conclusion to be calculated or reasonably inferred."""
 
 
 ALLOWED_ALERT_TYPES = {

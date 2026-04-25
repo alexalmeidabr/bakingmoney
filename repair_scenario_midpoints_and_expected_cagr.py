@@ -148,15 +148,22 @@ def repair_scenario_table(conn, table_name, select_sql, update_sql, dry_run):
     return summary
 
 
-def compute_expected_cagr_from_rows(rows):
+def compute_expected_cagr_from_rows(rows, current_price):
+    current = positive_number(current_price)
+    if current is None:
+        return None
+
     weighted_sum = 0.0
     probability_sum = 0.0
     valid_points = 0
 
     for row in rows:
         probability = finite_number(row["probability"])
-        cagr_mid = finite_number(row["cagr_mid"])
-        if probability is None or cagr_mid is None:
+        if probability is None:
+            continue
+        price_mid = compute_price_mid(row["price_low"], row["price_high"])
+        cagr_mid = compute_cagr_mid(price_mid, current)
+        if cagr_mid is None:
             continue
         weighted_sum += probability * cagr_mid
         probability_sum += probability
@@ -170,11 +177,17 @@ def compute_expected_cagr_from_rows(rows):
 def repair_expected_cagr_table(conn, table_name, id_col, scenario_table, scenario_fk, dry_run):
     summary = ExpectedSummary(name=table_name)
 
-    parent_rows = conn.execute(f"SELECT {id_col} AS id, expected_cagr FROM {table_name} ORDER BY {id_col} ASC").fetchall()
+    parent_rows = conn.execute(
+        f"SELECT {id_col} AS id, current_price, expected_cagr FROM {table_name} ORDER BY {id_col} ASC"
+    ).fetchall()
     summary.scanned = len(parent_rows)
 
     scenario_rows = conn.execute(
-        f"SELECT {scenario_fk} AS parent_id, probability, cagr_mid FROM {scenario_table} ORDER BY {scenario_fk} ASC"
+        f"""
+        SELECT {scenario_fk} AS parent_id, probability, price_low, price_high
+        FROM {scenario_table}
+        ORDER BY {scenario_fk} ASC
+        """
     ).fetchall()
 
     grouped = {}
@@ -190,7 +203,7 @@ def repair_expected_cagr_table(conn, table_name, id_col, scenario_table, scenari
             summary.skip_reasons["no_scenarios"] += 1
             continue
 
-        computed_expected_cagr = compute_expected_cagr_from_rows(rows)
+        computed_expected_cagr = compute_expected_cagr_from_rows(rows, parent["current_price"])
         if computed_expected_cagr is None:
             summary.skipped += 1
             summary.skip_reasons["invalid_scenario_inputs"] += 1

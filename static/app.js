@@ -533,10 +533,12 @@ function syncSelectAllCheckbox() {
 }
 
 function showAnalysisList() { analysisListView.classList.remove('hidden'); analysisDetailView.classList.add('hidden'); }
-function setAnalysisDetailBackButton() {
-  const fromPositions = analysisDetailOrigin === 'positions';
-  analysisDetailOrigin = fromPositions ? 'positions' : 'analysis';
-  analysisBackBtn.textContent = fromPositions ? '← Back to My Positions' : '← Back to Analysis';
+function updateAnalysisBackButton() {
+  if (analysisDetailOrigin === 'positions') {
+    analysisBackBtn.textContent = '← Back to My Positions';
+  } else {
+    analysisBackBtn.textContent = '← Back to Analysis';
+  }
 }
 function loadBackupView() {
   if (!backupStatusEl) return;
@@ -781,11 +783,10 @@ function renderVariablesTable() {
 }
 
 async function openAnalysisDetailForSymbol(symbol, options = {}) {
-  const { origin = 'analysis' } = options;
-  analysisDetailOrigin = origin === 'positions' ? 'positions' : 'analysis';
-  setAnalysisDetailBackButton();
+  const origin = options.origin === 'positions' ? 'positions' : 'analysis';
+  analysisDetailOrigin = origin;
 
-  if (analysisDetailOrigin === 'positions') {
+  if (origin === 'positions') {
     views.forEach((view) => view.classList.toggle('active', view.id === 'analysis'));
     menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === 'positions'));
   } else {
@@ -801,6 +802,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   analysisSummary.classList.add('hidden');
   analysisListView.classList.add('hidden');
   analysisDetailView.classList.remove('hidden');
+  updateAnalysisBackButton();
   isEditingVariables = false;
   isEditingBusinessModel = false;
   isEditingBusinessSummary = false;
@@ -811,7 +813,6 @@ async function loadAnalysisDetail(symbol, versionId = null) {
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load details'));
     analysisDetailState = payload.analysis;
-    setAnalysisDetailBackButton();
     renderAnalysisDetail();
     analysisDetailStatus.textContent = `Loaded ${symbol} detail.`;
   } catch (error) {
@@ -2345,7 +2346,7 @@ analysisBackBtn.addEventListener('click', () => {
     setView('positions');
     return;
   }
-  setView('analysis');
+  showAnalysisList();
 });
 alertDetailBackBtn.addEventListener('click', backToAlertsFromDetail);
 alertDetailReviewBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Reviewed', { stayOnDetail: true, advanceAfterUpdate: true }); });

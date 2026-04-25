@@ -35,6 +35,14 @@ Local web UI for IBKR positions + AI-powered analysis using standard-library `ht
 6. Open:
    http://127.0.0.1:8080
 
+### Run tests
+
+From the project root:
+
+```bash
+pytest -q
+```
+
 ### Endpoints
 
 - `GET /` -> serves the single-page UI.

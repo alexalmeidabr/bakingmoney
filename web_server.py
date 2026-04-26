@@ -4185,10 +4185,16 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
 
 def save_positions_cache(conn, positions):
     now = utc_now_iso()
+    active_symbols = set()
     for row in positions or []:
         symbol = normalize_symbol(row.get("symbol"))
         if not symbol:
             continue
+        qty = safe_number(row.get("position"))
+        if abs(qty or 0.0) <= 0:
+            conn.execute("DELETE FROM positions_cache WHERE symbol = ?", (symbol,))
+            continue
+        active_symbols.add(symbol)
         conn.execute(
             """
             INSERT INTO positions_cache (
@@ -4219,6 +4225,14 @@ def save_positions_cache(conn, positions):
                 now,
             ),
         )
+    if active_symbols:
+        placeholders = ", ".join(["?"] * len(active_symbols))
+        conn.execute(
+            f"DELETE FROM positions_cache WHERE symbol NOT IN ({placeholders})",
+            tuple(sorted(active_symbols)),
+        )
+    else:
+        conn.execute("DELETE FROM positions_cache")
     conn.commit()
 
 
@@ -4244,6 +4258,7 @@ def load_positions_cache(conn):
             "currency": row["currency"],
         }
         for row in rows
+        if abs(safe_number(row["position"]) or 0.0) > 0
     ]
 
 
@@ -4270,6 +4285,8 @@ def build_positions_payload(conn, positions, data_source, warning=None):
     normalized_positions = []
     for row in positions or []:
         normalized_row = dict(row)
+        if abs(safe_number(normalized_row.get("position")) or 0.0) <= 0:
+            continue
         normalized_row["unrealizedPnLPercent"] = compute_unrealized_pnl_percent(normalized_row)
         normalized_row["costBasis"] = compute_cost_basis(normalized_row)
         normalized_positions.append(normalized_row)

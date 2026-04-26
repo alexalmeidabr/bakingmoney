@@ -335,7 +335,7 @@ function loadCachedPositions() {
     const raw = localStorage.getItem(POSITIONS_CACHE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter((item) => Math.abs(Number(item?.position) || 0) > 0) : [];
   } catch (_error) {
     return [];
   }
@@ -343,7 +343,10 @@ function loadCachedPositions() {
 
 function saveCachedPositions(positions) {
   try {
-    localStorage.setItem(POSITIONS_CACHE_KEY, JSON.stringify(Array.isArray(positions) ? positions : []));
+    const activeOnly = Array.isArray(positions)
+      ? positions.filter((item) => Math.abs(Number(item?.position) || 0) > 0)
+      : [];
+    localStorage.setItem(POSITIONS_CACHE_KEY, JSON.stringify(activeOnly));
   } catch (_error) {
     // Ignore localStorage write failures.
   }
@@ -468,7 +471,7 @@ function renderPositions() {
 }
 
 function getFilteredPositions() {
-  let items = latestPositions;
+  let items = latestPositions.filter((item) => Math.abs(Number(item?.position) || 0) > 0);
   const selectedRatings = getSelectedPositionRatings();
   if (selectedRatings.size > 0 && selectedRatings.size < RATING_FILTER_OPTIONS.length) {
     const expectedRatings = new Set(Array.from(selectedRatings).map((key) => RATING_FILTER_LABEL_BY_KEY[key]).filter(Boolean));

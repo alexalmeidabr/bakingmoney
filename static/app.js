@@ -172,6 +172,9 @@ const earningsReviewWorkflowPanelEl = document.getElementById('earnings-review-w
 const earningsReviewCalendarPanelEl = document.getElementById('earnings-review-calendar-panel');
 const earningsCalendarStatusEl = document.getElementById('earnings-calendar-status');
 const earningsCalendarTableBody = document.querySelector('#earnings-calendar-table tbody');
+const earningsCalendarPortfolioFilterEl = document.getElementById('earnings-calendar-portfolio-filter');
+const earningsCalendarDateFilterEl = document.getElementById('earnings-calendar-date-filter');
+const earningsCalendarReleaseDateHeaderEl = document.getElementById('earnings-calendar-release-date-header');
 
 let latestPositions = [];
 let positionSort = { key: 'marketValue', direction: 'desc' };
@@ -200,6 +203,9 @@ let earningsReviewSelectedRecordId = null;
 let earningsReviewSymbolHistory = null;
 let earningsReviewActiveTab = 'workflow';
 let earningsCalendarItems = [];
+let earningsCalendarPortfolioFilter = 'all';
+let earningsCalendarDateFilter = 'all';
+let earningsCalendarReleaseDateSortDirection = 'asc';
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
   hybrid_ai_weight: 0.70,
@@ -1559,9 +1565,49 @@ function setEarningsReviewTab(tab) {
   earningsReviewCalendarPanelEl.classList.toggle('hidden', !showCalendar);
 }
 
+function parseCalendarDate(value) {
+  if (!value || typeof value !== 'string') return null;
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  const parsed = new Date(year, month - 1, day);
+  if (Number.isNaN(parsed.getTime())) return null;
+  if (parsed.getFullYear() !== year || parsed.getMonth() !== (month - 1) || parsed.getDate() !== day) return null;
+  return parsed;
+}
+
+function getFilteredAndSortedEarningsCalendarItems() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const filtered = earningsCalendarItems.filter((item) => {
+    if (earningsCalendarPortfolioFilter === 'in_portfolio' && !item.in_portfolio) return false;
+    if (earningsCalendarPortfolioFilter === 'not_in_portfolio' && item.in_portfolio) return false;
+    if (earningsCalendarDateFilter === 'all') return true;
+    const releaseDate = parseCalendarDate(item.release_date);
+    if (!releaseDate) return false;
+    if (earningsCalendarDateFilter === 'future') return releaseDate > today;
+    if (earningsCalendarDateFilter === 'past') return releaseDate < today;
+    return true;
+  });
+  return filtered.sort((a, b) => {
+    const left = parseCalendarDate(a.release_date);
+    const right = parseCalendarDate(b.release_date);
+    if (!left && !right) return String(a.symbol || '').localeCompare(String(b.symbol || ''));
+    if (!left) return 1; // always last
+    if (!right) return -1; // always last
+    const delta = left.getTime() - right.getTime();
+    return earningsCalendarReleaseDateSortDirection === 'asc' ? delta : -delta;
+  });
+}
+
 function renderEarningsCalendarTable() {
   earningsCalendarTableBody.innerHTML = '';
-  earningsCalendarItems.forEach((item) => {
+  const items = getFilteredAndSortedEarningsCalendarItems();
+  earningsCalendarReleaseDateHeaderEl.dataset.sortDirection = earningsCalendarReleaseDateSortDirection;
+  items.forEach((item) => {
     const row = document.createElement('tr');
     const upsideClass = typeof item.upside === 'number' ? valueClass(item.upside) : '';
     const timingOptions = ['', 'Before Open', 'After Close']
@@ -1580,6 +1626,8 @@ function renderEarningsCalendarTable() {
     `;
     earningsCalendarTableBody.appendChild(row);
   });
+  earningsCalendarStatusEl.textContent = `Showing ${items.length} of ${earningsCalendarItems.length} analyzed symbol(s).`;
+  earningsCalendarStatusEl.className = 'status';
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-save-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const symbol = btn.dataset.symbol;
@@ -1608,6 +1656,7 @@ function renderEarningsCalendarTable() {
           matched.release_date = releaseDate || null;
           matched.release_timing = releaseTiming || null;
         }
+        renderEarningsCalendarTable();
       } catch (error) {
         earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
         earningsCalendarStatusEl.className = 'status error';
@@ -1619,6 +1668,8 @@ function renderEarningsCalendarTable() {
 }
 
 async function loadEarningsCalendar() {
+  earningsCalendarPortfolioFilterEl.value = earningsCalendarPortfolioFilter;
+  earningsCalendarDateFilterEl.value = earningsCalendarDateFilter;
   earningsCalendarStatusEl.textContent = 'Loading analyzed companies…';
   earningsCalendarStatusEl.className = 'status';
   try {
@@ -1627,8 +1678,6 @@ async function loadEarningsCalendar() {
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings calendar.'));
     earningsCalendarItems = Array.isArray(payload.items) ? payload.items : [];
     renderEarningsCalendarTable();
-    earningsCalendarStatusEl.textContent = `Showing ${earningsCalendarItems.length} analyzed symbol(s).`;
-    earningsCalendarStatusEl.className = 'status';
   } catch (error) {
     earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
     earningsCalendarStatusEl.className = 'status error';
@@ -2571,6 +2620,18 @@ earningsReviewTabCalendarBtn.addEventListener('click', async () => {
   setEarningsReviewHash(null);
   setEarningsReviewTab('calendar');
   await loadEarningsReview();
+});
+earningsCalendarPortfolioFilterEl.addEventListener('change', () => {
+  earningsCalendarPortfolioFilter = earningsCalendarPortfolioFilterEl.value || 'all';
+  renderEarningsCalendarTable();
+});
+earningsCalendarDateFilterEl.addEventListener('change', () => {
+  earningsCalendarDateFilter = earningsCalendarDateFilterEl.value || 'all';
+  renderEarningsCalendarTable();
+});
+earningsCalendarReleaseDateHeaderEl.addEventListener('click', () => {
+  earningsCalendarReleaseDateSortDirection = earningsCalendarReleaseDateSortDirection === 'asc' ? 'desc' : 'asc';
+  renderEarningsCalendarTable();
 });
 earningsReviewAddSymbolEl.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {

@@ -1664,7 +1664,7 @@ function renderEarningsCalendarTable() {
       .map((value) => `<option value="${value}" ${value === (item.release_timing || '') ? 'selected' : ''}>${value || 'Not set'}</option>`)
       .join('');
     row.innerHTML = `
-      <td>${escapeHtml(item.symbol || '')}</td>
+      <td><button class="symbol-link earnings-calendar-symbol-link" data-symbol="${escapeHtml(item.symbol || '')}">${escapeHtml(item.symbol || '')}</button></td>
       <td>${escapeHtml(item.company_name || 'N/A')}</td>
       <td class="earnings-calendar-cell"><input type="text" class="earnings-calendar-date earnings-calendar-date-input earnings-calendar-date-text" data-symbol="${escapeHtml(item.symbol || '')}" value="${escapeHtml(formatCalendarDateInputValue(item.release_date))}" placeholder="DD.MM.YYYY" inputmode="numeric" /></td>
       <td class="earnings-calendar-cell"><select class="earnings-calendar-timing earnings-calendar-select" data-symbol="${escapeHtml(item.symbol || '')}">${timingOptions}</select></td>
@@ -1723,6 +1723,9 @@ function renderEarningsCalendarTable() {
         btn.disabled = false;
       }
     });
+  });
+  earningsCalendarTableBody.querySelectorAll('.earnings-calendar-symbol-link').forEach((btn) => {
+    btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'analysis' }));
   });
 }
 

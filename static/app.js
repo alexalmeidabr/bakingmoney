@@ -1597,6 +1597,38 @@ function parseCalendarDate(value) {
   return parsed;
 }
 
+function formatCalendarDateInputValue(isoDateValue) {
+  if (!isoDateValue) return '';
+  const parsed = parseCalendarDate(isoDateValue);
+  if (!parsed) return '';
+  const day = String(parsed.getDate()).padStart(2, '0');
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const year = parsed.getFullYear();
+  return `${day}.${month}.${year}`;
+}
+
+function parseCalendarDisplayDateToIso(displayDateValue) {
+  const raw = String(displayDateValue || '').trim();
+  if (!raw) return { ok: true, isoDate: null };
+  const match = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if (!match) {
+    return { ok: false, error: 'Release date must use DD.MM.YYYY format.' };
+  }
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const parsed = new Date(year, month - 1, day);
+  const isValid = !Number.isNaN(parsed.getTime())
+    && parsed.getFullYear() === year
+    && parsed.getMonth() === (month - 1)
+    && parsed.getDate() === day;
+  if (!isValid) {
+    return { ok: false, error: 'Release date is invalid. Please use a real DD.MM.YYYY date.' };
+  }
+  const isoDate = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return { ok: true, isoDate };
+}
+
 function getFilteredAndSortedEarningsCalendarItems() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -1634,7 +1666,7 @@ function renderEarningsCalendarTable() {
     row.innerHTML = `
       <td>${escapeHtml(item.symbol || '')}</td>
       <td>${escapeHtml(item.company_name || 'N/A')}</td>
-      <td class="earnings-calendar-cell"><input type="date" class="earnings-calendar-date earnings-calendar-date-input" data-symbol="${escapeHtml(item.symbol || '')}" value="${escapeHtml(item.release_date || '')}" /></td>
+      <td class="earnings-calendar-cell"><input type="text" class="earnings-calendar-date earnings-calendar-date-input earnings-calendar-date-text" data-symbol="${escapeHtml(item.symbol || '')}" value="${escapeHtml(formatCalendarDateInputValue(item.release_date))}" placeholder="DD.MM.YYYY" inputmode="numeric" /></td>
       <td class="earnings-calendar-cell"><select class="earnings-calendar-timing earnings-calendar-select" data-symbol="${escapeHtml(item.symbol || '')}">${timingOptions}</select></td>
       <td><span class="badge ${item.in_portfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.in_portfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td>
       <td class="${upsideClass}">${formatPercent(item.upside)}</td>
@@ -1651,7 +1683,16 @@ function renderEarningsCalendarTable() {
       const symbol = btn.dataset.symbol;
       const row = btn.closest('tr');
       if (!row || !symbol) return;
-      const releaseDate = row.querySelector('.earnings-calendar-date')?.value || null;
+      const releaseDateText = row.querySelector('.earnings-calendar-date-text')?.value || '';
+      const dateParse = parseCalendarDisplayDateToIso(releaseDateText);
+      if (!dateParse.ok) {
+        earningsCalendarStatusEl.textContent = `Error: ${dateParse.error}`;
+        earningsCalendarStatusEl.className = 'status error';
+        row.querySelector('.earnings-calendar-date-text')?.classList.add('input-error');
+        return;
+      }
+      row.querySelector('.earnings-calendar-date-text')?.classList.remove('input-error');
+      const releaseDate = dateParse.isoDate;
       const releaseTiming = row.querySelector('.earnings-calendar-timing')?.value || null;
       earningsCalendarStatusEl.textContent = `Saving ${symbol} schedule…`;
       earningsCalendarStatusEl.className = 'status';

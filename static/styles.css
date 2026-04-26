@@ -721,6 +721,11 @@ th.sortable[data-sort-direction='desc']::after {
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
+.earnings-calendar-date-input.input-error {
+  border-color: #b42318;
+  box-shadow: 0 0 0 3px rgba(180, 35, 24, 0.12);
+}
+
 .earnings-calendar-select {
   width: 156px;
   appearance: none;

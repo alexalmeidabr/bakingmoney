@@ -902,6 +902,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="earnings-review-detail-header"', html)
         self.assertIn('id="earnings-review-add-symbol"', html)
         self.assertIn('id="earnings-review-add-btn"', html)
+        self.assertIn('id="earnings-review-tab-workflow"', html)
+        self.assertIn('id="earnings-review-tab-calendar"', html)
+        self.assertIn('id="earnings-calendar-table"', html)
+        self.assertIn('id="earnings-calendar-status"', html)
         self.assertIn('<th>Portfolio</th>', html)
         self.assertIn('<th>Latest Quarter</th>', html)
         self.assertIn('id="earnings-review-document-type"', html)
@@ -924,6 +928,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function openEarningsReviewSymbolHistory(symbol)', js)
         self.assertIn('function openEarningsReviewRecordDetail(symbol, reviewId)', js)
         self.assertIn('function addEarningsReviewSymbol()', js)
+        self.assertIn('function loadEarningsCalendar()', js)
+        self.assertIn('function renderEarningsCalendarTable()', js)
+        self.assertIn('function openAnalysisDetailFromPositions(symbol)', js)
         self.assertIn('function uploadEarningsReviewDocument()', js)
         self.assertIn('function deleteEarningsReviewDocument(', js)
         self.assertIn('function renderEarningsReviewDocuments(', js)
@@ -932,6 +939,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('earningsReviewDocumentFileEl.addEventListener(\'change\'', js)
         self.assertIn('earningsReviewAnalyseBtn.addEventListener(\'click\', analyseEarningsWatchpoints);', js)
         self.assertIn('earningsReviewAddBtn.addEventListener(\'click\', addEarningsReviewSymbol);', js)
+        self.assertIn('earningsReviewTabCalendarBtn.addEventListener(\'click\'', js)
         self.assertIn('function deleteEarningsReviewRecord(', js)
         self.assertIn('earnings-record-delete-btn', js)
         self.assertIn('window.addEventListener(\'hashchange\'', js)
@@ -1121,6 +1129,44 @@ class EarningsReviewTests(unittest.TestCase):
                     detail_after_delete = web_server.get_earnings_review_record_detail(conn, "AMD", review_id)
                     self.assertEqual(detail_after_delete["status"], web_server.EARNINGS_REVIEW_STATUS_DRAFT)
                     self.assertEqual(len(detail_after_delete["documents"]), 0)
+                finally:
+                    conn.close()
+
+    def test_earnings_release_calendar_rows_cover_all_analysis_symbols_and_persist_schedule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="MSFT")
+                    self._seed_analysis(conn, symbol="NVDA")
+                    conn.execute(
+                        """
+                        INSERT INTO positions_cache (
+                          symbol, position, price, avg_cost, change_percent, market_value,
+                          unrealized_pnl, daily_pnl, currency, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        ("MSFT", 5, 110, 100, 1.0, 550, 50, 5, "USD", web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    before = web_server.list_earnings_release_calendar(conn)
+                    self.assertEqual({item["symbol"] for item in before}, {"MSFT", "NVDA"})
+                    msft_before = next(item for item in before if item["symbol"] == "MSFT")
+                    self.assertTrue(msft_before["in_portfolio"])
+                    self.assertIsNone(msft_before["release_date"])
+                    saved = web_server.save_earnings_release_schedule(
+                        conn,
+                        "MSFT",
+                        release_date="2026-05-07",
+                        release_timing="After Close",
+                    )
+                    self.assertEqual(saved["symbol"], "MSFT")
+                    after = web_server.list_earnings_release_calendar(conn)
+                    msft_after = next(item for item in after if item["symbol"] == "MSFT")
+                    self.assertEqual(msft_after["release_date"], "2026-05-07")
+                    self.assertEqual(msft_after["release_timing"], "After Close")
                 finally:
                     conn.close()
 

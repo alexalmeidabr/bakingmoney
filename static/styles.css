@@ -669,6 +669,29 @@ th.sortable[data-sort-direction='desc']::after {
   min-width: 100%;
 }
 
+.earnings-review-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.earnings-review-tab {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.earnings-review-tab.active {
+  background: #1d4ed8;
+  color: #fff;
+  border-color: #1d4ed8;
+}
+
+#earnings-calendar-table td input[type="date"],
+#earnings-calendar-table td select {
+  min-width: 145px;
+}
+
 .watchpoints-groups {
   display: grid;
   gap: 12px;

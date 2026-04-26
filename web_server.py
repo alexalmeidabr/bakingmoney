@@ -11,7 +11,7 @@ import tempfile
 import uuid
 import zipfile
 from html import unescape
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from io import BytesIO
 from pathlib import Path
@@ -2049,6 +2049,18 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS earnings_release_schedule (
+              symbol TEXT PRIMARY KEY,
+              release_date TEXT,
+              release_timing TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (symbol) REFERENCES analysis_roots(symbol) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             INSERT INTO earnings_review_symbols (symbol, created_at, updated_at)
             SELECT DISTINCT er.symbol, ?, ?
             FROM earnings_reviews er
@@ -3210,7 +3222,7 @@ def list_analysis_symbols(conn):
     rating_settings = get_rating_settings(conn)
     rows = conn.execute(
         """
-        SELECT r.symbol, v.current_price, v.expected_price, v.expected_cagr, v.upside, v.confidence_level AS overall_confidence,
+        SELECT r.symbol, v.company_name, v.current_price, v.expected_price, v.expected_cagr, v.upside, v.confidence_level AS overall_confidence,
                v.version_number AS analysis_version,
                COALESCE(
                    (
@@ -3270,6 +3282,97 @@ def list_analysis_symbols(conn):
         item["last_activity_at"] = max(activity_candidates).isoformat() if activity_candidates else None
         output.append(item)
     return output
+
+
+def _normalize_release_timing(value):
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    allowed = {"Before Open", "After Close"}
+    if normalized not in allowed:
+        raise ValueError("release_timing must be one of: Before Open, After Close")
+    return normalized
+
+
+def _normalize_release_date(value):
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    try:
+        date.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError("release_date must be a valid date in YYYY-MM-DD format") from exc
+    return normalized
+
+
+def list_earnings_release_calendar(conn):
+    analysis_items = list_analysis_symbols(conn)
+    schedule_rows = conn.execute(
+        """
+        SELECT symbol, release_date, release_timing
+        FROM earnings_release_schedule
+        """
+    ).fetchall()
+    schedule_by_symbol = {row["symbol"]: dict(row) for row in schedule_rows}
+    portfolio_symbols = {
+        normalize_symbol(item.get("symbol"))
+        for item in load_positions_cache(conn)
+        if abs(safe_number(item.get("position")) or 0.0) > 0
+    }
+    output = []
+    for item in analysis_items:
+        symbol = item.get("symbol")
+        schedule = schedule_by_symbol.get(symbol, {})
+        output.append({
+            "symbol": symbol,
+            "company_name": item.get("company_name"),
+            "in_portfolio": symbol in portfolio_symbols,
+            "upside": item.get("upside"),
+            "confidence_diff": item.get("confidence_diff"),
+            "bullish_confidence": item.get("bullish_confidence"),
+            "bearish_confidence": item.get("bearish_confidence"),
+            "rating": item.get("rating"),
+            "release_date": schedule.get("release_date"),
+            "release_timing": schedule.get("release_timing"),
+        })
+    return output
+
+
+def save_earnings_release_schedule(conn, symbol, release_date=None, release_timing=None):
+    normalized_symbol = normalize_symbol(symbol)
+    if not normalized_symbol:
+        raise ValueError("symbol is required")
+    exists = conn.execute("SELECT 1 FROM analysis_roots WHERE symbol = ?", (normalized_symbol,)).fetchone()
+    if not exists:
+        raise ValueError(f"Symbol {normalized_symbol} not found in Analysis")
+    normalized_date = _normalize_release_date(release_date)
+    normalized_timing = _normalize_release_timing(release_timing)
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO earnings_release_schedule (symbol, release_date, release_timing, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(symbol) DO UPDATE SET
+          release_date = excluded.release_date,
+          release_timing = excluded.release_timing,
+          updated_at = excluded.updated_at
+        """,
+        (normalized_symbol, normalized_date, normalized_timing, now, now),
+    )
+    conn.commit()
+    row = conn.execute(
+        """
+        SELECT symbol, release_date, release_timing, created_at, updated_at
+        FROM earnings_release_schedule
+        WHERE symbol = ?
+        """,
+        (normalized_symbol,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def refresh_latest_analysis_market_prices(conn):
@@ -5845,6 +5948,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_get()
         if path == "/api/earnings-review":
             return self.handle_earnings_review_get()
+        if path == "/api/earnings-review/calendar":
+            return self.handle_earnings_review_calendar_get()
         if path.startswith("/api/earnings-review/"):
             suffix = path[len("/api/earnings-review/") :]
             parts = [item for item in suffix.split("/") if item]
@@ -5934,6 +6039,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_import_positions()
         if path == "/api/earnings-review/symbols":
             return self.handle_earnings_review_symbol_add()
+        if path.startswith("/api/earnings-review/calendar/"):
+            symbol = normalize_symbol(path[len("/api/earnings-review/calendar/"):])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_earnings_review_calendar_save(symbol)
         if path.startswith("/api/earnings-review/"):
             suffix = path[len("/api/earnings-review/") :]
             parts = [item for item in suffix.split("/") if item]
@@ -6397,6 +6507,41 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to load earnings review symbols.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_calendar_get(self):
+        conn = get_db_connection()
+        try:
+            items = list_earnings_release_calendar(conn)
+            self._send_json({"items": items})
+        except Exception as exc:
+            self._send_json(
+                {"error": "Unable to load earnings calendar.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_calendar_save(self, symbol):
+        payload = self._read_json_body() or {}
+        conn = get_db_connection()
+        try:
+            item = save_earnings_release_schedule(
+                conn=conn,
+                symbol=symbol,
+                release_date=payload.get("release_date"),
+                release_timing=payload.get("release_timing"),
+            )
+            self._send_json({"ok": True, "item": item})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to save earnings calendar row for symbol %s", symbol)
+            self._send_json(
+                {"error": "Unable to save earnings calendar row.", "details": str(exc)},
                 status=500,
             )
         finally:

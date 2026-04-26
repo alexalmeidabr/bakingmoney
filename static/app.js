@@ -166,6 +166,12 @@ const earningsReviewDocumentFileNameEl = document.getElementById('earnings-revie
 const earningsReviewDocumentUploadBtn = document.getElementById('earnings-review-document-upload-btn');
 const earningsReviewDocumentsStatusEl = document.getElementById('earnings-review-documents-status');
 const earningsReviewDocumentsTableBody = document.querySelector('#earnings-review-documents-table tbody');
+const earningsReviewTabWorkflowBtn = document.getElementById('earnings-review-tab-workflow');
+const earningsReviewTabCalendarBtn = document.getElementById('earnings-review-tab-calendar');
+const earningsReviewWorkflowPanelEl = document.getElementById('earnings-review-workflow-panel');
+const earningsReviewCalendarPanelEl = document.getElementById('earnings-review-calendar-panel');
+const earningsCalendarStatusEl = document.getElementById('earnings-calendar-status');
+const earningsCalendarTableBody = document.querySelector('#earnings-calendar-table tbody');
 
 let latestPositions = [];
 let positionSort = { key: 'marketValue', direction: 'desc' };
@@ -192,6 +198,8 @@ let earningsReviewItems = [];
 let earningsReviewSelectedSymbol = null;
 let earningsReviewSelectedRecordId = null;
 let earningsReviewSymbolHistory = null;
+let earningsReviewActiveTab = 'workflow';
+let earningsCalendarItems = [];
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
   hybrid_ai_weight: 0.70,
@@ -1542,6 +1550,91 @@ function renderEarningsReviewList() {
   }
 }
 
+function setEarningsReviewTab(tab) {
+  earningsReviewActiveTab = tab === 'calendar' ? 'calendar' : 'workflow';
+  const showCalendar = earningsReviewActiveTab === 'calendar';
+  earningsReviewTabWorkflowBtn.classList.toggle('active', !showCalendar);
+  earningsReviewTabCalendarBtn.classList.toggle('active', showCalendar);
+  earningsReviewWorkflowPanelEl.classList.toggle('hidden', showCalendar);
+  earningsReviewCalendarPanelEl.classList.toggle('hidden', !showCalendar);
+}
+
+function renderEarningsCalendarTable() {
+  earningsCalendarTableBody.innerHTML = '';
+  earningsCalendarItems.forEach((item) => {
+    const row = document.createElement('tr');
+    const upsideClass = typeof item.upside === 'number' ? valueClass(item.upside) : '';
+    const timingOptions = ['', 'Before Open', 'After Close']
+      .map((value) => `<option value="${value}" ${value === (item.release_timing || '') ? 'selected' : ''}>${value || 'Not set'}</option>`)
+      .join('');
+    row.innerHTML = `
+      <td>${escapeHtml(item.symbol || '')}</td>
+      <td>${escapeHtml(item.company_name || 'N/A')}</td>
+      <td><span class="badge ${item.in_portfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.in_portfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td>
+      <td class="${upsideClass}">${formatPercent(item.upside)}</td>
+      <td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td>
+      <td>${escapeHtml(item.rating || 'N/A')}</td>
+      <td><input type="date" class="earnings-calendar-date" data-symbol="${escapeHtml(item.symbol || '')}" value="${escapeHtml(item.release_date || '')}" /></td>
+      <td><select class="earnings-calendar-timing" data-symbol="${escapeHtml(item.symbol || '')}">${timingOptions}</select></td>
+      <td><button class="earnings-calendar-save-btn" data-symbol="${escapeHtml(item.symbol || '')}">Save</button></td>
+    `;
+    earningsCalendarTableBody.appendChild(row);
+  });
+  earningsCalendarTableBody.querySelectorAll('.earnings-calendar-save-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const symbol = btn.dataset.symbol;
+      const row = btn.closest('tr');
+      if (!row || !symbol) return;
+      const releaseDate = row.querySelector('.earnings-calendar-date')?.value || null;
+      const releaseTiming = row.querySelector('.earnings-calendar-timing')?.value || null;
+      earningsCalendarStatusEl.textContent = `Saving ${symbol} schedule…`;
+      earningsCalendarStatusEl.className = 'status';
+      btn.disabled = true;
+      try {
+        const response = await fetch(`/api/earnings-review/calendar/${encodeURIComponent(symbol)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            release_date: releaseDate || null,
+            release_timing: releaseTiming || null,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save earnings schedule.'));
+        earningsCalendarStatusEl.textContent = `Saved earnings schedule for ${symbol}.`;
+        earningsCalendarStatusEl.className = 'status';
+        const matched = earningsCalendarItems.find((item) => item.symbol === symbol);
+        if (matched) {
+          matched.release_date = releaseDate || null;
+          matched.release_timing = releaseTiming || null;
+        }
+      } catch (error) {
+        earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
+        earningsCalendarStatusEl.className = 'status error';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+async function loadEarningsCalendar() {
+  earningsCalendarStatusEl.textContent = 'Loading analyzed companies…';
+  earningsCalendarStatusEl.className = 'status';
+  try {
+    const response = await fetch('/api/earnings-review/calendar');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings calendar.'));
+    earningsCalendarItems = Array.isArray(payload.items) ? payload.items : [];
+    renderEarningsCalendarTable();
+    earningsCalendarStatusEl.textContent = `Showing ${earningsCalendarItems.length} analyzed symbol(s).`;
+    earningsCalendarStatusEl.className = 'status';
+  } catch (error) {
+    earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
+    earningsCalendarStatusEl.className = 'status error';
+  }
+}
+
 async function addEarningsReviewSymbol() {
   const raw = earningsReviewAddSymbolEl.value || '';
   const normalized = raw.trim().toUpperCase();
@@ -1763,6 +1856,7 @@ function showEarningsReviewSymbolHistoryView() {
 async function openEarningsReviewSymbolHistory(symbol) {
   const normalized = (symbol || '').trim().toUpperCase();
   if (!normalized) return;
+  setEarningsReviewTab('workflow');
   earningsReviewSelectedSymbol = normalized;
   earningsReviewSelectedRecordId = null;
   showEarningsReviewSymbolHistoryView();
@@ -1798,6 +1892,12 @@ async function refreshEarningsReviewListOnly() {
 }
 
 async function loadEarningsReview() {
+  if (earningsReviewActiveTab === 'calendar') {
+    setEarningsReviewTab('calendar');
+    await loadEarningsCalendar();
+    return;
+  }
+  setEarningsReviewTab('workflow');
   showEarningsReviewList();
   earningsReviewSymbolView.classList.add('hidden');
   earningsReviewDetailView.classList.add('hidden');
@@ -1901,6 +2001,7 @@ function renderEarningsSnapshotSummary(snapshot, detail) {
 async function openEarningsReviewRecordDetail(symbol, reviewId) {
   const normalized = (symbol || '').trim().toUpperCase();
   if (!normalized || !Number.isFinite(reviewId)) return;
+  setEarningsReviewTab('workflow');
   earningsReviewSelectedSymbol = normalized;
   earningsReviewSelectedRecordId = Number(reviewId);
   showEarningsReviewDetail();
@@ -2461,6 +2562,16 @@ earningsReviewSymbolBackBtn.addEventListener('click', async () => {
   await loadEarningsReview();
 });
 earningsReviewAddBtn.addEventListener('click', addEarningsReviewSymbol);
+earningsReviewTabWorkflowBtn.addEventListener('click', async () => {
+  setEarningsReviewHash(null);
+  setEarningsReviewTab('workflow');
+  await loadEarningsReview();
+});
+earningsReviewTabCalendarBtn.addEventListener('click', async () => {
+  setEarningsReviewHash(null);
+  setEarningsReviewTab('calendar');
+  await loadEarningsReview();
+});
 earningsReviewAddSymbolEl.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
@@ -2488,6 +2599,7 @@ updateAnalysisSortHeaderState();
 setSelectedRatings(getAllRatingFilterKeys());
 setRatingFilterOpen(false);
 setSelectedPositionRatings(getAllRatingFilterKeys());
+setEarningsReviewTab('workflow');
 setPositionsRatingFilterOpen(false);
 loadTwsDataToggleState();
 

@@ -175,6 +175,11 @@
         </section>
 
         <section id="earnings-review" class="view">
+          <div class="earnings-review-tabs">
+            <button id="earnings-review-tab-workflow" class="earnings-review-tab active" type="button">Earnings Reviews</button>
+            <button id="earnings-review-tab-calendar" class="earnings-review-tab" type="button">Earnings Calendar</button>
+          </div>
+          <div id="earnings-review-workflow-panel">
           <div id="earnings-review-list-view" class="analysis-screen">
             <div class="view-header">
               <h2>Earnings Review</h2>
@@ -325,6 +330,34 @@
                 </div>
                 <div id="earnings-review-watchpoints" class="watchpoints-groups"></div>
               </section>
+            </section>
+          </div>
+          </div>
+
+          <div id="earnings-review-calendar-panel" class="analysis-screen hidden">
+            <div class="view-header">
+              <h2>Earnings Calendar</h2>
+            </div>
+            <p id="earnings-calendar-status" class="status">Loading analyzed companies…</p>
+            <section class="detail-card earnings-review-list-card">
+              <div class="table-wrap">
+                <table id="earnings-calendar-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Company Name</th>
+                      <th>Portfolio</th>
+                      <th>Upside</th>
+                      <th>Confidence</th>
+                      <th>Rating</th>
+                      <th>Earnings Release Date</th>
+                      <th>Release Timing</th>
+                      <th>Save</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
             </section>
           </div>
         </section>

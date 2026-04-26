@@ -387,10 +387,28 @@ const formatConfidenceDiffDisplay = (diff, bullish, bearish) => {
   const diffText = Number.isFinite(diffNumber) ? `${diffNumber >= 0 ? '+' : ''}${diffNumber.toFixed(2)}` : 'N/A';
   return `${diffText} (${formatNumber(bullish, 2)} / ${formatNumber(bearish, 2)})`;
 };
+function parseDateValue(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+function formatDate(value) {
+  const d = parseDateValue(value);
+  if (!d) return 'N/A';
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}.${month}.${year}`;
+}
 const formatDateTime = (v) => {
-  if (!v) return 'N/A';
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? v : d.toLocaleString();
+  const d = parseDateValue(v);
+  if (!d) return 'N/A';
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  return `${day}.${month}.${year} ${hours}:${minutes}`;
 };
 
 function escapeHtml(value) {
@@ -1414,7 +1432,7 @@ function renderAlertsList() {
   getFilteredAlerts().forEach((alert) => {
     const row = document.createElement('tr');
     const affected = (alert.affected_variables || []).join(', ') || '—';
-    row.innerHTML = `<td><button class="symbol-link" data-alert-id="${alert.id}">${escapeHtml(alert.symbol || '')}</button></td><td>${escapeHtml(alert.alert_type || '—')}</td><td>${formatDateTime(alert.event_date || alert.created_at)}</td><td>${escapeHtml(alert.status || 'New')}</td><td>${escapeHtml(affected)}</td><td><button class="alert-review-btn" data-id="${alert.id}">Mark Reviewed</button> <button class="alert-dismiss-btn" data-id="${alert.id}">Dismiss</button></td>`;
+    row.innerHTML = `<td><button class="symbol-link" data-alert-id="${alert.id}">${escapeHtml(alert.symbol || '')}</button></td><td>${escapeHtml(alert.alert_type || '—')}</td><td>${alert.event_date ? formatDate(alert.event_date) : formatDateTime(alert.created_at)}</td><td>${escapeHtml(alert.status || 'New')}</td><td>${escapeHtml(affected)}</td><td><button class="alert-review-btn" data-id="${alert.id}">Mark Reviewed</button> <button class="alert-dismiss-btn" data-id="${alert.id}">Dismiss</button></td>`;
     alertsTableBody.appendChild(row);
   });
   alertsTableBody.querySelectorAll('.alert-review-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Reviewed')));
@@ -1440,7 +1458,7 @@ async function openAlertDetail(alertId) {
     alertDetailTypeEl.textContent = alert.alert_type || '—';
     alertDetailAffectedEl.textContent = (alert.affected_variables || []).join(', ') || '—';
     alertDetailEventEl.textContent = alert.event_summary || '—';
-    alertDetailDateEl.textContent = formatDateTime(alert.event_date || alert.created_at);
+    alertDetailDateEl.textContent = alert.event_date ? formatDate(alert.event_date) : formatDateTime(alert.created_at);
     alertDetailSuggestedEl.textContent = alert.suggested_action || '—';
     alertDetailReviewBtn.disabled = false;
     alertDetailDismissBtn.disabled = false;
@@ -1874,7 +1892,7 @@ function renderEarningsReviewSymbolHistoryTable(records) {
     row.innerHTML = `
       <td>${record.fiscal_year}</td>
       <td>${record.fiscal_quarter}</td>
-      <td>${record.release_date || 'N/A'}</td>
+      <td>${formatDate(record.release_date)}</td>
       <td>${record.status || 'Draft'}</td>
       <td>${formatDateTime(record.created_at)}</td>
       <td>${formatDateTime(record.updated_at)}</td>
@@ -2036,7 +2054,7 @@ function renderEarningsSnapshotSummary(snapshot, detail) {
     <div class="summary-grid">
       <div class="summary-item"><div class="label">Status</div><div class="value">${detail.status || 'Draft'}</div></div>
       <div class="summary-item"><div class="label">Fiscal Period</div><div class="value">${detail.fiscal_year} ${detail.fiscal_quarter}</div></div>
-      <div class="summary-item"><div class="label">Release Date</div><div class="value">${detail.release_date || 'N/A'}</div></div>
+      <div class="summary-item"><div class="label">Release Date</div><div class="value">${formatDate(detail.release_date)}</div></div>
       <div class="summary-item"><div class="label">Rating Snapshot</div><div class="value">${rating}</div></div>
       <div class="summary-item"><div class="label">Current Price Snapshot</div><div class="value">${currentPrice}</div></div>
       <div class="summary-item"><div class="label">Expected Price Snapshot</div><div class="value">${expectedPrice}</div></div>
@@ -2077,7 +2095,7 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
     const snapshot = item.thesis_snapshot || {};
     earningsReviewDetailTitleEl.textContent = `Earnings Review: ${item.symbol} ${item.fiscal_year} ${item.fiscal_quarter}`;
     earningsReviewDetailHeaderEl.textContent = `${item.symbol} — ${item.company_name_snapshot || snapshot.company_name || item.symbol}`;
-    earningsReviewDetailMetaEl.textContent = `Status: ${item.status || 'Draft'} • Release Date: ${item.release_date || 'N/A'} • Watchpoints generated: ${item.watchpoints_generated_at ? formatDateTime(item.watchpoints_generated_at) : 'Not yet generated'} • Updated: ${formatDateTime(item.updated_at)}`;
+    earningsReviewDetailMetaEl.textContent = `Status: ${item.status || 'Draft'} • Release Date: ${formatDate(item.release_date)} • Watchpoints generated: ${item.watchpoints_generated_at ? formatDateTime(item.watchpoints_generated_at) : 'Not yet generated'} • Updated: ${formatDateTime(item.updated_at)}`;
     const hasWatchpoints = Array.isArray(item.watchpoints_by_variable) && item.watchpoints_by_variable.length > 0;
     const hasDocuments = Array.isArray(item.documents) && item.documents.length > 0;
     earningsReviewGenerateBtn.textContent = hasWatchpoints

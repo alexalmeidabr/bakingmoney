@@ -2061,6 +2061,15 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS earnings_release_calendar_exclusions (
+              symbol TEXT PRIMARY KEY,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (symbol) REFERENCES analysis_roots(symbol) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             INSERT INTO earnings_review_symbols (symbol, created_at, updated_at)
             SELECT DISTINCT er.symbol, ?, ?
             FROM earnings_reviews er
@@ -3311,6 +3320,10 @@ def _normalize_release_date(value):
 
 def list_earnings_release_calendar(conn):
     analysis_items = list_analysis_symbols(conn)
+    excluded_symbols = {
+        row["symbol"]
+        for row in conn.execute("SELECT symbol FROM earnings_release_calendar_exclusions").fetchall()
+    }
     schedule_rows = conn.execute(
         """
         SELECT symbol, release_date, release_timing
@@ -3326,6 +3339,8 @@ def list_earnings_release_calendar(conn):
     output = []
     for item in analysis_items:
         symbol = item.get("symbol")
+        if symbol in excluded_symbols:
+            continue
         schedule = schedule_by_symbol.get(symbol, {})
         output.append({
             "symbol": symbol,
@@ -3363,6 +3378,7 @@ def save_earnings_release_schedule(conn, symbol, release_date=None, release_timi
         """,
         (normalized_symbol, normalized_date, normalized_timing, now, now),
     )
+    conn.execute("DELETE FROM earnings_release_calendar_exclusions WHERE symbol = ?", (normalized_symbol,))
     conn.commit()
     row = conn.execute(
         """
@@ -3373,6 +3389,26 @@ def save_earnings_release_schedule(conn, symbol, release_date=None, release_timi
         (normalized_symbol,),
     ).fetchone()
     return dict(row) if row else None
+
+
+def remove_earnings_release_calendar_symbol(conn, symbol):
+    normalized_symbol = normalize_symbol(symbol)
+    if not normalized_symbol:
+        raise ValueError("symbol is required")
+    exists = conn.execute("SELECT 1 FROM analysis_roots WHERE symbol = ?", (normalized_symbol,)).fetchone()
+    if not exists:
+        raise ValueError(f"Symbol {normalized_symbol} not found in Analysis")
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO earnings_release_calendar_exclusions (symbol, created_at)
+        VALUES (?, ?)
+        ON CONFLICT(symbol) DO NOTHING
+        """,
+        (normalized_symbol, now),
+    )
+    conn.commit()
+    return {"symbol": normalized_symbol, "removed": True}
 
 
 def refresh_latest_analysis_market_prices(conn):
@@ -6109,6 +6145,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
+        if path.startswith("/api/earnings-review/calendar/"):
+            symbol = normalize_symbol(path[len("/api/earnings-review/calendar/"):])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_earnings_review_calendar_remove(symbol)
         if path.startswith("/api/earnings-review/"):
             suffix = path[len("/api/earnings-review/") :]
             parts = [item for item in suffix.split("/") if item]
@@ -6559,6 +6600,22 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             logger.exception("Unable to save earnings calendar row for symbol %s", symbol)
             self._send_json(
                 {"error": "Unable to save earnings calendar row.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_calendar_remove(self, symbol):
+        conn = get_db_connection()
+        try:
+            result = remove_earnings_release_calendar_symbol(conn, symbol)
+            self._send_json({"ok": True, "item": result})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to remove earnings calendar symbol %s", symbol)
+            self._send_json(
+                {"error": "Unable to remove earnings calendar symbol.", "details": str(exc)},
                 status=500,
             )
         finally:

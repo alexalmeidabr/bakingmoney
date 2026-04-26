@@ -1170,6 +1170,29 @@ class EarningsReviewTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_earnings_release_calendar_symbol_can_be_removed_without_deleting_analysis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="SHOP")
+                    self._seed_analysis(conn, symbol="ADBE")
+                    before = web_server.list_earnings_release_calendar(conn)
+                    self.assertEqual({item["symbol"] for item in before}, {"SHOP", "ADBE"})
+                    result = web_server.remove_earnings_release_calendar_symbol(conn, "SHOP")
+                    self.assertTrue(result["removed"])
+                    after = web_server.list_earnings_release_calendar(conn)
+                    self.assertEqual({item["symbol"] for item in after}, {"ADBE"})
+                    analysis_row = conn.execute(
+                        "SELECT symbol FROM analysis_roots WHERE symbol = ?",
+                        ("SHOP",),
+                    ).fetchone()
+                    self.assertIsNotNone(analysis_row)
+                finally:
+                    conn.close()
+
     def test_document_delete_reverts_to_watchpoints_generated_when_watchpoints_exist(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as tmp:

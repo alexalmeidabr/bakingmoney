@@ -1676,6 +1676,7 @@ function renderEarningsCalendarTable() {
       <td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td>
       <td>${escapeHtml(item.rating || 'N/A')}</td>
       <td><button class="earnings-calendar-save-btn" data-symbol="${escapeHtml(item.symbol || '')}">Save</button></td>
+      <td><button class="remove-btn earnings-calendar-remove-btn" data-symbol="${escapeHtml(item.symbol || '')}">Remove</button></td>
     `;
     earningsCalendarTableBody.appendChild(row);
   });
@@ -1729,6 +1730,32 @@ function renderEarningsCalendarTable() {
   });
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-symbol-link').forEach((btn) => {
     btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'analysis' }));
+  });
+  earningsCalendarTableBody.querySelectorAll('.earnings-calendar-remove-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const symbol = btn.dataset.symbol;
+      if (!symbol) return;
+      const confirmed = window.confirm(`Remove ${symbol} from Earnings Calendar?\n\nThis will only remove it from the Earnings Calendar list. Analysis and historical earnings reviews are kept.`);
+      if (!confirmed) return;
+      earningsCalendarStatusEl.textContent = `Removing ${symbol} from Earnings Calendar…`;
+      earningsCalendarStatusEl.className = 'status';
+      btn.disabled = true;
+      try {
+        const response = await fetch(`/api/earnings-review/calendar/${encodeURIComponent(symbol)}`, {
+          method: 'DELETE',
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to remove symbol from Earnings Calendar.'));
+        earningsCalendarStatusEl.textContent = `${symbol} removed from Earnings Calendar.`;
+        earningsCalendarStatusEl.className = 'status';
+        await loadEarningsCalendar();
+      } catch (error) {
+        earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
+        earningsCalendarStatusEl.className = 'status error';
+      } finally {
+        btn.disabled = false;
+      }
+    });
   });
 }
 

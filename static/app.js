@@ -1570,12 +1570,12 @@ function renderEarningsCalendarTable() {
     row.innerHTML = `
       <td>${escapeHtml(item.symbol || '')}</td>
       <td>${escapeHtml(item.company_name || 'N/A')}</td>
+      <td class="earnings-calendar-cell"><input type="date" class="earnings-calendar-date earnings-calendar-date-input" data-symbol="${escapeHtml(item.symbol || '')}" value="${escapeHtml(item.release_date || '')}" /></td>
+      <td class="earnings-calendar-cell"><select class="earnings-calendar-timing earnings-calendar-select" data-symbol="${escapeHtml(item.symbol || '')}">${timingOptions}</select></td>
       <td><span class="badge ${item.in_portfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.in_portfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td>
       <td class="${upsideClass}">${formatPercent(item.upside)}</td>
       <td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td>
       <td>${escapeHtml(item.rating || 'N/A')}</td>
-      <td><input type="date" class="earnings-calendar-date" data-symbol="${escapeHtml(item.symbol || '')}" value="${escapeHtml(item.release_date || '')}" /></td>
-      <td><select class="earnings-calendar-timing" data-symbol="${escapeHtml(item.symbol || '')}">${timingOptions}</select></td>
       <td><button class="earnings-calendar-save-btn" data-symbol="${escapeHtml(item.symbol || '')}">Save</button></td>
     `;
     earningsCalendarTableBody.appendChild(row);

@@ -367,6 +367,22 @@ th.sortable[data-sort-direction='desc']::after {
   margin-top: 4px;
 }
 
+.earnings-release-summary-item .value {
+  line-height: 1.35;
+}
+
+.release-history-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.release-history-btn {
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
 .config-textarea {
   width: 100%;
   border: 1px solid var(--border);

@@ -1238,6 +1238,46 @@ class EarningsReviewTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_analysis_detail_includes_sorted_earnings_release_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="MSFT")
+                    older = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q1",
+                        release_date="2026-04-20",
+                        release_timing="After Close",
+                    )
+                    latest = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q2",
+                        release_date="2026-07-25",
+                        release_timing="Before Open",
+                    )
+                    no_date = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q3",
+                    )
+
+                    detail = web_server.get_analysis_detail(conn, "MSFT")
+                    history = detail["release_history"]
+                    self.assertEqual([entry["id"] for entry in history], [latest["id"], older["id"], no_date["id"]])
+                    self.assertEqual(history[0]["release_date"], "2026-07-25")
+                    self.assertEqual(history[0]["fiscal_quarter"], "Q2")
+                    self.assertEqual(history[0]["release_timing"], "Before Open")
+                finally:
+                    conn.close()
+
     def test_earnings_release_calendar_entry_can_exist_without_analysis_and_be_updated_removed(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")

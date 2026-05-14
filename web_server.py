@@ -3819,6 +3819,26 @@ def _get_saved_business_summary_edit(conn, root_id):
     }
 
 
+def get_earnings_calendar_release_history_for_symbol(conn, symbol):
+    normalized_symbol = normalize_symbol(symbol)
+    if not normalized_symbol:
+        return []
+    rows = conn.execute(
+        """
+        SELECT id, fiscal_year, fiscal_quarter, release_date, release_timing
+        FROM earnings_calendar_entries
+        WHERE symbol = ?
+        ORDER BY CASE WHEN release_date IS NULL OR release_date = '' THEN 1 ELSE 0 END ASC,
+                 release_date DESC,
+                 fiscal_year DESC,
+                 CASE fiscal_quarter WHEN 'Q4' THEN 4 WHEN 'Q3' THEN 3 WHEN 'Q2' THEN 2 ELSE 1 END DESC,
+                 id DESC
+        """,
+        (normalized_symbol,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_analysis_detail(conn, symbol, version_id=None):
     root = conn.execute("SELECT id, symbol FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
     if not root:
@@ -3865,6 +3885,7 @@ def get_analysis_detail(conn, symbol, version_id=None):
         } if draft else None,
         "saved_business_model_edit": _get_saved_business_model_edit(conn, root["id"]),
         "saved_business_summary_edit": _get_saved_business_summary_edit(conn, root["id"]),
+        "release_history": get_earnings_calendar_release_history_for_symbol(conn, root["symbol"]),
     }
 
 

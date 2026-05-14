@@ -804,6 +804,36 @@ function selectedVersionIndex() {
   return (analysisDetailState.versions || []).findIndex((v) => Number(v.id) === Number(analysisDetailState.selected_version_id));
 }
 
+function getSelectedAnalysisReleaseEntry() {
+  const history = analysisDetailState?.release_history || [];
+  if (!history.length) return null;
+  const rawIndex = Number.isInteger(analysisDetailState.selected_release_index) ? analysisDetailState.selected_release_index : 0;
+  const index = Math.max(0, Math.min(rawIndex, history.length - 1));
+  analysisDetailState.selected_release_index = index;
+  return history[index] || null;
+}
+
+function formatAnalysisReleaseEntry(entry) {
+  if (!entry) return 'N/A';
+  const parts = [formatDate(entry.release_date)];
+  const period = [entry.fiscal_year, entry.fiscal_quarter].filter(Boolean).join(' ');
+  if (period) parts.push(period);
+  if (entry.release_timing) parts.push(entry.release_timing);
+  return parts.filter(Boolean).join(' • ');
+}
+
+function renderAnalysisReleaseSummaryCard() {
+  const history = analysisDetailState?.release_history || [];
+  const selected = getSelectedAnalysisReleaseEntry();
+  const selectedIndex = Number.isInteger(analysisDetailState?.selected_release_index) ? analysisDetailState.selected_release_index : 0;
+  const showUp = history.length > 1 && selectedIndex > 0;
+  const showDown = history.length > 1 && selectedIndex < history.length - 1;
+  const buttons = history.length > 1
+    ? `<div class="release-history-controls">${showUp ? '<button type="button" class="release-history-btn" data-release-nav="up">Up</button>' : ''}${showDown ? '<button type="button" class="release-history-btn" data-release-nav="down">Down</button>' : ''}</div>`
+    : '';
+  return `<div class="summary-item earnings-release-summary-item"><div class="label">Earnings Release</div><div class="value">${escapeHtml(formatAnalysisReleaseEntry(selected))}</div>${buttons}</div>`;
+}
+
 function renderVersionControls() {
   if (!analysisDetailState) return;
   const versions = analysisDetailState.versions || [];
@@ -837,7 +867,8 @@ function renderAnalysisDetail() {
   const businessSummarySection = isEditingBusinessSummary
     ? `<div class="business-model-editor"><label><strong>Business Summary:</strong></label><textarea id="analysis-business-summary-input" class="analysis-business-model-input" rows="4">${safeBusinessSummary}</textarea><div class="table-actions"><button id="analysis-business-summary-save-btn">Save</button><button id="analysis-business-summary-cancel-btn">Cancel</button></div></div>`
     : `<div class="business-model-editor"><p><strong>Business Summary:</strong> ${safeBusinessSummary || 'N/A'}</p><div class="table-actions"><button id="analysis-business-summary-edit-btn">Edit Business Summary</button></div></div>`;
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected CAGR</div><div class="value ${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</div></div><div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
+  const releaseSummaryCard = renderAnalysisReleaseSummaryCard();
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected CAGR</div><div class="value ${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</div></div>${releaseSummaryCard}<div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   analysisScenariosBody.innerHTML = '';
@@ -923,6 +954,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load details'));
     analysisDetailState = payload.analysis;
+    analysisDetailState.selected_release_index = 0;
     renderAnalysisDetail();
     analysisDetailStatus.textContent = `Loaded ${symbol} detail.`;
   } catch (error) {
@@ -2831,6 +2863,15 @@ analysisScenarioInfoCloseBtn.addEventListener('click', () => analysisScenarioInf
 analysisSummary.addEventListener('click', (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
+  const releaseNav = target.dataset.releaseNav;
+  if (releaseNav && analysisDetailState) {
+    const history = analysisDetailState.release_history || [];
+    const currentIndex = Number.isInteger(analysisDetailState.selected_release_index) ? analysisDetailState.selected_release_index : 0;
+    if (releaseNav === 'up') analysisDetailState.selected_release_index = Math.max(0, currentIndex - 1);
+    if (releaseNav === 'down') analysisDetailState.selected_release_index = Math.min(history.length - 1, currentIndex + 1);
+    renderAnalysisDetail();
+    return;
+  }
   if (target.id === 'analysis-business-model-edit-btn') {
     isEditingBusinessModel = true;
     renderAnalysisDetail();

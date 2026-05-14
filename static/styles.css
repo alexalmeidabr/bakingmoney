@@ -598,6 +598,14 @@ th.sortable[data-sort-direction='desc']::after {
   padding: 10px;
 }
 
+#earnings-calendar-date-filter .rating-filter-panel {
+  left: auto;
+  right: 0;
+  width: min(236px, calc(100vw - 48px));
+  min-width: min(236px, calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
+}
+
 .rating-filter-actions {
   display: flex;
   justify-content: space-between;

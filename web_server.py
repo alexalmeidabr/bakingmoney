@@ -3250,8 +3250,25 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
     return aggregated, runs
 
 
+def get_latest_earnings_release_dates_by_symbol(conn):
+    rows = conn.execute(
+        """
+        SELECT symbol, MAX(release_date) AS latest_release_date
+        FROM earnings_calendar_entries
+        WHERE release_date IS NOT NULL AND release_date != ''
+        GROUP BY symbol
+        """
+    ).fetchall()
+    return {
+        normalize_symbol(row["symbol"]): row["latest_release_date"]
+        for row in rows
+        if normalize_symbol(row["symbol"])
+    }
+
+
 def list_analysis_symbols(conn):
     rating_settings = get_rating_settings(conn)
+    latest_release_dates = get_latest_earnings_release_dates_by_symbol(conn)
     rows = conn.execute(
         """
         SELECT r.symbol, v.company_name, v.current_price, v.expected_price, v.expected_cagr, v.upside, v.confidence_level AS overall_confidence,
@@ -3308,6 +3325,7 @@ def list_analysis_symbols(conn):
         )
         item["confidence_diff"] = confidence_diff
         item["rating"] = rating
+        item["latest_release_date"] = latest_release_dates.get(normalize_symbol(item.get("symbol")))
         scenario_updated = _parse_iso_datetime(item.get("updated_at"))
         event_checked = _parse_iso_datetime(item.get("last_recent_event_check_at"))
         activity_candidates = [dt for dt in (scenario_updated, event_checked) if dt is not None]
@@ -4409,6 +4427,7 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
         row["bullish_confidence"] = analysis.get("bullish_confidence") if analysis else None
         row["bearish_confidence"] = analysis.get("bearish_confidence") if analysis else None
         row["confidence_diff"] = analysis.get("confidence_diff") if analysis else None
+        row["latest_release_date"] = analysis.get("latest_release_date") if analysis else None
         merged.append(row)
 
     with_rating = sum(1 for row in merged if row.get("rating"))

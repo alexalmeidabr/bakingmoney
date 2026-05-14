@@ -1238,6 +1238,41 @@ class EarningsReviewTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_analysis_and_positions_payload_include_latest_release_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="MSFT")
+                    web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q1",
+                        release_date="2026-04-20",
+                    )
+                    web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q2",
+                        release_date="2026-07-25",
+                    )
+
+                    analysis_row = next(item for item in web_server.list_analysis_symbols(conn) if item["symbol"] == "MSFT")
+                    self.assertEqual(analysis_row["latest_release_date"], "2026-07-25")
+
+                    payload = web_server.build_positions_payload(
+                        conn,
+                        [{"symbol": "MSFT", "position": 5, "avgCost": 100}],
+                        data_source="test",
+                    )
+                    self.assertEqual(payload["positions"][0]["latest_release_date"], "2026-07-25")
+                finally:
+                    conn.close()
+
     def test_analysis_detail_includes_sorted_earnings_release_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")

@@ -344,12 +344,22 @@
                   <option value="in_portfolio">In Portfolio</option>
                   <option value="not_in_portfolio">Not in Portfolio</option>
                 </select>
-                <label for="earnings-calendar-date-filter" class="inline-control-label">Release Date Filter</label>
-                <select id="earnings-calendar-date-filter">
-                  <option value="all">All</option>
-                  <option value="future">Future</option>
-                  <option value="past">Past</option>
-                </select>
+                <label for="earnings-calendar-date-filter-toggle" class="inline-control-label">Release Date Filter</label>
+                <div id="earnings-calendar-date-filter" class="rating-filter" data-open="false">
+                  <button id="earnings-calendar-date-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="earnings-calendar-date-filter-label" class="rating-filter-label-text">All</span>
+                    <span class="rating-filter-caret" aria-hidden="true">▼</span>
+                  </button>
+                  <div id="earnings-calendar-date-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Release date filter options">
+                    <div class="rating-filter-actions">
+                      <button id="earnings-calendar-date-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                      <button id="earnings-calendar-date-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                    </div>
+                    <label class="rating-filter-option"><input type="checkbox" value="past" /> <span class="rating-filter-option-label">Past</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="today" /> <span class="rating-filter-option-label">Today</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="future" /> <span class="rating-filter-option-label">Future</span></label>
+                  </div>
+                </div>
               </div>
             </div>
             <p id="earnings-calendar-status" class="status">Loading analyzed companies…</p>

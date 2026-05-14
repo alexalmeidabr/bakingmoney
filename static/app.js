@@ -174,6 +174,11 @@ const earningsCalendarStatusEl = document.getElementById('earnings-calendar-stat
 const earningsCalendarTableBody = document.querySelector('#earnings-calendar-table tbody');
 const earningsCalendarPortfolioFilterEl = document.getElementById('earnings-calendar-portfolio-filter');
 const earningsCalendarDateFilterEl = document.getElementById('earnings-calendar-date-filter');
+const earningsCalendarDateFilterToggleEl = document.getElementById('earnings-calendar-date-filter-toggle');
+const earningsCalendarDateFilterLabelEl = document.getElementById('earnings-calendar-date-filter-label');
+const earningsCalendarDateFilterPanelEl = document.getElementById('earnings-calendar-date-filter-panel');
+const earningsCalendarDateFilterSelectAllEl = document.getElementById('earnings-calendar-date-filter-select-all');
+const earningsCalendarDateFilterClearEl = document.getElementById('earnings-calendar-date-filter-clear');
 const earningsCalendarReleaseDateHeaderEl = document.getElementById('earnings-calendar-release-date-header');
 
 let latestPositions = [];
@@ -204,7 +209,7 @@ let earningsReviewSymbolHistory = null;
 let earningsReviewActiveTab = 'workflow';
 let earningsCalendarItems = [];
 let earningsCalendarPortfolioFilter = 'all';
-let earningsCalendarDateFilter = 'all';
+let earningsCalendarDateFilters = new Set();
 let earningsCalendarReleaseDateSortDirection = 'asc';
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
@@ -244,8 +249,22 @@ const RATING_FILTER_OPTIONS = [
 
 const RATING_FILTER_LABEL_BY_KEY = Object.fromEntries(RATING_FILTER_OPTIONS.map((option) => [option.key, option.label]));
 
+const EARNINGS_CALENDAR_DATE_FILTER_OPTIONS = [
+  { key: 'past', label: 'Past' },
+  { key: 'today', label: 'Today' },
+  { key: 'future', label: 'Future' },
+];
+
+const EARNINGS_CALENDAR_DATE_FILTER_LABEL_BY_KEY = Object.fromEntries(
+  EARNINGS_CALENDAR_DATE_FILTER_OPTIONS.map((option) => [option.key, option.label])
+);
+
 function getAllRatingFilterKeys() {
   return new Set(RATING_FILTER_OPTIONS.map((option) => option.key));
+}
+
+function getAllEarningsCalendarDateFilterKeys() {
+  return new Set(EARNINGS_CALENDAR_DATE_FILTER_OPTIONS.map((option) => option.key));
 }
 
 function setSelectedRatings(keys) {
@@ -268,12 +287,26 @@ function setSelectedPositionRatings(keys) {
   updatePositionRatingFilterLabel();
 }
 
+function setSelectedEarningsCalendarDateFilters(keys) {
+  earningsCalendarDateFilters = new Set(keys);
+  if (earningsCalendarDateFilterPanelEl) {
+    earningsCalendarDateFilterPanelEl.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = earningsCalendarDateFilters.has(checkbox.value);
+    });
+  }
+  updateEarningsCalendarDateFilterLabel();
+}
+
 function getSelectedRatings() {
   return new Set(ratingFilters);
 }
 
 function getSelectedPositionRatings() {
   return new Set(positionRatingFilters);
+}
+
+function getSelectedEarningsCalendarDateFilters() {
+  return new Set(earningsCalendarDateFilters);
 }
 
 function updateRatingFilterLabel() {
@@ -316,6 +349,25 @@ function updatePositionRatingFilterLabel() {
   positionsRatingFilterLabelEl.textContent = `${selectedCount} selected`;
 }
 
+function updateEarningsCalendarDateFilterLabel() {
+  const selected = Array.from(getSelectedEarningsCalendarDateFilters());
+  const selectedCount = selected.length;
+
+  if (!earningsCalendarDateFilterLabelEl) return;
+
+  if (selectedCount === 0) {
+    earningsCalendarDateFilterLabelEl.textContent = 'All';
+    return;
+  }
+
+  if (selectedCount === 1) {
+    earningsCalendarDateFilterLabelEl.textContent = EARNINGS_CALENDAR_DATE_FILTER_LABEL_BY_KEY[selected[0]] || 'All';
+    return;
+  }
+
+  earningsCalendarDateFilterLabelEl.textContent = `${selectedCount} selected`;
+}
+
 function setRatingFilterOpen(isOpen) {
   if (!analysisRatingFilterEl || !analysisRatingFilterPanelEl || !analysisRatingFilterToggleEl) return;
   analysisRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
@@ -328,6 +380,13 @@ function setPositionsRatingFilterOpen(isOpen) {
   positionsRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
   positionsRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
   positionsRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function setEarningsCalendarDateFilterOpen(isOpen) {
+  if (!earningsCalendarDateFilterEl || !earningsCalendarDateFilterPanelEl || !earningsCalendarDateFilterToggleEl) return;
+  earningsCalendarDateFilterEl.dataset.open = isOpen ? 'true' : 'false';
+  earningsCalendarDateFilterPanelEl.classList.toggle('hidden', !isOpen);
+  earningsCalendarDateFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
 }
 
 function loadCachedPositions() {
@@ -1632,18 +1691,26 @@ function parseCalendarDisplayDateToIso(displayDateValue) {
   return { ok: true, isoDate };
 }
 
+function getEarningsCalendarReleaseDateState(releaseDateValue, today) {
+  const releaseDate = parseCalendarDate(releaseDateValue);
+  if (!releaseDate) return null;
+  if (releaseDate < today) return 'past';
+  if (releaseDate > today) return 'future';
+  return 'today';
+}
+
 function getFilteredAndSortedEarningsCalendarItems() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+  const selectedDateFilters = getSelectedEarningsCalendarDateFilters();
+  const hasSpecificDateFilter = selectedDateFilters.size > 0;
   const filtered = earningsCalendarItems.filter((item) => {
     if (earningsCalendarPortfolioFilter === 'in_portfolio' && !item.in_portfolio) return false;
     if (earningsCalendarPortfolioFilter === 'not_in_portfolio' && item.in_portfolio) return false;
-    if (earningsCalendarDateFilter === 'all') return true;
-    const releaseDate = parseCalendarDate(item.release_date);
-    if (!releaseDate) return false;
-    if (earningsCalendarDateFilter === 'future') return releaseDate > today;
-    if (earningsCalendarDateFilter === 'past') return releaseDate < today;
-    return true;
+    if (!hasSpecificDateFilter) return true;
+    const releaseDateState = getEarningsCalendarReleaseDateState(item.release_date, today);
+    if (!releaseDateState) return false;
+    return selectedDateFilters.has(releaseDateState);
   });
   return filtered.sort((a, b) => {
     const left = parseCalendarDate(a.release_date);
@@ -1761,7 +1828,7 @@ function renderEarningsCalendarTable() {
 
 async function loadEarningsCalendar() {
   earningsCalendarPortfolioFilterEl.value = earningsCalendarPortfolioFilter;
-  earningsCalendarDateFilterEl.value = earningsCalendarDateFilter;
+  setSelectedEarningsCalendarDateFilters(earningsCalendarDateFilters);
   earningsCalendarStatusEl.textContent = 'Loading analyzed companies…';
   earningsCalendarStatusEl.className = 'status';
   try {
@@ -2532,6 +2599,10 @@ positionsRatingFilterToggleEl.addEventListener('click', () => {
   const isOpen = positionsRatingFilterEl?.dataset.open === 'true';
   setPositionsRatingFilterOpen(!isOpen);
 });
+earningsCalendarDateFilterToggleEl.addEventListener('click', () => {
+  const isOpen = earningsCalendarDateFilterEl?.dataset.open === 'true';
+  setEarningsCalendarDateFilterOpen(!isOpen);
+});
 analysisRatingFilterPanelEl.addEventListener('change', (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
@@ -2550,6 +2621,15 @@ positionsRatingFilterPanelEl.addEventListener('change', (event) => {
   setSelectedPositionRatings(next);
   renderPositions();
 });
+earningsCalendarDateFilterPanelEl.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+  const next = getSelectedEarningsCalendarDateFilters();
+  if (target.checked) next.add(target.value);
+  else next.delete(target.value);
+  setSelectedEarningsCalendarDateFilters(next);
+  renderEarningsCalendarTable();
+});
 analysisRatingFilterSelectAllEl.addEventListener('click', () => {
   setSelectedRatings(getAllRatingFilterKeys());
   renderAnalysisList();
@@ -2557,6 +2637,10 @@ analysisRatingFilterSelectAllEl.addEventListener('click', () => {
 positionsRatingFilterSelectAllEl.addEventListener('click', () => {
   setSelectedPositionRatings(getAllRatingFilterKeys());
   renderPositions();
+});
+earningsCalendarDateFilterSelectAllEl.addEventListener('click', () => {
+  setSelectedEarningsCalendarDateFilters(getAllEarningsCalendarDateFilterKeys());
+  renderEarningsCalendarTable();
 });
 analysisRatingFilterClearEl.addEventListener('click', () => {
   setSelectedRatings(new Set());
@@ -2566,18 +2650,21 @@ positionsRatingFilterClearEl.addEventListener('click', () => {
   setSelectedPositionRatings(new Set());
   renderPositions();
 });
+earningsCalendarDateFilterClearEl.addEventListener('click', () => {
+  setSelectedEarningsCalendarDateFilters(new Set());
+  renderEarningsCalendarTable();
+});
 document.addEventListener('click', (event) => {
-  if (!analysisRatingFilterEl || !(event.target instanceof Node)) return;
-  if (analysisRatingFilterEl.contains(event.target)) return;
-  setRatingFilterOpen(false);
-  if (!positionsRatingFilterEl) return;
-  if (positionsRatingFilterEl.contains(event.target)) return;
-  setPositionsRatingFilterOpen(false);
+  if (!(event.target instanceof Node)) return;
+  if (analysisRatingFilterEl && !analysisRatingFilterEl.contains(event.target)) setRatingFilterOpen(false);
+  if (positionsRatingFilterEl && !positionsRatingFilterEl.contains(event.target)) setPositionsRatingFilterOpen(false);
+  if (earningsCalendarDateFilterEl && !earningsCalendarDateFilterEl.contains(event.target)) setEarningsCalendarDateFilterOpen(false);
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   setRatingFilterOpen(false);
   setPositionsRatingFilterOpen(false);
+  setEarningsCalendarDateFilterOpen(false);
 });
 analysisSelectAllEl.addEventListener('change', () => {
   const visibleItems = getFilteredAnalysisItems();
@@ -2717,10 +2804,6 @@ earningsCalendarPortfolioFilterEl.addEventListener('change', () => {
   earningsCalendarPortfolioFilter = earningsCalendarPortfolioFilterEl.value || 'all';
   renderEarningsCalendarTable();
 });
-earningsCalendarDateFilterEl.addEventListener('change', () => {
-  earningsCalendarDateFilter = earningsCalendarDateFilterEl.value || 'all';
-  renderEarningsCalendarTable();
-});
 earningsCalendarReleaseDateHeaderEl.addEventListener('click', () => {
   earningsCalendarReleaseDateSortDirection = earningsCalendarReleaseDateSortDirection === 'asc' ? 'desc' : 'asc';
   renderEarningsCalendarTable();
@@ -2752,8 +2835,10 @@ updateAnalysisSortHeaderState();
 setSelectedRatings(getAllRatingFilterKeys());
 setRatingFilterOpen(false);
 setSelectedPositionRatings(getAllRatingFilterKeys());
+setSelectedEarningsCalendarDateFilters(new Set());
 setEarningsReviewTab('workflow');
 setPositionsRatingFilterOpen(false);
+setEarningsCalendarDateFilterOpen(false);
 loadTwsDataToggleState();
 
 async function handleInitialRoute() {

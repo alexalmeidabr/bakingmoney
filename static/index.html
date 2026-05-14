@@ -362,7 +362,31 @@
                 </div>
               </div>
             </div>
-            <p id="earnings-calendar-status" class="status">Loading analyzed companies…</p>
+            <section class="detail-card earnings-calendar-add-card">
+              <h4>Add Calendar Entry</h4>
+              <div class="earnings-calendar-add-form">
+                <label>Symbol <input id="earnings-calendar-add-symbol" type="text" placeholder="MSFT" autocomplete="off" /></label>
+                <label>Fiscal Year <input id="earnings-calendar-add-fiscal-year" type="number" min="1900" max="2200" step="1" placeholder="2026" /></label>
+                <label>Fiscal Quarter
+                  <select id="earnings-calendar-add-fiscal-quarter">
+                    <option value="Q1">Q1</option>
+                    <option value="Q2">Q2</option>
+                    <option value="Q3">Q3</option>
+                    <option value="Q4">Q4</option>
+                  </select>
+                </label>
+                <label>Release Date <input id="earnings-calendar-add-release-date" type="text" placeholder="DD.MM.YYYY" inputmode="numeric" /></label>
+                <label>Release Timing
+                  <select id="earnings-calendar-add-release-timing">
+                    <option value="">Not set</option>
+                    <option value="Before Open">Before Open</option>
+                    <option value="After Close">After Close</option>
+                  </select>
+                </label>
+                <button id="earnings-calendar-add-btn" type="button">Add Entry</button>
+              </div>
+            </section>
+            <p id="earnings-calendar-status" class="status">Loading calendar entries…</p>
             <section class="detail-card earnings-review-list-card">
               <div class="table-wrap">
                 <table id="earnings-calendar-table">
@@ -370,7 +394,9 @@
                     <tr>
                       <th>Symbol</th>
                       <th>Company Name</th>
-                      <th id="earnings-calendar-release-date-header" class="sortable" data-sort-direction="">Earnings Release Date</th>
+                      <th>Fiscal Year</th>
+                      <th>Fiscal Quarter</th>
+                      <th id="earnings-calendar-release-date-header" class="sortable" data-sort-direction="">Release Date</th>
                       <th>Release Timing</th>
                       <th>Portfolio</th>
                       <th>Upside</th>

@@ -179,6 +179,12 @@ const earningsCalendarDateFilterLabelEl = document.getElementById('earnings-cale
 const earningsCalendarDateFilterPanelEl = document.getElementById('earnings-calendar-date-filter-panel');
 const earningsCalendarDateFilterSelectAllEl = document.getElementById('earnings-calendar-date-filter-select-all');
 const earningsCalendarDateFilterClearEl = document.getElementById('earnings-calendar-date-filter-clear');
+const earningsCalendarAddSymbolEl = document.getElementById('earnings-calendar-add-symbol');
+const earningsCalendarAddFiscalYearEl = document.getElementById('earnings-calendar-add-fiscal-year');
+const earningsCalendarAddFiscalQuarterEl = document.getElementById('earnings-calendar-add-fiscal-quarter');
+const earningsCalendarAddReleaseDateEl = document.getElementById('earnings-calendar-add-release-date');
+const earningsCalendarAddReleaseTimingEl = document.getElementById('earnings-calendar-add-release-timing');
+const earningsCalendarAddBtn = document.getElementById('earnings-calendar-add-btn');
 const earningsCalendarReleaseDateHeaderEl = document.getElementById('earnings-calendar-release-date-header');
 
 let latestPositions = [];
@@ -1723,37 +1729,75 @@ function getFilteredAndSortedEarningsCalendarItems() {
   });
 }
 
+function getEarningsCalendarQuarterOptions(selectedQuarter) {
+  return ['Q1', 'Q2', 'Q3', 'Q4']
+    .map((value) => `<option value="${value}" ${value === selectedQuarter ? 'selected' : ''}>${value}</option>`)
+    .join('');
+}
+
+function getEarningsCalendarTimingOptions(selectedTiming) {
+  return ['', 'Before Open', 'After Close']
+    .map((value) => `<option value="${value}" ${value === (selectedTiming || '') ? 'selected' : ''}>${value || 'Not set'}</option>`)
+    .join('');
+}
+
+function parseEarningsCalendarFiscalYear(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { ok: false, error: 'Fiscal year is required.' };
+  const year = Number(raw);
+  if (!Number.isInteger(year) || year < 1900 || year > 2200) {
+    return { ok: false, error: 'Fiscal year must be an integer between 1900 and 2200.' };
+  }
+  return { ok: true, year };
+}
+
 function renderEarningsCalendarTable() {
   earningsCalendarTableBody.innerHTML = '';
   const items = getFilteredAndSortedEarningsCalendarItems();
   earningsCalendarReleaseDateHeaderEl.dataset.sortDirection = earningsCalendarReleaseDateSortDirection;
   items.forEach((item) => {
     const row = document.createElement('tr');
+    const entryId = String(item.id || '');
+    const symbol = String(item.symbol || '');
     const upsideClass = typeof item.upside === 'number' ? valueClass(item.upside) : '';
-    const timingOptions = ['', 'Before Open', 'After Close']
-      .map((value) => `<option value="${value}" ${value === (item.release_timing || '') ? 'selected' : ''}>${value || 'Not set'}</option>`)
-      .join('');
+    const symbolCell = item.has_analysis
+      ? `<button class="symbol-link earnings-calendar-symbol-link" data-symbol="${escapeHtml(symbol)}">${escapeHtml(symbol)}</button>`
+      : escapeHtml(symbol);
+    const quarterOptions = getEarningsCalendarQuarterOptions(item.fiscal_quarter || 'Q1');
+    const timingOptions = getEarningsCalendarTimingOptions(item.release_timing || '');
     row.innerHTML = `
-      <td><button class="symbol-link earnings-calendar-symbol-link" data-symbol="${escapeHtml(item.symbol || '')}">${escapeHtml(item.symbol || '')}</button></td>
+      <td>${symbolCell}</td>
       <td>${escapeHtml(item.company_name || 'N/A')}</td>
-      <td class="earnings-calendar-cell"><input type="text" class="earnings-calendar-date earnings-calendar-date-input earnings-calendar-date-text" data-symbol="${escapeHtml(item.symbol || '')}" value="${escapeHtml(formatCalendarDateInputValue(item.release_date))}" placeholder="DD.MM.YYYY" inputmode="numeric" /></td>
-      <td class="earnings-calendar-cell"><select class="earnings-calendar-timing earnings-calendar-select" data-symbol="${escapeHtml(item.symbol || '')}">${timingOptions}</select></td>
+      <td class="earnings-calendar-cell"><input type="number" class="earnings-calendar-fiscal-year earnings-calendar-date-input" data-entry-id="${escapeHtml(entryId)}" value="${escapeHtml(String(item.fiscal_year || ''))}" min="1900" max="2200" step="1" /></td>
+      <td class="earnings-calendar-cell"><select class="earnings-calendar-fiscal-quarter earnings-calendar-select" data-entry-id="${escapeHtml(entryId)}">${quarterOptions}</select></td>
+      <td class="earnings-calendar-cell"><input type="text" class="earnings-calendar-date earnings-calendar-date-input earnings-calendar-date-text" data-entry-id="${escapeHtml(entryId)}" value="${escapeHtml(formatCalendarDateInputValue(item.release_date))}" placeholder="DD.MM.YYYY" inputmode="numeric" /></td>
+      <td class="earnings-calendar-cell"><select class="earnings-calendar-timing earnings-calendar-select" data-entry-id="${escapeHtml(entryId)}">${timingOptions}</select></td>
       <td><span class="badge ${item.in_portfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.in_portfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td>
       <td class="${upsideClass}">${formatPercent(item.upside)}</td>
       <td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td>
       <td>${escapeHtml(item.rating || 'N/A')}</td>
-      <td><button class="earnings-calendar-save-btn" data-symbol="${escapeHtml(item.symbol || '')}">Save</button></td>
-      <td><button class="remove-btn earnings-calendar-remove-btn" data-symbol="${escapeHtml(item.symbol || '')}">Remove</button></td>
+      <td><button class="earnings-calendar-save-btn" data-entry-id="${escapeHtml(entryId)}" data-symbol="${escapeHtml(symbol)}">Save</button></td>
+      <td><button class="remove-btn earnings-calendar-remove-btn" data-entry-id="${escapeHtml(entryId)}" data-symbol="${escapeHtml(symbol)}">Remove</button></td>
     `;
     earningsCalendarTableBody.appendChild(row);
   });
-  earningsCalendarStatusEl.textContent = `Showing ${items.length} of ${earningsCalendarItems.length} analyzed symbol(s).`;
+  earningsCalendarStatusEl.textContent = `Showing ${items.length} of ${earningsCalendarItems.length} calendar entr${earningsCalendarItems.length === 1 ? 'y' : 'ies'}.`;
   earningsCalendarStatusEl.className = 'status';
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-save-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const symbol = btn.dataset.symbol;
+      const entryId = btn.dataset.entryId;
+      const symbol = btn.dataset.symbol || 'entry';
       const row = btn.closest('tr');
-      if (!row || !symbol) return;
+      if (!row || !entryId) return;
+      const fiscalYearInput = row.querySelector('.earnings-calendar-fiscal-year');
+      const yearParse = parseEarningsCalendarFiscalYear(fiscalYearInput?.value || '');
+      if (!yearParse.ok) {
+        earningsCalendarStatusEl.textContent = `Error: ${yearParse.error}`;
+        earningsCalendarStatusEl.className = 'status error';
+        fiscalYearInput?.classList.add('input-error');
+        return;
+      }
+      fiscalYearInput?.classList.remove('input-error');
       const releaseDateText = row.querySelector('.earnings-calendar-date-text')?.value || '';
       const dateParse = parseCalendarDisplayDateToIso(releaseDateText);
       if (!dateParse.ok) {
@@ -1763,28 +1807,30 @@ function renderEarningsCalendarTable() {
         return;
       }
       row.querySelector('.earnings-calendar-date-text')?.classList.remove('input-error');
+      const fiscalQuarter = row.querySelector('.earnings-calendar-fiscal-quarter')?.value || 'Q1';
       const releaseDate = dateParse.isoDate;
       const releaseTiming = row.querySelector('.earnings-calendar-timing')?.value || null;
-      earningsCalendarStatusEl.textContent = `Saving ${symbol} schedule…`;
+      earningsCalendarStatusEl.textContent = `Saving ${symbol} calendar entry…`;
       earningsCalendarStatusEl.className = 'status';
       btn.disabled = true;
       try {
-        const response = await fetch(`/api/earnings-review/calendar/${encodeURIComponent(symbol)}`, {
+        const response = await fetch(`/api/earnings-review/calendar/${encodeURIComponent(entryId)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            fiscal_year: yearParse.year,
+            fiscal_quarter: fiscalQuarter,
             release_date: releaseDate || null,
             release_timing: releaseTiming || null,
           }),
         });
         const payload = await response.json();
-        if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save earnings schedule.'));
-        earningsCalendarStatusEl.textContent = `Saved earnings schedule for ${symbol}.`;
+        if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save earnings calendar entry.'));
+        earningsCalendarStatusEl.textContent = `Saved ${symbol} ${yearParse.year} ${fiscalQuarter}.`;
         earningsCalendarStatusEl.className = 'status';
-        const matched = earningsCalendarItems.find((item) => item.symbol === symbol);
-        if (matched) {
-          matched.release_date = releaseDate || null;
-          matched.release_timing = releaseTiming || null;
+        if (payload.item) {
+          const index = earningsCalendarItems.findIndex((entry) => String(entry.id) === String(entryId));
+          if (index >= 0) earningsCalendarItems[index] = payload.item;
         }
         renderEarningsCalendarTable();
       } catch (error) {
@@ -1800,20 +1846,21 @@ function renderEarningsCalendarTable() {
   });
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-remove-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const symbol = btn.dataset.symbol;
-      if (!symbol) return;
-      const confirmed = window.confirm(`Remove ${symbol} from Earnings Calendar?\n\nThis will only remove it from the Earnings Calendar list. Analysis and historical earnings reviews are kept.`);
+      const entryId = btn.dataset.entryId;
+      const symbol = btn.dataset.symbol || 'entry';
+      if (!entryId) return;
+      const confirmed = window.confirm(`Remove ${symbol} from Earnings Calendar?\n\nThis will only remove this quarter-specific calendar entry. Analysis, Earnings Reviews, Alerts, and other data are kept.`);
       if (!confirmed) return;
-      earningsCalendarStatusEl.textContent = `Removing ${symbol} from Earnings Calendar…`;
+      earningsCalendarStatusEl.textContent = `Removing ${symbol} calendar entry…`;
       earningsCalendarStatusEl.className = 'status';
       btn.disabled = true;
       try {
-        const response = await fetch(`/api/earnings-review/calendar/${encodeURIComponent(symbol)}`, {
+        const response = await fetch(`/api/earnings-review/calendar/${encodeURIComponent(entryId)}`, {
           method: 'DELETE',
         });
         const payload = await response.json();
-        if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to remove symbol from Earnings Calendar.'));
-        earningsCalendarStatusEl.textContent = `${symbol} removed from Earnings Calendar.`;
+        if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to remove calendar entry.'));
+        earningsCalendarStatusEl.textContent = `${symbol} calendar entry removed.`;
         earningsCalendarStatusEl.className = 'status';
         await loadEarningsCalendar();
       } catch (error) {
@@ -1826,10 +1873,69 @@ function renderEarningsCalendarTable() {
   });
 }
 
+async function createEarningsCalendarEntry() {
+  const symbol = (earningsCalendarAddSymbolEl.value || '').trim().toUpperCase();
+  if (!symbol) {
+    earningsCalendarStatusEl.textContent = 'Error: Symbol is required.';
+    earningsCalendarStatusEl.className = 'status error';
+    earningsCalendarAddSymbolEl.focus();
+    return;
+  }
+  const yearParse = parseEarningsCalendarFiscalYear(earningsCalendarAddFiscalYearEl.value || '');
+  if (!yearParse.ok) {
+    earningsCalendarStatusEl.textContent = `Error: ${yearParse.error}`;
+    earningsCalendarStatusEl.className = 'status error';
+    earningsCalendarAddFiscalYearEl.classList.add('input-error');
+    earningsCalendarAddFiscalYearEl.focus();
+    return;
+  }
+  earningsCalendarAddFiscalYearEl.classList.remove('input-error');
+  const dateParse = parseCalendarDisplayDateToIso(earningsCalendarAddReleaseDateEl.value || '');
+  if (!dateParse.ok) {
+    earningsCalendarStatusEl.textContent = `Error: ${dateParse.error}`;
+    earningsCalendarStatusEl.className = 'status error';
+    earningsCalendarAddReleaseDateEl.classList.add('input-error');
+    earningsCalendarAddReleaseDateEl.focus();
+    return;
+  }
+  earningsCalendarAddReleaseDateEl.classList.remove('input-error');
+  const fiscalQuarter = earningsCalendarAddFiscalQuarterEl.value || 'Q1';
+  const releaseTiming = earningsCalendarAddReleaseTimingEl.value || null;
+  earningsCalendarStatusEl.textContent = `Adding ${symbol} ${yearParse.year} ${fiscalQuarter}…`;
+  earningsCalendarStatusEl.className = 'status';
+  earningsCalendarAddBtn.disabled = true;
+  try {
+    const response = await fetch('/api/earnings-review/calendar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        fiscal_year: yearParse.year,
+        fiscal_quarter: fiscalQuarter,
+        release_date: dateParse.isoDate || null,
+        release_timing: releaseTiming || null,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to add calendar entry.'));
+    earningsCalendarStatusEl.textContent = `Added ${symbol} ${yearParse.year} ${fiscalQuarter}.`;
+    earningsCalendarStatusEl.className = 'status';
+    earningsCalendarAddSymbolEl.value = '';
+    earningsCalendarAddReleaseDateEl.value = '';
+    earningsCalendarAddReleaseTimingEl.value = '';
+    await loadEarningsCalendar();
+  } catch (error) {
+    earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
+    earningsCalendarStatusEl.className = 'status error';
+  } finally {
+    earningsCalendarAddBtn.disabled = false;
+  }
+}
+
 async function loadEarningsCalendar() {
   earningsCalendarPortfolioFilterEl.value = earningsCalendarPortfolioFilter;
   setSelectedEarningsCalendarDateFilters(earningsCalendarDateFilters);
-  earningsCalendarStatusEl.textContent = 'Loading analyzed companies…';
+  earningsCalendarStatusEl.textContent = 'Loading calendar entries…';
   earningsCalendarStatusEl.className = 'status';
   try {
     const response = await fetch('/api/earnings-review/calendar');
@@ -2803,6 +2909,12 @@ earningsReviewTabCalendarBtn.addEventListener('click', async () => {
 earningsCalendarPortfolioFilterEl.addEventListener('change', () => {
   earningsCalendarPortfolioFilter = earningsCalendarPortfolioFilterEl.value || 'all';
   renderEarningsCalendarTable();
+});
+earningsCalendarAddBtn.addEventListener('click', createEarningsCalendarEntry);
+[earningsCalendarAddSymbolEl, earningsCalendarAddFiscalYearEl, earningsCalendarAddReleaseDateEl].forEach((input) => {
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') createEarningsCalendarEntry();
+  });
 });
 earningsCalendarReleaseDateHeaderEl.addEventListener('click', () => {
   earningsCalendarReleaseDateSortDirection = earningsCalendarReleaseDateSortDirection === 'asc' ? 'desc' : 'asc';

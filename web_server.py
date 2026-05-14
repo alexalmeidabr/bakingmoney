@@ -64,6 +64,7 @@ BACKUP_REQUIRED_TABLES = (
     "earnings_review_watchpoints",
     "earnings_review_documents",
     "earnings_review_watchpoint_results",
+    "earnings_calendar_entries",
     "app_settings",
     "positions_cache",
     "thesis_review_alerts",
@@ -2070,6 +2071,27 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS earnings_calendar_entries (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              symbol TEXT NOT NULL,
+              fiscal_year INTEGER NOT NULL,
+              fiscal_quarter TEXT NOT NULL CHECK (fiscal_quarter IN ('Q1', 'Q2', 'Q3', 'Q4')),
+              release_date TEXT,
+              release_timing TEXT CHECK (release_timing IS NULL OR release_timing IN ('Before Open', 'After Close')),
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(symbol, fiscal_year, fiscal_quarter)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_earnings_calendar_entries_symbol
+            ON earnings_calendar_entries(symbol)
+            """
+        )
+        conn.execute(
+            """
             INSERT INTO earnings_review_symbols (symbol, created_at, updated_at)
             SELECT DISTINCT er.symbol, ?, ?
             FROM earnings_reviews er
@@ -3318,97 +3340,176 @@ def _normalize_release_date(value):
     return normalized
 
 
-def list_earnings_release_calendar(conn):
-    analysis_items = list_analysis_symbols(conn)
-    excluded_symbols = {
-        row["symbol"]
-        for row in conn.execute("SELECT symbol FROM earnings_release_calendar_exclusions").fetchall()
+def _validate_fiscal_year(value):
+    try:
+        year = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("fiscal_year must be a valid integer") from exc
+    if year < 1900 or year > 2200:
+        raise ValueError("fiscal_year must be between 1900 and 2200")
+    return year
+
+
+def _get_analysis_enrichment_by_symbol(conn):
+    return {
+        normalize_symbol(item.get("symbol")): item
+        for item in list_analysis_symbols(conn)
+        if normalize_symbol(item.get("symbol"))
     }
-    schedule_rows = conn.execute(
-        """
-        SELECT symbol, release_date, release_timing
-        FROM earnings_release_schedule
-        """
-    ).fetchall()
-    schedule_by_symbol = {row["symbol"]: dict(row) for row in schedule_rows}
-    portfolio_symbols = {
+
+
+def _get_portfolio_symbols(conn):
+    return {
         normalize_symbol(item.get("symbol"))
         for item in load_positions_cache(conn)
-        if abs(safe_number(item.get("position")) or 0.0) > 0
+        if normalize_symbol(item.get("symbol")) and abs(safe_number(item.get("position")) or 0.0) > 0
     }
-    output = []
-    for item in analysis_items:
-        symbol = item.get("symbol")
-        if symbol in excluded_symbols:
-            continue
-        schedule = schedule_by_symbol.get(symbol, {})
-        output.append({
-            "symbol": symbol,
-            "company_name": item.get("company_name"),
-            "in_portfolio": symbol in portfolio_symbols,
-            "upside": item.get("upside"),
-            "confidence_diff": item.get("confidence_diff"),
-            "bullish_confidence": item.get("bullish_confidence"),
-            "bearish_confidence": item.get("bearish_confidence"),
-            "rating": item.get("rating"),
-            "release_date": schedule.get("release_date"),
-            "release_timing": schedule.get("release_timing"),
-        })
-    return output
 
 
-def save_earnings_release_schedule(conn, symbol, release_date=None, release_timing=None):
+def _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols):
+    entry = dict(row)
+    symbol = normalize_symbol(entry.get("symbol")) or ""
+    analysis = analysis_by_symbol.get(symbol) or {}
+    in_portfolio = symbol in portfolio_symbols
+    return {
+        "id": entry.get("id"),
+        "symbol": symbol,
+        "company_name": analysis.get("company_name"),
+        "has_analysis": bool(analysis),
+        "in_portfolio": in_portfolio,
+        "inPortfolio": in_portfolio,
+        "upside": analysis.get("upside"),
+        "confidence_diff": analysis.get("confidence_diff"),
+        "bullish_confidence": analysis.get("bullish_confidence"),
+        "bearish_confidence": analysis.get("bearish_confidence"),
+        "rating": analysis.get("rating"),
+        "fiscal_year": entry.get("fiscal_year"),
+        "fiscal_quarter": entry.get("fiscal_quarter"),
+        "release_date": entry.get("release_date"),
+        "release_timing": entry.get("release_timing"),
+        "created_at": entry.get("created_at"),
+        "updated_at": entry.get("updated_at"),
+    }
+
+
+def list_earnings_release_calendar(conn):
+    rows = conn.execute(
+        """
+        SELECT id, symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
+        FROM earnings_calendar_entries
+        ORDER BY fiscal_year DESC,
+                 CASE fiscal_quarter WHEN 'Q4' THEN 4 WHEN 'Q3' THEN 3 WHEN 'Q2' THEN 2 ELSE 1 END DESC,
+                 symbol ASC,
+                 id ASC
+        """
+    ).fetchall()
+    analysis_by_symbol = _get_analysis_enrichment_by_symbol(conn)
+    portfolio_symbols = _get_portfolio_symbols(conn)
+    return [_serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols) for row in rows]
+
+
+def create_earnings_calendar_entry(conn, symbol, fiscal_year, fiscal_quarter, release_date=None, release_timing=None):
     normalized_symbol = normalize_symbol(symbol)
     if not normalized_symbol:
         raise ValueError("symbol is required")
-    exists = conn.execute("SELECT 1 FROM analysis_roots WHERE symbol = ?", (normalized_symbol,)).fetchone()
-    if not exists:
-        raise ValueError(f"Symbol {normalized_symbol} not found in Analysis")
+    year = _validate_fiscal_year(fiscal_year)
+    quarter = _validate_fiscal_quarter(fiscal_quarter)
     normalized_date = _normalize_release_date(release_date)
     normalized_timing = _normalize_release_timing(release_timing)
     now = utc_now_iso()
-    conn.execute(
-        """
-        INSERT INTO earnings_release_schedule (symbol, release_date, release_timing, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(symbol) DO UPDATE SET
-          release_date = excluded.release_date,
-          release_timing = excluded.release_timing,
-          updated_at = excluded.updated_at
-        """,
-        (normalized_symbol, normalized_date, normalized_timing, now, now),
-    )
-    conn.execute("DELETE FROM earnings_release_calendar_exclusions WHERE symbol = ?", (normalized_symbol,))
-    conn.commit()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO earnings_calendar_entries (
+              symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (normalized_symbol, year, quarter, normalized_date, normalized_timing, now, now),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        if "UNIQUE" in str(exc).upper():
+            raise ValueError(f"Calendar entry for {normalized_symbol} {year} {quarter} already exists") from exc
+        raise ValueError(str(exc)) from exc
+    return get_earnings_calendar_entry(conn, cursor.lastrowid)
+
+
+def get_earnings_calendar_entry(conn, entry_id):
+    try:
+        normalized_id = int(entry_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("calendar entry id must be a valid integer") from exc
     row = conn.execute(
         """
-        SELECT symbol, release_date, release_timing, created_at, updated_at
-        FROM earnings_release_schedule
-        WHERE symbol = ?
+        SELECT id, symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
+        FROM earnings_calendar_entries
+        WHERE id = ?
         """,
-        (normalized_symbol,),
+        (normalized_id,),
     ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        raise ValueError("Calendar entry not found")
+    analysis_by_symbol = _get_analysis_enrichment_by_symbol(conn)
+    portfolio_symbols = _get_portfolio_symbols(conn)
+    return _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols)
 
 
-def remove_earnings_release_calendar_symbol(conn, symbol):
-    normalized_symbol = normalize_symbol(symbol)
-    if not normalized_symbol:
-        raise ValueError("symbol is required")
-    exists = conn.execute("SELECT 1 FROM analysis_roots WHERE symbol = ?", (normalized_symbol,)).fetchone()
-    if not exists:
-        raise ValueError(f"Symbol {normalized_symbol} not found in Analysis")
+def update_earnings_calendar_entry(conn, entry_id, fiscal_year, fiscal_quarter, release_date=None, release_timing=None):
+    try:
+        normalized_id = int(entry_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("calendar entry id must be a valid integer") from exc
+    existing = conn.execute("SELECT symbol FROM earnings_calendar_entries WHERE id = ?", (normalized_id,)).fetchone()
+    if not existing:
+        raise ValueError("Calendar entry not found")
+    year = _validate_fiscal_year(fiscal_year)
+    quarter = _validate_fiscal_quarter(fiscal_quarter)
+    normalized_date = _normalize_release_date(release_date)
+    normalized_timing = _normalize_release_timing(release_timing)
     now = utc_now_iso()
-    conn.execute(
-        """
-        INSERT INTO earnings_release_calendar_exclusions (symbol, created_at)
-        VALUES (?, ?)
-        ON CONFLICT(symbol) DO NOTHING
-        """,
-        (normalized_symbol, now),
-    )
+    try:
+        conn.execute(
+            """
+            UPDATE earnings_calendar_entries
+            SET fiscal_year = ?, fiscal_quarter = ?, release_date = ?, release_timing = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (year, quarter, normalized_date, normalized_timing, now, normalized_id),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        if "UNIQUE" in str(exc).upper():
+            symbol = existing["symbol"]
+            raise ValueError(f"Calendar entry for {symbol} {year} {quarter} already exists") from exc
+        raise ValueError(str(exc)) from exc
+    return get_earnings_calendar_entry(conn, normalized_id)
+
+
+def delete_earnings_calendar_entry(conn, entry_id):
+    try:
+        normalized_id = int(entry_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("calendar entry id must be a valid integer") from exc
+    row = conn.execute(
+        "SELECT id, symbol, fiscal_year, fiscal_quarter FROM earnings_calendar_entries WHERE id = ?",
+        (normalized_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError("Calendar entry not found")
+    conn.execute("DELETE FROM earnings_calendar_entries WHERE id = ?", (normalized_id,))
     conn.commit()
-    return {"symbol": normalized_symbol, "removed": True}
+    return {"id": row["id"], "symbol": row["symbol"], "fiscal_year": row["fiscal_year"], "fiscal_quarter": row["fiscal_quarter"], "removed": True}
+
+
+# Backwards-compatible helper names now operate on standalone quarter-specific entries.
+def save_earnings_release_schedule(conn, symbol, release_date=None, release_timing=None, fiscal_year=None, fiscal_quarter=None, entry_id=None):
+    if entry_id is not None:
+        return update_earnings_calendar_entry(conn, entry_id, fiscal_year, fiscal_quarter, release_date, release_timing)
+    return create_earnings_calendar_entry(conn, symbol, fiscal_year, fiscal_quarter, release_date, release_timing)
+
+
+def remove_earnings_release_calendar_symbol(conn, entry_id):
+    return delete_earnings_calendar_entry(conn, entry_id)
 
 
 def refresh_latest_analysis_market_prices(conn):
@@ -6092,11 +6193,13 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_import_positions()
         if path == "/api/earnings-review/symbols":
             return self.handle_earnings_review_symbol_add()
+        if path == "/api/earnings-review/calendar":
+            return self.handle_earnings_review_calendar_create()
         if path.startswith("/api/earnings-review/calendar/"):
-            symbol = normalize_symbol(path[len("/api/earnings-review/calendar/"):])
-            if not symbol:
-                return self._send_json({"error": "Invalid symbol"}, status=400)
-            return self.handle_earnings_review_calendar_save(symbol)
+            entry_id = path[len("/api/earnings-review/calendar/"):].strip()
+            if not entry_id.isdigit():
+                return self._send_json({"error": "Invalid earnings calendar entry id"}, status=400)
+            return self.handle_earnings_review_calendar_save(int(entry_id))
         if path.startswith("/api/earnings-review/"):
             suffix = path[len("/api/earnings-review/") :]
             parts = [item for item in suffix.split("/") if item]
@@ -6140,16 +6243,21 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/alerts/") and path.endswith("/status"):
             alert_id = path[len("/api/alerts/") : -len("/status")]
             return self.handle_alerts_status_put(alert_id)
+        if path.startswith("/api/earnings-review/calendar/"):
+            entry_id = path[len("/api/earnings-review/calendar/"):].strip()
+            if not entry_id.isdigit():
+                return self._send_json({"error": "Invalid earnings calendar entry id"}, status=400)
+            return self.handle_earnings_review_calendar_save(int(entry_id))
 
         self.send_error(404, "Not Found")
 
     def do_DELETE(self):
         path = urlparse(self.path).path
         if path.startswith("/api/earnings-review/calendar/"):
-            symbol = normalize_symbol(path[len("/api/earnings-review/calendar/"):])
-            if not symbol:
-                return self._send_json({"error": "Invalid symbol"}, status=400)
-            return self.handle_earnings_review_calendar_remove(symbol)
+            entry_id = path[len("/api/earnings-review/calendar/"):].strip()
+            if not entry_id.isdigit():
+                return self._send_json({"error": "Invalid earnings calendar entry id"}, status=400)
+            return self.handle_earnings_review_calendar_remove(int(entry_id))
         if path.startswith("/api/earnings-review/"):
             suffix = path[len("/api/earnings-review/") :]
             parts = [item for item in suffix.split("/") if item]
@@ -6583,21 +6691,49 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_earnings_review_calendar_save(self, symbol):
+    def handle_earnings_review_calendar_create(self):
         payload = self._read_json_body() or {}
         conn = get_db_connection()
         try:
-            item = save_earnings_release_schedule(
+            item = create_earnings_calendar_entry(
                 conn=conn,
-                symbol=symbol,
+                symbol=payload.get("symbol"),
+                fiscal_year=payload.get("fiscal_year"),
+                fiscal_quarter=payload.get("fiscal_quarter"),
+                release_date=payload.get("release_date"),
+                release_timing=payload.get("release_timing"),
+            )
+            self._send_json({"ok": True, "item": item}, status=201)
+        except ValueError as exc:
+            status = 409 if "already exists" in str(exc).lower() else 400
+            self._send_json({"error": str(exc)}, status=status)
+        except Exception as exc:
+            logger.exception("Unable to create earnings calendar row")
+            self._send_json(
+                {"error": "Unable to create earnings calendar row.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_calendar_save(self, entry_id):
+        payload = self._read_json_body() or {}
+        conn = get_db_connection()
+        try:
+            item = update_earnings_calendar_entry(
+                conn=conn,
+                entry_id=entry_id,
+                fiscal_year=payload.get("fiscal_year"),
+                fiscal_quarter=payload.get("fiscal_quarter"),
                 release_date=payload.get("release_date"),
                 release_timing=payload.get("release_timing"),
             )
             self._send_json({"ok": True, "item": item})
         except ValueError as exc:
-            self._send_json({"error": str(exc)}, status=400)
+            status = 409 if "already exists" in str(exc).lower() else 400
+            self._send_json({"error": str(exc)}, status=status)
         except Exception as exc:
-            logger.exception("Unable to save earnings calendar row for symbol %s", symbol)
+            logger.exception("Unable to save earnings calendar row %s", entry_id)
             self._send_json(
                 {"error": "Unable to save earnings calendar row.", "details": str(exc)},
                 status=500,
@@ -6605,17 +6741,17 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_earnings_review_calendar_remove(self, symbol):
+    def handle_earnings_review_calendar_remove(self, entry_id):
         conn = get_db_connection()
         try:
-            result = remove_earnings_release_calendar_symbol(conn, symbol)
+            result = delete_earnings_calendar_entry(conn, entry_id)
             self._send_json({"ok": True, "item": result})
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=400)
         except Exception as exc:
-            logger.exception("Unable to remove earnings calendar symbol %s", symbol)
+            logger.exception("Unable to remove earnings calendar row %s", entry_id)
             self._send_json(
-                {"error": "Unable to remove earnings calendar symbol.", "details": str(exc)},
+                {"error": "Unable to remove earnings calendar row.", "details": str(exc)},
                 status=500,
             )
         finally:

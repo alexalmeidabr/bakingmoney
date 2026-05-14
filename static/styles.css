@@ -701,6 +701,54 @@ th.sortable[data-sort-direction='desc']::after {
   min-width: 100%;
 }
 
+#earnings-calendar-table {
+  min-width: 1320px;
+}
+
+.earnings-calendar-add-card h4 {
+  margin: 0 0 12px;
+}
+
+.earnings-calendar-add-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.earnings-calendar-add-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.earnings-calendar-add-form input,
+.earnings-calendar-add-form select {
+  height: 38px;
+  min-width: 132px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+#earnings-calendar-add-symbol {
+  min-width: 96px;
+  text-transform: uppercase;
+}
+
+#earnings-calendar-add-release-date {
+  min-width: 142px;
+}
+
+#earnings-calendar-add-btn {
+  height: 38px;
+}
+
 .earnings-review-tabs {
   display: flex;
   gap: 8px;
@@ -744,7 +792,8 @@ th.sortable[data-sort-direction='desc']::after {
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
-.earnings-calendar-date-input.input-error {
+.earnings-calendar-date-input.input-error,
+.earnings-calendar-add-form .input-error {
   border-color: #b42318;
   box-shadow: 0 0 0 3px rgba(180, 35, 24, 0.12);
 }

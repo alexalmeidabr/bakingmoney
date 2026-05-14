@@ -1132,7 +1132,7 @@ class EarningsReviewTests(unittest.TestCase):
                 finally:
                     conn.close()
 
-    def test_earnings_release_calendar_rows_cover_all_analysis_symbols_and_persist_schedule(self):
+    def test_earnings_release_calendar_uses_standalone_entries_with_analysis_enrichment(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")
             with mock.patch.object(web_server, "DB_PATH", db_path):
@@ -1140,7 +1140,6 @@ class EarningsReviewTests(unittest.TestCase):
                 conn = web_server.get_db_connection()
                 try:
                     self._seed_analysis(conn, symbol="MSFT")
-                    self._seed_analysis(conn, symbol="NVDA")
                     conn.execute(
                         """
                         INSERT INTO positions_cache (
@@ -1151,45 +1150,72 @@ class EarningsReviewTests(unittest.TestCase):
                         ("MSFT", 5, 110, 100, 1.0, 550, 50, 5, "USD", web_server.utc_now_iso()),
                     )
                     conn.commit()
-                    before = web_server.list_earnings_release_calendar(conn)
-                    self.assertEqual({item["symbol"] for item in before}, {"MSFT", "NVDA"})
-                    msft_before = next(item for item in before if item["symbol"] == "MSFT")
-                    self.assertTrue(msft_before["in_portfolio"])
-                    self.assertIsNone(msft_before["release_date"])
-                    saved = web_server.save_earnings_release_schedule(
+                    self.assertEqual(web_server.list_earnings_release_calendar(conn), [])
+
+                    first = web_server.create_earnings_calendar_entry(
                         conn,
                         "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q1",
                         release_date="2026-05-07",
                         release_timing="After Close",
                     )
-                    self.assertEqual(saved["symbol"], "MSFT")
+                    second = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q2",
+                        release_date="2026-08-06",
+                        release_timing="Before Open",
+                    )
+
+                    self.assertNotEqual(first["id"], second["id"])
                     after = web_server.list_earnings_release_calendar(conn)
-                    msft_after = next(item for item in after if item["symbol"] == "MSFT")
-                    self.assertEqual(msft_after["release_date"], "2026-05-07")
-                    self.assertEqual(msft_after["release_timing"], "After Close")
+                    self.assertEqual(len(after), 2)
+                    self.assertEqual({(item["symbol"], item["fiscal_year"], item["fiscal_quarter"]) for item in after}, {("MSFT", 2026, "Q1"), ("MSFT", 2026, "Q2")})
+                    q1 = next(item for item in after if item["fiscal_quarter"] == "Q1")
+                    self.assertTrue(q1["has_analysis"])
+                    self.assertTrue(q1["in_portfolio"])
+                    self.assertTrue(q1["inPortfolio"])
+                    self.assertEqual(q1["release_date"], "2026-05-07")
+                    self.assertEqual(q1["release_timing"], "After Close")
+                    self.assertIsNotNone(q1["rating"])
                 finally:
                     conn.close()
 
-    def test_earnings_release_calendar_symbol_can_be_removed_without_deleting_analysis(self):
+    def test_earnings_release_calendar_entry_can_exist_without_analysis_and_be_updated_removed(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")
             with mock.patch.object(web_server, "DB_PATH", db_path):
                 web_server.init_db()
                 conn = web_server.get_db_connection()
                 try:
-                    self._seed_analysis(conn, symbol="SHOP")
-                    self._seed_analysis(conn, symbol="ADBE")
-                    before = web_server.list_earnings_release_calendar(conn)
-                    self.assertEqual({item["symbol"] for item in before}, {"SHOP", "ADBE"})
-                    result = web_server.remove_earnings_release_calendar_symbol(conn, "SHOP")
+                    created = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "ABCD",
+                        fiscal_year=2027,
+                        fiscal_quarter="Q3",
+                    )
+                    item = web_server.list_earnings_release_calendar(conn)[0]
+                    self.assertEqual(item["symbol"], "ABCD")
+                    self.assertIsNone(item["company_name"])
+                    self.assertFalse(item["has_analysis"])
+                    self.assertFalse(item["in_portfolio"])
+
+                    updated = web_server.update_earnings_calendar_entry(
+                        conn,
+                        created["id"],
+                        fiscal_year=2027,
+                        fiscal_quarter="Q4",
+                        release_date="2027-11-01",
+                        release_timing="Before Open",
+                    )
+                    self.assertEqual(updated["fiscal_quarter"], "Q4")
+                    self.assertEqual(updated["release_date"], "2027-11-01")
+
+                    result = web_server.delete_earnings_calendar_entry(conn, created["id"])
                     self.assertTrue(result["removed"])
-                    after = web_server.list_earnings_release_calendar(conn)
-                    self.assertEqual({item["symbol"] for item in after}, {"ADBE"})
-                    analysis_row = conn.execute(
-                        "SELECT symbol FROM analysis_roots WHERE symbol = ?",
-                        ("SHOP",),
-                    ).fetchone()
-                    self.assertIsNotNone(analysis_row)
+                    self.assertEqual(web_server.list_earnings_release_calendar(conn), [])
                 finally:
                     conn.close()
 

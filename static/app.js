@@ -817,8 +817,9 @@ function formatAnalysisReleaseEntry(entry) {
   if (!entry) return 'N/A';
   const parts = [];
   const dateText = entry.release_date ? formatDate(entry.release_date) : '';
+  const period = [entry.fiscal_quarter, entry.fiscal_year].filter(Boolean).join(' ');
   if (dateText && dateText !== 'N/A') parts.push(dateText);
-  if (entry.fiscal_quarter) parts.push(entry.fiscal_quarter);
+  if (period) parts.push(period);
   return parts.length ? parts.join(' • ') : 'N/A';
 }
 

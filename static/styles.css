@@ -494,13 +494,16 @@ th.sortable[data-sort-direction='desc']::after {
   background: var(--surface);
 }
 
-#earnings-calendar-portfolio-filter,
-#earnings-calendar-date-filter {
+#earnings-calendar-portfolio-filter {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;
   min-width: 150px;
   background: var(--surface);
+}
+
+#earnings-calendar-date-filter {
+  min-width: 182px;
 }
 
 #earnings-review-status-filter {
@@ -601,9 +604,21 @@ th.sortable[data-sort-direction='desc']::after {
 #earnings-calendar-date-filter .rating-filter-panel {
   left: auto;
   right: 0;
-  width: min(236px, calc(100vw - 48px));
-  min-width: min(236px, calc(100vw - 48px));
+  width: 260px;
+  min-width: 260px;
   max-width: calc(100vw - 48px);
+}
+
+#earnings-calendar-date-filter .rating-filter-option {
+  justify-content: flex-start;
+}
+
+#earnings-calendar-date-filter .rating-filter-option-label {
+  flex: 0 0 auto;
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .rating-filter-actions {

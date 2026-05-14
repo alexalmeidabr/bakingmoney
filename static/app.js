@@ -815,11 +815,11 @@ function getSelectedAnalysisReleaseEntry() {
 
 function formatAnalysisReleaseEntry(entry) {
   if (!entry) return 'N/A';
-  const parts = [formatDate(entry.release_date)];
-  const period = [entry.fiscal_year, entry.fiscal_quarter].filter(Boolean).join(' ');
-  if (period) parts.push(period);
-  if (entry.release_timing) parts.push(entry.release_timing);
-  return parts.filter(Boolean).join(' • ');
+  const parts = [];
+  const dateText = entry.release_date ? formatDate(entry.release_date) : '';
+  if (dateText && dateText !== 'N/A') parts.push(dateText);
+  if (entry.fiscal_quarter) parts.push(entry.fiscal_quarter);
+  return parts.length ? parts.join(' • ') : 'N/A';
 }
 
 function renderAnalysisReleaseSummaryCard() {

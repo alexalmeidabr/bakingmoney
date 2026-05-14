@@ -1183,6 +1183,61 @@ class EarningsReviewTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_init_db_backfills_legacy_calendar_rows_as_2026_q1_idempotently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="MSFT")
+                    self._seed_analysis(conn, symbol="NVDA")
+                    self._seed_analysis(conn, symbol="SHOP")
+                    now = web_server.utc_now_iso()
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_release_schedule (symbol, release_date, release_timing, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("MSFT", "2026-05-07", "After Close", "2026-01-01T00:00:00+00:00", "2026-01-02T00:00:00+00:00"),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_release_calendar_exclusions (symbol, created_at)
+                        VALUES (?, ?)
+                        """,
+                        ("SHOP", now),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    rows = web_server.list_earnings_release_calendar(conn)
+                    self.assertEqual({item["symbol"] for item in rows}, {"MSFT", "NVDA"})
+                    self.assertTrue(all(item["fiscal_year"] == 2026 for item in rows))
+                    self.assertTrue(all(item["fiscal_quarter"] == "Q1" for item in rows))
+                    msft = next(item for item in rows if item["symbol"] == "MSFT")
+                    nvda = next(item for item in rows if item["symbol"] == "NVDA")
+                    self.assertEqual(msft["release_date"], "2026-05-07")
+                    self.assertEqual(msft["release_timing"], "After Close")
+                    self.assertIsNone(nvda["release_date"])
+                    self.assertIsNone(nvda["release_timing"])
+
+                    web_server.init_db()
+                    duplicate_count = conn.execute(
+                        """
+                        SELECT COUNT(*) AS c
+                        FROM earnings_calendar_entries
+                        WHERE fiscal_year = 2026 AND fiscal_quarter = 'Q1'
+                        """
+                    ).fetchone()["c"]
+                    self.assertEqual(duplicate_count, 2)
+                finally:
+                    conn.close()
+
     def test_earnings_release_calendar_entry_can_exist_without_analysis_and_be_updated_removed(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")

@@ -2297,6 +2297,7 @@ def init_db():
                             variable["created_at"] or root_created_at,
                         ),
                     )
+        migrate_legacy_earnings_release_calendar(conn)
         conn.commit()
     finally:
         conn.close()
@@ -3338,6 +3339,89 @@ def _normalize_release_date(value):
     except ValueError as exc:
         raise ValueError("release_date must be a valid date in YYYY-MM-DD format") from exc
     return normalized
+
+
+def migrate_legacy_earnings_release_calendar(conn):
+    """Backfill pre-redesign symbol-level calendar rows as 2026 Q1 entries.
+
+    Phase 2 intentionally treats every old current Earnings Calendar row as FY2026 Q1.
+    The old current calendar was derived from analyzed symbols, with optional symbol-level
+    release dates/timing in earnings_release_schedule and removals tracked in
+    earnings_release_calendar_exclusions.
+    """
+    now = utc_now_iso()
+    source_rows = conn.execute(
+        """
+        SELECT
+          r.symbol,
+          r.created_at AS root_created_at,
+          r.updated_at AS root_updated_at,
+          s.release_date,
+          s.release_timing,
+          s.created_at AS schedule_created_at,
+          s.updated_at AS schedule_updated_at
+        FROM analysis_roots r
+        LEFT JOIN earnings_release_schedule s ON s.symbol = r.symbol
+        WHERE EXISTS (
+          SELECT 1
+          FROM analysis_versions v
+          WHERE v.analysis_root_id = r.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM earnings_release_calendar_exclusions e
+            WHERE e.symbol = r.symbol
+          )
+        ORDER BY r.symbol ASC
+        """
+    ).fetchall()
+
+    migrated = 0
+    skipped = 0
+    invalid = 0
+    for row in source_rows:
+        symbol = normalize_symbol(row["symbol"])
+        if not symbol:
+            invalid += 1
+            continue
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM earnings_calendar_entries
+            WHERE symbol = ? AND fiscal_year = 2026 AND fiscal_quarter = 'Q1'
+            """,
+            (symbol,),
+        ).fetchone()
+        if exists:
+            skipped += 1
+            continue
+        try:
+            release_date = _normalize_release_date(row["release_date"])
+            release_timing = _normalize_release_timing(row["release_timing"])
+        except ValueError:
+            invalid += 1
+            logger.warning("Skipping legacy earnings calendar migration row with invalid schedule data for %s", symbol)
+            continue
+        created_at = row["schedule_created_at"] or row["root_created_at"] or now
+        updated_at = row["schedule_updated_at"] or row["schedule_created_at"] or row["root_updated_at"] or created_at
+        conn.execute(
+            """
+            INSERT INTO earnings_calendar_entries (
+              symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
+            ) VALUES (?, 2026, 'Q1', ?, ?, ?, ?)
+            """,
+            (symbol, release_date, release_timing, created_at, updated_at),
+        )
+        migrated += 1
+
+    if source_rows:
+        logger.info(
+            "Legacy earnings calendar migration to 2026 Q1: migrated %s row(s), skipped %s existing row(s), ignored %s invalid row(s).",
+            migrated,
+            skipped,
+            invalid,
+        )
+    return {"migrated": migrated, "skipped": skipped, "invalid": invalid, "source_count": len(source_rows)}
 
 
 def _validate_fiscal_year(value):

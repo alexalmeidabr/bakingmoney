@@ -1087,14 +1087,14 @@ async function rerunScenarios() {
   }
 }
 
-async function loadPositions() {
-  positionsStatusEl.textContent = 'Loading positions…';
+async function loadPositions(options = {}) {
+  positionsStatusEl.textContent = options.refresh ? 'Refreshing positions from TWS…' : 'Loading saved positions…';
   positionsStatusEl.className = 'status';
   positionsTable.classList.add('hidden');
 
   try {
     const [positionsResponse, analysisResponse] = await Promise.all([
-      fetch('/api/positions'),
+      fetch(options.refresh ? '/api/positions?refresh=1' : '/api/positions'),
       fetch('/api/analysis'),
     ]);
     const positionsPayload = await positionsResponse.json();
@@ -2813,7 +2813,7 @@ analysisSelectAllEl.addEventListener('change', () => {
   renderAnalysisList();
 });
 
-refreshBtn.addEventListener('click', loadPositions);
+refreshBtn.addEventListener('click', () => loadPositions({ refresh: true }));
 analysisAddBtn.addEventListener('click', addAnalysisSymbol);
 analysisImportBtn.addEventListener('click', importAnalysisFromPositions);
 analysisRefreshPricesBtn.addEventListener('click', refreshAnalysisPrices);

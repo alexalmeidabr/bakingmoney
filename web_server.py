@@ -6221,7 +6221,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         path = parsed_url.path
 
         if path == "/api/positions":
-            return self.handle_positions_api()
+            query = parse_qs(parsed_url.query or "")
+            refresh = str(query.get("refresh", ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            return self.handle_positions_api(refresh=refresh)
         if path == "/api/analysis":
             return self.handle_analysis_get()
         if path == "/api/earnings-review":
@@ -6510,7 +6512,27 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_positions_api(self):
+    def handle_positions_api(self, refresh=False):
+        if not refresh:
+            conn = get_db_connection()
+            try:
+                cached_positions = load_positions_cache(conn)
+                payload = build_positions_payload(
+                    conn,
+                    cached_positions,
+                    data_source="cached" if cached_positions else "empty",
+                    warning=None if cached_positions else "No saved positions available. Click Refresh to load positions from TWS.",
+                )
+                logger.info(
+                    "Positions API returning stored rows=%s sample_symbols=%s",
+                    len(payload["positions"]),
+                    [item.get("symbol") for item in payload["positions"][:5]],
+                )
+                self._send_json(payload)
+            finally:
+                conn.close()
+            return
+
         try:
             ensure_event_loop()
             ib = get_ib_connection()
@@ -6779,7 +6801,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def handle_analysis_get(self):
         conn = get_db_connection()
         try:
-            refresh_latest_analysis_market_prices(conn)
             self._send_json({"analysis": list_analysis_symbols(conn)})
         except Exception as exc:
             self._send_json(

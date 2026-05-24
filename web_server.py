@@ -132,6 +132,9 @@ RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE = "strong_buy_min_bullish_confi
 RATING_SETTING_BUY_MIN_UPSIDE = "buy_min_upside"
 RATING_SETTING_BUY_MIN_DIFF = "buy_min_diff"
 RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE = "buy_min_bullish_confidence"
+RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE = "speculative_buy_min_upside"
+RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF = "speculative_buy_min_diff"
+RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE = "speculative_buy_min_bullish_confidence"
 RATING_SETTING_STRONG_SELL_MAX_UPSIDE = "strong_sell_max_upside"
 RATING_SETTING_STRONG_SELL_MAX_DIFF = "strong_sell_max_diff"
 RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE = "strong_sell_min_bearish_confidence"
@@ -161,6 +164,9 @@ DEFAULT_RATING_SETTINGS = {
     RATING_SETTING_BUY_MIN_UPSIDE: 25.0,
     RATING_SETTING_BUY_MIN_DIFF: 0.5,
     RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE: 5.5,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE: 75.0,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF: 0.1,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE: 4.5,
     RATING_SETTING_STRONG_SELL_MAX_UPSIDE: 0.0,
     RATING_SETTING_STRONG_SELL_MAX_DIFF: -1.5,
     RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE: 7.0,
@@ -1210,9 +1216,6 @@ def calculate_rating(upside, bullish_confidence, bearish_confidence, rating_sett
     confidence_diff = bullish_value - bearish_value
     max_confidence = max(bullish_value, bearish_value)
 
-    if max_confidence < rating_settings[RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD]:
-        return "Hold", confidence_diff
-
     if (
         upside_value >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_UPSIDE]
         and confidence_diff >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_DIFF]
@@ -1241,6 +1244,16 @@ def calculate_rating(upside, bullish_confidence, bearish_confidence, rating_sett
     ):
         return "Sell", confidence_diff
 
+    if (
+        upside_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE]
+        and confidence_diff >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF]
+        and bullish_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE]
+    ):
+        return "Speculative Buy", confidence_diff
+
+    if max_confidence < rating_settings[RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD]:
+        return "Hold", confidence_diff
+
     return "Hold", confidence_diff
 
 
@@ -1253,6 +1266,7 @@ def get_rating_settings(conn):
         RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD,
         RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE,
         RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE,
+        RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE,
         RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE,
         RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE,
     ):
@@ -1527,6 +1541,7 @@ def save_general_configuration(conn, settings):
                 RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD,
                 RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE,
                 RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE,
+                RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE,
                 RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE,
                 RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE,
             } and (value < 0 or value > 10):

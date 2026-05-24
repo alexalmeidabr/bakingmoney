@@ -117,6 +117,9 @@ const configRatingStrongBuyMinBullishConfidenceEl = document.getElementById('con
 const configRatingBuyMinUpsideEl = document.getElementById('config-rating-buy-min-upside');
 const configRatingBuyMinDiffEl = document.getElementById('config-rating-buy-min-diff');
 const configRatingBuyMinBullishConfidenceEl = document.getElementById('config-rating-buy-min-bullish-confidence');
+const configRatingSpeculativeBuyMinUpsideEl = document.getElementById('config-rating-speculative-buy-min-upside');
+const configRatingSpeculativeBuyMinDiffEl = document.getElementById('config-rating-speculative-buy-min-diff');
+const configRatingSpeculativeBuyMinBullishConfidenceEl = document.getElementById('config-rating-speculative-buy-min-bullish-confidence');
 const configRatingStrongSellMaxUpsideEl = document.getElementById('config-rating-strong-sell-max-upside');
 const configRatingStrongSellMaxDiffEl = document.getElementById('config-rating-strong-sell-max-diff');
 const configRatingStrongSellMinBearishConfidenceEl = document.getElementById('config-rating-strong-sell-min-bearish-confidence');
@@ -233,6 +236,9 @@ const DEFAULT_RATING_SETTINGS = {
   buy_min_upside: 25.0,
   buy_min_diff: 0.5,
   buy_min_bullish_confidence: 5.5,
+  speculative_buy_min_upside: 75.0,
+  speculative_buy_min_diff: 0.1,
+  speculative_buy_min_bullish_confidence: 4.5,
   strong_sell_max_upside: 0.0,
   strong_sell_max_diff: -1.5,
   strong_sell_min_bearish_confidence: 7.0,
@@ -248,6 +254,7 @@ const POSITIONS_CACHE_KEY = 'bakingmoney.latestPositions';
 const RATING_FILTER_OPTIONS = [
   { key: 'strong_buy', label: 'Strong Buy' },
   { key: 'buy', label: 'Buy' },
+  { key: 'speculative_buy', label: 'Speculative Buy' },
   { key: 'hold', label: 'Hold' },
   { key: 'sell', label: 'Sell' },
   { key: 'strong_sell', label: 'Strong Sell' },
@@ -505,7 +512,7 @@ const sortPositions = (positions) => [...positions].sort((a, b) => {
   }
   return compareValues(a[positionSort.key], b[positionSort.key], positionSort.direction);
 });
-const RATING_SORT_ORDER = { 'Strong Sell': 1, Sell: 2, Hold: 3, Buy: 4, 'Strong Buy': 5 };
+const RATING_SORT_ORDER = { 'Strong Sell': 1, Sell: 2, Hold: 3, 'Speculative Buy': 4, Buy: 5, 'Strong Buy': 6 };
 const sortAnalysis = (items) => [...items].sort((a, b) => {
   if (analysisSort.key === 'rating') {
     return compareValues(RATING_SORT_ORDER[a.rating] || 0, RATING_SORT_ORDER[b.rating] || 0, analysisSort.direction);
@@ -2552,6 +2559,9 @@ function getRatingSettingsFromForm() {
     buy_min_upside: Number(configRatingBuyMinUpsideEl.value),
     buy_min_diff: Number(configRatingBuyMinDiffEl.value),
     buy_min_bullish_confidence: Number(configRatingBuyMinBullishConfidenceEl.value),
+    speculative_buy_min_upside: Number(configRatingSpeculativeBuyMinUpsideEl.value),
+    speculative_buy_min_diff: Number(configRatingSpeculativeBuyMinDiffEl.value),
+    speculative_buy_min_bullish_confidence: Number(configRatingSpeculativeBuyMinBullishConfidenceEl.value),
     strong_sell_max_upside: Number(configRatingStrongSellMaxUpsideEl.value),
     strong_sell_max_diff: Number(configRatingStrongSellMaxDiffEl.value),
     strong_sell_min_bearish_confidence: Number(configRatingStrongSellMinBearishConfidenceEl.value),
@@ -2570,6 +2580,9 @@ function applyRatingSettingsToForm(settings) {
   configRatingBuyMinUpsideEl.value = effective.buy_min_upside;
   configRatingBuyMinDiffEl.value = effective.buy_min_diff;
   configRatingBuyMinBullishConfidenceEl.value = effective.buy_min_bullish_confidence;
+  configRatingSpeculativeBuyMinUpsideEl.value = effective.speculative_buy_min_upside;
+  configRatingSpeculativeBuyMinDiffEl.value = effective.speculative_buy_min_diff;
+  configRatingSpeculativeBuyMinBullishConfidenceEl.value = effective.speculative_buy_min_bullish_confidence;
   configRatingStrongSellMaxUpsideEl.value = effective.strong_sell_max_upside;
   configRatingStrongSellMaxDiffEl.value = effective.strong_sell_max_diff;
   configRatingStrongSellMinBearishConfidenceEl.value = effective.strong_sell_min_bearish_confidence;
@@ -2583,6 +2596,7 @@ function validateRatingSettings(settings) {
     'min_conviction_hold_threshold',
     'strong_buy_min_bullish_confidence',
     'buy_min_bullish_confidence',
+    'speculative_buy_min_bullish_confidence',
     'strong_sell_min_bearish_confidence',
     'sell_min_bearish_confidence',
   ];

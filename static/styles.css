@@ -438,7 +438,7 @@ th.sortable[data-sort-direction='desc']::after {
 
 #analysis-variables-table th:nth-child(1),
 #analysis-variables-table td:nth-child(1) {
-  width: 58%;
+  width: 40%;
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -452,18 +452,25 @@ th.sortable[data-sort-direction='desc']::after {
 }
 
 #analysis-variables-table th:nth-child(3),
-#analysis-variables-table td:nth-child(3),
+#analysis-variables-table td:nth-child(3) {
+  width: 16%;
+  white-space: nowrap;
+}
+
 #analysis-variables-table th:nth-child(4),
-#analysis-variables-table td:nth-child(4) {
+#analysis-variables-table td:nth-child(4),
+#analysis-variables-table th:nth-child(5),
+#analysis-variables-table td:nth-child(5) {
   width: 10%;
   white-space: nowrap;
   text-align: center;
 }
 
-#analysis-variables-table th:nth-child(5),
-#analysis-variables-table td:nth-child(5) {
-  width: 10%;
+#analysis-variables-table th:nth-child(6),
+#analysis-variables-table td:nth-child(6) {
+  width: 12%;
   white-space: nowrap;
+  text-align: center;
 }
 
 #analysis-variables-table .var-text-input {
@@ -859,20 +866,25 @@ th.sortable[data-sort-direction='desc']::after {
 @media (max-width: 1100px) {
   #analysis-variables-table th:nth-child(1),
   #analysis-variables-table td:nth-child(1) {
-    width: 50%;
+    width: 36%;
   }
 
   #analysis-variables-table th:nth-child(2),
   #analysis-variables-table td:nth-child(2) {
-    width: 14%;
+    width: 13%;
   }
 
   #analysis-variables-table th:nth-child(3),
-  #analysis-variables-table td:nth-child(3),
+  #analysis-variables-table td:nth-child(3) {
+    width: 17%;
+  }
+
   #analysis-variables-table th:nth-child(4),
   #analysis-variables-table td:nth-child(4),
   #analysis-variables-table th:nth-child(5),
-  #analysis-variables-table td:nth-child(5) {
-    width: 12%;
+  #analysis-variables-table td:nth-child(5),
+  #analysis-variables-table th:nth-child(6),
+  #analysis-variables-table td:nth-child(6) {
+    width: 11.33%;
   }
 }

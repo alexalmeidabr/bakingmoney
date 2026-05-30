@@ -66,6 +66,24 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertIsNone(calculate_overall_confidence([]))
 
 
+    def test_key_variables_default_missing_driver_category_to_core_driver(self):
+        payload = build_valid_payload()
+        parsed = parse_analysis_payload(payload)
+        self.assertTrue(parsed["key_variables"])
+        self.assertTrue(all(item["driver_category"] == "Core Driver" for item in parsed["key_variables"]))
+
+    def test_key_variables_accept_potential_driver_category(self):
+        payload = build_valid_payload()
+        payload["key_variables"][0]["driver_category"] = "Potential Driver"
+        parsed = parse_analysis_payload(payload)
+        self.assertEqual(parsed["key_variables"][0]["driver_category"], "Potential Driver")
+
+    def test_key_variables_reject_invalid_driver_category(self):
+        payload = build_valid_payload()
+        payload["key_variables"][0]["driver_category"] = "Emerging"
+        with self.assertRaises(AnalysisValidationError):
+            parse_analysis_payload(payload)
+
     def test_key_variables_more_than_previous_max_allowed(self):
         payload = build_valid_payload()
         payload["key_variables"].extend([

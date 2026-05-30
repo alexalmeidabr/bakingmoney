@@ -576,6 +576,66 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(merged[0]["currency"], "USD")
 
 
+class KeyVariableDriverCategoryTests(unittest.TestCase):
+    def test_save_key_variable_edits_preserves_driver_category_and_defaults_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = "2026-05-01T00:00:00+00:00"
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("NVDA", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'NVDA', 'NVIDIA', 100, 130, 5, 30, 6, 'assume', 'model', 'summary', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+                    conn.commit()
+
+                    detail = web_server.save_key_variable_edits(
+                        conn,
+                        "NVDA",
+                        version_id,
+                        [
+                            {"variable_text": "AI accelerator demand", "variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 9},
+                            {"variable_text": "New robotics optionality", "variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 4, "importance": 8},
+                            {"variable_text": "Export controls", "variable_type": "Bearish", "confidence": 5, "importance": 7},
+                        ],
+                    )
+
+                    saved = detail["saved_key_variable_edits"]["key_variables"]
+                    self.assertEqual(saved[0]["driver_category"], "Core Driver")
+                    self.assertEqual(saved[1]["driver_category"], "Potential Driver")
+                    self.assertEqual(saved[2]["driver_category"], "Core Driver")
+                finally:
+                    conn.close()
+
+    def test_save_key_variable_edits_rejects_invalid_driver_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    with self.assertRaises(web_server.AnalysisValidationError):
+                        web_server.save_key_variable_edits(
+                            conn,
+                            "NVDA",
+                            1,
+                            [{"variable_text": "Driver", "variable_type": "Bullish", "driver_category": "Speculative", "confidence": 5, "importance": 5}],
+                        )
+                finally:
+                    conn.close()
+
+
 class RecentEventAlertEnhancementTests(unittest.TestCase):
     def _seed_analysis(self, conn, symbol='NVDA', created_at='2026-03-01T00:00:00+00:00'):
         now = created_at

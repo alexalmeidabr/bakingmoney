@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 SCENARIO_ORDER = ["Bear", "Base", "Bull"]
 SCENARIO_SET = set(SCENARIO_ORDER)
 VARIABLE_TYPES = {"Bullish", "Bearish"}
+DRIVER_CATEGORIES = {"Core Driver", "Potential Driver"}
+DEFAULT_DRIVER_CATEGORY = "Core Driver"
 MIN_KEY_VARIABLES = 6
 
 
@@ -37,6 +39,14 @@ def _safe_int_0_10(value: Any, name: str) -> int:
 
 def _normalize_probability(value: float) -> float:
     return value / 100.0 if value > 1 else value
+
+
+def normalize_driver_category(value: Any) -> str:
+    if value is None or value == "":
+        return DEFAULT_DRIVER_CATEGORY
+    if value not in DRIVER_CATEGORIES:
+        raise AnalysisValidationError("driver_category must be Core Driver or Potential Driver")
+    return value
 
 
 def extract_json_payload(text: str) -> Dict[str, Any]:
@@ -147,11 +157,16 @@ def parse_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         confidence = _safe_int_0_10(item.get("confidence"), f"key_variables[{index}].confidence")
         importance = _safe_int_0_10(item.get("importance"), f"key_variables[{index}].importance")
+        try:
+            driver_category = normalize_driver_category(item.get("driver_category"))
+        except AnalysisValidationError:
+            raise AnalysisValidationError(f"key_variables[{index}].driver_category must be Core Driver or Potential Driver")
 
         key_variables.append(
             {
                 "variable_text": variable_text.strip(),
                 "variable_type": variable_type,
+                "driver_category": driver_category,
                 "confidence": confidence,
                 "importance": importance,
             }

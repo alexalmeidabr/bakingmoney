@@ -495,6 +495,16 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+
+function normalizeDriverCategory(value) {
+  return value === 'Potential Driver' ? 'Potential Driver' : 'Core Driver';
+}
+
+function renderDriverCategorySelect(className, value) {
+  const category = normalizeDriverCategory(value);
+  return `<select class="${className}"><option value="Core Driver" ${category === 'Core Driver' ? 'selected' : ''}>Core Driver</option><option value="Potential Driver" ${category === 'Potential Driver' ? 'selected' : ''}>Potential Driver</option></select>`;
+}
+
 function normalizeSymbolForJoin(symbol) {
   return String(symbol ?? '').trim().toUpperCase();
 }
@@ -906,9 +916,10 @@ function renderVariablesTable() {
   variables.forEach((variable) => {
     const row = document.createElement('tr');
     const variableType = variable.variable_type || 'Bullish';
+    const driverCategory = normalizeDriverCategory(variable.driver_category);
     row.innerHTML = isEditingVariables
-      ? `<td><input class="var-text var-text-input" type="text" value="${variable.variable_text || ''}"></td><td><select class="var-type"><option value="Bullish" ${variableType === 'Bullish' ? 'selected' : ''}>Bullish</option><option value="Bearish" ${variableType === 'Bearish' ? 'selected' : ''}>Bearish</option></select></td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="${variable.confidence}"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="${variable.importance}"></td><td><button class="var-delete-btn">Delete</button></td>`
-      : `<td>${variable.variable_text}</td><td>${variableType}</td><td>${formatNumber(variable.confidence, 2)}</td><td>${formatNumber(variable.importance, 2)}</td><td>—</td>`;
+      ? `<td><input class="var-text var-text-input" type="text" value="${escapeHtml(variable.variable_text || '')}"></td><td><select class="var-type"><option value="Bullish" ${variableType === 'Bullish' ? 'selected' : ''}>Bullish</option><option value="Bearish" ${variableType === 'Bearish' ? 'selected' : ''}>Bearish</option></select></td><td>${renderDriverCategorySelect('var-driver-category', driverCategory)}</td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="${variable.confidence}"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="${variable.importance}"></td><td><button class="var-delete-btn">Delete</button></td>`
+      : `<td>${escapeHtml(variable.variable_text || '')}</td><td>${escapeHtml(variableType)}</td><td>${escapeHtml(driverCategory)}</td><td>${formatNumber(variable.confidence, 2)}</td><td>${formatNumber(variable.importance, 2)}</td><td>—</td>`;
     analysisVariablesBody.appendChild(row);
   });
 
@@ -977,6 +988,7 @@ function collectEditedVariables() {
   return [...analysisVariablesBody.querySelectorAll('tr')].map((row, idx) => ({
     variable_text: row.querySelector('.var-text')?.value?.trim() || '',
     variable_type: row.querySelector('.var-type')?.value || analysisDetailState.version.key_variables[idx]?.variable_type || 'Bullish',
+    driver_category: normalizeDriverCategory(row.querySelector('.var-driver-category')?.value || analysisDetailState.version.key_variables[idx]?.driver_category),
     confidence: Number(row.querySelector('.var-confidence')?.value),
     importance: Number(row.querySelector('.var-importance')?.value),
   }));
@@ -1427,9 +1439,10 @@ function renderAlertDetailVariablesTable() {
   variables.forEach((variable) => {
     const row = document.createElement('tr');
     const variableType = variable.variable_type || 'Bullish';
+    const driverCategory = normalizeDriverCategory(variable.driver_category);
     row.innerHTML = alertDetailIsEditingVariables
-      ? `<td><input class="alert-var-text" type="text" value="${escapeHtml(variable.variable_text || '')}"></td><td><select class="alert-var-type"><option value="Bullish" ${variableType === 'Bullish' ? 'selected' : ''}>Bullish</option><option value="Bearish" ${variableType === 'Bearish' ? 'selected' : ''}>Bearish</option></select></td><td><input class="alert-var-confidence" type="number" min="0" max="10" step="1" value="${Number(variable.confidence ?? 0)}"></td><td><input class="alert-var-importance" type="number" min="0" max="10" step="1" value="${Number(variable.importance ?? 0)}"></td><td><button class="alert-var-delete-btn">Delete</button></td>`
-      : `<td>${escapeHtml(variable.variable_text || '')}</td><td>${escapeHtml(variableType)}</td><td>${formatNumber(variable.confidence, 2)}</td><td>${formatNumber(variable.importance, 2)}</td><td>—</td>`;
+      ? `<td><input class="alert-var-text" type="text" value="${escapeHtml(variable.variable_text || '')}"></td><td><select class="alert-var-type"><option value="Bullish" ${variableType === 'Bullish' ? 'selected' : ''}>Bullish</option><option value="Bearish" ${variableType === 'Bearish' ? 'selected' : ''}>Bearish</option></select></td><td>${renderDriverCategorySelect('alert-var-driver-category', driverCategory)}</td><td><input class="alert-var-confidence" type="number" min="0" max="10" step="1" value="${Number(variable.confidence ?? 0)}"></td><td><input class="alert-var-importance" type="number" min="0" max="10" step="1" value="${Number(variable.importance ?? 0)}"></td><td><button class="alert-var-delete-btn">Delete</button></td>`
+      : `<td>${escapeHtml(variable.variable_text || '')}</td><td>${escapeHtml(variableType)}</td><td>${escapeHtml(driverCategory)}</td><td>${formatNumber(variable.confidence, 2)}</td><td>${formatNumber(variable.importance, 2)}</td><td>—</td>`;
     alertDetailVarsBody.appendChild(row);
   });
 
@@ -1453,6 +1466,7 @@ function collectEditedAlertDetailVariables() {
   return [...alertDetailVarsBody.querySelectorAll('tr')].map((row) => ({
     variable_text: row.querySelector('.alert-var-text')?.value?.trim() || '',
     variable_type: row.querySelector('.alert-var-type')?.value || 'Bullish',
+    driver_category: normalizeDriverCategory(row.querySelector('.alert-var-driver-category')?.value),
     confidence: Number(row.querySelector('.alert-var-confidence')?.value),
     importance: Number(row.querySelector('.alert-var-importance')?.value),
   }));
@@ -2114,6 +2128,7 @@ function renderEarningsKeyVariables(variables) {
     row.innerHTML = `
       <td>${item.variable || 'N/A'}</td>
       <td>${item.type || 'N/A'}</td>
+      <td>${normalizeDriverCategory(item.driver_category)}</td>
       <td>${typeof item.confidence === 'number' ? item.confidence : 'N/A'}</td>
       <td>${typeof item.importance === 'number' ? item.importance : 'N/A'}</td>
     `;
@@ -2853,7 +2868,7 @@ alertDetailEditVarsBtn.addEventListener('click', () => {
 });
 alertDetailAddVarBtn.addEventListener('click', () => {
   const row = document.createElement('tr');
-  row.innerHTML = '<td><input class="alert-var-text" type="text" value=""></td><td><select class="alert-var-type"><option value="Bullish">Bullish</option><option value="Bearish">Bearish</option></select></td><td><input class="alert-var-confidence" type="number" min="0" max="10" step="1" value="5"></td><td><input class="alert-var-importance" type="number" min="0" max="10" step="1" value="5"></td><td><button class="alert-var-delete-btn">Delete</button></td>';
+  row.innerHTML = '<td><input class="alert-var-text" type="text" value=""></td><td><select class="alert-var-type"><option value="Bullish">Bullish</option><option value="Bearish">Bearish</option></select></td><td><select class="alert-var-driver-category"><option value="Core Driver" selected>Core Driver</option><option value="Potential Driver">Potential Driver</option></select></td><td><input class="alert-var-confidence" type="number" min="0" max="10" step="1" value="5"></td><td><input class="alert-var-importance" type="number" min="0" max="10" step="1" value="5"></td><td><button class="alert-var-delete-btn">Delete</button></td>';
   alertDetailVarsBody.appendChild(row);
   row.querySelector('.alert-var-delete-btn')?.addEventListener('click', () => row.remove());
 });
@@ -2918,7 +2933,7 @@ analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = 
 analysisAddVariableBtn.addEventListener('click', () => {
   if (!isEditingVariables) return;
   const row = document.createElement('tr');
-  row.innerHTML = '<td><input class="var-text var-text-input" type="text" value=""></td><td><select class="var-type"><option value="Bullish" selected>Bullish</option><option value="Bearish">Bearish</option></select></td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="5"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="5"></td><td><button class="var-delete-btn">Delete</button></td>';
+  row.innerHTML = '<td><input class="var-text var-text-input" type="text" value=""></td><td><select class="var-type"><option value="Bullish" selected>Bullish</option><option value="Bearish">Bearish</option></select></td><td><select class="var-driver-category"><option value="Core Driver" selected>Core Driver</option><option value="Potential Driver">Potential Driver</option></select></td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="5"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="5"></td><td><button class="var-delete-btn">Delete</button></td>';
   analysisVariablesBody.appendChild(row);
   row.querySelector('.var-delete-btn')?.addEventListener('click', () => row.remove());
   row.querySelector('.var-text')?.focus();

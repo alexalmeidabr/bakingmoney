@@ -27,6 +27,7 @@ from analysis_service import (
     calculate_overall_confidence,
     calculate_upside,
     extract_json_payload,
+    normalize_driver_category,
     parse_analysis_payload,
 )
 
@@ -237,6 +238,9 @@ Definitions:
 - A key variable is one of the most important company-specific factors that could materially move the stock price over 5 years.
 - Confidence means how strong the current evidence is that this variable is acting in that direction now.
 - Importance means how much this variable could influence the stock price over the 5-year horizon.
+- Driver Category explains whether the variable is tied to the existing material business or to emerging future optionality.
+- Core Driver means the variable is tied to the existing material business, current revenue/margin/cash-flow engine, current customer demand, current cost structure, current competitive position, or an already proven/material segment.
+- Potential Driver means the variable is tied to emerging optionality, new initiatives, early-stage products, future markets, speculative technologies, new business lines, or not-yet-material drivers that could become material over five years but are not yet strongly proven.
 
 What makes a strong key variable:
 - specific
@@ -259,6 +263,14 @@ Guidance:
 - Do not mix bullish and bearish directions in the same variable.
 - Most variables should be business drivers or risks, not secondary consequences.
 - Use scoring discipline: do not give too many 10/10 scores, do not make everything highly important, and do not overstate confidence for speculative optionality.
+- Classify each variable as either Core Driver or Potential Driver.
+- Do not classify a normal future growth driver as Potential Driver just because it is forward-looking.
+- Use Potential Driver only when the variable is genuinely tied to optionality, emerging initiatives, speculative products, new segments, or not-yet-material future drivers.
+- Most companies should normally have more Core Drivers than Potential Drivers.
+- Do not force Potential Drivers if the company has no meaningful optionality.
+- Potential Drivers should usually have lower confidence unless there is strong current evidence.
+- High importance is allowed for Potential Drivers if the possible 5-year upside/downside impact could be large.
+- Both Core Drivers and Potential Drivers can be Bullish or Bearish.
 
 ETF-specific guidance:
 - If the symbol is an ETF, focus mainly on:
@@ -275,6 +287,7 @@ Return ONLY valid JSON in this exact structure:
     {
       "variable": "text",
       "type": "Bullish",
+      "driver_category": "Core Driver",
       "confidence": 0,
       "importance": 0
     }
@@ -288,7 +301,9 @@ Rules:
 - Include only the variables that most likely determine the 5-year outcome, exclude secondary variables unless they are clearly more important than a core driver/risk.
 - Each variable must be specific, causal, and clearly linked to revenue, margins, cash flow, or valuation.
 - Each variable must be clearly and exclusively Bullish or Bearish.
-- Avoid overlap between variables, if two candidate variables describe the same mechanism, keep only the stronger one
+- Each variable must include driver_category.
+- driver_category must be exactly one of: Core Driver, Potential Driver.
+- Avoid overlap between variables, if two candidate variables describe the same mechanism, keep only the stronger one.
 - Keep each variable text concise. Prefer a short phrase or one short sentence, not a full explanation. Do not explicitly include “mechanism:” or “financial consequence:” in the variable text.
 - confidence must be an integer from 0 to 10.
 - importance must be an integer from 0 to 10.
@@ -311,6 +326,7 @@ Task:
 Build Bear, Base, and Bull stock price scenarios over a 5-year horizon using the company name, business model, current price, and key variables above.
 
 Definitions:
+
 - Bear = pessimistic but plausible outcome
 - Base = most likely central outcome
 - Bull = optimistic but plausible outcome
@@ -331,13 +347,33 @@ Rules:
 - Build each scenario primarily from the key variables provided and the business model.
 - The Bear case should reflect stronger materialization of the most important bearish variables.
 - The Bull case should reflect stronger materialization of the most important bullish variables.
-- The Base case must reflect the most likely balance of the variable set and must not simply be a softened Bull case.
+- The Base case should represent normal execution and currently visible trajectory, not a scenario where most bullish variables work well.
 - Probabilities must sum to 100.
+
+Base-case discipline:
+
+- Do not assume multiple expansion in the Base case unless valuation is clearly undemanding or earnings/cash-flow growth strongly justifies it.
+- If the stock already trades at a premium valuation, the Base case may have modest upside even if the business performs well.
+- The Base case should usually be closer to the outcome supported by key variables, current guidance, current margins, current growth trajectory, and currently visible backlog/contracts.
 
 Fresh-information rule:
 Before building scenarios, review the latest company earnings release and guidance, and consider only recent news or analyst commentary that materially changes the company’s key variables, current expectations, or scenario probabilities. Prioritize primary sources and factual updates over sentiment or low-signal market commentary.
 
+When reviewing company earnings releases, management commentary, and shareholder letters, be cautious because companies often present results in an optimistic way. Prioritize hard financial data, segment performance, margins, cash flow, and guidance over promotional language. Give greater weight to forward guidance, outlook changes, and the quality of revenue/profit drivers than to management’s qualitative enthusiasm. If the release tone is positive but the guidance, margin profile, growth trajectory, or key operating metrics are only moderate or deteriorating, reflect that caution in the scenario assumptions, price ranges, and probabilities.
+
 The key variables are the primary foundation for the scenario analysis. Build the Bear, Base, and Bull scenarios mainly from the highest-importance and highest-confidence key variables, and ensure that the scenario assumptions, price ranges, and probabilities are directly driven by how those variables could evolve over the next 5 years.
+
+Key variable category interpretation:
+- Key variables may include driver_category values of Core Driver or Potential Driver.
+- Core Drivers are tied to the existing material business, current revenue/margin/cash-flow engine, current demand, current cost structure, current competitive position, or already proven/material segments.
+- Potential Drivers are tied to emerging optionality, new initiatives, early-stage products, future markets, speculative technologies, new business lines, or not-yet-material drivers that could become material over five years but are not yet strongly proven.
+- Core Drivers should dominate the Base case and normal scenario probability framing.
+- Potential Drivers should mainly affect Bull/Bear optionality and scenario range unless confidence is already high.
+- Do not let low-confidence Potential Drivers dominate the Base case.
+- A high-importance Potential Driver may justify a wider Bull or Bear range, but not necessarily a high probability.
+- If Potential Drivers are bullish but low confidence, reflect them mainly in the Bull case, not in the Base case.
+- If Potential Drivers are bearish but low confidence, reflect them mainly as downside/tail risk, not as the central Base case.
+- Do not ignore Potential Drivers, but distinguish clearly between currently proven business drivers and speculative optionality.
 
 Valuation discipline:
 - A strong business does not automatically imply high stock upside.
@@ -345,6 +381,25 @@ Valuation discipline:
 - Do not assume extreme 5-year upside unless clearly supported by multiple high-confidence, high-importance bullish variables and limited material bearish constraints.
 - High-importance bullish and bearish variables must materially affect price ranges and probabilities, not just the written assumptions.
 - If the stock is not obviously expensive relative to its risk, growth profile, and business quality, allow meaningful upside when justified by the variables.
+
+Valuation framework:
+- When possible, mentally anchor scenarios to plausible 5-year revenue, earnings, EBITDA, free-cash-flow, or book-value outcomes and a reasonable terminal valuation multiple.
+- Do not output price ranges that imply unrealistic revenue growth, margin expansion, or valuation multiples relative to the company’s maturity, industry, cyclicality, leverage, and risk.
+- If the current stock price already reflects optimistic growth or margin assumptions, reflect that in lower expected upside, lower Bull probability, or a narrower Bull range.
+- If the company is highly speculative, loss-making, capital-intensive, or dependent on external financing, require stronger evidence before assigning high Bull probability.
+
+Current-price anchoring:
+- Use the current price to judge how much optimism or pessimism is already priced in.
+- A high-quality company can have a Base case below or near the current price if valuation already discounts strong execution.
+- A beaten-down company can have a Base case materially above the current price if the key variables and current evidence support recovery.
+- Do not mechanically center scenarios around the current price; anchor them to plausible 5-year business value.
+
+Guidance interpretation:
+- Treat guidance as more important than backward-looking results when it materially changes the 5-year trajectory.
+- A beat with reaffirmed guidance is usually confirmation, not a thesis upgrade.
+- A beat with weak or reduced guidance should reduce scenario optimism.
+- A miss with raised guidance may still support the thesis if the forward drivers are improving.
+- Distinguish between temporary quarterly volatility and durable changes in growth, margins, cash flow, backlog, customer demand, or capital intensity.
 
 Scenario realism:
 - Use realistic price ranges that reflect both business performance and valuation constraints.
@@ -356,13 +411,29 @@ Scenario realism:
 - Use latest earnings release / shareholder letter / earnings call guidance and extract only facts that materially affect the 5-year thesis and current scenario framing.
 - Use latest earnings release to understand current company valuation.
 
+Assumptions field rules:
+
+- The assumptions field is a concise 5-year thesis summary for the scenario set, not an earnings recap.
+- It must primarily explain which key variables are most likely to determine the 5-year outcome and how they shape the Bear, Base, and Bull cases.
+- Use the latest earnings release or guidance only to the extent that it changes, confirms, or weakens those 5-year drivers.
+- Do not summarize quarterly results, year-over-year growth rates, or management commentary unless they materially change the 5-year thesis.
+- Do not turn the assumptions field into a mini earnings report.
+- Do not list multiple quarterly metrics unless one is essential to understanding a durable change in trajectory.
+- Prefer a causal 2-part structure:
+  1. the core 5-year drivers likely to determine value
+  2. the main constraints/risks that limit upside or increase downside
+- Keep assumptions concise, ideally 2 to 4 sentences.
+- Focus on durable drivers such as growth durability, margin structure, take-rate/pricing power, capital intensity, balance-sheet/leverage risk, competitive pressure, customer concentration, or valuation constraint when relevant.
+- If the latest earnings were merely in line with the existing thesis, do not let them dominate the assumptions text.
+- A beat with unchanged guidance is usually confirmation, not the main substance of the assumptions field.
+
 Interpretation rules:
 - Distinguish clearly between business quality and stock attractiveness.
 - A company can be excellent while the stock has limited upside.
 - If current price is known, use it as an anchor, but do not force the Base case close to current price when the variable set clearly justifies deviation.
 - Scenario probabilities must reflect the weighted balance of key variables using both importance and confidence.
 - Avoid generic default probability splits unless the evidence is truly balanced.
-- assumptions should be concise and reflect the business model and most important key variables.
+- assumptions should be concise and reflect the 5-year business thesis behind the scenarios, driven mainly by the most important Core Drivers, while acknowledging important Potential Drivers only when they materially shape Bull/Bear optionality or scenario range.
 - If the symbol is an ETF, reflect the performance drivers and risks of its top holdings.
 
 JSON only.
@@ -1707,8 +1778,39 @@ def render_recent_event_prompt(template, values):
     return render_prompt_template(template, substitution_context)
 
 
+def normalized_driver_category(value):
+    return normalize_driver_category(value)
+
+
+def safe_driver_category(value):
+    try:
+        return normalized_driver_category(value)
+    except AnalysisValidationError:
+        return "Core Driver"
+
+
+def normalize_key_variables_for_payload(key_variables):
+    normalized = []
+    for item in key_variables or []:
+        if not isinstance(item, dict):
+            continue
+        variable_text = item.get("variable_text") or item.get("variable") or ""
+        variable_type = item.get("variable_type") or item.get("type") or "Bullish"
+        driver_category = safe_driver_category(item.get("driver_category"))
+        normalized.append(
+            {
+                "variable_text": variable_text,
+                "variable_type": variable_type,
+                "driver_category": driver_category,
+                "confidence": item.get("confidence"),
+                "importance": item.get("importance"),
+            }
+        )
+    return normalized
+
+
 def format_key_variables_for_prompt(key_variables):
-    return json.dumps(key_variables, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(normalize_key_variables_for_payload(key_variables), separators=(",", ":"), ensure_ascii=False)
 
 
 def build_business_model_prompt_value(business_model="", business_summary=""):
@@ -1812,6 +1914,7 @@ def init_db():
               analysis_symbol_id INTEGER NOT NULL,
               variable_text TEXT NOT NULL,
               variable_type TEXT NOT NULL,
+              driver_category TEXT NOT NULL DEFAULT 'Core Driver',
               confidence REAL NOT NULL,
               importance REAL NOT NULL,
               created_at TEXT NOT NULL,
@@ -1880,6 +1983,7 @@ def init_db():
               analysis_version_id INTEGER NOT NULL,
               variable_text TEXT NOT NULL,
               variable_type TEXT NOT NULL,
+              driver_category TEXT NOT NULL DEFAULT 'Core Driver',
               confidence REAL NOT NULL,
               importance REAL NOT NULL,
               created_at TEXT NOT NULL,
@@ -2192,6 +2296,8 @@ def init_db():
         ensure_column_exists(conn, "analysis_scenarios", "cagr_mid", "REAL")
         ensure_column_exists(conn, "analysis_version_scenarios", "price_mid", "REAL")
         ensure_column_exists(conn, "analysis_version_scenarios", "cagr_mid", "REAL")
+        ensure_column_exists(conn, "analysis_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
+        ensure_column_exists(conn, "analysis_version_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
 
         has_roots = conn.execute("SELECT 1 FROM analysis_roots LIMIT 1").fetchone()
         if not has_roots:
@@ -2288,7 +2394,7 @@ def init_db():
 
                 legacy_variables = conn.execute(
                     """
-                    SELECT variable_text, variable_type, confidence, importance, created_at
+                    SELECT variable_text, variable_type, COALESCE(driver_category, 'Core Driver') AS driver_category, confidence, importance, created_at
                     FROM analysis_key_variables
                     WHERE analysis_symbol_id = ?
                     ORDER BY id ASC
@@ -2299,14 +2405,15 @@ def init_db():
                     conn.execute(
                         """
                         INSERT INTO analysis_version_key_variables (
-                            analysis_version_id, variable_text, variable_type, confidence,
+                            analysis_version_id, variable_text, variable_type, driver_category, confidence,
                             importance, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             version_id,
                             variable["variable_text"],
                             variable["variable_type"],
+                            variable["driver_category"],
                             variable["confidence"],
                             variable["importance"],
                             variable["created_at"] or root_created_at,
@@ -2691,6 +2798,7 @@ def validate_step3_scenarios(payload, symbol, key_variables):
                 {
                     "variable_text": item["variable_text"],
                     "variable_type": item["variable_type"],
+                    "driver_category": safe_driver_category(item.get("driver_category")),
                     "confidence": item["confidence"],
                     "importance": item["importance"],
                 }
@@ -2700,6 +2808,7 @@ def validate_step3_scenarios(payload, symbol, key_variables):
                 {
                     "variable_text": item["variable"],
                     "variable_type": item["type"],
+                    "driver_category": safe_driver_category(item.get("driver_category")),
                     "confidence": item["confidence"],
                     "importance": item["importance"],
                 }
@@ -2776,10 +2885,11 @@ def request_ai_analysis(symbol, current_price=None):
                         "properties": {
                             "variable": {"type": "string"},
                             "type": {"type": "string", "enum": ["Bullish", "Bearish"]},
+                            "driver_category": {"type": "string", "enum": ["Core Driver", "Potential Driver"]},
                             "confidence": {"type": "integer", "minimum": 0, "maximum": 10},
                             "importance": {"type": "integer", "minimum": 0, "maximum": 10},
                         },
-                        "required": ["variable", "type", "confidence", "importance"],
+                        "required": ["variable", "type", "driver_category", "confidence", "importance"],
                     },
                 },
             },
@@ -3694,6 +3804,11 @@ def _normalize_manual_key_variables(raw_key_variables):
             raise AnalysisValidationError(f"key_variables[{index}].variable_type must be Bullish or Bearish")
 
         try:
+            driver_category = normalized_driver_category(item.get("driver_category"))
+        except AnalysisValidationError:
+            raise AnalysisValidationError(f"key_variables[{index}].driver_category must be Core Driver or Potential Driver")
+
+        try:
             confidence = int(round(float(item.get("confidence"))))
             importance = int(round(float(item.get("importance"))))
         except (TypeError, ValueError):
@@ -3708,6 +3823,7 @@ def _normalize_manual_key_variables(raw_key_variables):
             {
                 "variable_text": variable_text,
                 "variable_type": variable_type,
+                "driver_category": driver_category,
                 "confidence": confidence,
                 "importance": importance,
             }
@@ -3729,7 +3845,7 @@ def _version_payload(conn, version_row):
 
     key_variables = conn.execute(
         """
-        SELECT variable_text, variable_type, confidence, importance
+        SELECT variable_text, variable_type, COALESCE(driver_category, 'Core Driver') AS driver_category, confidence, importance
         FROM analysis_version_key_variables
         WHERE analysis_version_id = ?
         ORDER BY id ASC
@@ -3914,7 +4030,7 @@ def get_analysis_detail(conn, symbol, version_id=None):
         "saved_key_variable_edits": {
             "based_on_version_id": draft["based_on_version_id"],
             "updated_at": draft["updated_at"],
-            "key_variables": json.loads(draft["key_variables_json"]),
+            "key_variables": normalize_key_variables_for_payload(json.loads(draft["key_variables_json"])),
         } if draft else None,
         "saved_business_model_edit": _get_saved_business_model_edit(conn, root["id"]),
         "saved_business_summary_edit": _get_saved_business_summary_edit(conn, root["id"]),
@@ -4004,13 +4120,14 @@ def _insert_analysis_version(
         conn.execute(
             """
             INSERT INTO analysis_version_key_variables (
-                analysis_version_id, variable_text, variable_type, confidence, importance, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                analysis_version_id, variable_text, variable_type, driver_category, confidence, importance, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 version_id,
                 variable["variable_text"],
                 variable["variable_type"],
+                normalized_driver_category(variable.get("driver_category")),
                 variable["confidence"],
                 variable["importance"],
                 now,
@@ -4202,7 +4319,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     if not base_version:
         raise ValueError("Base version not found")
 
-    key_variables = json.loads(draft["key_variables_json"])
+    key_variables = normalize_key_variables_for_payload(json.loads(draft["key_variables_json"]))
 
     templates, _sources = get_prompt_templates_for_keys(
         conn,
@@ -4312,7 +4429,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
         dict(row)
         for row in conn.execute(
             """
-            SELECT variable_text, variable_type, confidence, importance
+            SELECT variable_text, variable_type, COALESCE(driver_category, 'Core Driver') AS driver_category, confidence, importance
             FROM analysis_version_key_variables
             WHERE analysis_version_id = ?
             ORDER BY id ASC
@@ -4600,7 +4717,7 @@ def get_latest_analysis_context(conn, symbol):
 
     key_variables = conn.execute(
         """
-        SELECT variable_text, variable_type, confidence, importance
+        SELECT variable_text, variable_type, COALESCE(driver_category, 'Core Driver') AS driver_category, confidence, importance
         FROM analysis_version_key_variables
         WHERE analysis_version_id = ?
         ORDER BY id ASC
@@ -4617,6 +4734,7 @@ def get_latest_analysis_context(conn, symbol):
             {
                 "variable": item["variable_text"],
                 "type": item["variable_type"],
+                "driver_category": normalized_driver_category(item["driver_category"]),
                 "confidence": item["confidence"],
                 "importance": item["importance"],
             }
@@ -4875,6 +4993,7 @@ def _build_earnings_review_thesis_snapshot(conn, symbol):
             {
                 "variable": str(variable_text).strip(),
                 "type": str(variable_type).strip(),
+                "driver_category": safe_driver_category(item.get("driver_category")),
                 "confidence": safe_number(item.get("confidence")),
                 "importance": safe_number(item.get("importance")),
             }
@@ -5323,6 +5442,7 @@ def get_earnings_review_record_detail(conn, symbol, review_id):
                     or item.get("polarity")
                     or ""
                 ).strip(),
+                "driver_category": safe_driver_category(item.get("driver_category")),
                 "confidence": safe_number(item.get("confidence")),
                 "importance": safe_number(item.get("importance")),
             }

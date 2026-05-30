@@ -2,6 +2,7 @@ import unittest
 
 from analysis_service import (
     AnalysisValidationError,
+    calculate_confidence_breakdown,
     calculate_expected_price,
     calculate_overall_confidence,
     calculate_upside,
@@ -65,6 +66,34 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertAlmostEqual(calculate_overall_confidence(key_variables), (9 * 10 + 4 * 5) / 15)
         self.assertIsNone(calculate_overall_confidence([]))
 
+
+    def test_confidence_breakdown_separates_core_and_potential_drivers(self):
+        key_variables = [
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 3},
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 6, "importance": 1},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 5, "importance": 2},
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 4, "importance": 4},
+            {"variable_type": "Bearish", "driver_category": "Potential Driver", "confidence": 3, "importance": 2},
+        ]
+        breakdown = calculate_confidence_breakdown(key_variables)
+        self.assertAlmostEqual(breakdown["core_bullish_confidence"], 7.5)
+        self.assertAlmostEqual(breakdown["core_bearish_confidence"], 5.0)
+        self.assertAlmostEqual(breakdown["core_confidence_diff"], 2.5)
+        self.assertAlmostEqual(breakdown["potential_bullish_confidence"], 4.0)
+        self.assertAlmostEqual(breakdown["potential_bearish_confidence"], 3.0)
+        self.assertAlmostEqual(breakdown["potential_confidence_diff"], 1.0)
+
+    def test_confidence_breakdown_defaults_missing_or_invalid_category_to_core(self):
+        key_variables = [
+            {"variable_type": "Bullish", "confidence": 8, "importance": 2},
+            {"variable_type": "Bearish", "driver_category": "Invalid", "confidence": 5, "importance": 3},
+        ]
+        breakdown = calculate_confidence_breakdown(key_variables)
+        self.assertEqual(breakdown["core_bullish_confidence"], 8)
+        self.assertEqual(breakdown["core_bearish_confidence"], 5)
+        self.assertIsNone(breakdown["potential_bullish_confidence"])
+        self.assertIsNone(breakdown["potential_bearish_confidence"])
+        self.assertIsNone(breakdown["potential_confidence_diff"])
 
     def test_key_variables_default_missing_driver_category_to_core_driver(self):
         payload = build_valid_payload()

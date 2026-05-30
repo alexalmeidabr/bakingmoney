@@ -207,3 +207,59 @@ def calculate_overall_confidence(key_variables: List[Dict[str, Any]]) -> Optiona
 
     weighted_confidence = sum(item["confidence"] * item["importance"] for item in key_variables)
     return weighted_confidence / weight_total
+
+
+def _key_variable_type(item: Dict[str, Any]) -> Optional[str]:
+    return item.get("variable_type") or item.get("type")
+
+
+def _key_variable_driver_category(item: Dict[str, Any]) -> str:
+    try:
+        return normalize_driver_category(item.get("driver_category"))
+    except AnalysisValidationError:
+        return DEFAULT_DRIVER_CATEGORY
+
+
+def calculate_confidence_for_category(
+    key_variables: List[Dict[str, Any]],
+    driver_category: str,
+    variable_type: str,
+) -> Optional[float]:
+    normalized_category = normalize_driver_category(driver_category)
+    filtered = [
+        item
+        for item in key_variables or []
+        if _key_variable_driver_category(item) == normalized_category
+        and _key_variable_type(item) == variable_type
+    ]
+    return calculate_overall_confidence(filtered)
+
+
+def _confidence_diff(bullish: Optional[float], bearish: Optional[float]) -> Optional[float]:
+    if bullish is None or bearish is None:
+        return None
+    return bullish - bearish
+
+
+def calculate_confidence_breakdown(key_variables: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    core_bullish = calculate_confidence_for_category(key_variables, "Core Driver", "Bullish")
+    core_bearish = calculate_confidence_for_category(key_variables, "Core Driver", "Bearish")
+    potential_bullish = calculate_confidence_for_category(key_variables, "Potential Driver", "Bullish")
+    potential_bearish = calculate_confidence_for_category(key_variables, "Potential Driver", "Bearish")
+    bullish = calculate_overall_confidence([
+        item for item in key_variables or [] if _key_variable_type(item) == "Bullish"
+    ])
+    bearish = calculate_overall_confidence([
+        item for item in key_variables or [] if _key_variable_type(item) == "Bearish"
+    ])
+    return {
+        "bullish_confidence": bullish,
+        "bearish_confidence": bearish,
+        "confidence_diff": _confidence_diff(bullish, bearish),
+        "core_bullish_confidence": core_bullish,
+        "core_bearish_confidence": core_bearish,
+        "core_confidence_diff": _confidence_diff(core_bullish, core_bearish),
+        "potential_bullish_confidence": potential_bullish,
+        "potential_bearish_confidence": potential_bearish,
+        "potential_confidence_diff": _confidence_diff(potential_bullish, potential_bearish),
+    }

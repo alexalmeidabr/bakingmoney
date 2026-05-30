@@ -457,11 +457,36 @@ const formatCurrencyValue = (value, currency, digits = 2) => {
 const formatPercent = (value) => (typeof value !== 'number' || Number.isNaN(value) ? 'N/A' : `${value.toFixed(2)}%`);
 const valueClass = (value) => (typeof value !== 'number' || Number.isNaN(value) || value === 0 ? '' : value > 0 ? 'pnl-positive' : 'pnl-negative');
 const formatConfidencePair = (bullish, bearish) => `${formatNumber(bullish, 2)} / ${formatNumber(bearish, 2)}`;
+const isFiniteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
 const formatConfidenceDiffDisplay = (diff, bullish, bearish) => {
-  const diffNumber = typeof diff === 'number' && Number.isFinite(diff) ? diff : (Number(bullish) - Number(bearish));
-  const diffText = Number.isFinite(diffNumber) ? `${diffNumber >= 0 ? '+' : ''}${diffNumber.toFixed(2)}` : 'N/A';
+  if (!isFiniteNumber(bullish) || !isFiniteNumber(bearish)) return 'N/A';
+  const diffNumber = isFiniteNumber(diff) ? diff : bullish - bearish;
+  const diffText = `${diffNumber >= 0 ? '+' : ''}${diffNumber.toFixed(2)}`;
   return `${diffText} (${formatNumber(bullish, 2)} / ${formatNumber(bearish, 2)})`;
 };
+const getCoreConfidenceFields = (item) => {
+  const hasCore = isFiniteNumber(item?.core_bullish_confidence) && isFiniteNumber(item?.core_bearish_confidence);
+  return hasCore
+    ? {
+        diff: item.core_confidence_diff,
+        bullish: item.core_bullish_confidence,
+        bearish: item.core_bearish_confidence,
+      }
+    : {
+        diff: item?.confidence_diff,
+        bullish: item?.bullish_confidence,
+        bearish: item?.bearish_confidence,
+      };
+};
+const formatCoreConfidenceDisplay = (item) => {
+  const fields = getCoreConfidenceFields(item);
+  return formatConfidenceDiffDisplay(fields.diff, fields.bullish, fields.bearish);
+};
+const formatPotentialConfidenceDisplay = (item) => formatConfidenceDiffDisplay(
+  item?.potential_confidence_diff,
+  item?.potential_bullish_confidence,
+  item?.potential_bearish_confidence,
+);
 function parseDateValue(value) {
   if (!value) return null;
   const parsed = new Date(value);
@@ -543,9 +568,7 @@ function renderPositions() {
     const upsideClass = typeof position.upside === 'number' ? valueClass(position.upside) : '';
     const expectedCagrValue = typeof position.expected_cagr === 'number' ? formatPercent(position.expected_cagr) : '—';
     const expectedCagrClass = typeof position.expected_cagr === 'number' ? valueClass(position.expected_cagr) : '';
-    const confidenceValue = (typeof position.bullish_confidence === 'number' || typeof position.bearish_confidence === 'number')
-      ? formatConfidenceDiffDisplay(position.confidence_diff, position.bullish_confidence, position.bearish_confidence)
-      : '—';
+    const confidenceValue = formatCoreConfidenceDisplay(position);
     row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(symbol)}">${escapeHtml(symbol)}</button></td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td class="${expectedCagrClass}">${expectedCagrValue}</td><td>${confidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.costBasis, position.currency)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.unrealizedPnLPercent)}">${formatPercent(position.unrealizedPnLPercent)}</td><td>${formatCurrencyValue(position.price, position.currency)}</td><td>${formatNumber(position.avgCost)}</td><td>${formatDate(position.latest_release_date)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>`;
     positionsTableBody.appendChild(row);
   });
@@ -585,6 +608,12 @@ function mergePositionsWithAnalysis(positions, analysisItems) {
       confidence_diff: typeof position.confidence_diff === 'number' ? position.confidence_diff : matched.confidence_diff,
       bullish_confidence: typeof position.bullish_confidence === 'number' ? position.bullish_confidence : matched.bullish_confidence,
       bearish_confidence: typeof position.bearish_confidence === 'number' ? position.bearish_confidence : matched.bearish_confidence,
+      core_confidence_diff: typeof position.core_confidence_diff === 'number' ? position.core_confidence_diff : matched.core_confidence_diff,
+      core_bullish_confidence: typeof position.core_bullish_confidence === 'number' ? position.core_bullish_confidence : matched.core_bullish_confidence,
+      core_bearish_confidence: typeof position.core_bearish_confidence === 'number' ? position.core_bearish_confidence : matched.core_bearish_confidence,
+      potential_confidence_diff: typeof position.potential_confidence_diff === 'number' ? position.potential_confidence_diff : matched.potential_confidence_diff,
+      potential_bullish_confidence: typeof position.potential_bullish_confidence === 'number' ? position.potential_bullish_confidence : matched.potential_bullish_confidence,
+      potential_bearish_confidence: typeof position.potential_bearish_confidence === 'number' ? position.potential_bearish_confidence : matched.potential_bearish_confidence,
       latest_release_date: position.latest_release_date || matched.latest_release_date || null,
     };
   });
@@ -625,7 +654,7 @@ function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
   sortAnalysis(getFilteredAnalysisItems()).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td><td>${formatDate(item.latest_release_date)}</td><td>${formatDateTime(item.last_activity_at || item.updated_at)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatCoreConfidenceDisplay(item)}</td><td>${formatDate(item.latest_release_date)}</td><td>${formatDateTime(item.last_activity_at || item.updated_at)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
@@ -887,7 +916,7 @@ function renderAnalysisDetail() {
     ? `<div class="business-model-editor"><label><strong>Business Summary:</strong></label><textarea id="analysis-business-summary-input" class="analysis-business-model-input" rows="4">${safeBusinessSummary}</textarea><div class="table-actions"><button id="analysis-business-summary-save-btn">Save</button><button id="analysis-business-summary-cancel-btn">Cancel</button></div></div>`
     : `<div class="business-model-editor"><p><strong>Business Summary:</strong> ${safeBusinessSummary || 'N/A'}</p><div class="table-actions"><button id="analysis-business-summary-edit-btn">Edit Business Summary</button></div></div>`;
   const releaseSummaryCard = renderAnalysisReleaseSummaryCard();
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected CAGR</div><div class="value ${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value">${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</div></div>${releaseSummaryCard}<div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected CAGR</div><div class="value ${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value confidence-breakdown"><div>Core: ${formatCoreConfidenceDisplay(item)}</div><div>Potential: ${formatPotentialConfidenceDisplay(item)}</div></div></div>${releaseSummaryCard}<div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   analysisScenariosBody.innerHTML = '';

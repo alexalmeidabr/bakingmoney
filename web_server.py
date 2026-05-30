@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 from analysis_service import (
     AnalysisValidationError,
+    calculate_confidence_breakdown,
     calculate_expected_price,
     calculate_overall_confidence,
     calculate_upside,
@@ -3391,11 +3392,36 @@ def get_latest_earnings_release_dates_by_symbol(conn):
     }
 
 
+def _diff_or_none(bullish, bearish):
+    if bullish is None or bearish is None:
+        return None
+    return bullish - bearish
+
+
+# Phase 2 separates confidence views by driver category for display/API payloads.
+# Rating basis remains on the existing combined confidence fields intentionally.
+def _confidence_sql(variable_type, driver_category=None):
+    category_filter = ""
+    if driver_category == "Core Driver":
+        category_filter = " AND COALESCE(NULLIF(kv.driver_category, ''), 'Core Driver') != 'Potential Driver'"
+    elif driver_category == "Potential Driver":
+        category_filter = " AND kv.driver_category = 'Potential Driver'"
+    return f"""
+               (
+                   SELECT CASE WHEN SUM(kv.importance) > 0
+                     THEN SUM(kv.confidence * kv.importance) / SUM(kv.importance)
+                     ELSE NULL END
+                   FROM analysis_version_key_variables kv
+                   WHERE kv.analysis_version_id = v.id AND kv.variable_type = '{variable_type}'{category_filter}
+               )
+    """
+
+
 def list_analysis_symbols(conn):
     rating_settings = get_rating_settings(conn)
     latest_release_dates = get_latest_earnings_release_dates_by_symbol(conn)
     rows = conn.execute(
-        """
+        f"""
         SELECT r.symbol, v.company_name, v.current_price, v.expected_price, v.expected_cagr, v.upside, v.confidence_level AS overall_confidence,
                v.version_number AS analysis_version,
                COALESCE(
@@ -3406,20 +3432,12 @@ def list_analysis_symbols(conn):
                    ),
                    0
                ) AS scenario_pass_count,
-               (
-                   SELECT CASE WHEN SUM(kv.importance) > 0
-                     THEN SUM(kv.confidence * kv.importance) / SUM(kv.importance)
-                     ELSE NULL END
-                   FROM analysis_version_key_variables kv
-                   WHERE kv.analysis_version_id = v.id AND kv.variable_type = 'Bullish'
-               ) AS bullish_confidence,
-               (
-                   SELECT CASE WHEN SUM(kv.importance) > 0
-                     THEN SUM(kv.confidence * kv.importance) / SUM(kv.importance)
-                     ELSE NULL END
-                   FROM analysis_version_key_variables kv
-                   WHERE kv.analysis_version_id = v.id AND kv.variable_type = 'Bearish'
-               ) AS bearish_confidence,
+               {_confidence_sql('Bullish')} AS bullish_confidence,
+               {_confidence_sql('Bearish')} AS bearish_confidence,
+               {_confidence_sql('Bullish', 'Core Driver')} AS core_bullish_confidence,
+               {_confidence_sql('Bearish', 'Core Driver')} AS core_bearish_confidence,
+               {_confidence_sql('Bullish', 'Potential Driver')} AS potential_bullish_confidence,
+               {_confidence_sql('Bearish', 'Potential Driver')} AS potential_bearish_confidence,
                (
                    SELECT MAX(rc.checked_at)
                    FROM recent_event_checks rc
@@ -3449,6 +3467,8 @@ def list_analysis_symbols(conn):
             rating_settings,
         )
         item["confidence_diff"] = confidence_diff
+        item["core_confidence_diff"] = _diff_or_none(item.get("core_bullish_confidence"), item.get("core_bearish_confidence"))
+        item["potential_confidence_diff"] = _diff_or_none(item.get("potential_bullish_confidence"), item.get("potential_bearish_confidence"))
         item["rating"] = rating
         item["latest_release_date"] = latest_release_dates.get(normalize_symbol(item.get("symbol")))
         scenario_updated = _parse_iso_datetime(item.get("updated_at"))
@@ -3609,6 +3629,12 @@ def _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbol
         "confidence_diff": analysis.get("confidence_diff"),
         "bullish_confidence": analysis.get("bullish_confidence"),
         "bearish_confidence": analysis.get("bearish_confidence"),
+        "core_bullish_confidence": analysis.get("core_bullish_confidence"),
+        "core_bearish_confidence": analysis.get("core_bearish_confidence"),
+        "core_confidence_diff": analysis.get("core_confidence_diff"),
+        "potential_bullish_confidence": analysis.get("potential_bullish_confidence"),
+        "potential_bearish_confidence": analysis.get("potential_bearish_confidence"),
+        "potential_confidence_diff": analysis.get("potential_confidence_diff"),
         "rating": analysis.get("rating"),
         "fiscal_year": entry.get("fiscal_year"),
         "fiscal_quarter": entry.get("fiscal_quarter"),
@@ -3864,12 +3890,9 @@ def _version_payload(conn, version_row):
         (version_row["id"],),
     ).fetchall()
 
-    bullish_confidence = calculate_overall_confidence(
-        [item for item in [dict(v) for v in key_variables] if item["variable_type"] == "Bullish"]
-    )
-    bearish_confidence = calculate_overall_confidence(
-        [item for item in [dict(v) for v in key_variables] if item["variable_type"] == "Bearish"]
-    )
+    confidence_breakdown = calculate_confidence_breakdown([dict(v) for v in key_variables])
+    bullish_confidence = confidence_breakdown["bullish_confidence"]
+    bearish_confidence = confidence_breakdown["bearish_confidence"]
 
     raw_payload = {}
     try:
@@ -3911,6 +3934,12 @@ def _version_payload(conn, version_row):
         "bullish_confidence": bullish_confidence,
         "bearish_confidence": bearish_confidence,
         "confidence_diff": confidence_diff,
+        "core_bullish_confidence": confidence_breakdown["core_bullish_confidence"],
+        "core_bearish_confidence": confidence_breakdown["core_bearish_confidence"],
+        "core_confidence_diff": confidence_breakdown["core_confidence_diff"],
+        "potential_bullish_confidence": confidence_breakdown["potential_bullish_confidence"],
+        "potential_bearish_confidence": confidence_breakdown["potential_bearish_confidence"],
+        "potential_confidence_diff": confidence_breakdown["potential_confidence_diff"],
         "rating": rating,
         "assumptions": version_row["assumptions_text"],
         "business_model": version_row["business_model_text"],
@@ -4559,6 +4588,12 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
         row["bullish_confidence"] = analysis.get("bullish_confidence") if analysis else None
         row["bearish_confidence"] = analysis.get("bearish_confidence") if analysis else None
         row["confidence_diff"] = analysis.get("confidence_diff") if analysis else None
+        row["core_bullish_confidence"] = analysis.get("core_bullish_confidence") if analysis else None
+        row["core_bearish_confidence"] = analysis.get("core_bearish_confidence") if analysis else None
+        row["core_confidence_diff"] = analysis.get("core_confidence_diff") if analysis else None
+        row["potential_bullish_confidence"] = analysis.get("potential_bullish_confidence") if analysis else None
+        row["potential_bearish_confidence"] = analysis.get("potential_bearish_confidence") if analysis else None
+        row["potential_confidence_diff"] = analysis.get("potential_confidence_diff") if analysis else None
         row["latest_release_date"] = analysis.get("latest_release_date") if analysis else None
         merged.append(row)
 

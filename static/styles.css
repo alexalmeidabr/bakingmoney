@@ -367,8 +367,14 @@ th.sortable[data-sort-direction='desc']::after {
   margin-top: 4px;
 }
 
-.earnings-release-summary-item .value {
+.earnings-release-summary-item .value,
+.confidence-breakdown {
   line-height: 1.35;
+}
+
+.confidence-breakdown {
+  display: grid;
+  gap: 2px;
 }
 
 .release-history-controls {

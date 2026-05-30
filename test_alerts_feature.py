@@ -635,6 +635,103 @@ class KeyVariableDriverCategoryTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_analysis_payloads_include_core_and_potential_confidence_breakdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = "2026-05-01T00:00:00+00:00"
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("NVDA", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'NVDA', 'NVIDIA', 100, 130, 5, 30, 6, 'assume', 'model', 'summary', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+                    conn.executemany(
+                        """
+                        INSERT INTO analysis_version_key_variables (
+                            analysis_version_id, variable_text, variable_type, driver_category, confidence, importance, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (version_id, "Core demand", "Bullish", "Core Driver", 8.0, 3.0, now),
+                            (version_id, "Core competition", "Bearish", "Core Driver", 6.0, 2.0, now),
+                            (version_id, "Emerging platform", "Bullish", "Potential Driver", 4.0, 4.0, now),
+                            (version_id, "Emerging risk", "Bearish", "Potential Driver", 3.0, 1.0, now),
+                        ],
+                    )
+                    conn.commit()
+
+                    analysis_row = web_server.list_analysis_symbols(conn)[0]
+                    self.assertEqual(analysis_row["core_bullish_confidence"], 8.0)
+                    self.assertEqual(analysis_row["core_bearish_confidence"], 6.0)
+                    self.assertEqual(analysis_row["core_confidence_diff"], 2.0)
+                    self.assertEqual(analysis_row["potential_bullish_confidence"], 4.0)
+                    self.assertEqual(analysis_row["potential_bearish_confidence"], 3.0)
+                    self.assertEqual(analysis_row["potential_confidence_diff"], 1.0)
+                    self.assertIn("confidence_diff", analysis_row)
+
+                    detail = web_server.get_analysis_detail(conn, "NVDA")
+                    version = detail["version"]
+                    self.assertEqual(version["core_confidence_diff"], 2.0)
+                    self.assertEqual(version["potential_confidence_diff"], 1.0)
+
+                    merged = web_server.merge_positions_with_latest_analysis(
+                        [{"symbol": "NVDA", "position": 1}],
+                        [analysis_row],
+                    )[0]
+                    self.assertEqual(merged["core_confidence_diff"], 2.0)
+                    self.assertEqual(merged["potential_confidence_diff"], 1.0)
+                finally:
+                    conn.close()
+
+    def test_old_key_variables_without_driver_category_are_treated_as_core_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = "2026-05-01T00:00:00+00:00"
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("MSFT", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'MSFT'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'MSFT', 'Microsoft', 100, 120, 4, 20, 6, 'assume', 'model', 'summary', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_version_key_variables (
+                            analysis_version_id, variable_text, variable_type, confidence, importance, created_at
+                        ) VALUES (?, 'Legacy demand', 'Bullish', 7.0, 2.0, ?)
+                        """,
+                        (version_id, now),
+                    )
+                    conn.commit()
+
+                    analysis_row = web_server.list_analysis_symbols(conn)[0]
+                    self.assertEqual(analysis_row["core_bullish_confidence"], 7.0)
+                    self.assertIsNone(analysis_row["potential_bullish_confidence"])
+                    self.assertIsNone(analysis_row["potential_confidence_diff"])
+                finally:
+                    conn.close()
+
 
 class RecentEventAlertEnhancementTests(unittest.TestCase):
     def _seed_analysis(self, conn, symbol='NVDA', created_at='2026-03-01T00:00:00+00:00'):

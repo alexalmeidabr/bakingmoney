@@ -158,6 +158,10 @@ DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
     SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN: 35.0,
 }
 
+CORE_DRIVER_BACKEND_PROBABILITY_WEIGHT = 1.0
+POTENTIAL_DRIVER_BACKEND_PROBABILITY_MAX_WEIGHT = 0.25
+POTENTIAL_DRIVER_BACKEND_PROBABILITY_CONFIDENCE_FLOOR = 3.0
+
 DEFAULT_RATING_SETTINGS = {
     RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD: 5.0,
     RATING_SETTING_STRONG_BUY_MIN_UPSIDE: 50.0,
@@ -364,16 +368,18 @@ When reviewing company earnings releases, management commentary, and shareholder
 
 The key variables are the primary foundation for the scenario analysis. Build the Bear, Base, and Bull scenarios mainly from the highest-importance and highest-confidence key variables, and ensure that the scenario assumptions, price ranges, and probabilities are directly driven by how those variables could evolve over the next 5 years.
 
-Key variable category interpretation:
+Core vs Potential Driver scenario treatment:
 - Key variables may include driver_category values of Core Driver or Potential Driver.
 - Core Drivers are tied to the existing material business, current revenue/margin/cash-flow engine, current demand, current cost structure, current competitive position, or already proven/material segments.
 - Potential Drivers are tied to emerging optionality, new initiatives, early-stage products, future markets, speculative technologies, new business lines, or not-yet-material drivers that could become material over five years but are not yet strongly proven.
-- Core Drivers should dominate the Base case and normal scenario probability framing.
-- Potential Drivers should mainly affect Bull/Bear optionality and scenario range unless confidence is already high.
-- Do not let low-confidence Potential Drivers dominate the Base case.
-- A high-importance Potential Driver may justify a wider Bull or Bear range, but not necessarily a high probability.
+- Core Drivers should dominate the Base case, normal execution assumptions, and the central business trajectory.
+- Potential Drivers should mainly affect Bull/Bear optionality and scenario range.
+- Do not let low-confidence Potential Drivers materially lift or reduce the Base case.
+- A Potential Driver may influence the Base case only when its confidence is high and evidence suggests it is becoming material to the business.
+- High-importance Potential Drivers may justify a wider Bull or Bear range, but they should not automatically imply a high probability.
 - If Potential Drivers are bullish but low confidence, reflect them mainly in the Bull case, not in the Base case.
 - If Potential Drivers are bearish but low confidence, reflect them mainly as downside/tail risk, not as the central Base case.
+- If a Potential Driver becomes credible and material enough to dominate the Base case, treat that as evidence that it may no longer be merely optionality.
 - Do not ignore Potential Drivers, but distinguish clearly between currently proven business drivers and speculative optionality.
 
 Valuation discipline:
@@ -1372,34 +1378,116 @@ def scenario_probabilities_from_scenarios(scenarios):
     return normalize_probabilities(mapping)
 
 
-def compute_backend_probabilities(key_variables, base_max, base_min):
-    bull_score = 0.0
-    bear_score = 0.0
+def _safe_probability_number(value, default=0.0):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _key_variable_type_for_probability(item):
+    return item.get("variable_type") or item.get("type")
+
+
+def calculate_effective_potential_driver_probability_weight(
+    key_variables,
+    max_weight=POTENTIAL_DRIVER_BACKEND_PROBABILITY_MAX_WEIGHT,
+    confidence_floor=POTENTIAL_DRIVER_BACKEND_PROBABILITY_CONFIDENCE_FLOOR,
+):
+    potential_confidences = []
+    potential_importances = []
     for item in key_variables or []:
-        try:
-            confidence = float(item.get("confidence", 0.0))
-            importance = float(item.get("importance", 0.0))
-        except (TypeError, ValueError):
+        if safe_driver_category(item.get("driver_category")) != "Potential Driver":
             continue
+        potential_confidences.append(_safe_probability_number(item.get("confidence")))
+        potential_importances.append(_safe_probability_number(item.get("importance")))
+
+    if not potential_confidences:
+        return {
+            "effective_potential_driver_probability_weight": 0.0,
+            "median_potential_confidence": None,
+            "median_potential_importance": None,
+        }
+
+    median_confidence = statistics.median(potential_confidences)
+    median_importance = statistics.median(potential_importances)
+    if median_confidence < confidence_floor:
+        effective_weight = 0.0
+    else:
+        effective_weight = float(max_weight) * (median_confidence / 10.0) * (median_importance / 10.0)
+    effective_weight = max(0.0, min(float(max_weight), effective_weight))
+    return {
+        "effective_potential_driver_probability_weight": effective_weight,
+        "median_potential_confidence": median_confidence,
+        "median_potential_importance": median_importance,
+    }
+
+
+def compute_backend_probability_details(key_variables, base_max, base_min):
+    weight_meta = calculate_effective_potential_driver_probability_weight(key_variables)
+    potential_weight = weight_meta["effective_potential_driver_probability_weight"]
+    core_bull_score = 0.0
+    core_bear_score = 0.0
+    potential_bull_raw_score = 0.0
+    potential_bear_raw_score = 0.0
+
+    for item in key_variables or []:
+        confidence = _safe_probability_number(item.get("confidence"))
+        importance = _safe_probability_number(item.get("importance"))
         score = confidence * importance
-        if item.get("variable_type") == "Bullish":
-            bull_score += score
-        elif item.get("variable_type") == "Bearish":
-            bear_score += score
+        variable_type = _key_variable_type_for_probability(item)
+        category = safe_driver_category(item.get("driver_category"))
+        if category == "Potential Driver":
+            if variable_type == "Bullish":
+                potential_bull_raw_score += score
+            elif variable_type == "Bearish":
+                potential_bear_raw_score += score
+        elif variable_type == "Bullish":
+            core_bull_score += score * CORE_DRIVER_BACKEND_PROBABILITY_WEIGHT
+        elif variable_type == "Bearish":
+            core_bear_score += score * CORE_DRIVER_BACKEND_PROBABILITY_WEIGHT
+
+    potential_bull_weighted_score = potential_bull_raw_score * potential_weight
+    potential_bear_weighted_score = potential_bear_raw_score * potential_weight
+    bull_score = core_bull_score + potential_bull_weighted_score
+    bear_score = core_bear_score + potential_bear_weighted_score
 
     total = bull_score + bear_score
     if total <= 0:
-        return {"Bear": 20.0, "Base": 60.0, "Bull": 20.0}
+        probabilities = {"Bear": 20.0, "Base": 60.0, "Bull": 20.0}
+    else:
+        bull_share = bull_score / total
+        bear_share = bear_score / total
+        imbalance = abs(bull_share - bear_share)
+        base = float(base_max) - imbalance * (float(base_max) - float(base_min))
+        base = max(0.0, min(100.0, base))
+        remaining = max(0.0, 100.0 - base)
+        bull = remaining * bull_share
+        bear = remaining * bear_share
+        probabilities = normalize_probabilities({"Bear": bear, "Base": base, "Bull": bull})
 
-    bull_share = bull_score / total
-    bear_share = bear_score / total
-    imbalance = abs(bull_share - bear_share)
-    base = float(base_max) - imbalance * (float(base_max) - float(base_min))
-    base = max(0.0, min(100.0, base))
-    remaining = max(0.0, 100.0 - base)
-    bull = remaining * bull_share
-    bear = remaining * bear_share
-    return normalize_probabilities({"Bear": bear, "Base": base, "Bull": bull})
+    return {
+        "probabilities": probabilities,
+        "meta": {
+            **weight_meta,
+            "core_driver_backend_probability_weight": CORE_DRIVER_BACKEND_PROBABILITY_WEIGHT,
+            "potential_driver_backend_probability_max_weight": POTENTIAL_DRIVER_BACKEND_PROBABILITY_MAX_WEIGHT,
+            "potential_driver_backend_probability_confidence_floor": POTENTIAL_DRIVER_BACKEND_PROBABILITY_CONFIDENCE_FLOOR,
+            "core_bull_score": core_bull_score,
+            "core_bear_score": core_bear_score,
+            "potential_bull_raw_score": potential_bull_raw_score,
+            "potential_bear_raw_score": potential_bear_raw_score,
+            "potential_bull_weighted_score": potential_bull_weighted_score,
+            "potential_bear_weighted_score": potential_bear_weighted_score,
+            "bull_score": bull_score,
+            "bear_score": bear_score,
+        },
+    }
+
+
+def compute_backend_probabilities(key_variables, base_max, base_min):
+    return compute_backend_probability_details(key_variables, base_max, base_min)["probabilities"]
 
 
 def blend_probabilities(ai_probs, backend_probs, ai_weight, backend_weight):
@@ -2996,12 +3084,14 @@ def request_ai_analysis(symbol, current_price=None):
     finally:
         conn.close()
     ai_probs = scenario_probabilities_from_scenarios(parsed["scenarios"])
-    backend_probs = compute_backend_probabilities(
+    backend_probability_details = compute_backend_probability_details(
         step2["key_variables"],
         probability_settings["backend_base_max_probability"],
         probability_settings["backend_base_min_probability"],
     )
+    backend_probs = backend_probability_details["probabilities"]
     probability_meta = choose_final_probabilities(ai_probs, backend_probs, probability_settings)
+    probability_meta["backend_probability_meta"] = backend_probability_details["meta"]
     parsed["scenarios"] = apply_final_probabilities_to_scenarios(
         parsed["scenarios"],
         probability_meta["final_scenario_probabilities"],
@@ -3951,6 +4041,7 @@ def _version_payload(conn, version_row):
         "backend_scenario_probabilities": probability_meta.get("backend_scenario_probabilities"),
         "final_scenario_probabilities": probability_meta.get("final_scenario_probabilities"),
         "probability_source_mode_used": probability_meta.get("probability_source_mode_used"),
+        "backend_probability_meta": probability_meta.get("backend_probability_meta"),
         "scenarios": [dict(s) for s in scenarios],
         "key_variables": [dict(v) for v in key_variables],
         "scenario_passes": [
@@ -4405,12 +4496,14 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
 
     probability_settings = get_scenario_probability_settings(conn)
     ai_probs = scenario_probabilities_from_scenarios(parsed["scenarios"])
-    backend_probs = compute_backend_probabilities(
+    backend_probability_details = compute_backend_probability_details(
         key_variables,
         probability_settings["backend_base_max_probability"],
         probability_settings["backend_base_min_probability"],
     )
+    backend_probs = backend_probability_details["probabilities"]
     probability_meta = choose_final_probabilities(ai_probs, backend_probs, probability_settings)
+    probability_meta["backend_probability_meta"] = backend_probability_details["meta"]
     parsed["scenarios"] = apply_final_probabilities_to_scenarios(
         parsed["scenarios"],
         probability_meta["final_scenario_probabilities"],
@@ -4524,12 +4617,14 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
 
     probability_settings = get_scenario_probability_settings(conn)
     ai_probs = scenario_probabilities_from_scenarios(parsed["scenarios"])
-    backend_probs = compute_backend_probabilities(
+    backend_probability_details = compute_backend_probability_details(
         key_variables,
         probability_settings["backend_base_max_probability"],
         probability_settings["backend_base_min_probability"],
     )
+    backend_probs = backend_probability_details["probabilities"]
     probability_meta = choose_final_probabilities(ai_probs, backend_probs, probability_settings)
+    probability_meta["backend_probability_meta"] = backend_probability_details["meta"]
     parsed["scenarios"] = apply_final_probabilities_to_scenarios(
         parsed["scenarios"],
         probability_meta["final_scenario_probabilities"],

@@ -576,6 +576,87 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(merged[0]["currency"], "USD")
 
 
+class ScenarioProbabilityDriverWeightTests(unittest.TestCase):
+    def test_effective_potential_driver_weight_formula_and_cap(self):
+        weight_meta = web_server.calculate_effective_potential_driver_probability_weight([
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 5, "importance": 8},
+        ])
+        self.assertAlmostEqual(weight_meta["effective_potential_driver_probability_weight"], 0.10)
+        self.assertEqual(weight_meta["median_potential_confidence"], 5)
+        self.assertEqual(weight_meta["median_potential_importance"], 8)
+
+        capped = web_server.calculate_effective_potential_driver_probability_weight([
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 10, "importance": 10},
+        ])
+        self.assertAlmostEqual(capped["effective_potential_driver_probability_weight"], 0.25)
+
+        low_confidence = web_server.calculate_effective_potential_driver_probability_weight([
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 2.9, "importance": 10},
+        ])
+        self.assertEqual(low_confidence["effective_potential_driver_probability_weight"], 0.0)
+
+    def test_backend_probabilities_with_only_core_match_legacy_shape(self):
+        variables = [
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+        ]
+        details = web_server.compute_backend_probability_details(variables, 60.0, 35.0)
+        self.assertEqual(details["meta"]["effective_potential_driver_probability_weight"], 0.0)
+        self.assertEqual(details["meta"]["core_bull_score"], 80.0)
+        self.assertEqual(details["meta"]["core_bear_score"], 40.0)
+        self.assertAlmostEqual(details["probabilities"]["Bull"], 32.22)
+        self.assertAlmostEqual(details["probabilities"]["Bear"], 16.11)
+        self.assertAlmostEqual(details["probabilities"]["Base"], 51.67)
+
+    def test_missing_category_defaults_to_core_for_backend_probabilities(self):
+        categorized = web_server.compute_backend_probabilities([
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+        ], 60.0, 35.0)
+        legacy = web_server.compute_backend_probabilities([
+            {"variable_type": "Bullish", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Invalid", "confidence": 4, "importance": 10},
+        ], 60.0, 35.0)
+        self.assertEqual(legacy, categorized)
+
+    def test_potential_drivers_apply_adaptive_backend_weight(self):
+        details = web_server.compute_backend_probability_details([
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 5, "importance": 8},
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 5, "importance": 8},
+        ], 60.0, 35.0)
+        self.assertAlmostEqual(details["meta"]["effective_potential_driver_probability_weight"], 0.10)
+        self.assertAlmostEqual(details["meta"]["potential_bull_raw_score"], 80.0)
+        self.assertAlmostEqual(details["meta"]["potential_bull_weighted_score"], 8.0)
+        self.assertAlmostEqual(details["meta"]["bull_score"], 88.0)
+        core_only = web_server.compute_backend_probabilities([
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+        ], 60.0, 35.0)
+        self.assertGreater(details["probabilities"]["Bull"], core_only["Bull"])
+
+    def test_hybrid_mode_blends_ai_with_weighted_backend_probabilities(self):
+        backend = web_server.compute_backend_probabilities([
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+        ], 60.0, 35.0)
+        result = web_server.choose_final_probabilities(
+            {"Bear": 30.0, "Base": 40.0, "Bull": 30.0},
+            backend,
+            {"probability_source_mode": "hybrid", "hybrid_ai_weight": 0.7, "hybrid_backend_weight": 0.3},
+        )
+        expected = web_server.blend_probabilities({"Bear": 30.0, "Base": 40.0, "Bull": 30.0}, backend, 0.7, 0.3)
+        self.assertEqual(result["final_scenario_probabilities"], expected)
+
+    def test_default_build_scenarios_prompt_contains_phase3_guidance(self):
+        prompt = web_server.DEFAULT_PROMPT_SCENARIOS
+        self.assertIn("Core vs Potential Driver scenario treatment:", prompt)
+        self.assertIn("Core Drivers should dominate the Base case, normal execution assumptions, and the central business trajectory.", prompt)
+        self.assertIn("Potential Drivers should mainly affect Bull/Bear optionality and scenario range.", prompt)
+        self.assertIn("assumptions should be concise and reflect the 5-year business thesis behind the scenarios", prompt)
+
+
 class KeyVariableDriverCategoryTests(unittest.TestCase):
     def test_save_key_variable_edits_preserves_driver_category_and_defaults_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

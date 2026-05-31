@@ -120,6 +120,7 @@ const configRatingBuyMinBullishConfidenceEl = document.getElementById('config-ra
 const configRatingSpeculativeBuyMinUpsideEl = document.getElementById('config-rating-speculative-buy-min-upside');
 const configRatingSpeculativeBuyMinDiffEl = document.getElementById('config-rating-speculative-buy-min-diff');
 const configRatingSpeculativeBuyMinBullishConfidenceEl = document.getElementById('config-rating-speculative-buy-min-bullish-confidence');
+const configRatingSpeculativeBuyMinCoreDiffFloorEl = document.getElementById('config-rating-speculative-buy-min-core-diff-floor');
 const configRatingStrongSellMaxUpsideEl = document.getElementById('config-rating-strong-sell-max-upside');
 const configRatingStrongSellMaxDiffEl = document.getElementById('config-rating-strong-sell-max-diff');
 const configRatingStrongSellMinBearishConfidenceEl = document.getElementById('config-rating-strong-sell-min-bearish-confidence');
@@ -239,6 +240,7 @@ const DEFAULT_RATING_SETTINGS = {
   speculative_buy_min_upside: 75.0,
   speculative_buy_min_diff: 0.1,
   speculative_buy_min_bullish_confidence: 4.5,
+  speculative_buy_min_core_diff_floor: -0.5,
   strong_sell_max_upside: 0.0,
   strong_sell_max_diff: -1.5,
   strong_sell_min_bearish_confidence: 7.0,
@@ -2606,6 +2608,7 @@ function getRatingSettingsFromForm() {
     speculative_buy_min_upside: Number(configRatingSpeculativeBuyMinUpsideEl.value),
     speculative_buy_min_diff: Number(configRatingSpeculativeBuyMinDiffEl.value),
     speculative_buy_min_bullish_confidence: Number(configRatingSpeculativeBuyMinBullishConfidenceEl.value),
+    speculative_buy_min_core_diff_floor: Number(configRatingSpeculativeBuyMinCoreDiffFloorEl.value),
     strong_sell_max_upside: Number(configRatingStrongSellMaxUpsideEl.value),
     strong_sell_max_diff: Number(configRatingStrongSellMaxDiffEl.value),
     strong_sell_min_bearish_confidence: Number(configRatingStrongSellMinBearishConfidenceEl.value),
@@ -2627,6 +2630,7 @@ function applyRatingSettingsToForm(settings) {
   configRatingSpeculativeBuyMinUpsideEl.value = effective.speculative_buy_min_upside;
   configRatingSpeculativeBuyMinDiffEl.value = effective.speculative_buy_min_diff;
   configRatingSpeculativeBuyMinBullishConfidenceEl.value = effective.speculative_buy_min_bullish_confidence;
+  configRatingSpeculativeBuyMinCoreDiffFloorEl.value = effective.speculative_buy_min_core_diff_floor;
   configRatingStrongSellMaxUpsideEl.value = effective.strong_sell_max_upside;
   configRatingStrongSellMaxDiffEl.value = effective.strong_sell_max_diff;
   configRatingStrongSellMinBearishConfidenceEl.value = effective.strong_sell_min_bearish_confidence;

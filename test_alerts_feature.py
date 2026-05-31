@@ -576,6 +576,129 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(merged[0]["currency"], "USD")
 
 
+class RatingCorePotentialConfidenceTests(unittest.TestCase):
+    def _settings(self):
+        return dict(web_server.DEFAULT_RATING_SETTINGS)
+
+    def test_strong_buy_and_buy_use_core_confidence(self):
+        settings = self._settings()
+        rating, _ = web_server.calculate_rating(
+            65,
+            bullish_confidence=2.0,
+            bearish_confidence=2.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 7.5, "core_bearish_confidence": 5.7},
+        )
+        self.assertEqual(rating, "Strong Buy")
+
+        rating, _ = web_server.calculate_rating(
+            35,
+            bullish_confidence=8.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 6.0, "core_bearish_confidence": 5.2},
+        )
+        self.assertEqual(rating, "Buy")
+
+        rating, _ = web_server.calculate_rating(
+            35,
+            bullish_confidence=8.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 4.0, "core_bearish_confidence": 4.0},
+        )
+        self.assertEqual(rating, "Hold")
+
+    def test_sell_ratings_use_core_confidence(self):
+        settings = self._settings()
+        rating, _ = web_server.calculate_rating(
+            -5,
+            bullish_confidence=8.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 4.0, "core_bearish_confidence": 7.0},
+        )
+        self.assertEqual(rating, "Strong Sell")
+
+        rating, _ = web_server.calculate_rating(
+            5,
+            bullish_confidence=8.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 5.2, "core_bearish_confidence": 6.0},
+        )
+        self.assertEqual(rating, "Sell")
+
+    def test_speculative_buy_core_and_potential_paths_with_core_floor(self):
+        settings = self._settings()
+        rating, _ = web_server.calculate_rating(
+            90,
+            bullish_confidence=4.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 4.8, "core_bearish_confidence": 4.6},
+        )
+        self.assertEqual(rating, "Speculative Buy")
+
+        rating, _ = web_server.calculate_rating(
+            110,
+            bullish_confidence=4.0,
+            bearish_confidence=4.2,
+            rating_settings=settings,
+            confidence_context={
+                "core_bullish_confidence": 4.0,
+                "core_bearish_confidence": 4.2,
+                "potential_bullish_confidence": 5.5,
+                "potential_bearish_confidence": 4.3,
+            },
+        )
+        self.assertEqual(rating, "Speculative Buy")
+
+        rating, _ = web_server.calculate_rating(
+            110,
+            bullish_confidence=4.0,
+            bearish_confidence=5.2,
+            rating_settings=settings,
+            confidence_context={
+                "core_bullish_confidence": 4.0,
+                "core_bearish_confidence": 5.2,
+                "potential_bullish_confidence": 5.5,
+                "potential_bearish_confidence": 4.3,
+            },
+        )
+        self.assertEqual(rating, "Hold")
+
+    def test_speculative_buy_guardrail_and_combined_fallback(self):
+        settings = self._settings()
+        rating, _ = web_server.calculate_rating(
+            100,
+            bullish_confidence=1.0,
+            bearish_confidence=1.0,
+            rating_settings=settings,
+            confidence_context={
+                "core_bullish_confidence": 1.0,
+                "core_bearish_confidence": 1.0,
+                "potential_bullish_confidence": 4.6,
+                "potential_bearish_confidence": 4.4,
+            },
+        )
+        self.assertEqual(rating, "Speculative Buy")
+
+        rating, _ = web_server.calculate_rating(35, 6.0, 5.2, settings)
+        self.assertEqual(rating, "Buy")
+
+    def test_speculative_buy_core_floor_default_and_filter_ui(self):
+        self.assertEqual(
+            web_server.DEFAULT_RATING_SETTINGS[web_server.RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR],
+            -0.5,
+        )
+        html = open(os.path.join(os.path.dirname(__file__), "static", "index.html"), encoding="utf-8").read()
+        js = open(os.path.join(os.path.dirname(__file__), "static", "app.js"), encoding="utf-8").read()
+        self.assertIn("config-rating-speculative-buy-min-core-diff-floor", html)
+        self.assertIn('value="speculative_buy"', html)
+        self.assertIn("Speculative Buy", js)
+
+
 class ScenarioProbabilityDriverWeightTests(unittest.TestCase):
     def test_effective_potential_driver_weight_formula_and_cap(self):
         weight_meta = web_server.calculate_effective_potential_driver_probability_weight([

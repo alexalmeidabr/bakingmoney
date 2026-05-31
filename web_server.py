@@ -137,6 +137,7 @@ RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE = "buy_min_bullish_confidence"
 RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE = "speculative_buy_min_upside"
 RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF = "speculative_buy_min_diff"
 RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE = "speculative_buy_min_bullish_confidence"
+RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR = "speculative_buy_min_core_diff_floor"
 RATING_SETTING_STRONG_SELL_MAX_UPSIDE = "strong_sell_max_upside"
 RATING_SETTING_STRONG_SELL_MAX_DIFF = "strong_sell_max_diff"
 RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE = "strong_sell_min_bearish_confidence"
@@ -173,6 +174,7 @@ DEFAULT_RATING_SETTINGS = {
     RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE: 75.0,
     RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF: 0.1,
     RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE: 4.5,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR: -0.5,
     RATING_SETTING_STRONG_SELL_MAX_UPSIDE: 0.0,
     RATING_SETTING_STRONG_SELL_MAX_DIFF: -1.5,
     RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE: 7.0,
@@ -1287,52 +1289,103 @@ def _coerce_score(value):
     return number
 
 
-def calculate_rating(upside, bullish_confidence, bearish_confidence, rating_settings):
+def _score_or_none(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _confidence_pair_or_fallback(primary_bullish, primary_bearish, fallback_bullish, fallback_bearish):
+    bullish = _score_or_none(primary_bullish)
+    bearish = _score_or_none(primary_bearish)
+    if bullish is not None and bearish is not None:
+        return bullish, bearish, bullish - bearish
+
+    fallback_bullish_value = _score_or_none(fallback_bullish)
+    fallback_bearish_value = _score_or_none(fallback_bearish)
+    if fallback_bullish_value is None:
+        fallback_bullish_value = 0.0
+    if fallback_bearish_value is None:
+        fallback_bearish_value = 0.0
+    return fallback_bullish_value, fallback_bearish_value, fallback_bullish_value - fallback_bearish_value
+
+
+def calculate_rating(upside, bullish_confidence, bearish_confidence, rating_settings, confidence_context=None):
+    confidence_context = confidence_context or {}
     upside_value = _coerce_score(upside)
-    bullish_value = _coerce_score(bullish_confidence)
-    bearish_value = _coerce_score(bearish_confidence)
-    confidence_diff = bullish_value - bearish_value
-    max_confidence = max(bullish_value, bearish_value)
+
+    combined_bullish_value = _coerce_score(bullish_confidence)
+    combined_bearish_value = _coerce_score(bearish_confidence)
+    combined_confidence_diff = combined_bullish_value - combined_bearish_value
+
+    core_bullish_value, core_bearish_value, core_confidence_diff = _confidence_pair_or_fallback(
+        confidence_context.get("core_bullish_confidence"),
+        confidence_context.get("core_bearish_confidence"),
+        bullish_confidence,
+        bearish_confidence,
+    )
+    potential_bullish_value = _score_or_none(confidence_context.get("potential_bullish_confidence"))
+    potential_bearish_value = _score_or_none(confidence_context.get("potential_bearish_confidence"))
+    potential_confidence_diff = None
+    if potential_bullish_value is not None and potential_bearish_value is not None:
+        potential_confidence_diff = potential_bullish_value - potential_bearish_value
 
     if (
         upside_value >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_UPSIDE]
-        and confidence_diff >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_DIFF]
-        and bullish_value >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE]
+        and core_confidence_diff >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_DIFF]
+        and core_bullish_value >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE]
     ):
-        return "Strong Buy", confidence_diff
+        return "Strong Buy", combined_confidence_diff
 
     if (
         upside_value >= rating_settings[RATING_SETTING_BUY_MIN_UPSIDE]
-        and confidence_diff >= rating_settings[RATING_SETTING_BUY_MIN_DIFF]
-        and bullish_value >= rating_settings[RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE]
+        and core_confidence_diff >= rating_settings[RATING_SETTING_BUY_MIN_DIFF]
+        and core_bullish_value >= rating_settings[RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE]
     ):
-        return "Buy", confidence_diff
+        return "Buy", combined_confidence_diff
 
     if (
         upside_value <= rating_settings[RATING_SETTING_STRONG_SELL_MAX_UPSIDE]
-        and confidence_diff <= rating_settings[RATING_SETTING_STRONG_SELL_MAX_DIFF]
-        and bearish_value >= rating_settings[RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE]
+        and core_confidence_diff <= rating_settings[RATING_SETTING_STRONG_SELL_MAX_DIFF]
+        and core_bearish_value >= rating_settings[RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE]
     ):
-        return "Strong Sell", confidence_diff
+        return "Strong Sell", combined_confidence_diff
 
     if (
         upside_value <= rating_settings[RATING_SETTING_SELL_MAX_UPSIDE]
-        and confidence_diff <= rating_settings[RATING_SETTING_SELL_MAX_DIFF]
-        and bearish_value >= rating_settings[RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE]
+        and core_confidence_diff <= rating_settings[RATING_SETTING_SELL_MAX_DIFF]
+        and core_bearish_value >= rating_settings[RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE]
     ):
-        return "Sell", confidence_diff
+        return "Sell", combined_confidence_diff
 
+    speculative_core_path = (
+        core_confidence_diff >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF]
+        and core_bullish_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE]
+    )
+    speculative_potential_path = (
+        potential_confidence_diff is not None
+        and potential_bullish_value is not None
+        and potential_confidence_diff >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF]
+        and potential_bullish_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE]
+    )
     if (
         upside_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE]
-        and confidence_diff >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF]
-        and bullish_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE]
+        and core_confidence_diff >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR]
+        and (speculative_core_path or speculative_potential_path)
     ):
-        return "Speculative Buy", confidence_diff
+        return "Speculative Buy", combined_confidence_diff
 
+    # Phase 4: the low-conviction guardrail intentionally remains after the
+    # Speculative Buy check so it cannot short-circuit valid speculative cases.
+    max_confidence = max(core_bullish_value, core_bearish_value, combined_bullish_value, combined_bearish_value)
     if max_confidence < rating_settings[RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD]:
-        return "Hold", confidence_diff
+        return "Hold", combined_confidence_diff
 
-    return "Hold", confidence_diff
+    return "Hold", combined_confidence_diff
 
 
 def get_rating_settings(conn):
@@ -3550,15 +3603,16 @@ def list_analysis_symbols(conn):
         item = dict(row)
         if (item.get("scenario_pass_count") or 0) <= 0:
             item["scenario_pass_count"] = 1
+        item["core_confidence_diff"] = _diff_or_none(item.get("core_bullish_confidence"), item.get("core_bearish_confidence"))
+        item["potential_confidence_diff"] = _diff_or_none(item.get("potential_bullish_confidence"), item.get("potential_bearish_confidence"))
         rating, confidence_diff = calculate_rating(
             item.get("upside"),
             item.get("bullish_confidence"),
             item.get("bearish_confidence"),
             rating_settings,
+            confidence_context=item,
         )
         item["confidence_diff"] = confidence_diff
-        item["core_confidence_diff"] = _diff_or_none(item.get("core_bullish_confidence"), item.get("core_bearish_confidence"))
-        item["potential_confidence_diff"] = _diff_or_none(item.get("potential_bullish_confidence"), item.get("potential_bearish_confidence"))
         item["rating"] = rating
         item["latest_release_date"] = latest_release_dates.get(normalize_symbol(item.get("symbol")))
         scenario_updated = _parse_iso_datetime(item.get("updated_at"))
@@ -4007,7 +4061,13 @@ def _version_payload(conn, version_row):
         ]
 
     rating_settings = get_rating_settings(conn)
-    rating, confidence_diff = calculate_rating(version_row["upside"], bullish_confidence, bearish_confidence, rating_settings)
+    rating, confidence_diff = calculate_rating(
+        version_row["upside"],
+        bullish_confidence,
+        bearish_confidence,
+        rating_settings,
+        confidence_context=confidence_breakdown,
+    )
 
     probability_meta = raw_payload.get("probability_meta") if isinstance(raw_payload.get("probability_meta"), dict) else {}
 

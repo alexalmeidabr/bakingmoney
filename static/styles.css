@@ -426,6 +426,31 @@ th.sortable[data-sort-direction='desc']::after {
   width: 100%;
 }
 
+.key-variable-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.key-variable-tab {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.92rem;
+  padding: 8px 12px;
+}
+
+.key-variable-tab.active {
+  background: #1d4ed8;
+  color: #fff;
+  border-color: #1d4ed8;
+}
+
+#analysis-variables-empty {
+  margin: 0 0 12px;
+}
+
 #analysis-variables-table {
   min-width: 0;
   table-layout: fixed;

@@ -149,6 +149,11 @@
                     <button id="analysis-cancel-variables-btn" class="hidden">Cancel</button>
                   </div>
                 </div>
+                <div id="analysis-variable-tabs" class="key-variable-tabs" role="tablist" aria-label="Key variable driver category tabs">
+                  <button type="button" class="key-variable-tab analysis-variable-tab active" data-driver-category="Core Driver" role="tab" aria-selected="true">Core Drivers</button>
+                  <button type="button" class="key-variable-tab analysis-variable-tab" data-driver-category="Potential Driver" role="tab" aria-selected="false">Potential Drivers</button>
+                </div>
+                <p id="analysis-variables-empty" class="status hidden"></p>
                 <div class="table-wrap">
                   <table id="analysis-variables-table">
                     <thead>

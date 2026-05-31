@@ -40,6 +40,8 @@ const analysisDetailStatus = document.getElementById('analysis-detail-status');
 const analysisSummary = document.getElementById('analysis-summary');
 const analysisScenariosBody = document.querySelector('#analysis-scenarios-table tbody');
 const analysisVariablesBody = document.querySelector('#analysis-variables-table tbody');
+const analysisVariableTabButtons = document.querySelectorAll('.analysis-variable-tab');
+const analysisVariablesEmptyEl = document.getElementById('analysis-variables-empty');
 const analysisVersionBar = document.getElementById('analysis-version-bar');
 const analysisVersionMeta = document.getElementById('analysis-version-meta');
 const analysisVersionPrevBtn = document.getElementById('analysis-version-prev-btn');
@@ -202,6 +204,8 @@ let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let analysisDetailOrigin = 'analysis';
 let isEditingVariables = false;
+let activeAnalysisVariableCategory = 'Core Driver';
+let editableAnalysisVariables = null;
 let isEditingBusinessModel = false;
 let isEditingBusinessSummary = false;
 let currentAlertDetailId = null;
@@ -937,15 +941,77 @@ function renderAnalysisDetail() {
   analysisScenarioInfoText.textContent = `Prompt used to build scenarios:\n${item.scenario_prompt || 'N/A'}\n\nScenario build passes:\n${passLines.length ? passLines.join('\n') : 'No pass details available.'}`;
 }
 
-function renderVariablesTable() {
+function getCurrentAnalysisKeyVariables() {
   const hasSavedEditsForVersion = analysisDetailState.saved_key_variable_edits?.based_on_version_id === analysisDetailState.version.id;
-  const variables = hasSavedEditsForVersion
-    ? analysisDetailState.saved_key_variable_edits.key_variables
-    : analysisDetailState.version.key_variables;
+  return hasSavedEditsForVersion
+    ? analysisDetailState.saved_key_variable_edits.key_variables || []
+    : analysisDetailState.version.key_variables || [];
+}
 
+function normalizeAnalysisVariableForUi(variable = {}) {
+  return {
+    variable_text: variable.variable_text || '',
+    variable_type: variable.variable_type === 'Bearish' ? 'Bearish' : 'Bullish',
+    driver_category: normalizeDriverCategory(variable.driver_category),
+    confidence: Number.isFinite(Number(variable.confidence)) ? Number(variable.confidence) : 0,
+    importance: Number.isFinite(Number(variable.importance)) ? Number(variable.importance) : 0,
+  };
+}
+
+function getAnalysisVariableEditDraft() {
+  if (!editableAnalysisVariables) {
+    editableAnalysisVariables = getCurrentAnalysisKeyVariables().map(normalizeAnalysisVariableForUi);
+  }
+  return editableAnalysisVariables;
+}
+
+function syncActiveAnalysisVariableRowsFromDom() {
+  if (!isEditingVariables || !editableAnalysisVariables) return;
+  analysisVariablesBody.querySelectorAll('tr[data-variable-index]').forEach((row) => {
+    const index = Number(row.dataset.variableIndex);
+    if (!Number.isInteger(index) || !editableAnalysisVariables[index]) return;
+    editableAnalysisVariables[index] = {
+      variable_text: row.querySelector('.var-text')?.value?.trim() || '',
+      variable_type: row.querySelector('.var-type')?.value === 'Bearish' ? 'Bearish' : 'Bullish',
+      driver_category: normalizeDriverCategory(row.querySelector('.var-driver-category')?.value),
+      confidence: Number(row.querySelector('.var-confidence')?.value),
+      importance: Number(row.querySelector('.var-importance')?.value),
+    };
+  });
+}
+
+function updateAnalysisVariableTabs(variables) {
+  const counts = variables.reduce((acc, variable) => {
+    const category = normalizeDriverCategory(variable.driver_category);
+    acc[category] = (acc[category] || 0) + 1;
+    return acc;
+  }, { 'Core Driver': 0, 'Potential Driver': 0 });
+
+  analysisVariableTabButtons.forEach((button) => {
+    const category = normalizeDriverCategory(button.dataset.driverCategory);
+    const isActive = category === activeAnalysisVariableCategory;
+    const label = category === 'Potential Driver' ? 'Potential Drivers' : 'Core Drivers';
+    button.textContent = `${label} (${counts[category] || 0})`;
+    button.classList.toggle('active', isActive);
+    button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+}
+
+function renderVariablesTable() {
+  const variables = isEditingVariables
+    ? getAnalysisVariableEditDraft()
+    : getCurrentAnalysisKeyVariables().map(normalizeAnalysisVariableForUi);
+  const activeCategory = normalizeDriverCategory(activeAnalysisVariableCategory);
+  activeAnalysisVariableCategory = activeCategory;
+  const visibleVariables = variables
+    .map((variable, index) => ({ variable: normalizeAnalysisVariableForUi(variable), index }))
+    .filter(({ variable }) => normalizeDriverCategory(variable.driver_category) === activeCategory);
+
+  updateAnalysisVariableTabs(variables);
   analysisVariablesBody.innerHTML = '';
-  variables.forEach((variable) => {
+  visibleVariables.forEach(({ variable, index }) => {
     const row = document.createElement('tr');
+    row.dataset.variableIndex = String(index);
     const variableType = variable.variable_type || 'Bullish';
     const driverCategory = normalizeDriverCategory(variable.driver_category);
     row.innerHTML = isEditingVariables
@@ -954,10 +1020,25 @@ function renderVariablesTable() {
     analysisVariablesBody.appendChild(row);
   });
 
+  if (analysisVariablesEmptyEl) {
+    const emptyLabel = activeCategory === 'Potential Driver' ? 'Potential Driver' : 'Core Driver';
+    analysisVariablesEmptyEl.textContent = `No ${emptyLabel} variables.`;
+    analysisVariablesEmptyEl.classList.toggle('hidden', visibleVariables.length > 0);
+  }
+
   if (isEditingVariables) {
     analysisVariablesBody.querySelectorAll('.var-delete-btn').forEach((button) => {
       button.addEventListener('click', () => {
-        button.closest('tr')?.remove();
+        syncActiveAnalysisVariableRowsFromDom();
+        const index = Number(button.closest('tr')?.dataset.variableIndex);
+        if (Number.isInteger(index)) editableAnalysisVariables.splice(index, 1);
+        renderVariablesTable();
+      });
+    });
+    analysisVariablesBody.querySelectorAll('.var-driver-category').forEach((select) => {
+      select.addEventListener('change', () => {
+        syncActiveAnalysisVariableRowsFromDom();
+        renderVariablesTable();
       });
     });
   }
@@ -996,6 +1077,8 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   if (analysisDetailOrigin === 'positions') showAnalysisDetailFromPositionsOrigin();
   updateAnalysisBackButton();
   isEditingVariables = false;
+  activeAnalysisVariableCategory = 'Core Driver';
+  editableAnalysisVariables = null;
   isEditingBusinessModel = false;
   isEditingBusinessSummary = false;
 
@@ -1016,13 +1099,8 @@ async function loadAnalysisDetail(symbol, versionId = null) {
 }
 
 function collectEditedVariables() {
-  return [...analysisVariablesBody.querySelectorAll('tr')].map((row, idx) => ({
-    variable_text: row.querySelector('.var-text')?.value?.trim() || '',
-    variable_type: row.querySelector('.var-type')?.value || analysisDetailState.version.key_variables[idx]?.variable_type || 'Bullish',
-    driver_category: normalizeDriverCategory(row.querySelector('.var-driver-category')?.value || analysisDetailState.version.key_variables[idx]?.driver_category),
-    confidence: Number(row.querySelector('.var-confidence')?.value),
-    importance: Number(row.querySelector('.var-importance')?.value),
-  }));
+  syncActiveAnalysisVariableRowsFromDom();
+  return getAnalysisVariableEditDraft().map(normalizeAnalysisVariableForUi);
 }
 
 async function saveEditedBusinessModel() {
@@ -1104,6 +1182,7 @@ async function saveEditedVariables() {
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save key variables'));
     analysisDetailState = payload.analysis;
     isEditingVariables = false;
+    editableAnalysisVariables = null;
     isEditingBusinessModel = false;
     isEditingBusinessSummary = false;
     renderAnalysisDetail();
@@ -2962,16 +3041,38 @@ analysisSummary.addEventListener('click', (event) => {
     cancelEditedBusinessSummary();
   }
 });
-analysisEditVariablesBtn.addEventListener('click', () => { isEditingVariables = true; renderVariablesTable(); });
+analysisVariableTabButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    if (isEditingVariables) syncActiveAnalysisVariableRowsFromDom();
+    activeAnalysisVariableCategory = normalizeDriverCategory(button.dataset.driverCategory);
+    renderVariablesTable();
+  });
+});
+analysisEditVariablesBtn.addEventListener('click', () => {
+  editableAnalysisVariables = getCurrentAnalysisKeyVariables().map(normalizeAnalysisVariableForUi);
+  isEditingVariables = true;
+  renderVariablesTable();
+});
 analysisAddVariableBtn.addEventListener('click', () => {
   if (!isEditingVariables) return;
-  const row = document.createElement('tr');
-  row.innerHTML = '<td><input class="var-text var-text-input" type="text" value=""></td><td><select class="var-type"><option value="Bullish" selected>Bullish</option><option value="Bearish">Bearish</option></select></td><td><select class="var-driver-category"><option value="Core Driver" selected>Core Driver</option><option value="Potential Driver">Potential Driver</option></select></td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="5"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="5"></td><td><button type="button" class="var-delete-btn remove-btn">Delete</button></td>';
-  analysisVariablesBody.appendChild(row);
-  row.querySelector('.var-delete-btn')?.addEventListener('click', () => row.remove());
-  row.querySelector('.var-text')?.focus();
+  syncActiveAnalysisVariableRowsFromDom();
+  const draft = getAnalysisVariableEditDraft();
+  const newIndex = draft.push({
+    variable_text: '',
+    variable_type: 'Bullish',
+    driver_category: normalizeDriverCategory(activeAnalysisVariableCategory),
+    confidence: 5,
+    importance: 5,
+  }) - 1;
+  renderVariablesTable();
+  const newRow = analysisVariablesBody.querySelector(`tr[data-variable-index="${newIndex}"]`);
+  newRow?.querySelector('.var-text')?.focus();
 });
-analysisCancelVariablesBtn.addEventListener('click', () => { isEditingVariables = false; renderVariablesTable(); });
+analysisCancelVariablesBtn.addEventListener('click', () => {
+  isEditingVariables = false;
+  editableAnalysisVariables = null;
+  renderVariablesTable();
+});
 analysisSaveVariablesBtn.addEventListener('click', saveEditedVariables);
 analysisRerunBtn.addEventListener('click', rerunScenarios);
 analysisVersionPrevBtn.addEventListener('click', () => {

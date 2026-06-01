@@ -1219,7 +1219,11 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="alert-detail-open-analysis-btn"', html)
         self.assertIn('id="alert-detail-edit-vars-btn"', html)
         self.assertIn('id="alert-detail-rerun-btn"', html)
-        self.assertIn('data-sort-key="confidence_diff" class="sortable">Confidence</th>', html)
+        self.assertIn('data-sort-key="core_confidence_diff" class="sortable">Confidence</th>', html)
+        self.assertIn('data-sort-key="potential_confidence_diff" class="sortable">Potential Confidence</th>', html)
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn('<td>${formatPotentialConfidenceDisplay(item)}</td>', js)
+        self.assertIn('const potentialConfidenceValue = formatPotentialConfidenceDisplay(position);', js)
         self.assertIn('data-sort-key="last_activity_at" class="sortable">Last Scenario/Event</th>', html)
         self.assertIn('data-sort-key="costBasis" class="sortable">Cost Value</th>', html)
         self.assertIn('id="tws-data-toggle"', html)
@@ -1250,7 +1254,8 @@ class AlertsUiStructureTests(unittest.TestCase):
             'data-sort-key="symbol" class="sortable">Symbol</th>',
             'data-sort-key="rating" class="sortable">Rating</th>',
             'data-sort-key="upside" class="sortable">Upside</th>',
-            'data-sort-key="confidence_diff" class="sortable">Confidence</th>',
+            'data-sort-key="core_confidence_diff" class="sortable">Confidence</th>',
+            'data-sort-key="potential_confidence_diff" class="sortable">Potential Confidence</th>',
             'data-sort-key="marketValue" class="sortable">Market Value</th>',
             'data-sort-key="costBasis" class="sortable">Cost Value</th>',
             'data-sort-key="unrealizedPnL" class="sortable">Unrealized P&amp;L</th>',

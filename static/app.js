@@ -39,6 +39,23 @@ const analysisDetailTitle = document.getElementById('analysis-detail-title');
 const analysisDetailStatus = document.getElementById('analysis-detail-status');
 const analysisSummary = document.getElementById('analysis-summary');
 const analysisScenariosBody = document.querySelector('#analysis-scenarios-table tbody');
+const analysisAddExternalScenarioBtn = document.getElementById('analysis-add-external-scenario-btn');
+const analysisScenarioOverlayTabsEl = document.getElementById('analysis-scenario-overlay-tabs');
+const analysisScenarioOverlayTabButtons = document.querySelectorAll('.scenario-overlay-tab');
+const analysisFinalScenarioPanelEl = document.getElementById('analysis-final-scenario-panel');
+const analysisBakingMoneyScenarioPanelEl = document.getElementById('analysis-bakingmoney-scenario-panel');
+const analysisExternalScenariosPanelEl = document.getElementById('analysis-external-scenarios-panel');
+const analysisExternalScenarioModalEl = document.getElementById('analysis-external-scenario-modal');
+const analysisExternalScenarioModalTitleEl = document.getElementById('analysis-external-scenario-modal-title');
+const analysisExternalScenarioTitleEl = document.getElementById('analysis-external-scenario-title');
+const analysisExternalScenarioWeightEl = document.getElementById('analysis-external-scenario-weight');
+const analysisExternalScenarioNotesEl = document.getElementById('analysis-external-scenario-notes');
+const analysisExternalScenarioJsonEl = document.getElementById('analysis-external-scenario-json');
+const analysisExternalScenarioStatusEl = document.getElementById('analysis-external-scenario-status');
+const analysisExternalScenarioSaveBtn = document.getElementById('analysis-external-scenario-save-btn');
+const analysisExternalScenarioTemplateBtn = document.getElementById('analysis-external-scenario-template-btn');
+const analysisExternalScenarioCancelBtn = document.getElementById('analysis-external-scenario-cancel-btn');
+const analysisExternalScenarioCancelFormBtn = document.getElementById('analysis-external-scenario-cancel-form-btn');
 const analysisVariablesBody = document.querySelector('#analysis-variables-table tbody');
 const analysisVariableTabButtons = document.querySelectorAll('.analysis-variable-tab');
 const analysisVariablesEmptyEl = document.getElementById('analysis-variables-empty');
@@ -206,6 +223,8 @@ let analysisDetailOrigin = 'analysis';
 let isEditingVariables = false;
 let activeAnalysisVariableCategory = 'Core Driver';
 let editableAnalysisVariables = null;
+let activeScenarioOverlayTab = 'bakingmoney';
+let editingExternalScenarioId = null;
 let isEditingBusinessModel = false;
 let isEditingBusinessSummary = false;
 let currentAlertDetailId = null;
@@ -888,6 +907,265 @@ function renderAnalysisReleaseSummaryCard() {
   return `<div class="summary-item earnings-release-summary-item"><div class="label">Earnings Release</div><div class="value">${escapeHtml(formatAnalysisReleaseEntry(selected))}</div>${buttons}</div>`;
 }
 
+function getExternalScenarioTemplate() {
+  return JSON.stringify({
+    scenarios: [
+      { name: 'Bear', price_low: 80, price_high: 100, cagr_low: -5, cagr_high: 0, probability: 25 },
+      { name: 'Base', price_low: 120, price_high: 150, cagr_low: 4, cagr_high: 8, probability: 50 },
+      { name: 'Bull', price_low: 180, price_high: 220, cagr_low: 12, cagr_high: 17, probability: 25 },
+    ],
+  }, null, 2);
+}
+
+function externalScenarioWeightPercent(item) {
+  const value = Number(item?.external_weight_percent ?? (Number(item?.external_weight) * 100));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function getCurrentExternalScenarios() {
+  return analysisDetailState?.external_scenarios || [];
+}
+
+function hasExternalScenarioOverlay() {
+  return getCurrentExternalScenarios().length > 0;
+}
+
+function renderScenarioRows(scenarios, targetBody = analysisScenariosBody) {
+  targetBody.innerHTML = '';
+  (scenarios || []).forEach((scenario) => {
+    const row = document.createElement('tr');
+    row.innerHTML = `<td>${escapeHtml(scenario.scenario_name || scenario.name || '')}</td><td>${formatCurrencyValue(scenario.price_low, 'USD')}</td><td>${formatCurrencyValue(scenario.price_mid, 'USD')}</td><td>${formatCurrencyValue(scenario.price_high, 'USD')}</td><td>${formatPercent(scenario.cagr_low)}</td><td>${formatPercent(scenario.cagr_mid)}</td><td>${formatPercent(scenario.cagr_high)}</td><td>${formatPercent((scenario.probability || 0) * 100)}</td>`;
+    targetBody.appendChild(row);
+  });
+}
+
+function buildScenarioTableHtml(scenarios) {
+  const rows = (scenarios || []).map((scenario) => `<tr><td>${escapeHtml(scenario.scenario_name || scenario.name || '')}</td><td>${formatCurrencyValue(scenario.price_low, 'USD')}</td><td>${formatCurrencyValue(scenario.price_mid, 'USD')}</td><td>${formatCurrencyValue(scenario.price_high, 'USD')}</td><td>${formatPercent(scenario.cagr_low)}</td><td>${formatPercent(scenario.cagr_mid)}</td><td>${formatPercent(scenario.cagr_high)}</td><td>${formatPercent((scenario.probability || 0) * 100)}</td></tr>`).join('');
+  return `<div class="table-wrap"><table class="scenario-overlay-table"><thead><tr><th>Scenario</th><th>Price Low</th><th>Price Mid</th><th>Price High</th><th>CAGR Low</th><th>CAGR Mid</th><th>CAGR High</th><th>Probability</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function setScenarioOverlayTab(tab) {
+  activeScenarioOverlayTab = tab;
+  renderScenarioOverlayArea();
+}
+
+function renderScenarioOverlayArea() {
+  const hasExternal = hasExternalScenarioOverlay();
+  if (!hasExternal) activeScenarioOverlayTab = 'bakingmoney';
+  else if (!['final', 'bakingmoney', 'external'].includes(activeScenarioOverlayTab) || activeScenarioOverlayTab === 'bakingmoney') activeScenarioOverlayTab = 'final';
+
+  analysisScenarioOverlayTabsEl.classList.toggle('hidden', !hasExternal);
+  analysisFinalScenarioPanelEl.classList.toggle('hidden', !hasExternal || activeScenarioOverlayTab !== 'final');
+  analysisExternalScenariosPanelEl.classList.toggle('hidden', !hasExternal || activeScenarioOverlayTab !== 'external');
+  analysisBakingMoneyScenarioPanelEl.classList.toggle('hidden', hasExternal && activeScenarioOverlayTab !== 'bakingmoney');
+  analysisAddExternalScenarioBtn.classList.toggle('hidden', hasExternal && activeScenarioOverlayTab !== 'external');
+  analysisScenarioOverlayTabButtons.forEach((button) => {
+    const active = button.dataset.scenarioTab === activeScenarioOverlayTab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  renderScenarioRows(analysisDetailState?.version?.scenarios || []);
+  if (hasExternal) {
+    renderFinalScenarioPanel();
+    renderExternalScenariosPanel();
+  }
+  updateAnalysisScenarioInfoText();
+}
+
+function renderFinalScenarioPanel() {
+  const overlay = analysisDetailState?.final_scenario_overlay;
+  if (!overlay) {
+    analysisFinalScenarioPanelEl.innerHTML = '<p class="status warning">Final Scenario has not been recalculated yet.</p><button type="button" class="final-scenario-recalculate-btn">Recalculate Final Scenario</button>';
+    return;
+  }
+  const stale = overlay.is_stale || analysisDetailState?.final_scenario_stale;
+  const warning = stale ? '<p class="status warning">External scenarios changed. Recalculate Final Scenario to apply the latest weights and scenario values.</p>' : '';
+  analysisFinalScenarioPanelEl.innerHTML = `${warning}<div class="summary-grid scenario-overlay-summary"><div class="summary-item"><div class="label">Final Expected Price</div><div class="value">${formatCurrencyValue(overlay.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Final Expected CAGR</div><div class="value ${valueClass(overlay.expected_cagr)}">${formatPercent(overlay.expected_cagr)}</div></div><div class="summary-item"><div class="label">Final Upside</div><div class="value ${valueClass(overlay.upside)}">${formatPercent(overlay.upside)}</div></div><div class="summary-item"><div class="label">BakingMoney Weight</div><div class="value">${formatPercent(overlay.bakingmoney_weight_percent)}</div></div><div class="summary-item"><div class="label">External Weight</div><div class="value">${formatPercent(overlay.external_total_weight_percent)}</div></div><div class="summary-item"><div class="label">Last Recalculated</div><div class="value">${formatDateTime(overlay.recalculated_at)}</div></div></div>${buildScenarioTableHtml(overlay.scenarios)}<div class="table-actions"><button type="button" class="final-scenario-recalculate-btn">Recalculate Final Scenario</button></div>`;
+}
+
+function getPendingExternalWeightTotalPercent() {
+  let total = 0;
+  analysisExternalScenariosPanelEl.querySelectorAll('.external-scenario-weight-input').forEach((input) => {
+    const value = Number(input.value);
+    if (Number.isFinite(value)) total += value;
+  });
+  return total;
+}
+
+function updateExternalWeightSummary() {
+  const total = getPendingExternalWeightTotalPercent();
+  const bakingWeight = 100 - total;
+  const warning = analysisExternalScenariosPanelEl.querySelector('.external-weight-warning');
+  const summary = analysisExternalScenariosPanelEl.querySelector('.external-weight-summary');
+  if (summary) summary.textContent = `Pending external weight: ${formatPercent(total)} • Pending BakingMoney weight: ${formatPercent(bakingWeight)}`;
+  if (warning) {
+    warning.textContent = total > 100 ? 'External scenario weights total more than 100%. Reduce weights before recalculating.' : '';
+    warning.classList.toggle('hidden', total <= 100);
+  }
+}
+
+function renderExternalScenariosPanel() {
+  const items = getCurrentExternalScenarios();
+  const currentTotal = items.reduce((total, item) => total + externalScenarioWeightPercent(item), 0);
+  const cards = items.map((item) => `<section class="external-scenario-card" data-external-id="${item.id}"><div class="view-header"><h4>${escapeHtml(item.title)}</h4><div class="table-actions"><button type="button" class="external-scenario-edit-btn" data-external-id="${item.id}">Edit</button><button type="button" class="external-scenario-remove-btn remove-btn" data-external-id="${item.id}">Remove</button></div></div><label class="external-scenario-weight-label">Weight (%) <input class="external-scenario-weight-input" data-external-id="${item.id}" type="number" min="0" max="100" step="0.1" value="${externalScenarioWeightPercent(item)}"></label>${item.source_notes ? `<p class="external-scenario-notes">${escapeHtml(item.source_notes)}</p>` : ''}${buildScenarioTableHtml(item.scenarios)}</section>`).join('');
+  analysisExternalScenariosPanelEl.innerHTML = `<div class="external-scenario-actions"><p class="status external-weight-summary">Pending external weight: ${formatPercent(currentTotal)} • Pending BakingMoney weight: ${formatPercent(100 - currentTotal)}</p><p class="status error external-weight-warning hidden"></p><div class="table-actions"><button type="button" id="analysis-external-add-another-btn">Add External Scenario</button><button type="button" id="analysis-external-recalculate-btn">Recalculate Final Scenario</button></div></div>${cards || '<p class="status">No external scenarios.</p>'}`;
+  analysisExternalScenariosPanelEl.querySelectorAll('.external-scenario-weight-input').forEach((input) => input.addEventListener('input', updateExternalWeightSummary));
+  updateExternalWeightSummary();
+}
+
+function externalScenarioPayloadFromItemWithWeight(item, weightPercent) {
+  return {
+    title: item.title,
+    external_weight: weightPercent,
+    source_notes: item.source_notes || '',
+    scenario_json: item.scenario_json || JSON.stringify({ scenarios: item.scenarios }, null, 2),
+  };
+}
+
+async function savePendingExternalWeights() {
+  const updates = [];
+  for (const input of analysisExternalScenariosPanelEl.querySelectorAll('.external-scenario-weight-input')) {
+    const id = Number(input.dataset.externalId);
+    const item = getCurrentExternalScenarios().find((scenario) => Number(scenario.id) === id);
+    if (!item) continue;
+    const weight = Number(input.value);
+    if (!Number.isFinite(weight) || weight < 0 || weight > 100) throw new Error('Each external scenario weight must be between 0% and 100%.');
+    if (Math.abs(weight - externalScenarioWeightPercent(item)) > 0.0001) {
+      updates.push(fetch(`/api/analysis/versions/${encodeURIComponent(analysisDetailState.selected_version_id)}/external-scenarios/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(externalScenarioPayloadFromItemWithWeight(item, weight)),
+      }).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save external scenario weight'));
+        return payload;
+      }));
+    }
+  }
+  if (updates.length) await Promise.all(updates);
+}
+
+
+async function recalculateFinalScenario() {
+  analysisDetailStatus.textContent = 'Recalculating final scenario…';
+  analysisDetailStatus.className = 'status';
+  try {
+    await savePendingExternalWeights();
+    const response = await fetch(`/api/analysis/versions/${encodeURIComponent(analysisDetailState.selected_version_id)}/final-scenario/recalculate`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to recalculate final scenario'));
+    Object.assign(analysisDetailState, payload);
+    activeScenarioOverlayTab = 'final';
+    renderScenarioOverlayArea();
+    analysisDetailStatus.textContent = 'Final Scenario recalculated.';
+    analysisDetailStatus.className = 'status';
+  } catch (error) {
+    analysisDetailStatus.textContent = `Error: ${error.message}`;
+    analysisDetailStatus.className = 'status error';
+  }
+}
+
+function openExternalScenarioModal(item = null) {
+  editingExternalScenarioId = item?.id || null;
+  analysisExternalScenarioModalTitleEl.textContent = item ? 'Edit External Scenario' : 'Add External Scenario';
+  analysisExternalScenarioTitleEl.value = item?.title || '';
+  analysisExternalScenarioWeightEl.value = item ? externalScenarioWeightPercent(item) : 30;
+  analysisExternalScenarioNotesEl.value = item?.source_notes || '';
+  analysisExternalScenarioJsonEl.value = item?.scenario_json || getExternalScenarioTemplate();
+  analysisExternalScenarioStatusEl.textContent = '';
+  analysisExternalScenarioStatusEl.className = 'status';
+  analysisExternalScenarioModalEl.classList.remove('hidden');
+  analysisExternalScenarioTitleEl.focus();
+}
+
+function closeExternalScenarioModal() {
+  editingExternalScenarioId = null;
+  analysisExternalScenarioModalEl.classList.add('hidden');
+}
+
+async function saveExternalScenarioFromModal() {
+  const versionId = analysisDetailState?.selected_version_id;
+  if (!versionId) return;
+  const payload = {
+    title: analysisExternalScenarioTitleEl.value,
+    external_weight: analysisExternalScenarioWeightEl.value,
+    source_notes: analysisExternalScenarioNotesEl.value,
+    scenario_json: analysisExternalScenarioJsonEl.value,
+  };
+  analysisExternalScenarioStatusEl.textContent = 'Saving external scenario…';
+  analysisExternalScenarioStatusEl.className = 'status';
+  const url = editingExternalScenarioId
+    ? `/api/analysis/versions/${encodeURIComponent(versionId)}/external-scenarios/${encodeURIComponent(editingExternalScenarioId)}`
+    : `/api/analysis/versions/${encodeURIComponent(versionId)}/external-scenarios`;
+  try {
+    const response = await fetch(url, {
+      method: editingExternalScenarioId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(result, 'Unable to save external scenario'));
+    Object.assign(analysisDetailState, result);
+    closeExternalScenarioModal();
+    activeScenarioOverlayTab = 'external';
+    renderScenarioOverlayArea();
+    analysisDetailStatus.textContent = 'External scenario saved. Recalculate Final Scenario to apply it.';
+    analysisDetailStatus.className = 'status';
+  } catch (error) {
+    analysisExternalScenarioStatusEl.textContent = `Error: ${error.message}`;
+    analysisExternalScenarioStatusEl.className = 'status error';
+  }
+}
+
+async function removeExternalScenario(id) {
+  if (!window.confirm('Remove this external scenario?')) return;
+  analysisDetailStatus.textContent = 'Removing external scenario…';
+  analysisDetailStatus.className = 'status';
+  try {
+    const response = await fetch(`/api/analysis/versions/${encodeURIComponent(analysisDetailState.selected_version_id)}/external-scenarios/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to remove external scenario'));
+    Object.assign(analysisDetailState, payload);
+    activeScenarioOverlayTab = hasExternalScenarioOverlay() ? 'external' : 'bakingmoney';
+    renderScenarioOverlayArea();
+    analysisDetailStatus.textContent = hasExternalScenarioOverlay() ? 'External scenario removed. Recalculate Final Scenario to apply the change.' : 'External scenario removed.';
+    analysisDetailStatus.className = 'status';
+  } catch (error) {
+    analysisDetailStatus.textContent = `Error: ${error.message}`;
+    analysisDetailStatus.className = 'status error';
+  }
+}
+
+function buildExternalScenarioInfoText() {
+  const items = getCurrentExternalScenarios();
+  if (!items.length) return '\n\nExternal Scenario Overlay:\n- No external scenarios attached to this version.';
+  const overlay = analysisDetailState.final_scenario_overlay;
+  const status = overlay ? (overlay.is_stale ? 'Stale' : 'Recalculated') : 'Not recalculated';
+  const lines = [
+    '\n\nExternal Scenario Overlay:',
+    `- Final Scenario status: ${status}`,
+  ];
+  if (overlay?.recalculated_at) lines.push(`- Last recalculated: ${formatDateTime(overlay.recalculated_at)}`);
+  if (overlay) {
+    lines.push(`- BakingMoney weight from last recalculation: ${formatPercent(overlay.bakingmoney_weight_percent)}`);
+    lines.push(`- External total weight from last recalculation: ${formatPercent(overlay.external_total_weight_percent)}`);
+  }
+  lines.push('- External scenarios:');
+  items.forEach((item) => lines.push(`  - ${item.title}: ${formatPercent(externalScenarioWeightPercent(item))}, updated ${formatDateTime(item.updated_at)}`));
+  if (overlay?.is_stale) lines.push('- Final Scenario may not reflect latest external scenario changes.');
+  return lines.join('\n');
+}
+
+function updateAnalysisScenarioInfoText() {
+  const item = analysisDetailState?.version;
+  if (!item) return;
+  const passes = item.scenario_passes || [];
+  const passLines = passes.map((p) => `Pass ${p.pass_index}: status=${p.validation_status}${p.is_outlier ? ' outlier=true' : ''}${p.rejection_reason ? ` reason=${p.rejection_reason}` : ''}${typeof p.quality_score === 'number' ? ` score=${p.quality_score.toFixed(2)}` : ''}`);
+  analysisScenarioInfoText.textContent = `Prompt used to build scenarios:\n${item.scenario_prompt || 'N/A'}\n\nScenario build passes:\n${passLines.length ? passLines.join('\n') : 'No pass details available.'}${buildExternalScenarioInfoText()}`;
+}
+
+
 function renderVersionControls() {
   if (!analysisDetailState) return;
   const versions = analysisDetailState.versions || [];
@@ -925,20 +1203,13 @@ function renderAnalysisDetail() {
   analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected CAGR</div><div class="value ${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value confidence-breakdown"><div>Core: ${formatCoreConfidenceDisplay(item)}</div><div>Potential: ${formatPotentialConfidenceDisplay(item)}</div></div></div>${releaseSummaryCard}<div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
-  analysisScenariosBody.innerHTML = '';
-  (item.scenarios || []).forEach((scenario) => {
-    const row = document.createElement('tr');
-    row.innerHTML = `<td>${scenario.scenario_name}</td><td>${formatCurrencyValue(scenario.price_low, 'USD')}</td><td>${formatCurrencyValue(scenario.price_mid, 'USD')}</td><td>${formatCurrencyValue(scenario.price_high, 'USD')}</td><td>${formatPercent(scenario.cagr_low)}</td><td>${formatPercent(scenario.cagr_mid)}</td><td>${formatPercent(scenario.cagr_high)}</td><td>${formatPercent((scenario.probability || 0) * 100)}</td>`;
-    analysisScenariosBody.appendChild(row);
-  });
+  renderScenarioOverlayArea();
 
   renderVariablesTable();
   renderVersionControls();
   analysisRerunBtn.disabled = false;
 
-  const passes = item.scenario_passes || [];
-  const passLines = passes.map((p) => `Pass ${p.pass_index}: status=${p.validation_status}${p.is_outlier ? ' outlier=true' : ''}${p.rejection_reason ? ` reason=${p.rejection_reason}` : ''}${typeof p.quality_score === 'number' ? ` score=${p.quality_score.toFixed(2)}` : ''}`);
-  analysisScenarioInfoText.textContent = `Prompt used to build scenarios:\n${item.scenario_prompt || 'N/A'}\n\nScenario build passes:\n${passLines.length ? passLines.join('\n') : 'No pass details available.'}`;
+  updateAnalysisScenarioInfoText();
 }
 
 function getCurrentAnalysisKeyVariables() {
@@ -1089,6 +1360,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load details'));
     analysisDetailState = payload.analysis;
     analysisDetailState.selected_release_index = 0;
+    activeScenarioOverlayTab = hasExternalScenarioOverlay() ? 'final' : 'bakingmoney';
     renderAnalysisDetail();
     analysisDetailStatus.textContent = `Loaded ${symbol} detail.`;
   } catch (error) {
@@ -3003,6 +3275,42 @@ alertsStatusFilterEl.addEventListener('change', () => {
 });
 analysisScenarioInfoBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.remove('hidden'));
 analysisScenarioInfoCloseBtn.addEventListener('click', () => analysisScenarioInfoModal.classList.add('hidden'));
+analysisScenarioOverlayTabButtons.forEach((button) => {
+  button.addEventListener('click', () => setScenarioOverlayTab(button.dataset.scenarioTab));
+});
+analysisAddExternalScenarioBtn.addEventListener('click', () => openExternalScenarioModal());
+analysisExternalScenarioTemplateBtn.addEventListener('click', () => {
+  analysisExternalScenarioJsonEl.value = getExternalScenarioTemplate();
+});
+analysisExternalScenarioSaveBtn.addEventListener('click', saveExternalScenarioFromModal);
+analysisExternalScenarioCancelBtn.addEventListener('click', closeExternalScenarioModal);
+analysisExternalScenarioCancelFormBtn.addEventListener('click', closeExternalScenarioModal);
+analysisFinalScenarioPanelEl.addEventListener('click', (event) => {
+  const target = event.target;
+  if (target instanceof HTMLElement && target.classList.contains('final-scenario-recalculate-btn')) recalculateFinalScenario();
+});
+analysisExternalScenariosPanelEl.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (target.id === 'analysis-external-add-another-btn') {
+    openExternalScenarioModal();
+    return;
+  }
+  if (target.id === 'analysis-external-recalculate-btn') {
+    recalculateFinalScenario();
+    return;
+  }
+  const editId = target.dataset.externalId;
+  if (target.classList.contains('external-scenario-edit-btn') && editId) {
+    const item = getCurrentExternalScenarios().find((scenario) => Number(scenario.id) === Number(editId));
+    if (item) openExternalScenarioModal(item);
+    return;
+  }
+  if (target.classList.contains('external-scenario-remove-btn') && editId) {
+    removeExternalScenario(editId);
+  }
+});
+
 analysisSummary.addEventListener('click', (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;

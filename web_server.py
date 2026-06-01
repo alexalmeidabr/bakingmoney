@@ -56,6 +56,8 @@ BACKUP_REQUIRED_TABLES = (
     "analysis_version_scenarios",
     "analysis_version_key_variables",
     "analysis_version_scenario_passes",
+    "analysis_external_scenarios",
+    "analysis_final_scenario_overlays",
     "analysis_key_variable_edits",
     "analysis_business_model_edits",
     "analysis_business_summary_edits",
@@ -2152,6 +2154,46 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS analysis_external_scenarios (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_version_id INTEGER NOT NULL,
+              title TEXT NOT NULL,
+              source_notes TEXT,
+              external_weight REAL NOT NULL,
+              scenarios_json TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_analysis_external_scenarios_version
+            ON analysis_external_scenarios(analysis_version_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_final_scenario_overlays (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_version_id INTEGER NOT NULL UNIQUE,
+              bakingmoney_weight REAL NOT NULL,
+              external_total_weight REAL NOT NULL,
+              final_scenarios_json TEXT NOT NULL,
+              expected_price REAL,
+              expected_cagr REAL,
+              upside REAL,
+              recalculated_at TEXT NOT NULL,
+              is_stale INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS analysis_key_variable_edits (
               analysis_root_id INTEGER PRIMARY KEY,
               based_on_version_id INTEGER NOT NULL,
@@ -4120,6 +4162,393 @@ def _version_payload(conn, version_row):
     }
 
 
+EXTERNAL_SCENARIO_NAMES = ("Bear", "Base", "Bull")
+
+def _analysis_version_exists(conn, version_id):
+    try:
+        normalized_id = int(version_id)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid analysis version id")
+    row = conn.execute("SELECT id FROM analysis_versions WHERE id = ?", (normalized_id,)).fetchone()
+    if not row:
+        raise ValueError("Analysis version not found")
+    return normalized_id
+
+
+def _normalize_external_weight(value):
+    try:
+        weight = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("External scenario weight must be numeric")
+    if not math.isfinite(weight):
+        raise ValueError("External scenario weight must be numeric")
+    if weight < 0:
+        raise ValueError("External scenario weight cannot be negative")
+    if weight > 100:
+        raise ValueError("External scenario weight cannot exceed 100%")
+    return weight / 100.0 if weight > 1.0 else weight
+
+
+def _safe_external_float(value, field_name):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be numeric")
+    if not math.isfinite(number):
+        raise ValueError(f"{field_name} must be numeric")
+    return number
+
+
+def _normalize_external_scenario_payload(raw_scenarios):
+    if isinstance(raw_scenarios, str):
+        try:
+            raw_scenarios = json.loads(raw_scenarios)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Scenario JSON is invalid: {exc.msg}")
+    if not isinstance(raw_scenarios, dict):
+        raise ValueError("Scenario JSON must be an object")
+    scenarios = raw_scenarios.get("scenarios")
+    if not isinstance(scenarios, list):
+        raise ValueError("Scenario JSON must include a scenarios array")
+    if len(scenarios) != 3:
+        raise ValueError("Scenario JSON must include exactly 3 scenarios")
+
+    by_name = {}
+    for index, item in enumerate(scenarios):
+        if not isinstance(item, dict):
+            raise ValueError(f"scenarios[{index}] must be an object")
+        name = item.get("name") or item.get("scenario_name")
+        if name not in EXTERNAL_SCENARIO_NAMES:
+            raise ValueError("Scenario names must be exactly Bear, Base, and Bull")
+        if name in by_name:
+            raise ValueError("Duplicate scenario names are not allowed")
+        price_low = _safe_external_float(item.get("price_low"), f"{name}.price_low")
+        price_high = _safe_external_float(item.get("price_high"), f"{name}.price_high")
+        cagr_low = _safe_external_float(item.get("cagr_low"), f"{name}.cagr_low")
+        cagr_high = _safe_external_float(item.get("cagr_high"), f"{name}.cagr_high")
+        probability = _safe_external_float(item.get("probability"), f"{name}.probability")
+        if price_low <= 0 or price_high <= 0:
+            raise ValueError(f"{name} price values must be greater than 0")
+        if price_low > price_high:
+            raise ValueError(f"{name} price_low cannot exceed price_high")
+        if cagr_low > cagr_high:
+            raise ValueError(f"{name} cagr_low cannot exceed cagr_high")
+        if probability < 0:
+            raise ValueError(f"{name} probability cannot be negative")
+        by_name[name] = {
+            "scenario_name": name,
+            "price_low": price_low,
+            "price_high": price_high,
+            "cagr_low": cagr_low,
+            "cagr_high": cagr_high,
+            "probability": probability,
+        }
+
+    missing = [name for name in EXTERNAL_SCENARIO_NAMES if name not in by_name]
+    if missing:
+        raise ValueError("Scenario JSON must include Bear, Base, and Bull")
+
+    probability_sum = sum(item["probability"] for item in by_name.values())
+    if abs(probability_sum - 100.0) <= 0.05:
+        divisor = 100.0
+    elif abs(probability_sum - 1.0) <= 0.0005:
+        divisor = 1.0
+    else:
+        raise ValueError("Scenario probabilities must sum to 100 or 1")
+
+    normalized = []
+    for name in EXTERNAL_SCENARIO_NAMES:
+        item = dict(by_name[name])
+        item["probability"] = item["probability"] / divisor
+        normalized.append(_populate_external_scenario_midpoints(item))
+    return _normalize_probabilities(normalized)
+
+
+
+
+def _populate_external_scenario_midpoints(item):
+    cloned = dict(item)
+    cloned["price_mid"] = compute_price_mid(cloned.get("price_low"), cloned.get("price_high"))
+    try:
+        cloned["cagr_mid"] = (float(cloned.get("cagr_low")) + float(cloned.get("cagr_high"))) / 2.0
+    except (TypeError, ValueError):
+        cloned["cagr_mid"] = None
+    return cloned
+
+
+def _external_scenario_json_for_edit(scenarios):
+    payload = {
+        "scenarios": [
+            {
+                "name": item.get("scenario_name") or item.get("name"),
+                "price_low": item.get("price_low"),
+                "price_high": item.get("price_high"),
+                "cagr_low": item.get("cagr_low"),
+                "cagr_high": item.get("cagr_high"),
+                "probability": round(float(item.get("probability") or 0) * 100.0, 6),
+            }
+            for item in scenarios
+        ]
+    }
+    return json.dumps(payload, indent=2)
+
+
+def _serialize_external_scenario_row(row):
+    scenarios = json.loads(row["scenarios_json"] or "[]")
+    return {
+        "id": row["id"],
+        "analysis_version_id": row["analysis_version_id"],
+        "title": row["title"],
+        "source_notes": row["source_notes"],
+        "external_weight": row["external_weight"],
+        "external_weight_percent": row["external_weight"] * 100.0,
+        "scenarios": scenarios,
+        "scenario_json": _external_scenario_json_for_edit(scenarios),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_external_scenarios(conn, version_id):
+    version_id = _analysis_version_exists(conn, version_id)
+    rows = conn.execute(
+        """
+        SELECT id, analysis_version_id, title, source_notes, external_weight, scenarios_json, created_at, updated_at
+        FROM analysis_external_scenarios
+        WHERE analysis_version_id = ?
+        ORDER BY created_at ASC, id ASC
+        """,
+        (version_id,),
+    ).fetchall()
+    return [_serialize_external_scenario_row(row) for row in rows]
+
+
+def _mark_final_scenario_overlay_stale(conn, version_id):
+    conn.execute(
+        "UPDATE analysis_final_scenario_overlays SET is_stale = 1, updated_at = ? WHERE analysis_version_id = ?",
+        (utc_now_iso(), version_id),
+    )
+
+
+def _delete_final_overlay_if_no_external_scenarios(conn, version_id):
+    remaining = conn.execute(
+        "SELECT COUNT(*) AS count FROM analysis_external_scenarios WHERE analysis_version_id = ?",
+        (version_id,),
+    ).fetchone()["count"]
+    if remaining == 0:
+        conn.execute("DELETE FROM analysis_final_scenario_overlays WHERE analysis_version_id = ?", (version_id,))
+        return True
+    _mark_final_scenario_overlay_stale(conn, version_id)
+    return False
+
+
+def _normalize_external_scenario_record_payload(payload):
+    payload = payload or {}
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise ValueError("External scenario title is required")
+    weight_value = payload.get("external_weight", payload.get("weight"))
+    external_weight = _normalize_external_weight(weight_value)
+    source_notes = payload.get("source_notes", payload.get("notes"))
+    source_notes = str(source_notes).strip() if source_notes is not None else None
+    raw_scenarios = payload.get("scenario_json")
+    if raw_scenarios is None:
+        raw_scenarios = payload.get("scenarios_json")
+    if raw_scenarios is None:
+        raw_scenarios = {"scenarios": payload.get("scenarios")}
+    scenarios = _normalize_external_scenario_payload(raw_scenarios)
+    return title, source_notes, external_weight, scenarios
+
+
+def create_external_scenario(conn, version_id, payload):
+    version_id = _analysis_version_exists(conn, version_id)
+    title, source_notes, external_weight, scenarios = _normalize_external_scenario_record_payload(payload)
+    now = utc_now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO analysis_external_scenarios (
+            analysis_version_id, title, source_notes, external_weight, scenarios_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (version_id, title, source_notes, external_weight, json.dumps(scenarios), now, now),
+    )
+    _mark_final_scenario_overlay_stale(conn, version_id)
+    conn.commit()
+    row = conn.execute("SELECT * FROM analysis_external_scenarios WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return _serialize_external_scenario_row(row)
+
+
+def update_external_scenario(conn, version_id, external_id, payload):
+    version_id = _analysis_version_exists(conn, version_id)
+    try:
+        external_id = int(external_id)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid external scenario id")
+    existing = conn.execute(
+        "SELECT id FROM analysis_external_scenarios WHERE id = ? AND analysis_version_id = ?",
+        (external_id, version_id),
+    ).fetchone()
+    if not existing:
+        raise ValueError("External scenario not found")
+    title, source_notes, external_weight, scenarios = _normalize_external_scenario_record_payload(payload)
+    now = utc_now_iso()
+    conn.execute(
+        """
+        UPDATE analysis_external_scenarios
+        SET title = ?, source_notes = ?, external_weight = ?, scenarios_json = ?, updated_at = ?
+        WHERE id = ? AND analysis_version_id = ?
+        """,
+        (title, source_notes, external_weight, json.dumps(scenarios), now, external_id, version_id),
+    )
+    _mark_final_scenario_overlay_stale(conn, version_id)
+    conn.commit()
+    row = conn.execute("SELECT * FROM analysis_external_scenarios WHERE id = ?", (external_id,)).fetchone()
+    return _serialize_external_scenario_row(row)
+
+
+def delete_external_scenario(conn, version_id, external_id):
+    version_id = _analysis_version_exists(conn, version_id)
+    try:
+        external_id = int(external_id)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid external scenario id")
+    row = conn.execute(
+        "SELECT id, title FROM analysis_external_scenarios WHERE id = ? AND analysis_version_id = ?",
+        (external_id, version_id),
+    ).fetchone()
+    if not row:
+        raise ValueError("External scenario not found")
+    conn.execute("DELETE FROM analysis_external_scenarios WHERE id = ? AND analysis_version_id = ?", (external_id, version_id))
+    deleted_overlay = _delete_final_overlay_if_no_external_scenarios(conn, version_id)
+    conn.commit()
+    return {"id": external_id, "title": row["title"], "deleted_final_overlay": deleted_overlay}
+
+
+def _serialize_final_overlay_row(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "analysis_version_id": row["analysis_version_id"],
+        "bakingmoney_weight": row["bakingmoney_weight"],
+        "bakingmoney_weight_percent": row["bakingmoney_weight"] * 100.0,
+        "external_total_weight": row["external_total_weight"],
+        "external_total_weight_percent": row["external_total_weight"] * 100.0,
+        "scenarios": json.loads(row["final_scenarios_json"] or "[]"),
+        "expected_price": row["expected_price"],
+        "expected_cagr": row["expected_cagr"],
+        "upside": row["upside"],
+        "recalculated_at": row["recalculated_at"],
+        "is_stale": bool(row["is_stale"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def get_final_scenario_overlay(conn, version_id):
+    version_id = _analysis_version_exists(conn, version_id)
+    row = conn.execute("SELECT * FROM analysis_final_scenario_overlays WHERE analysis_version_id = ?", (version_id,)).fetchone()
+    return _serialize_final_overlay_row(row)
+
+
+def _external_overlay_summary(conn, version_id):
+    external_scenarios = list_external_scenarios(conn, version_id)
+    external_total_weight = sum(float(item["external_weight"] or 0) for item in external_scenarios)
+    overlay = get_final_scenario_overlay(conn, version_id)
+    return {
+        "external_scenarios": external_scenarios,
+        "final_scenario_overlay": overlay,
+        "final_scenario_stale": bool(overlay and overlay.get("is_stale")),
+        "external_total_weight": external_total_weight,
+        "external_total_weight_percent": external_total_weight * 100.0,
+        "bakingmoney_weight": max(0.0, 1.0 - external_total_weight),
+        "bakingmoney_weight_percent": max(0.0, 1.0 - external_total_weight) * 100.0,
+    }
+
+
+def recalculate_final_scenario_overlay(conn, version_id):
+    version_id = _analysis_version_exists(conn, version_id)
+    version = conn.execute("SELECT id, current_price FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+    bakingmoney_rows = conn.execute(
+        """
+        SELECT scenario_name, price_low, price_mid, price_high, cagr_low, cagr_mid, cagr_high, probability
+        FROM analysis_version_scenarios
+        WHERE analysis_version_id = ?
+        ORDER BY CASE scenario_name WHEN 'Bear' THEN 1 WHEN 'Base' THEN 2 WHEN 'Bull' THEN 3 ELSE 99 END
+        """,
+        (version_id,),
+    ).fetchall()
+    if len(bakingmoney_rows) != 3:
+        raise ValueError("BakingMoney scenario must include Bear, Base, and Bull before recalculating")
+    bakingmoney = {row["scenario_name"]: dict(row) for row in bakingmoney_rows}
+    external_scenarios = list_external_scenarios(conn, version_id)
+    if not external_scenarios:
+        raise ValueError("Add at least one external scenario before recalculating")
+    total_external_weight = sum(float(item["external_weight"] or 0) for item in external_scenarios)
+    if total_external_weight > 1.0 + 1e-9:
+        raise ValueError("External scenario weights total more than 100%. Reduce weights before recalculating.")
+    bakingmoney_weight = max(0.0, 1.0 - total_external_weight)
+
+    final_scenarios = []
+    for name in EXTERNAL_SCENARIO_NAMES:
+        base = bakingmoney[name]
+        blended = {
+            "scenario_name": name,
+            "price_low": float(base["price_low"]) * bakingmoney_weight,
+            "price_high": float(base["price_high"]) * bakingmoney_weight,
+            "cagr_low": float(base["cagr_low"]) * bakingmoney_weight,
+            "cagr_high": float(base["cagr_high"]) * bakingmoney_weight,
+            "probability": float(base["probability"]) * bakingmoney_weight,
+        }
+        for external in external_scenarios:
+            scenario = next(item for item in external["scenarios"] if item["scenario_name"] == name)
+            weight = float(external["external_weight"] or 0)
+            blended["price_low"] += float(scenario["price_low"]) * weight
+            blended["price_high"] += float(scenario["price_high"]) * weight
+            blended["cagr_low"] += float(scenario["cagr_low"]) * weight
+            blended["cagr_high"] += float(scenario["cagr_high"]) * weight
+            blended["probability"] += float(scenario["probability"]) * weight
+        final_scenarios.append(blended)
+
+    final_scenarios = [_populate_external_scenario_midpoints(item) for item in _normalize_probabilities(final_scenarios)]
+    expected_price = calculate_expected_price(final_scenarios)
+    expected_cagr = calculate_expected_cagr(final_scenarios)
+    upside = calculate_upside(expected_price, version["current_price"])
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO analysis_final_scenario_overlays (
+            analysis_version_id, bakingmoney_weight, external_total_weight, final_scenarios_json,
+            expected_price, expected_cagr, upside, recalculated_at, is_stale, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        ON CONFLICT(analysis_version_id) DO UPDATE SET
+          bakingmoney_weight = excluded.bakingmoney_weight,
+          external_total_weight = excluded.external_total_weight,
+          final_scenarios_json = excluded.final_scenarios_json,
+          expected_price = excluded.expected_price,
+          expected_cagr = excluded.expected_cagr,
+          upside = excluded.upside,
+          recalculated_at = excluded.recalculated_at,
+          is_stale = 0,
+          updated_at = excluded.updated_at
+        """,
+        (
+            version_id,
+            bakingmoney_weight,
+            total_external_weight,
+            json.dumps(final_scenarios),
+            expected_price,
+            expected_cagr,
+            upside,
+            now,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return get_final_scenario_overlay(conn, version_id)
+
+
 def _get_saved_business_model_edit(conn, root_id):
     draft = conn.execute(
         "SELECT based_on_version_id, business_model_text, updated_at FROM analysis_business_model_edits WHERE analysis_root_id = ?",
@@ -4201,7 +4630,7 @@ def get_analysis_detail(conn, symbol, version_id=None):
         (root["id"],),
     ).fetchone()
 
-    return {
+    detail = {
         "symbol": root["symbol"],
         "root_id": root["id"],
         "selected_version_id": selected["id"],
@@ -4216,6 +4645,8 @@ def get_analysis_detail(conn, symbol, version_id=None):
         "saved_business_summary_edit": _get_saved_business_summary_edit(conn, root["id"]),
         "release_history": get_earnings_calendar_release_history_for_symbol(conn, root["symbol"]),
     }
+    detail.update(_external_overlay_summary(conn, selected["id"]))
+    return detail
 
 
 def _insert_analysis_version(
@@ -6578,6 +7009,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 if not symbol or not parts[1].isdigit() or not parts[3].isdigit():
                     return self._send_json({"error": "Invalid earnings review document download path"}, status=400)
                 return self.handle_earnings_review_document_download(symbol, int(parts[1]), int(parts[3]))
+        if path.startswith("/api/analysis/versions/"):
+            parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
+            if len(parts) == 2 and parts[0].isdigit() and parts[1] == "external-scenarios":
+                return self.handle_external_scenarios_get(int(parts[0]))
+            return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
         if path.startswith("/api/analysis/"):
             symbol = normalize_symbol(path[len("/api/analysis/") :])
             if not symbol:
@@ -6620,6 +7056,13 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_rerun_scenarios_batch()
         if path == "/api/analysis/refresh-prices":
             return self.handle_analysis_refresh_prices()
+        if path.startswith("/api/analysis/versions/"):
+            parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
+            if len(parts) == 2 and parts[0].isdigit() and parts[1] == "external-scenarios":
+                return self.handle_external_scenario_create(int(parts[0]))
+            if len(parts) == 3 and parts[0].isdigit() and parts[1] == "final-scenario" and parts[2] == "recalculate":
+                return self.handle_final_scenario_recalculate(int(parts[0]))
+            return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
         if path.startswith("/api/analysis/") and path.endswith("/key-variables"):
             symbol = normalize_symbol(path[len("/api/analysis/") : -len("/key-variables")])
             if not symbol:
@@ -6691,6 +7134,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_prompts_put()
         if path == "/api/configuration/general":
             return self.handle_configuration_general_put()
+        if path.startswith("/api/analysis/versions/"):
+            parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
+            if len(parts) == 3 and parts[0].isdigit() and parts[1] == "external-scenarios" and parts[2].isdigit():
+                return self.handle_external_scenario_update(int(parts[0]), int(parts[2]))
+            return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
         if path.startswith("/api/alerts/") and path.endswith("/status"):
             alert_id = path[len("/api/alerts/") : -len("/status")]
             return self.handle_alerts_status_put(alert_id)
@@ -6704,6 +7152,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
+        if path.startswith("/api/analysis/versions/"):
+            parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
+            if len(parts) == 3 and parts[0].isdigit() and parts[1] == "external-scenarios" and parts[2].isdigit():
+                return self.handle_external_scenario_delete(int(parts[0]), int(parts[2]))
+            return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
         if path.startswith("/api/earnings-review/calendar/"):
             entry_id = path[len("/api/earnings-review/calendar/"):].strip()
             if not entry_id.isdigit():
@@ -7347,6 +7800,72 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 {"error": "Unable to refresh analysis prices.", "details": str(exc)},
                 status=500,
             )
+        finally:
+            conn.close()
+
+    def handle_external_scenarios_get(self, version_id):
+        conn = get_db_connection()
+        try:
+            self._send_json(_external_overlay_summary(conn, version_id))
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            logger.exception("Unable to load external scenarios for version %s", version_id)
+            self._send_json({"error": "Unable to load external scenarios.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_external_scenario_create(self, version_id):
+        payload = self._read_json_body() or {}
+        conn = get_db_connection()
+        try:
+            item = create_external_scenario(conn, version_id, payload)
+            self._send_json({"ok": True, "item": item, **_external_overlay_summary(conn, version_id)}, status=201)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to create external scenario for version %s", version_id)
+            self._send_json({"error": "Unable to create external scenario.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_external_scenario_update(self, version_id, external_id):
+        payload = self._read_json_body() or {}
+        conn = get_db_connection()
+        try:
+            item = update_external_scenario(conn, version_id, external_id, payload)
+            self._send_json({"ok": True, "item": item, **_external_overlay_summary(conn, version_id)})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to update external scenario %s for version %s", external_id, version_id)
+            self._send_json({"error": "Unable to update external scenario.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_external_scenario_delete(self, version_id, external_id):
+        conn = get_db_connection()
+        try:
+            item = delete_external_scenario(conn, version_id, external_id)
+            self._send_json({"ok": True, "item": item, **_external_overlay_summary(conn, version_id)})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to delete external scenario %s for version %s", external_id, version_id)
+            self._send_json({"error": "Unable to delete external scenario.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_final_scenario_recalculate(self, version_id):
+        conn = get_db_connection()
+        try:
+            overlay = recalculate_final_scenario_overlay(conn, version_id)
+            self._send_json({"ok": True, "final_scenario_overlay": overlay, **_external_overlay_summary(conn, version_id)})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to recalculate final scenario for version %s", version_id)
+            self._send_json({"error": "Unable to recalculate final scenario.", "details": str(exc)}, status=500)
         finally:
             conn.close()
 

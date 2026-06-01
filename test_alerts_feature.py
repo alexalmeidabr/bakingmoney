@@ -2115,3 +2115,145 @@ class EarningsReviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExternalScenarioOverlayTests(unittest.TestCase):
+    def _seed_version_with_scenarios(self, conn, symbol="EXT"):
+        now = web_server.utc_now_iso()
+        conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", (symbol, now, now))
+        root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO analysis_versions (
+                analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                business_summary_text, raw_ai_response, source_trigger, created_at
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (root_id, symbol, f"{symbol} Inc.", 100.0, 140.0, 7.0, 40.0, 6.0, "assume", "model", "summary", "{}", "test", now),
+        )
+        version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+        scenarios = [
+            ("Bear", 80.0, 90.0, -4.0, -2.0, 0.20),
+            ("Base", 120.0, 140.0, 4.0, 7.0, 0.50),
+            ("Bull", 180.0, 220.0, 12.0, 17.0, 0.30),
+        ]
+        for name, low, high, cagr_low, cagr_high, probability in scenarios:
+            conn.execute(
+                """
+                INSERT INTO analysis_version_scenarios (
+                    analysis_version_id, scenario_name, price_low, price_mid, price_high,
+                    cagr_low, cagr_mid, cagr_high, probability, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (version_id, name, low, (low + high) / 2, high, cagr_low, (cagr_low + cagr_high) / 2, cagr_high, probability, now),
+            )
+        conn.commit()
+        return root_id, version_id
+
+    def _external_payload(self, weight=30, title="External"):
+        return {
+            "title": title,
+            "external_weight": weight,
+            "source_notes": "analyst model",
+            "scenario_json": json.dumps({
+                "scenarios": [
+                    {"name": "Bear", "price_low": 70, "price_high": 85, "cagr_low": -7, "cagr_high": -3, "probability": 30},
+                    {"name": "Base", "price_low": 130, "price_high": 150, "cagr_low": 5, "cagr_high": 8, "probability": 45},
+                    {"name": "Bull", "price_low": 240, "price_high": 280, "cagr_low": 19, "cagr_high": 23, "probability": 25},
+                ]
+            }),
+        }
+
+    def test_external_scenario_crud_validation_and_stale_overlay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn)
+                    item = web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    self.assertEqual(item["title"], "External")
+                    self.assertAlmostEqual(item["external_weight"], 0.30)
+                    self.assertEqual([s["scenario_name"] for s in item["scenarios"]], ["Bear", "Base", "Bull"])
+
+                    updated = web_server.update_external_scenario(conn, version_id, item["id"], self._external_payload(weight=0.4, title="Updated"))
+                    self.assertEqual(updated["title"], "Updated")
+                    self.assertAlmostEqual(updated["external_weight"], 0.40)
+
+                    overlay = web_server.recalculate_final_scenario_overlay(conn, version_id)
+                    self.assertFalse(overlay["is_stale"])
+                    web_server.update_external_scenario(conn, version_id, item["id"], self._external_payload(weight=50, title="Updated again"))
+                    stale = web_server.get_final_scenario_overlay(conn, version_id)
+                    self.assertTrue(stale["is_stale"])
+
+                    deleted = web_server.delete_external_scenario(conn, version_id, item["id"])
+                    self.assertTrue(deleted["deleted_final_overlay"])
+                    self.assertEqual(web_server.list_external_scenarios(conn, version_id), [])
+                    self.assertIsNone(web_server.get_final_scenario_overlay(conn, version_id))
+                finally:
+                    conn.close()
+
+    def test_external_scenario_recalculation_blends_and_blocks_overweight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn)
+                    web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    overlay = web_server.recalculate_final_scenario_overlay(conn, version_id)
+                    self.assertAlmostEqual(overlay["bakingmoney_weight"], 0.70)
+                    self.assertAlmostEqual(overlay["external_total_weight"], 0.30)
+                    bear = overlay["scenarios"][0]
+                    self.assertEqual(bear["scenario_name"], "Bear")
+                    self.assertAlmostEqual(bear["price_low"], 77.0)
+                    self.assertAlmostEqual(bear["price_high"], 88.5)
+                    self.assertAlmostEqual(bear["cagr_low"], -4.9)
+                    self.assertAlmostEqual(bear["cagr_high"], -2.3)
+                    self.assertAlmostEqual(bear["cagr_mid"], -3.6)
+                    self.assertAlmostEqual(sum(s["probability"] for s in overlay["scenarios"]), 1.0)
+                    self.assertIsNotNone(overlay["expected_price"])
+                    self.assertIsNotNone(overlay["expected_cagr"])
+
+                    first = web_server.list_external_scenarios(conn, version_id)[0]
+                    web_server.update_external_scenario(conn, version_id, first["id"], self._external_payload(weight=80, title="High weight"))
+                    web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30, title="Second"))
+                    with self.assertRaisesRegex(ValueError, "more than 100%"):
+                        web_server.recalculate_final_scenario_overlay(conn, version_id)
+                finally:
+                    conn.close()
+
+    def test_external_scenarios_are_version_scoped_and_invalid_json_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    root_id, version_one = self._seed_version_with_scenarios(conn, symbol="VERS")
+                    now = web_server.utc_now_iso()
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 2, 'VERS', 'VERS Inc.', 100, 130, 5, 30, 6, 'assume2', 'model2', 'summary2', '{}', 'rerun', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_two = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ? AND version_number = 2", (root_id,)).fetchone()["id"]
+                    conn.commit()
+                    web_server.create_external_scenario(conn, version_one, self._external_payload(weight=25))
+                    self.assertEqual(len(web_server.list_external_scenarios(conn, version_one)), 1)
+                    self.assertEqual(len(web_server.list_external_scenarios(conn, version_two)), 0)
+
+                    invalid = self._external_payload()
+                    invalid["scenario_json"] = json.dumps({"scenarios": [{"name": "Bear"}]})
+                    with self.assertRaisesRegex(ValueError, "exactly 3"):
+                        web_server.create_external_scenario(conn, version_one, invalid)
+                finally:
+                    conn.close()

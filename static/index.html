@@ -118,9 +118,19 @@
               <section class="detail-card">
                 <div class="view-header">
                   <h3>Scenarios <button id="analysis-scenario-info-btn" title="Scenario generation info">i</button></h3>
-                  <button id="analysis-rerun-btn" disabled>Re-run Scenarios</button>
+                  <div class="table-actions">
+                    <button id="analysis-add-external-scenario-btn" type="button">Add External Scenario</button>
+                    <button id="analysis-rerun-btn" disabled>Re-run Scenarios</button>
+                  </div>
                 </div>
-                <div class="table-wrap">
+                <div id="analysis-scenario-overlay-tabs" class="scenario-overlay-tabs hidden" role="tablist" aria-label="Scenario overlay tabs">
+                  <button type="button" class="scenario-overlay-tab active" data-scenario-tab="final" role="tab" aria-selected="true">Final Scenario</button>
+                  <button type="button" class="scenario-overlay-tab" data-scenario-tab="bakingmoney" role="tab" aria-selected="false">BakingMoney Scenario</button>
+                  <button type="button" class="scenario-overlay-tab" data-scenario-tab="external" role="tab" aria-selected="false">External Scenarios</button>
+                </div>
+                <div id="analysis-final-scenario-panel" class="scenario-overlay-panel hidden"></div>
+                <div id="analysis-external-scenarios-panel" class="scenario-overlay-panel hidden"></div>
+                <div class="table-wrap" id="analysis-bakingmoney-scenario-panel">
                   <table id="analysis-scenarios-table">
                     <thead>
                       <tr>
@@ -170,6 +180,30 @@
                   </table>
                 </div>
               </section>
+            </div>
+
+            <div id="analysis-external-scenario-modal" class="modal hidden">
+              <div class="modal-content external-scenario-modal-content">
+                <div class="view-header">
+                  <h3 id="analysis-external-scenario-modal-title">Add External Scenario</h3>
+                  <button id="analysis-external-scenario-cancel-btn" type="button">Close</button>
+                </div>
+                <div class="external-scenario-form">
+                  <label>Title <input id="analysis-external-scenario-title" type="text" placeholder="e.g. ChatGPT scenario" /></label>
+                  <label>Weight (%) <input id="analysis-external-scenario-weight" type="number" min="0" max="100" step="0.1" value="30" /></label>
+                  <label>Source notes <textarea id="analysis-external-scenario-notes" rows="3" placeholder="Optional notes about the source or assumptions"></textarea></label>
+                  <div class="view-header external-scenario-json-header">
+                    <label for="analysis-external-scenario-json"><strong>Scenario JSON</strong></label>
+                    <button id="analysis-external-scenario-template-btn" type="button">Insert Template</button>
+                  </div>
+                  <textarea id="analysis-external-scenario-json" class="external-scenario-json" rows="16"></textarea>
+                  <p id="analysis-external-scenario-status" class="status"></p>
+                  <div class="table-actions">
+                    <button id="analysis-external-scenario-save-btn" type="button">Save External Scenario</button>
+                    <button id="analysis-external-scenario-cancel-form-btn" type="button">Cancel</button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div id="analysis-scenario-info-modal" class="detail-card hidden">

@@ -228,6 +228,13 @@ class PositionsAnalysisMergeTests(unittest.TestCase):
                 "symbol": "NVDA",
                 "rating": "Buy",
                 "upside": 25.5,
+                "expected_price": 125.5,
+                "expected_cagr": 4.5,
+                "upside_original": 20.0,
+                "expected_price_original": 120.0,
+                "expected_cagr_original": 3.5,
+                "uses_final_scenario_overlay": True,
+                "final_scenario_stale": False,
                 "bullish_confidence": 6.8,
                 "bearish_confidence": 4.1,
                 "confidence_diff": 2.7,
@@ -240,6 +247,10 @@ class PositionsAnalysisMergeTests(unittest.TestCase):
 
         self.assertEqual(nvda["rating"], "Buy")
         self.assertEqual(nvda["upside"], 25.5)
+        self.assertEqual(nvda["expected_price"], 125.5)
+        self.assertEqual(nvda["expected_cagr"], 4.5)
+        self.assertEqual(nvda["upside_original"], 20.0)
+        self.assertTrue(nvda["uses_final_scenario_overlay"])
         self.assertEqual(nvda["confidence_diff"], 2.7)
         self.assertEqual(msft["rating"], None)
         self.assertEqual(msft["upside"], None)
@@ -2232,6 +2243,74 @@ class ExternalScenarioOverlayTests(unittest.TestCase):
                     web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30, title="Second"))
                     with self.assertRaisesRegex(ValueError, "more than 100%"):
                         web_server.recalculate_final_scenario_overlay(conn, version_id)
+                finally:
+                    conn.close()
+
+    def test_non_stale_final_overlay_provides_effective_metrics_for_detail_list_and_positions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn, symbol="EFF")
+                    web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    overlay = web_server.recalculate_final_scenario_overlay(conn, version_id)
+
+                    detail_version = web_server.get_analysis_detail(conn, "EFF")["version"]
+                    self.assertTrue(detail_version["uses_final_scenario_overlay"])
+                    self.assertFalse(detail_version["final_scenario_stale"])
+                    self.assertEqual(detail_version["expected_price_original"], 140.0)
+                    self.assertEqual(detail_version["expected_cagr_original"], 7.0)
+                    self.assertEqual(detail_version["upside_original"], 40.0)
+                    self.assertAlmostEqual(detail_version["expected_price"], overlay["expected_price"])
+                    self.assertAlmostEqual(detail_version["expected_cagr"], overlay["expected_cagr"])
+                    self.assertAlmostEqual(detail_version["upside"], overlay["upside"])
+
+                    analysis_row = web_server.list_analysis_symbols(conn)[0]
+                    self.assertTrue(analysis_row["uses_final_scenario_overlay"])
+                    self.assertAlmostEqual(analysis_row["expected_price"], overlay["expected_price"])
+                    self.assertAlmostEqual(analysis_row["expected_cagr"], overlay["expected_cagr"])
+                    self.assertAlmostEqual(analysis_row["upside"], overlay["upside"])
+
+                    merged = web_server.merge_positions_with_latest_analysis([{"symbol": "EFF", "position": 1}], [analysis_row])[0]
+                    self.assertTrue(merged["uses_final_scenario_overlay"])
+                    self.assertAlmostEqual(merged["expected_price"], overlay["expected_price"])
+                    self.assertAlmostEqual(merged["expected_cagr"], overlay["expected_cagr"])
+                    self.assertAlmostEqual(merged["upside"], overlay["upside"])
+
+                    original_scenario_rows = conn.execute(
+                        "SELECT scenario_name, price_low, price_high FROM analysis_version_scenarios WHERE analysis_version_id = ? ORDER BY scenario_name",
+                        (version_id,),
+                    ).fetchall()
+                    self.assertEqual(len(original_scenario_rows), 3)
+                    self.assertEqual({row["scenario_name"]: row["price_high"] for row in original_scenario_rows}["Bull"], 220.0)
+                finally:
+                    conn.close()
+
+    def test_stale_final_overlay_is_ignored_for_effective_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn, symbol="STALE")
+                    item = web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    web_server.recalculate_final_scenario_overlay(conn, version_id)
+                    web_server.update_external_scenario(conn, version_id, item["id"], self._external_payload(weight=40, title="Changed"))
+
+                    detail_version = web_server.get_analysis_detail(conn, "STALE")["version"]
+                    self.assertFalse(detail_version["uses_final_scenario_overlay"])
+                    self.assertTrue(detail_version["final_scenario_stale"])
+                    self.assertEqual(detail_version["expected_price"], 140.0)
+                    self.assertEqual(detail_version["expected_cagr"], 7.0)
+                    self.assertEqual(detail_version["upside"], 40.0)
+
+                    analysis_row = web_server.list_analysis_symbols(conn)[0]
+                    self.assertFalse(analysis_row["uses_final_scenario_overlay"])
+                    self.assertTrue(analysis_row["final_scenario_stale"])
+                    self.assertEqual(analysis_row["expected_price"], 140.0)
                 finally:
                     conn.close()
 

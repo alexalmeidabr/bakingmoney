@@ -1047,6 +1047,17 @@ async function savePendingExternalWeights() {
 }
 
 
+async function refreshAnalysisDetailAfterExternalScenarioChange(targetTab = null) {
+  const symbol = analysisDetailState?.symbol;
+  const versionId = analysisDetailState?.selected_version_id;
+  if (!symbol || !versionId) return;
+  await loadAnalysisDetail(symbol, versionId);
+  if (targetTab) {
+    activeScenarioOverlayTab = targetTab;
+    renderScenarioOverlayArea();
+  }
+}
+
 async function recalculateFinalScenario() {
   analysisDetailStatus.textContent = 'Recalculating final scenario…';
   analysisDetailStatus.className = 'status';
@@ -1056,8 +1067,7 @@ async function recalculateFinalScenario() {
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to recalculate final scenario'));
     Object.assign(analysisDetailState, payload);
-    activeScenarioOverlayTab = 'final';
-    renderScenarioOverlayArea();
+    await refreshAnalysisDetailAfterExternalScenarioChange('final');
     analysisDetailStatus.textContent = 'Final Scenario recalculated.';
     analysisDetailStatus.className = 'status';
   } catch (error) {
@@ -1108,8 +1118,7 @@ async function saveExternalScenarioFromModal() {
     if (!response.ok) throw new Error(extractErrorMessage(result, 'Unable to save external scenario'));
     Object.assign(analysisDetailState, result);
     closeExternalScenarioModal();
-    activeScenarioOverlayTab = 'external';
-    renderScenarioOverlayArea();
+    await refreshAnalysisDetailAfterExternalScenarioChange('external');
     analysisDetailStatus.textContent = 'External scenario saved. Recalculate Final Scenario to apply it.';
     analysisDetailStatus.className = 'status';
   } catch (error) {
@@ -1127,9 +1136,9 @@ async function removeExternalScenario(id) {
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to remove external scenario'));
     Object.assign(analysisDetailState, payload);
-    activeScenarioOverlayTab = hasExternalScenarioOverlay() ? 'external' : 'bakingmoney';
-    renderScenarioOverlayArea();
-    analysisDetailStatus.textContent = hasExternalScenarioOverlay() ? 'External scenario removed. Recalculate Final Scenario to apply the change.' : 'External scenario removed.';
+    const hasRemainingExternalScenarios = hasExternalScenarioOverlay();
+    await refreshAnalysisDetailAfterExternalScenarioChange(hasRemainingExternalScenarios ? 'external' : 'bakingmoney');
+    analysisDetailStatus.textContent = hasRemainingExternalScenarios ? 'External scenario removed. Recalculate Final Scenario to apply the change.' : 'External scenario removed.';
     analysisDetailStatus.className = 'status';
   } catch (error) {
     analysisDetailStatus.textContent = `Error: ${error.message}`;

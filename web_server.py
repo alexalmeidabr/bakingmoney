@@ -3608,6 +3608,7 @@ def list_analysis_symbols(conn):
     rows = conn.execute(
         f"""
         SELECT r.symbol, v.company_name, v.current_price, v.expected_price, v.expected_cagr, v.upside, v.confidence_level AS overall_confidence,
+               v.id AS analysis_version_id,
                v.version_number AS analysis_version,
                COALESCE(
                    (
@@ -3647,6 +3648,15 @@ def list_analysis_symbols(conn):
             item["scenario_pass_count"] = 1
         item["core_confidence_diff"] = _diff_or_none(item.get("core_bullish_confidence"), item.get("core_bearish_confidence"))
         item["potential_confidence_diff"] = _diff_or_none(item.get("potential_bullish_confidence"), item.get("potential_bearish_confidence"))
+        item.update(
+            get_effective_analysis_metrics(
+                conn,
+                item.get("analysis_version_id"),
+                item.get("expected_price"),
+                item.get("expected_cagr"),
+                item.get("upside"),
+            )
+        )
         rating, confidence_diff = calculate_rating(
             item.get("upside"),
             item.get("bullish_confidence"),
@@ -4102,9 +4112,16 @@ def _version_payload(conn, version_row):
             for row in raw_payload.get("step3_runs", [])
         ]
 
+    effective_metrics = get_effective_analysis_metrics(
+        conn,
+        version_row["id"],
+        version_row["expected_price"],
+        version_row["expected_cagr"],
+        version_row["upside"],
+    )
     rating_settings = get_rating_settings(conn)
     rating, confidence_diff = calculate_rating(
-        version_row["upside"],
+        effective_metrics["upside"],
         bullish_confidence,
         bearish_confidence,
         rating_settings,
@@ -4119,9 +4136,7 @@ def _version_payload(conn, version_row):
         "symbol": version_row["symbol"],
         "company_name": version_row["company_name"],
         "current_price": version_row["current_price"],
-        "expected_price": version_row["expected_price"],
-        "expected_cagr": version_row["expected_cagr"],
-        "upside": version_row["upside"],
+        **effective_metrics,
         "overall_confidence": version_row["confidence_level"],
         "bullish_confidence": bullish_confidence,
         "bearish_confidence": bearish_confidence,
@@ -4422,6 +4437,37 @@ def delete_external_scenario(conn, version_id, external_id):
     deleted_overlay = _delete_final_overlay_if_no_external_scenarios(conn, version_id)
     conn.commit()
     return {"id": external_id, "title": row["title"], "deleted_final_overlay": deleted_overlay}
+
+
+def get_effective_analysis_metrics(conn, version_id, expected_price, expected_cagr, upside):
+    original = {
+        "expected_price_original": expected_price,
+        "expected_cagr_original": expected_cagr,
+        "upside_original": upside,
+    }
+    row = conn.execute(
+        """
+        SELECT expected_price, expected_cagr, upside, is_stale
+        FROM analysis_final_scenario_overlays
+        WHERE analysis_version_id = ?
+        """,
+        (version_id,),
+    ).fetchone()
+    uses_overlay = bool(row and not row["is_stale"])
+    effective_price = row["expected_price"] if uses_overlay else expected_price
+    effective_cagr = row["expected_cagr"] if uses_overlay else expected_cagr
+    effective_upside = row["upside"] if uses_overlay else upside
+    return {
+        **original,
+        "expected_price_effective": effective_price,
+        "expected_cagr_effective": effective_cagr,
+        "upside_effective": effective_upside,
+        "expected_price": effective_price,
+        "expected_cagr": effective_cagr,
+        "upside": effective_upside,
+        "uses_final_scenario_overlay": uses_overlay,
+        "final_scenario_stale": bool(row and row["is_stale"]),
+    }
 
 
 def _serialize_final_overlay_row(row):
@@ -5170,7 +5216,16 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
         row = dict(position)
         row["rating"] = analysis.get("rating") if analysis else None
         row["upside"] = analysis.get("upside") if analysis else None
+        row["expected_price"] = analysis.get("expected_price") if analysis else None
         row["expected_cagr"] = analysis.get("expected_cagr") if analysis else None
+        row["upside_original"] = analysis.get("upside_original") if analysis else None
+        row["expected_price_original"] = analysis.get("expected_price_original") if analysis else None
+        row["expected_cagr_original"] = analysis.get("expected_cagr_original") if analysis else None
+        row["upside_effective"] = analysis.get("upside_effective") if analysis else None
+        row["expected_price_effective"] = analysis.get("expected_price_effective") if analysis else None
+        row["expected_cagr_effective"] = analysis.get("expected_cagr_effective") if analysis else None
+        row["uses_final_scenario_overlay"] = analysis.get("uses_final_scenario_overlay") if analysis else False
+        row["final_scenario_stale"] = analysis.get("final_scenario_stale") if analysis else False
         row["bullish_confidence"] = analysis.get("bullish_confidence") if analysis else None
         row["bearish_confidence"] = analysis.get("bearish_confidence") if analysis else None
         row["confidence_diff"] = analysis.get("confidence_diff") if analysis else None

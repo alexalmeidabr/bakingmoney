@@ -881,9 +881,32 @@ class KeyVariableDriverCategoryTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_import_key_variable_edits_allows_more_than_twenty_variables(self):
+        payload = {
+            "key_variables": [
+                {
+                    "variable": f"Imported driver {index}",
+                    "type": "Bullish" if index % 2 == 0 else "Bearish",
+                    "driver_category": "Core Driver" if index % 3 else "Potential Driver",
+                    "confidence": index % 11,
+                    "importance": (index + 1) % 11,
+                }
+                for index in range(25)
+            ]
+        }
+
+        normalized = web_server._normalize_imported_key_variables_payload(payload)
+
+        self.assertEqual(len(normalized), 25)
+        self.assertEqual(normalized[0]["variable_text"], "Imported driver 0")
+        self.assertEqual(normalized[0]["driver_category"], "Potential Driver")
+        self.assertEqual(normalized[-1]["variable_text"], "Imported driver 24")
+
     def test_import_key_variable_edits_rejects_invalid_rows(self):
         with self.assertRaisesRegex(web_server.AnalysisValidationError, "key_variables must be an array"):
             web_server.import_key_variable_edits(None, "NVDA", 1, {"key_variables": "bad"})
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "key_variables must contain at least 1 item"):
+            web_server._normalize_imported_key_variables_payload({"key_variables": []})
         with self.assertRaisesRegex(web_server.AnalysisValidationError, "Row 1: type must be Bullish or Bearish"):
             web_server._normalize_imported_key_variables_payload({"key_variables": [{"variable": "Driver", "type": "bullish", "driver_category": "Core Driver", "confidence": 5, "importance": 5}]})
         with self.assertRaisesRegex(web_server.AnalysisValidationError, "Row 1: driver_category must be Core Driver or Potential Driver"):

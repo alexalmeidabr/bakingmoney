@@ -1503,7 +1503,6 @@ function parseKeyVariableImportPayload() {
   const keyVariables = payload.key_variables;
   if (!Array.isArray(keyVariables)) throw new Error('key_variables must be an array.');
   if (!keyVariables.length) throw new Error('key_variables must contain at least 1 item.');
-  if (keyVariables.length > 20) throw new Error('key_variables must contain no more than 20 items.');
 
   const normalized = keyVariables.map((item, index) => {
     const rowNumber = index + 1;

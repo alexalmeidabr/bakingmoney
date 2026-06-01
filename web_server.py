@@ -4016,8 +4016,6 @@ def _normalize_imported_key_variables_payload(payload):
         raise AnalysisValidationError("key_variables must be an array")
     if not raw_key_variables:
         raise AnalysisValidationError("key_variables must contain at least 1 item")
-    if len(raw_key_variables) > 20:
-        raise AnalysisValidationError("key_variables must contain no more than 20 items")
 
     normalized = []
     for index, item in enumerate(raw_key_variables, start=1):

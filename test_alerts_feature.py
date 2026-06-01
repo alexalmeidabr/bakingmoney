@@ -833,6 +833,64 @@ class KeyVariableDriverCategoryTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_import_key_variable_edits_replaces_saved_variables_with_strict_json_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = "2026-05-01T00:00:00+00:00"
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("NVDA", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'NVDA', 'NVIDIA', 100, 130, 5, 30, 6, 'assume', 'model', 'summary', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+                    conn.commit()
+
+                    web_server.save_key_variable_edits(
+                        conn,
+                        "NVDA",
+                        version_id,
+                        [{"variable_text": "Old driver", "variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 5, "importance": 5}],
+                    )
+                    detail = web_server.import_key_variable_edits(
+                        conn,
+                        "NVDA",
+                        version_id,
+                        {
+                            "symbol": "NVDA",
+                            "key_variables": [
+                                {"variable": "Imported core demand", "type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 9},
+                                {"variable": "Imported optional risk", "type": "Bearish", "driver_category": "Potential Driver", "confidence": 4, "importance": 7},
+                            ],
+                        },
+                    )
+                    saved = detail["saved_key_variable_edits"]["key_variables"]
+                    self.assertEqual([item["variable_text"] for item in saved], ["Imported core demand", "Imported optional risk"])
+                    self.assertEqual(saved[1]["driver_category"], "Potential Driver")
+                    self.assertEqual(saved[1]["variable_type"], "Bearish")
+                finally:
+                    conn.close()
+
+    def test_import_key_variable_edits_rejects_invalid_rows(self):
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "key_variables must be an array"):
+            web_server.import_key_variable_edits(None, "NVDA", 1, {"key_variables": "bad"})
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "Row 1: type must be Bullish or Bearish"):
+            web_server._normalize_imported_key_variables_payload({"key_variables": [{"variable": "Driver", "type": "bullish", "driver_category": "Core Driver", "confidence": 5, "importance": 5}]})
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "Row 1: driver_category must be Core Driver or Potential Driver"):
+            web_server._normalize_imported_key_variables_payload({"key_variables": [{"variable": "Driver", "type": "Bullish", "driver_category": "core driver", "confidence": 5, "importance": 5}]})
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "Row 1: confidence must be an integer from 0 to 10"):
+            web_server._normalize_imported_key_variables_payload({"key_variables": [{"variable": "Driver", "type": "Bullish", "driver_category": "Core Driver", "confidence": 5.5, "importance": 5}]})
+
     def test_save_key_variable_edits_rejects_invalid_driver_category(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")
@@ -1219,11 +1277,18 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="alert-detail-open-analysis-btn"', html)
         self.assertIn('id="alert-detail-edit-vars-btn"', html)
         self.assertIn('id="alert-detail-rerun-btn"', html)
+        self.assertIn('id="analysis-import-variables-btn"', html)
+        self.assertIn('id="analysis-key-variable-import-modal"', html)
+        self.assertIn('id="analysis-key-variable-import-template-btn"', html)
+        self.assertIn('id="analysis-key-variable-import-save-btn"', html)
         self.assertIn('data-sort-key="core_confidence_diff" class="sortable">Confidence</th>', html)
         self.assertIn('data-sort-key="potential_confidence_diff" class="sortable">Potential Confidence</th>', html)
         js = Path('static/app.js').read_text(encoding='utf-8')
         self.assertIn('<td>${formatPotentialConfidenceDisplay(item)}</td>', js)
         self.assertIn('const potentialConfidenceValue = formatPotentialConfidenceDisplay(position);', js)
+        self.assertIn('function parseKeyVariableImportPayload()', js)
+        self.assertIn('/key-variables/import', js)
+        self.assertIn('This will replace the current key variables for this analysis version. Continue?', js)
         self.assertIn('data-sort-key="last_activity_at" class="sortable">Last Scenario/Event</th>', html)
         self.assertIn('data-sort-key="costBasis" class="sortable">Cost Value</th>', html)
         self.assertIn('id="tws-data-toggle"', html)

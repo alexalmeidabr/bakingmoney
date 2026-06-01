@@ -887,12 +887,14 @@ th.sortable[data-sort-direction='desc']::after {
   width: min(960px, 100%);
 }
 
-.external-scenario-form {
+.external-scenario-form,
+.key-variable-import-form {
   display: grid;
   gap: 12px;
 }
 
-.external-scenario-form label {
+.external-scenario-form label,
+.key-variable-import-form label {
   display: grid;
   gap: 6px;
   color: var(--muted);
@@ -902,7 +904,8 @@ th.sortable[data-sort-direction='desc']::after {
   margin: 0;
 }
 
-.external-scenario-json {
+.external-scenario-json,
+.key-variable-import-json {
   width: 100%;
   min-height: 320px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

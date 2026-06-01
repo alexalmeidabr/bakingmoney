@@ -65,6 +65,14 @@ const analysisVersionPrevBtn = document.getElementById('analysis-version-prev-bt
 const analysisVersionNextBtn = document.getElementById('analysis-version-next-btn');
 const analysisVersionSelect = document.getElementById('analysis-version-select');
 const analysisEditVariablesBtn = document.getElementById('analysis-edit-variables-btn');
+const analysisImportVariablesBtn = document.getElementById('analysis-import-variables-btn');
+const analysisKeyVariableImportModalEl = document.getElementById('analysis-key-variable-import-modal');
+const analysisKeyVariableImportJsonEl = document.getElementById('analysis-key-variable-import-json');
+const analysisKeyVariableImportStatusEl = document.getElementById('analysis-key-variable-import-status');
+const analysisKeyVariableImportTemplateBtn = document.getElementById('analysis-key-variable-import-template-btn');
+const analysisKeyVariableImportSaveBtn = document.getElementById('analysis-key-variable-import-save-btn');
+const analysisKeyVariableImportCloseBtn = document.getElementById('analysis-key-variable-import-close-btn');
+const analysisKeyVariableImportCancelBtn = document.getElementById('analysis-key-variable-import-cancel-btn');
 const analysisAddVariableBtn = document.getElementById('analysis-add-variable-btn');
 const analysisSaveVariablesBtn = document.getElementById('analysis-save-variables-btn');
 const analysisCancelVariablesBtn = document.getElementById('analysis-cancel-variables-btn');
@@ -1448,6 +1456,125 @@ function cancelEditedBusinessSummary() {
   renderAnalysisDetail();
   analysisDetailStatus.textContent = 'Business summary editing canceled.';
   analysisDetailStatus.className = 'status';
+}
+
+function getKeyVariableImportTemplate() {
+  return JSON.stringify({
+    symbol: analysisDetailState?.symbol || 'SYMBOL',
+    key_variables: [
+      {
+        variable: 'Example bullish core driver',
+        type: 'Bullish',
+        driver_category: 'Core Driver',
+        confidence: 7,
+        importance: 8,
+      },
+      {
+        variable: 'Example bearish potential risk',
+        type: 'Bearish',
+        driver_category: 'Potential Driver',
+        confidence: 4,
+        importance: 7,
+      },
+    ],
+  }, null, 2);
+}
+
+function openKeyVariableImportModal() {
+  analysisKeyVariableImportJsonEl.value = getKeyVariableImportTemplate();
+  analysisKeyVariableImportStatusEl.textContent = '';
+  analysisKeyVariableImportStatusEl.className = 'status';
+  analysisKeyVariableImportModalEl.classList.remove('hidden');
+  analysisKeyVariableImportJsonEl.focus();
+}
+
+function closeKeyVariableImportModal() {
+  analysisKeyVariableImportModalEl.classList.add('hidden');
+}
+
+function parseKeyVariableImportPayload() {
+  let payload;
+  try {
+    payload = JSON.parse(analysisKeyVariableImportJsonEl.value || '');
+  } catch (_error) {
+    throw new Error('JSON must be valid.');
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Import payload must be a JSON object.');
+  const keyVariables = payload.key_variables;
+  if (!Array.isArray(keyVariables)) throw new Error('key_variables must be an array.');
+  if (!keyVariables.length) throw new Error('key_variables must contain at least 1 item.');
+  if (keyVariables.length > 20) throw new Error('key_variables must contain no more than 20 items.');
+
+  const normalized = keyVariables.map((item, index) => {
+    const rowNumber = index + 1;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error(`Row ${rowNumber}: key variable must be an object.`);
+    const variable = typeof item.variable === 'string' ? item.variable.trim() : '';
+    if (!variable) throw new Error(`Row ${rowNumber}: variable must be non-empty text.`);
+    if (!['Bullish', 'Bearish'].includes(item.type)) throw new Error(`Row ${rowNumber}: type must be Bullish or Bearish.`);
+    const driverCategory = item.driver_category == null || item.driver_category === '' ? 'Core Driver' : item.driver_category;
+    if (!['Core Driver', 'Potential Driver'].includes(driverCategory)) throw new Error(`Row ${rowNumber}: driver_category must be Core Driver or Potential Driver.`);
+    const confidence = Number(item.confidence);
+    const importance = Number(item.importance);
+    if (!Number.isInteger(confidence) || confidence < 0 || confidence > 10) throw new Error(`Row ${rowNumber}: confidence must be an integer from 0 to 10.`);
+    if (!Number.isInteger(importance) || importance < 0 || importance > 10) throw new Error(`Row ${rowNumber}: importance must be an integer from 0 to 10.`);
+    return {
+      variable,
+      type: item.type,
+      driver_category: driverCategory,
+      confidence,
+      importance,
+    };
+  });
+
+  return {
+    symbol: typeof payload.symbol === 'string' ? payload.symbol.trim() : '',
+    key_variables: normalized,
+  };
+}
+
+async function importKeyVariablesFromJson() {
+  let importPayload;
+  try {
+    importPayload = parseKeyVariableImportPayload();
+  } catch (error) {
+    analysisKeyVariableImportStatusEl.textContent = `Error: ${error.message}`;
+    analysisKeyVariableImportStatusEl.className = 'status error';
+    return;
+  }
+
+  const currentSymbol = analysisDetailState?.symbol || '';
+  if (importPayload.symbol && normalizeSymbolForJoin(importPayload.symbol) !== normalizeSymbolForJoin(currentSymbol)) {
+    const continueMismatch = window.confirm(`Imported symbol ${importPayload.symbol} does not match current symbol ${currentSymbol}. Continue?`);
+    if (!continueMismatch) return;
+  }
+  const shouldReplace = window.confirm('This will replace the current key variables for this analysis version. Continue?');
+  if (!shouldReplace) return;
+
+  const versionId = analysisDetailState?.version?.id;
+  if (!versionId) return;
+  analysisKeyVariableImportStatusEl.textContent = 'Importing key variables…';
+  analysisKeyVariableImportStatusEl.className = 'status';
+  try {
+    const response = await fetch(`/api/analysis/${encodeURIComponent(currentSymbol)}/key-variables/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version_id: versionId, ...importPayload }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to import key variables'));
+    analysisDetailState = payload.analysis;
+    isEditingVariables = false;
+    editableAnalysisVariables = null;
+    activeAnalysisVariableCategory = 'Core Driver';
+    closeKeyVariableImportModal();
+    renderAnalysisDetail();
+    loadAnalysis();
+    analysisDetailStatus.textContent = 'Key variables imported and saved. Re-run scenarios when ready.';
+    analysisDetailStatus.className = 'status';
+  } catch (error) {
+    analysisKeyVariableImportStatusEl.textContent = `Error: ${error.message}`;
+    analysisKeyVariableImportStatusEl.className = 'status error';
+  }
 }
 
 async function saveEditedVariables() {
@@ -3371,6 +3498,13 @@ analysisEditVariablesBtn.addEventListener('click', () => {
   isEditingVariables = true;
   renderVariablesTable();
 });
+analysisImportVariablesBtn.addEventListener('click', openKeyVariableImportModal);
+analysisKeyVariableImportTemplateBtn.addEventListener('click', () => {
+  analysisKeyVariableImportJsonEl.value = getKeyVariableImportTemplate();
+});
+analysisKeyVariableImportSaveBtn.addEventListener('click', importKeyVariablesFromJson);
+analysisKeyVariableImportCloseBtn.addEventListener('click', closeKeyVariableImportModal);
+analysisKeyVariableImportCancelBtn.addEventListener('click', closeKeyVariableImportModal);
 analysisAddVariableBtn.addEventListener('click', () => {
   if (!isEditingVariables) return;
   syncActiveAnalysisVariableRowsFromDom();

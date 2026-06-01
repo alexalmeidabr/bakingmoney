@@ -155,6 +155,7 @@
                   <h3>Key Variables</h3>
                   <div class="table-actions">
                     <button id="analysis-edit-variables-btn">Edit Key Variables</button>
+                    <button id="analysis-import-variables-btn" type="button">Import Key Variables JSON</button>
                     <button id="analysis-add-variable-btn" class="hidden">Add Key Variable</button>
                     <button id="analysis-save-variables-btn" class="hidden">Save Key Variables</button>
                     <button id="analysis-cancel-variables-btn" class="hidden">Cancel</button>
@@ -181,6 +182,29 @@
                   </table>
                 </div>
               </section>
+            </div>
+
+
+            <div id="analysis-key-variable-import-modal" class="modal hidden">
+              <div class="modal-content key-variable-import-modal-content">
+                <div class="view-header">
+                  <h3>Import Key Variables JSON</h3>
+                  <button id="analysis-key-variable-import-close-btn" type="button">Close</button>
+                </div>
+                <div class="key-variable-import-form">
+                  <p class="status">Importing replaces the current saved key variables for this analysis version. Use the fixed JSON format with <code>symbol</code> and <code>key_variables</code>.</p>
+                  <div class="view-header external-scenario-json-header">
+                    <label for="analysis-key-variable-import-json"><strong>Key Variables JSON</strong></label>
+                    <button id="analysis-key-variable-import-template-btn" type="button">Insert Template</button>
+                  </div>
+                  <textarea id="analysis-key-variable-import-json" class="key-variable-import-json" rows="16"></textarea>
+                  <p id="analysis-key-variable-import-status" class="status"></p>
+                  <div class="table-actions">
+                    <button id="analysis-key-variable-import-save-btn" type="button">Import Key Variables</button>
+                    <button id="analysis-key-variable-import-cancel-btn" type="button">Cancel</button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div id="analysis-external-scenario-modal" class="modal hidden">

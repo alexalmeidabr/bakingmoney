@@ -4008,6 +4008,70 @@ def refresh_latest_analysis_market_prices(conn):
     return {"updated": updated, "skipped": skipped}
 
 
+def _normalize_imported_key_variables_payload(payload):
+    if not isinstance(payload, dict):
+        raise AnalysisValidationError("Import payload must be a JSON object")
+    raw_key_variables = payload.get("key_variables")
+    if not isinstance(raw_key_variables, list):
+        raise AnalysisValidationError("key_variables must be an array")
+    if not raw_key_variables:
+        raise AnalysisValidationError("key_variables must contain at least 1 item")
+    if len(raw_key_variables) > 20:
+        raise AnalysisValidationError("key_variables must contain no more than 20 items")
+
+    normalized = []
+    for index, item in enumerate(raw_key_variables, start=1):
+        if not isinstance(item, dict):
+            raise AnalysisValidationError(f"Row {index}: key variable must be an object")
+
+        variable_text = (item.get("variable") or item.get("variable_text") or "").strip()
+        if not variable_text:
+            raise AnalysisValidationError(f"Row {index}: variable must be non-empty text")
+
+        variable_type = item.get("type") or item.get("variable_type")
+        if variable_type not in {"Bullish", "Bearish"}:
+            raise AnalysisValidationError(f"Row {index}: type must be Bullish or Bearish")
+
+        try:
+            driver_category = normalized_driver_category(item.get("driver_category"))
+        except AnalysisValidationError:
+            raise AnalysisValidationError(f"Row {index}: driver_category must be Core Driver or Potential Driver")
+
+        confidence = _strict_import_score(item.get("confidence"), f"Row {index}: confidence")
+        importance = _strict_import_score(item.get("importance"), f"Row {index}: importance")
+        normalized.append(
+            {
+                "variable_text": variable_text,
+                "variable_type": variable_type,
+                "driver_category": driver_category,
+                "confidence": confidence,
+                "importance": importance,
+            }
+        )
+
+    return normalized
+
+
+def _strict_import_score(value, label):
+    if isinstance(value, bool):
+        raise AnalysisValidationError(f"{label} must be an integer from 0 to 10")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise AnalysisValidationError(f"{label} must be an integer from 0 to 10")
+    if not math.isfinite(number) or not number.is_integer():
+        raise AnalysisValidationError(f"{label} must be an integer from 0 to 10")
+    integer = int(number)
+    if integer < 0 or integer > 10:
+        raise AnalysisValidationError(f"{label} must be an integer from 0 to 10")
+    return integer
+
+
+def import_key_variable_edits(conn, symbol, version_id, import_payload):
+    normalized = _normalize_imported_key_variables_payload(import_payload)
+    return save_key_variable_edits(conn, symbol, version_id, normalized)
+
+
 def _normalize_manual_key_variables(raw_key_variables):
     if not isinstance(raw_key_variables, list) or not raw_key_variables:
         raise AnalysisValidationError("key_variables must be a non-empty array")
@@ -7118,6 +7182,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if len(parts) == 3 and parts[0].isdigit() and parts[1] == "final-scenario" and parts[2] == "recalculate":
                 return self.handle_final_scenario_recalculate(int(parts[0]))
             return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
+        if path.startswith("/api/analysis/") and path.endswith("/key-variables/import"):
+            symbol = normalize_symbol(path[len("/api/analysis/") : -len("/key-variables/import")])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_analysis_key_variables_import(symbol)
         if path.startswith("/api/analysis/") and path.endswith("/key-variables"):
             symbol = normalize_symbol(path[len("/api/analysis/") : -len("/key-variables")])
             if not symbol:
@@ -8015,6 +8084,26 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 {"error": "Unable to import analysis from positions.", "details": str(exc)},
                 status=500,
             )
+        finally:
+            conn.close()
+
+    def handle_analysis_key_variables_import(self, symbol):
+        payload = self._read_json_body() or {}
+        version_id = payload.get("version_id")
+        if version_id is None:
+            return self._send_json({"error": "version_id is required"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            detail = import_key_variable_edits(conn, symbol, int(version_id), payload)
+            self._send_json({"ok": True, "analysis": detail})
+        except AnalysisValidationError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            logger.exception("Unable to import key variable edits for symbol %s", symbol)
+            self._send_json({"error": "Unable to import key variables.", "details": str(exc)}, status=500)
         finally:
             conn.close()
 

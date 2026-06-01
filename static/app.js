@@ -952,7 +952,7 @@ function setScenarioOverlayTab(tab) {
 function renderScenarioOverlayArea() {
   const hasExternal = hasExternalScenarioOverlay();
   if (!hasExternal) activeScenarioOverlayTab = 'bakingmoney';
-  else if (!['final', 'bakingmoney', 'external'].includes(activeScenarioOverlayTab) || activeScenarioOverlayTab === 'bakingmoney') activeScenarioOverlayTab = 'final';
+  else if (!['final', 'bakingmoney', 'external'].includes(activeScenarioOverlayTab)) activeScenarioOverlayTab = 'final';
 
   analysisScenarioOverlayTabsEl.classList.toggle('hidden', !hasExternal);
   analysisFinalScenarioPanelEl.classList.toggle('hidden', !hasExternal || activeScenarioOverlayTab !== 'final');

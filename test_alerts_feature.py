@@ -1280,6 +1280,15 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertLess(html.index('<h4>Earnings Documents</h4>'), html.index('<h4>Key Variables Snapshot</h4>'))
         self.assertIn('id="prompt-earnings-watchpoint-analysis"', html)
 
+    def test_external_scenario_bakingmoney_tab_is_not_forced_back_to_final(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        html = Path('static/index.html').read_text(encoding='utf-8')
+        self.assertIn('data-scenario-tab="bakingmoney"', html)
+        self.assertIn("button.addEventListener('click', () => setScenarioOverlayTab(button.dataset.scenarioTab));", js)
+        self.assertIn("analysisBakingMoneyScenarioPanelEl.classList.toggle('hidden', hasExternal && activeScenarioOverlayTab !== 'bakingmoney');", js)
+        self.assertNotIn("activeScenarioOverlayTab === 'bakingmoney') activeScenarioOverlayTab = 'final'", js)
+
     def test_earnings_review_navigation_uses_view_state_and_hash(self):
         from pathlib import Path
         js = Path('static/app.js').read_text(encoding='utf-8')

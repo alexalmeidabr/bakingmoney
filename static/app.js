@@ -551,6 +551,12 @@ function formatDate(value) {
   const year = d.getFullYear();
   return `${day}.${month}.${year}`;
 }
+function formatLocalDateForExternalScenarioNotes(dateValue = new Date()) {
+  const day = String(dateValue.getDate()).padStart(2, '0');
+  const month = String(dateValue.getMonth() + 1).padStart(2, '0');
+  const year = dateValue.getFullYear();
+  return `${day}.${month}.${year}`;
+}
 const formatDateTime = (v) => {
   const d = parseDateValue(v);
   if (!d) return 'N/A';
@@ -1108,7 +1114,7 @@ function openExternalScenarioModal(item = null) {
   analysisExternalScenarioModalTitleEl.textContent = item ? 'Edit External Scenario' : 'Add External Scenario';
   analysisExternalScenarioTitleEl.value = item?.title || '';
   analysisExternalScenarioWeightEl.value = item ? externalScenarioWeightPercent(item) : 30;
-  analysisExternalScenarioNotesEl.value = item?.source_notes || '';
+  analysisExternalScenarioNotesEl.value = item ? (item.source_notes || '') : formatLocalDateForExternalScenarioNotes();
   analysisExternalScenarioJsonEl.value = item?.scenario_json || getExternalScenarioTemplate();
   analysisExternalScenarioStatusEl.textContent = '';
   analysisExternalScenarioStatusEl.className = 'status';

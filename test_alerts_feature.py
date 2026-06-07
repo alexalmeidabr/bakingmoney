@@ -1417,6 +1417,15 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertLess(html.index('<h4>Earnings Documents</h4>'), html.index('<h4>Key Variables Snapshot</h4>'))
         self.assertIn('id="prompt-earnings-watchpoint-analysis"', html)
 
+    def test_external_scenario_create_prefills_notes_with_local_date_without_overwriting_edits(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn('function formatLocalDateForExternalScenarioNotes(dateValue = new Date())', js)
+        self.assertIn(
+            "analysisExternalScenarioNotesEl.value = item ? (item.source_notes || '') : formatLocalDateForExternalScenarioNotes();",
+            js,
+        )
+
     def test_external_scenario_bakingmoney_tab_is_not_forced_back_to_final(self):
         from pathlib import Path
         js = Path('static/app.js').read_text(encoding='utf-8')

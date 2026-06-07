@@ -2327,19 +2327,21 @@ function addCalendarDays(dateValue, days) {
   return next;
 }
 
-function getEarningsCalendarReleaseDateState(releaseDateValue, today) {
+function releaseDateMatchesEarningsCalendarDateFilters(releaseDateValue, today, selectedDateFilters) {
   const releaseDate = parseCalendarDate(releaseDateValue);
-  if (!releaseDate) return null;
+  if (!releaseDate) return false;
   const normalizedToday = new Date(today);
   normalizedToday.setHours(0, 0, 0, 0);
   const yesterday = addCalendarDays(normalizedToday, -1);
   const tomorrow = addCalendarDays(normalizedToday, 1);
   const releaseTime = releaseDate.getTime();
-  if (releaseTime < yesterday.getTime()) return 'past';
-  if (releaseTime === yesterday.getTime()) return 'yesterday';
-  if (releaseTime === normalizedToday.getTime()) return 'today';
-  if (releaseTime === tomorrow.getTime()) return 'tomorrow';
-  return 'future';
+  const todayTime = normalizedToday.getTime();
+  if (selectedDateFilters.has('past') && releaseTime < todayTime) return true;
+  if (selectedDateFilters.has('yesterday') && releaseTime === yesterday.getTime()) return true;
+  if (selectedDateFilters.has('today') && releaseTime === todayTime) return true;
+  if (selectedDateFilters.has('tomorrow') && releaseTime === tomorrow.getTime()) return true;
+  if (selectedDateFilters.has('future') && releaseTime > todayTime) return true;
+  return false;
 }
 
 function getFilteredAndSortedEarningsCalendarItems() {
@@ -2351,9 +2353,7 @@ function getFilteredAndSortedEarningsCalendarItems() {
     if (earningsCalendarPortfolioFilter === 'in_portfolio' && !item.in_portfolio) return false;
     if (earningsCalendarPortfolioFilter === 'not_in_portfolio' && item.in_portfolio) return false;
     if (!hasSpecificDateFilter) return true;
-    const releaseDateState = getEarningsCalendarReleaseDateState(item.release_date, today);
-    if (!releaseDateState) return false;
-    return selectedDateFilters.has(releaseDateState);
+    return releaseDateMatchesEarningsCalendarDateFilters(item.release_date, today, selectedDateFilters);
   });
   return filtered.sort((a, b) => {
     const left = parseCalendarDate(a.release_date);

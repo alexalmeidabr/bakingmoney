@@ -659,29 +659,31 @@ th.sortable[data-sort-direction='desc']::after {
   left: auto;
   right: 0;
   width: min(280px, calc(100vw - 48px));
-  min-width: min(280px, calc(100vw - 48px));
+  min-width: min(260px, calc(100vw - 48px));
   max-width: calc(100vw - 48px);
   box-sizing: border-box;
+  padding: 12px;
 }
 
 #earnings-calendar-date-filter .rating-filter-option {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  justify-content: start;
-  justify-items: start;
+  justify-content: flex-start;
   gap: 10px;
   box-sizing: border-box;
+  width: 100%;
   padding: 9px 12px;
 }
 
 #earnings-calendar-date-filter .rating-filter-option input[type="checkbox"] {
-  justify-self: start;
+  flex: 0 0 auto;
+  margin: 0;
 }
 
 #earnings-calendar-date-filter .rating-filter-option-label {
+  display: inline-block;
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: 100%;
   overflow: visible;
   text-overflow: clip;
   white-space: nowrap;

@@ -297,7 +297,9 @@ const RATING_FILTER_LABEL_BY_KEY = Object.fromEntries(RATING_FILTER_OPTIONS.map(
 
 const EARNINGS_CALENDAR_DATE_FILTER_OPTIONS = [
   { key: 'past', label: 'Past' },
+  { key: 'yesterday', label: 'Yesterday' },
   { key: 'today', label: 'Today' },
+  { key: 'tomorrow', label: 'Tomorrow' },
   { key: 'future', label: 'Future' },
 ];
 
@@ -401,7 +403,9 @@ function updateEarningsCalendarDateFilterLabel() {
 
   if (!earningsCalendarDateFilterLabelEl) return;
 
-  if (selectedCount === 0) {
+  const totalCount = EARNINGS_CALENDAR_DATE_FILTER_OPTIONS.length;
+
+  if (selectedCount === 0 || selectedCount === totalCount) {
     earningsCalendarDateFilterLabelEl.textContent = 'All';
     return;
   }
@@ -2316,12 +2320,26 @@ function parseCalendarDisplayDateToIso(displayDateValue) {
   return { ok: true, isoDate };
 }
 
+function addCalendarDays(dateValue, days) {
+  const next = new Date(dateValue);
+  next.setDate(next.getDate() + days);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
 function getEarningsCalendarReleaseDateState(releaseDateValue, today) {
   const releaseDate = parseCalendarDate(releaseDateValue);
   if (!releaseDate) return null;
-  if (releaseDate < today) return 'past';
-  if (releaseDate > today) return 'future';
-  return 'today';
+  const normalizedToday = new Date(today);
+  normalizedToday.setHours(0, 0, 0, 0);
+  const yesterday = addCalendarDays(normalizedToday, -1);
+  const tomorrow = addCalendarDays(normalizedToday, 1);
+  const releaseTime = releaseDate.getTime();
+  if (releaseTime < yesterday.getTime()) return 'past';
+  if (releaseTime === yesterday.getTime()) return 'yesterday';
+  if (releaseTime === normalizedToday.getTime()) return 'today';
+  if (releaseTime === tomorrow.getTime()) return 'tomorrow';
+  return 'future';
 }
 
 function getFilteredAndSortedEarningsCalendarItems() {

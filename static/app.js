@@ -482,6 +482,20 @@ function extractErrorMessage(payload, fallback) {
   if (!payload || typeof payload !== 'object') return fallback;
   return [payload.error, payload.details, payload.debugHint].filter(Boolean).join(' ') || fallback;
 }
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function shouldRetryTwsPositionsRefresh(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  if (payload.data_source && payload.data_source !== 'live') return true;
+  const warning = String(payload.warning || '');
+  return /TWS offline|TWS unavailable|no saved positions/i.test(warning);
+}
+
+function shouldRetryTwsAnalysisPriceRefresh(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  return Number(payload.updated || 0) === 0 && Number(payload.skipped || 0) > 0;
+}
 const formatNumber = (value, digits = 2) => (typeof value !== 'number' || Number.isNaN(value) ? 'N/A' : value.toLocaleString(undefined, { maximumFractionDigits: digits }));
 const formatCurrencyValue = (value, currency, digits = 2) => {
   const formatted = formatNumber(value, digits);
@@ -1628,22 +1642,37 @@ async function loadPositions(options = {}) {
   positionsStatusEl.textContent = options.refresh ? 'Refreshing positions from TWS…' : 'Loading saved positions…';
   positionsStatusEl.className = 'status';
   positionsTable.classList.add('hidden');
+  if (options.refresh) refreshBtn.disabled = true;
 
   try {
-    const [positionsResponse, analysisResponse] = await Promise.all([
-      fetch(options.refresh ? '/api/positions?refresh=1' : '/api/positions'),
-      fetch('/api/analysis'),
-    ]);
-    const positionsPayload = await positionsResponse.json();
-    const analysisPayload = await analysisResponse.json();
-    if (!positionsResponse.ok) throw new Error(extractErrorMessage(positionsPayload, 'Request failed'));
+    let positionsPayload = null;
+    let analysisPayload = null;
+    let analysisResponseOk = false;
+    const maxAttempts = options.refresh ? 2 : 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const [positionsResponse, analysisResponse] = await Promise.all([
+        fetch(options.refresh ? '/api/positions?refresh=1' : '/api/positions'),
+        fetch('/api/analysis'),
+      ]);
+      positionsPayload = await positionsResponse.json();
+      analysisPayload = await analysisResponse.json();
+      analysisResponseOk = analysisResponse.ok;
+      if (!positionsResponse.ok) throw new Error(extractErrorMessage(positionsPayload, 'Request failed'));
+      if (options.refresh && attempt === 0 && shouldRetryTwsPositionsRefresh(positionsPayload)) {
+        positionsStatusEl.textContent = 'Connecting to TWS… retrying refresh once.';
+        await delay(750);
+        positionsStatusEl.textContent = 'Refreshing positions from TWS…';
+        continue;
+      }
+      break;
+    }
 
     console.debug('[positions] raw /api/positions response sample:', {
       count: (positionsPayload.positions || []).length,
       first: (positionsPayload.positions || [])[0] || null,
     });
     console.debug('[positions] raw /api/analysis response sample:', {
-      ok: analysisResponse.ok,
+      ok: analysisResponseOk,
       topLevelKeys: analysisPayload && typeof analysisPayload === 'object' ? Object.keys(analysisPayload) : [],
       count: Array.isArray(analysisPayload?.analysis) ? analysisPayload.analysis.length : 0,
       first: Array.isArray(analysisPayload?.analysis) ? (analysisPayload.analysis[0] || null) : null,
@@ -1651,7 +1680,7 @@ async function loadPositions(options = {}) {
 
     latestPositions = mergePositionsWithAnalysis(
       positionsPayload.positions || [],
-      analysisResponse.ok ? analysisPayload : [],
+      analysisResponseOk ? analysisPayload : [],
     );
 
     console.debug('[positions] merged rows sample:', {
@@ -1695,8 +1724,11 @@ async function loadPositions(options = {}) {
 
     positionsStatusEl.textContent = `Error: ${error.message}`;
     positionsStatusEl.className = 'status error';
+  } finally {
+    if (options.refresh) refreshBtn.disabled = false;
   }
 }
+
 
 async function loadAnalysis() {
   analysisStatusEl.textContent = 'Loading analysis…'; analysisStatusEl.className = 'status'; analysisTable.classList.add('hidden');
@@ -1832,10 +1864,21 @@ async function importAnalysisFromPositions() {
 
 async function refreshAnalysisPrices() {
   analysisStatusEl.textContent = 'Updating current prices…'; analysisStatusEl.className = 'status';
+  analysisRefreshPricesBtn.disabled = true;
   try {
-    const response = await fetch('/api/analysis/refresh-prices', { method: 'POST' });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to refresh analysis prices'));
+    let payload = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fetch('/api/analysis/refresh-prices', { method: 'POST' });
+      payload = await response.json();
+      if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to refresh analysis prices'));
+      if (attempt === 0 && shouldRetryTwsAnalysisPriceRefresh(payload)) {
+        analysisStatusEl.textContent = 'Connecting to TWS… retrying price refresh once.';
+        await delay(750);
+        analysisStatusEl.textContent = 'Updating current prices…';
+        continue;
+      }
+      break;
+    }
     latestAnalysis = enrichAnalysisWithPortfolioStatus(payload.analysis || []);
     updateAnalysisSortHeaderState();
     renderAnalysisList();
@@ -1844,8 +1887,11 @@ async function refreshAnalysisPrices() {
   } catch (error) {
     analysisStatusEl.textContent = `Error: ${error.message}`;
     analysisStatusEl.className = 'status error';
+  } finally {
+    analysisRefreshPricesBtn.disabled = false;
   }
 }
+
 
 async function deleteAnalysis(symbol) {
   analysisStatusEl.textContent = `Deleting ${symbol}…`; analysisStatusEl.className = 'status';

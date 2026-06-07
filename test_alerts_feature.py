@@ -1323,6 +1323,12 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("const twsDataToggleEl = document.getElementById('tws-data-toggle');", js)
         self.assertIn('async function updateTwsDataToggle(enabled)', js)
         self.assertIn("twsDataToggleEl.addEventListener('change'", js)
+        self.assertIn('function shouldRetryTwsPositionsRefresh(payload)', js)
+        self.assertIn('function shouldRetryTwsAnalysisPriceRefresh(payload)', js)
+        self.assertIn("Connecting to TWS… retrying refresh once.", js)
+        self.assertIn("Connecting to TWS… retrying price refresh once.", js)
+        self.assertIn('refreshBtn.disabled = true;', js)
+        self.assertIn('analysisRefreshPricesBtn.disabled = true;', js)
         self.assertIn("alertDetailOpenAnalysisBtn.addEventListener('click'", js)
 
     def test_alerts_affected_variables_column_has_wrap_style(self):

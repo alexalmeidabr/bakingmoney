@@ -29,6 +29,10 @@ const analysisRatingFilterClearEl = document.getElementById('analysis-rating-fil
 const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
 const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
+const actionPlanStatusEl = document.getElementById('action-plan-status');
+const actionPlanSummaryEl = document.getElementById('action-plan-summary');
+const actionPlanTableBody = document.querySelector('#action-plan-table tbody');
+const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
 const analysisRerunSelectedBtn = document.getElementById('analysis-rerun-selected-btn');
 const analysisCheckEventsBtn = document.getElementById('analysis-check-events-btn');
 
@@ -134,6 +138,8 @@ const configScenarioProbabilityHybridAiWeightEl = document.getElementById('confi
 const configScenarioProbabilityHybridBackendWeightEl = document.getElementById('config-scenario-probability-hybrid-backend-weight');
 const configScenarioProbabilityBackendBaseMaxEl = document.getElementById('config-scenario-probability-backend-base-max');
 const configScenarioProbabilityBackendBaseMinEl = document.getElementById('config-scenario-probability-backend-base-min');
+const configActionPlanInputs = document.querySelectorAll('[data-action-plan-setting]');
+const configActionPlanTotalEl = document.getElementById('config-action-plan-total');
 const configSaveBtn = document.getElementById('config-save-btn');
 const configCancelBtn = document.getElementById('config-cancel-btn');
 const configRestoreDefaultsBtn = document.getElementById('config-restore-defaults-btn');
@@ -278,6 +284,58 @@ const DEFAULT_RATING_SETTINGS = {
   sell_max_upside: 10.0,
   sell_max_diff: -0.5,
   sell_min_bearish_confidence: 5.5,
+};
+
+
+const DEFAULT_ACTION_PLAN_SETTINGS = {
+  action_bucket_strong_buy_target: 35.0,
+  action_bucket_buy_target: 30.0,
+  action_bucket_speculative_buy_target: 15.0,
+  action_bucket_hold_target: 10.0,
+  action_bucket_cash_target: 10.0,
+  action_bucket_sell_target: 0.0,
+  action_bucket_strong_sell_target: 0.0,
+  action_include_current_positions: true,
+  action_include_strong_buy: true,
+  action_include_buy: true,
+  action_include_speculative_buy: true,
+  action_include_hold_only_if_owned: true,
+  action_include_sell_only_if_owned: true,
+  action_redistribute_capped_excess: false,
+  action_allow_bucket_underallocation: true,
+  action_show_unallocated_bucket_amount: true,
+  action_upside_zero_score: 10.0,
+  action_upside_full_score: 100.0,
+  action_core_diff_zero_score: -0.5,
+  action_core_diff_full_score: 2.0,
+  action_core_bearish_penalty_start: 5.0,
+  action_core_bearish_penalty_full: 8.0,
+  action_max_potential_bonus_weight: 2.0,
+  action_potential_diff_minimum: 0.25,
+  action_potential_diff_full_score: 2.0,
+  action_potential_bullish_confidence_minimum: 4.5,
+  action_potential_bonus_upside_minimum: 50.0,
+  action_max_single_stock_weight: 8.0,
+  action_max_strong_buy_stock_weight: 8.0,
+  action_max_buy_stock_weight: 6.0,
+  action_max_speculative_buy_stock_weight: 3.0,
+  action_max_negative_core_weight: 2.0,
+  action_max_very_negative_core_weight: 1.0,
+  action_min_target_weight_to_show: 0.5,
+  action_band_lower_multiplier: 0.8,
+  action_band_upper_multiplier: 1.2,
+  action_speculative_band_lower_multiplier: 0.7,
+  action_speculative_band_upper_multiplier: 1.3,
+  action_min_absolute_band_width: 0.5,
+  action_strong_add_below_target_multiplier: 0.5,
+  action_strong_trim_above_target_multiplier: 1.5,
+  action_min_trade_gap_percent: 0.5,
+  action_starter_buy_max_initial_weight: 1.0,
+  action_add_required_upside: 30.0,
+  action_strong_add_required_upside: 50.0,
+  action_starter_buy_required_upside: 75.0,
+  action_trim_remaining_upside: 10.0,
+  action_sell_remaining_upside: 0.0,
 };
 
 let savedGeneralSettings = null;
@@ -728,6 +786,36 @@ function renderAnalysisList() {
   syncSelectAllCheckbox();
 }
 
+async function loadActionPlan() {
+  if (!actionPlanTableBody) return;
+  actionPlanStatusEl.textContent = 'Loading Action Plan…';
+  actionPlanStatusEl.className = 'status';
+  try {
+    const response = await fetch('/api/action-plan');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load Action Plan'));
+    renderActionPlan(payload);
+    actionPlanStatusEl.textContent = `Loaded ${payload.action_plan?.length || 0} Action Plan rows.`;
+    actionPlanStatusEl.className = 'status';
+  } catch (error) {
+    actionPlanStatusEl.textContent = `Error: ${error.message}`;
+    actionPlanStatusEl.className = 'status error';
+  }
+}
+
+function renderActionPlan(payload) {
+  const summary = payload.summary || {};
+  actionPlanSummaryEl.innerHTML = `<div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Configured Bucket Total</div><div class="value">${formatPercent(summary.configured_bucket_total)}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated / Cash</div><div class="value">${formatPercent(summary.unallocated_target_total)}</div></div>`;
+  actionPlanTableBody.innerHTML = '';
+  (payload.action_plan || []).forEach((item) => {
+    const row = document.createElement('tr');
+    const targetBand = `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)} (mid ${formatPercent(item.target_weight_mid)})`;
+    row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td>${escapeHtml(item.action)}</td><td>${formatCurrencyValue(item.trigger_price, 'USD')}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td class="${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td>${escapeHtml(item.rating || 'Hold')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td>${formatPercent(item.current_position_weight)}</td><td>${targetBand}</td><td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td>${escapeHtml(item.reason)}</td>`;
+    actionPlanTableBody.appendChild(row);
+  });
+  actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'analysis' })));
+}
+
 function syncSelectAllCheckbox() {
   const selectable = getFilteredAnalysisItems().map((item) => item.symbol);
   if (!selectable.length) {
@@ -846,6 +934,7 @@ function setView(targetView) {
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
   if (targetView === 'analysis') { showAnalysisList(); loadAnalysis(); }
   if (targetView === 'positions') loadPositions();
+  if (targetView === 'action-plan') loadActionPlan();
   if (targetView === 'alerts') loadAlerts();
   if (targetView === 'prompt') loadPromptConfiguration();
   if (targetView === 'configuration') loadGeneralConfiguration();
@@ -3212,6 +3301,49 @@ function validateRatingSettings(settings) {
   return null;
 }
 
+function getActionPlanSettingsFromForm() {
+  const settings = {};
+  configActionPlanInputs.forEach((input) => {
+    const key = input.dataset.actionPlanSetting;
+    settings[key] = input.type === 'checkbox' ? input.checked : Number(input.value);
+  });
+  return settings;
+}
+
+function applyActionPlanSettingsToForm(settings) {
+  const effective = { ...DEFAULT_ACTION_PLAN_SETTINGS, ...(settings || {}) };
+  configActionPlanInputs.forEach((input) => {
+    const key = input.dataset.actionPlanSetting;
+    if (input.type === 'checkbox') input.checked = Boolean(effective[key]);
+    else input.value = effective[key];
+  });
+  updateActionPlanBucketTotal();
+}
+
+function updateActionPlanBucketTotal() {
+  const settings = getActionPlanSettingsFromForm();
+  const total = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
+    .reduce((sum, key) => sum + (Number.isFinite(settings[key]) ? settings[key] : 0), 0);
+  configActionPlanTotalEl.textContent = `Bucket total: ${formatPercent(total)}`;
+  configActionPlanTotalEl.className = total > 100 ? 'status error' : 'status';
+}
+
+function validateActionPlanSettings(settings) {
+  for (const [key, value] of Object.entries(settings)) {
+    if (typeof value === 'boolean') continue;
+    if (!Number.isFinite(value)) return `${key} must be numeric.`;
+    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score'].includes(key)) return `${key} cannot be negative.`;
+  }
+  const bucketTotal = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
+    .reduce((sum, key) => sum + settings[key], 0);
+  if (bucketTotal > 100) return 'Action Plan bucket targets cannot total more than 100%.';
+  if (settings.action_upside_full_score <= settings.action_upside_zero_score) return 'Action Plan upside full score must be greater than zero score.';
+  if (settings.action_core_diff_full_score <= settings.action_core_diff_zero_score) return 'Action Plan core diff full score must be greater than zero score.';
+  if (settings.action_core_bearish_penalty_full <= settings.action_core_bearish_penalty_start) return 'Action Plan core bearish penalty full must be greater than start.';
+  if (settings.action_potential_diff_full_score <= settings.action_potential_diff_minimum) return 'Action Plan potential diff full score must be greater than minimum.';
+  return null;
+}
+
 function cancelGeneralConfigurationEdits() {
   if (!savedGeneralSettings) return;
   configIbPriceWaitSecondsEl.value = savedGeneralSettings.ib_price_wait_seconds ?? 5;
@@ -3219,6 +3351,7 @@ function cancelGeneralConfigurationEdits() {
   configScenarioPassCountEl.value = savedGeneralSettings.scenario_pass_count || 1;
   applyScenarioProbabilitySettingsToForm(savedGeneralSettings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
   applyRatingSettingsToForm(savedGeneralSettings.rating_settings || DEFAULT_RATING_SETTINGS);
+  applyActionPlanSettingsToForm(savedGeneralSettings.action_plan_settings || DEFAULT_ACTION_PLAN_SETTINGS);
   configurationStatusEl.textContent = 'Unsaved changes reverted.';
   configurationStatusEl.className = 'status';
 }
@@ -3226,7 +3359,8 @@ function cancelGeneralConfigurationEdits() {
 function restoreDefaultRatingSettings() {
   applyScenarioProbabilitySettingsToForm(DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
   applyRatingSettingsToForm(DEFAULT_RATING_SETTINGS);
-  configurationStatusEl.textContent = 'Default rating and scenario probability settings restored in form. Click Save to persist.';
+  applyActionPlanSettingsToForm(DEFAULT_ACTION_PLAN_SETTINGS);
+  configurationStatusEl.textContent = 'Default rating, scenario probability, and Action Plan settings restored in form. Click Save to persist.';
   configurationStatusEl.className = 'status';
 }
 
@@ -3293,6 +3427,7 @@ async function loadGeneralConfiguration() {
     configScenarioPassCountEl.value = settings.scenario_pass_count || 1;
     applyScenarioProbabilitySettingsToForm(settings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
     applyRatingSettingsToForm(settings.rating_settings || DEFAULT_RATING_SETTINGS);
+    applyActionPlanSettingsToForm(settings.action_plan_settings || DEFAULT_ACTION_PLAN_SETTINGS);
     applyTwsDataToggleState(Boolean(settings.use_tws_data), Boolean(settings.use_tws_data) ? 'TWS data enabled.' : 'TWS data disabled.');
     configurationStatusEl.textContent = 'Configuration loaded.';
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
@@ -3328,8 +3463,16 @@ async function saveGeneralConfiguration() {
     return;
   }
 
+  const actionPlanSettings = getActionPlanSettingsFromForm();
+  const actionPlanValidationError = validateActionPlanSettings(actionPlanSettings);
+  if (actionPlanValidationError) {
+    configurationStatusEl.textContent = `Error: ${actionPlanValidationError}`;
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+
   configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings, use_tws_data: Boolean(twsDataToggleEl.checked) } }) });
+  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings, action_plan_settings: actionPlanSettings, use_tws_data: Boolean(twsDataToggleEl.checked) } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); savedGeneralSettings = payload.settings || null; configurationStatusEl.textContent = 'Configuration saved.';
     if (savedGeneralSettings) applyTwsDataToggleState(Boolean(savedGeneralSettings.use_tws_data), Boolean(savedGeneralSettings.use_tws_data) ? 'TWS data enabled.' : 'TWS data disabled.');
     await loadAnalysis();
@@ -3665,6 +3808,8 @@ earningsReviewDocumentUploadBtn.addEventListener('click', uploadEarningsReviewDo
 configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
 configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
+actionPlanRefreshBtn.addEventListener('click', loadActionPlan);
+configActionPlanInputs.forEach((input) => input.addEventListener('input', updateActionPlanBucketTotal));
 twsDataToggleEl.addEventListener('change', () => updateTwsDataToggle(Boolean(twsDataToggleEl.checked)));
 backupExportBtn.addEventListener('click', exportBackupFile);
 backupImportBtn.addEventListener('click', restoreBackupFile);

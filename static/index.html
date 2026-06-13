@@ -13,6 +13,7 @@
         <nav>
           <button class="menu-item active" data-view="analysis">Analysis</button>
           <button class="menu-item" data-view="positions">My Positions</button>
+          <button class="menu-item" data-view="action-plan">Action Plan</button>
           <button class="menu-item" data-view="earnings-review">Earnings Review</button>
           <button class="menu-item" data-view="alerts">Alerts</button>
           <button class="menu-item" data-view="prompt">Prompt</button>
@@ -603,12 +604,100 @@
               <label>Sell max diff <input id="config-rating-sell-max-diff" type="number" step="0.1" value="-0.5" /></label>
               <label>Sell min bearish confidence <input id="config-rating-sell-min-bearish-confidence" type="number" min="0" max="10" step="0.1" value="5.5" /></label>
             </div>
+
+          <section class="detail-card" id="config-action-plan-panel">
+            <h3>Action Plan Settings</h3>
+            <p id="config-action-plan-total" class="status">Bucket total: 100%</p>
+            <div class="table-actions config-actions settings-grid">
+              <label>Strong Buy bucket % <input id="config-action-bucket-strong-buy-target" data-action-plan-setting="action_bucket_strong_buy_target" type="number" step="0.1" value="0" /></label>
+              <label>Buy bucket % <input id="config-action-bucket-buy-target" data-action-plan-setting="action_bucket_buy_target" type="number" step="0.1" value="0" /></label>
+              <label>Speculative Buy bucket % <input id="config-action-bucket-speculative-buy-target" data-action-plan-setting="action_bucket_speculative_buy_target" type="number" step="0.1" value="0" /></label>
+              <label>Hold bucket % <input id="config-action-bucket-hold-target" data-action-plan-setting="action_bucket_hold_target" type="number" step="0.1" value="0" /></label>
+              <label>Cash/unallocated % <input id="config-action-bucket-cash-target" data-action-plan-setting="action_bucket_cash_target" type="number" step="0.1" value="0" /></label>
+              <label>Sell bucket % <input id="config-action-bucket-sell-target" data-action-plan-setting="action_bucket_sell_target" type="number" step="0.1" value="0" /></label>
+              <label>Strong Sell bucket % <input id="config-action-bucket-strong-sell-target" data-action-plan-setting="action_bucket_strong_sell_target" type="number" step="0.1" value="0" /></label>
+              <label>Upside zero score % <input id="config-action-upside-zero-score" data-action-plan-setting="action_upside_zero_score" type="number" step="0.1" value="0" /></label>
+              <label>Upside full score % <input id="config-action-upside-full-score" data-action-plan-setting="action_upside_full_score" type="number" step="0.1" value="0" /></label>
+              <label>Core diff zero score <input id="config-action-core-diff-zero-score" data-action-plan-setting="action_core_diff_zero_score" type="number" step="0.1" value="0" /></label>
+              <label>Core diff full score <input id="config-action-core-diff-full-score" data-action-plan-setting="action_core_diff_full_score" type="number" step="0.1" value="0" /></label>
+              <label>Core bearish penalty start <input id="config-action-core-bearish-penalty-start" data-action-plan-setting="action_core_bearish_penalty_start" type="number" step="0.1" value="0" /></label>
+              <label>Core bearish penalty full <input id="config-action-core-bearish-penalty-full" data-action-plan-setting="action_core_bearish_penalty_full" type="number" step="0.1" value="0" /></label>
+              <label>Potential diff minimum <input id="config-action-potential-diff-minimum" data-action-plan-setting="action_potential_diff_minimum" type="number" step="0.1" value="0" /></label>
+              <label>Potential diff full score <input id="config-action-potential-diff-full-score" data-action-plan-setting="action_potential_diff_full_score" type="number" step="0.1" value="0" /></label>
+              <label>Potential bullish confidence minimum <input id="config-action-potential-bullish-confidence-minimum" data-action-plan-setting="action_potential_bullish_confidence_minimum" type="number" step="0.1" value="0" /></label>
+              <label>Potential bonus upside minimum % <input id="config-action-potential-bonus-upside-minimum" data-action-plan-setting="action_potential_bonus_upside_minimum" type="number" step="0.1" value="0" /></label>
+              <label>Max potential bonus weight % <input id="config-action-max-potential-bonus-weight" data-action-plan-setting="action_max_potential_bonus_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max single-stock weight % <input id="config-action-max-single-stock-weight" data-action-plan-setting="action_max_single_stock_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max Strong Buy stock weight % <input id="config-action-max-strong-buy-stock-weight" data-action-plan-setting="action_max_strong_buy_stock_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max Buy stock weight % <input id="config-action-max-buy-stock-weight" data-action-plan-setting="action_max_buy_stock_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max Speculative Buy stock weight % <input id="config-action-max-speculative-buy-stock-weight" data-action-plan-setting="action_max_speculative_buy_stock_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max weight if core diff below 0 % <input id="config-action-max-negative-core-weight" data-action-plan-setting="action_max_negative_core_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max weight if core diff below -0.5 % <input id="config-action-max-very-negative-core-weight" data-action-plan-setting="action_max_very_negative_core_weight" type="number" step="0.1" value="0" /></label>
+              <label>Min target weight to show % <input id="config-action-min-target-weight-to-show" data-action-plan-setting="action_min_target_weight_to_show" type="number" step="0.1" value="0" /></label>
+              <label>Normal lower band multiplier <input id="config-action-band-lower-multiplier" data-action-plan-setting="action_band_lower_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Normal upper band multiplier <input id="config-action-band-upper-multiplier" data-action-plan-setting="action_band_upper_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Speculative lower band multiplier <input id="config-action-speculative-band-lower-multiplier" data-action-plan-setting="action_speculative_band_lower_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Speculative upper band multiplier <input id="config-action-speculative-band-upper-multiplier" data-action-plan-setting="action_speculative_band_upper_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Minimum absolute band width % <input id="config-action-min-absolute-band-width" data-action-plan-setting="action_min_absolute_band_width" type="number" step="0.1" value="0" /></label>
+              <label>Strong Add below target multiplier <input id="config-action-strong-add-below-target-multiplier" data-action-plan-setting="action_strong_add_below_target_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Strong Trim above target multiplier <input id="config-action-strong-trim-above-target-multiplier" data-action-plan-setting="action_strong_trim_above_target_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Minimum trade gap % <input id="config-action-min-trade-gap-percent" data-action-plan-setting="action_min_trade_gap_percent" type="number" step="0.1" value="0" /></label>
+              <label>Starter Buy max initial weight % <input id="config-action-starter-buy-max-initial-weight" data-action-plan-setting="action_starter_buy_max_initial_weight" type="number" step="0.1" value="0" /></label>
+              <label>Add required upside % <input id="config-action-add-required-upside" data-action-plan-setting="action_add_required_upside" type="number" step="0.1" value="0" /></label>
+              <label>Strong Add required upside % <input id="config-action-strong-add-required-upside" data-action-plan-setting="action_strong_add_required_upside" type="number" step="0.1" value="0" /></label>
+              <label>Starter Buy required upside % <input id="config-action-starter-buy-required-upside" data-action-plan-setting="action_starter_buy_required_upside" type="number" step="0.1" value="0" /></label>
+              <label>Trim remaining upside % <input id="config-action-trim-remaining-upside" data-action-plan-setting="action_trim_remaining_upside" type="number" step="0.1" value="0" /></label>
+              <label>Sell remaining upside % <input id="config-action-sell-remaining-upside" data-action-plan-setting="action_sell_remaining_upside" type="number" step="0.1" value="0" /></label>
+              <label><input id="config-action-include-current-positions" data-action-plan-setting="action_include_current_positions" type="checkbox" /> Include current positions</label>
+              <label><input id="config-action-include-strong-buy" data-action-plan-setting="action_include_strong_buy" type="checkbox" /> Include Strong Buy</label>
+              <label><input id="config-action-include-buy" data-action-plan-setting="action_include_buy" type="checkbox" /> Include Buy</label>
+              <label><input id="config-action-include-speculative-buy" data-action-plan-setting="action_include_speculative_buy" type="checkbox" /> Include Speculative Buy</label>
+              <label><input id="config-action-include-hold-only-if-owned" data-action-plan-setting="action_include_hold_only_if_owned" type="checkbox" /> Include Hold only if owned</label>
+              <label><input id="config-action-include-sell-only-if-owned" data-action-plan-setting="action_include_sell_only_if_owned" type="checkbox" /> Include Sell only if owned</label>
+              <label><input id="config-action-redistribute-capped-excess" data-action-plan-setting="action_redistribute_capped_excess" type="checkbox" /> Redistribute capped excess</label>
+              <label><input id="config-action-allow-bucket-underallocation" data-action-plan-setting="action_allow_bucket_underallocation" type="checkbox" /> Allow bucket underallocation</label>
+              <label><input id="config-action-show-unallocated-bucket-amount" data-action-plan-setting="action_show_unallocated_bucket_amount" type="checkbox" /> Show unallocated bucket amount</label>
+            </div>
+          </section>
             <div class="table-actions config-actions">
               <button id="config-save-btn">Save Settings</button>
               <button id="config-cancel-btn">Cancel</button>
               <button id="config-restore-defaults-btn">Restore Defaults</button>
             </div>
           </section>
+        </section>
+
+        <section id="action-plan" class="view hidden">
+          <div class="view-header">
+            <h2>Action Plan</h2>
+            <div class="table-actions">
+              <button id="action-plan-refresh-btn">Refresh Action Plan</button>
+            </div>
+          </div>
+          <p id="action-plan-status" class="status">Loading Action Plan…</p>
+          <div id="action-plan-summary" class="summary-grid"></div>
+          <div class="table-wrap">
+            <table id="action-plan-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Action</th>
+                  <th>Trigger Price</th>
+                  <th>Current Price</th>
+                  <th>Distance</th>
+                  <th>Rating</th>
+                  <th>Upside</th>
+                  <th>Core Confidence</th>
+                  <th>Potential Confidence</th>
+                  <th>Current Weight</th>
+                  <th>Target Band</th>
+                  <th>Gap to Mid</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </section>
 
         <section id="backup" class="view">

@@ -188,6 +188,89 @@ DEFAULT_RATING_SETTINGS = {
 SCENARIO_MAX_BASE_DEVIATION = 0.40
 SCENARIO_MAX_AVG_DEVIATION = 0.30
 
+ACTION_PLAN_DEFAULT_SETTINGS = {
+    "action_bucket_strong_buy_target": 35.0,
+    "action_bucket_buy_target": 30.0,
+    "action_bucket_speculative_buy_target": 15.0,
+    "action_bucket_hold_target": 10.0,
+    "action_bucket_cash_target": 10.0,
+    "action_bucket_sell_target": 0.0,
+    "action_bucket_strong_sell_target": 0.0,
+    "action_include_current_positions": True,
+    "action_include_strong_buy": True,
+    "action_include_buy": True,
+    "action_include_speculative_buy": True,
+    "action_include_hold_only_if_owned": True,
+    "action_include_sell_only_if_owned": True,
+    "action_allow_manual_include_exclude": False,
+    "action_upside_zero_score": 10.0,
+    "action_upside_full_score": 100.0,
+    "action_core_diff_zero_score": -0.5,
+    "action_core_diff_full_score": 2.0,
+    "action_core_bearish_penalty_start": 5.0,
+    "action_core_bearish_penalty_full": 8.0,
+    "action_max_potential_bonus_weight": 2.0,
+    "action_potential_diff_minimum": 0.25,
+    "action_potential_diff_full_score": 2.0,
+    "action_potential_bullish_confidence_minimum": 4.5,
+    "action_potential_bonus_upside_minimum": 50.0,
+    "action_max_single_stock_weight": 8.0,
+    "action_max_strong_buy_stock_weight": 8.0,
+    "action_max_buy_stock_weight": 6.0,
+    "action_max_speculative_buy_stock_weight": 3.0,
+    "action_max_negative_core_weight": 2.0,
+    "action_max_very_negative_core_weight": 1.0,
+    "action_min_target_weight_to_show": 0.5,
+    "action_band_lower_multiplier": 0.8,
+    "action_band_upper_multiplier": 1.2,
+    "action_speculative_band_lower_multiplier": 0.7,
+    "action_speculative_band_upper_multiplier": 1.3,
+    "action_min_absolute_band_width": 0.5,
+    "action_strong_add_below_target_multiplier": 0.5,
+    "action_strong_trim_above_target_multiplier": 1.5,
+    "action_min_trade_gap_percent": 0.5,
+    "action_starter_buy_max_initial_weight": 1.0,
+    "action_add_required_upside": 30.0,
+    "action_strong_add_required_upside": 50.0,
+    "action_starter_buy_required_upside": 75.0,
+    "action_trim_remaining_upside": 10.0,
+    "action_sell_remaining_upside": 0.0,
+    "action_redistribute_capped_excess": False,
+    "action_allow_bucket_underallocation": True,
+    "action_show_unallocated_bucket_amount": True,
+}
+ACTION_PLAN_BOOL_SETTINGS = {
+    "action_include_current_positions",
+    "action_include_strong_buy",
+    "action_include_buy",
+    "action_include_speculative_buy",
+    "action_include_hold_only_if_owned",
+    "action_include_sell_only_if_owned",
+    "action_allow_manual_include_exclude",
+    "action_redistribute_capped_excess",
+    "action_allow_bucket_underallocation",
+    "action_show_unallocated_bucket_amount",
+}
+ACTION_PLAN_BUCKET_KEYS = {
+    "Strong Buy": "action_bucket_strong_buy_target",
+    "Buy": "action_bucket_buy_target",
+    "Speculative Buy": "action_bucket_speculative_buy_target",
+    "Hold": "action_bucket_hold_target",
+    "Sell": "action_bucket_sell_target",
+    "Strong Sell": "action_bucket_strong_sell_target",
+}
+ACTION_PLAN_ACTION_PRIORITY = {
+    "Strong Add": 1,
+    "Add": 2,
+    "Starter Buy": 3,
+    "Trim": 4,
+    "Strong Trim": 5,
+    "Sell": 6,
+    "Watch": 7,
+    "Hold": 8,
+    "Re-evaluate": 9,
+}
+
 DEFAULT_PROMPT_BUSINESS_MODEL = """You are an equity analyst.
 
 Describe the business model of the publicly traded company below for use in a 5-year stock scenario analysis.
@@ -1577,6 +1660,76 @@ def get_scenario_probability_settings(conn):
     }
 
 
+def get_action_plan_settings(conn):
+    settings = {}
+    for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
+        if key in ACTION_PLAN_BOOL_SETTINGS:
+            settings[key] = get_bool_setting(conn, key, bool(default))
+        else:
+            settings[key] = get_float_setting(conn, key, float(default))
+    return settings
+
+
+def validate_action_plan_settings(settings):
+    if not isinstance(settings, dict):
+        raise ValueError("action_plan_settings must be an object")
+    effective = {**ACTION_PLAN_DEFAULT_SETTINGS, **settings}
+    for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
+        if key in ACTION_PLAN_BOOL_SETTINGS:
+            continue
+        try:
+            value = float(effective[key])
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be numeric")
+        if not math.isfinite(value):
+            raise ValueError(f"{key} must be finite")
+        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score"}:
+            raise ValueError(f"{key} cannot be negative")
+        effective[key] = value
+    if effective["action_upside_full_score"] <= effective["action_upside_zero_score"]:
+        raise ValueError("action_upside_full_score must be greater than action_upside_zero_score")
+    if effective["action_core_diff_full_score"] <= effective["action_core_diff_zero_score"]:
+        raise ValueError("action_core_diff_full_score must be greater than action_core_diff_zero_score")
+    if effective["action_core_bearish_penalty_full"] <= effective["action_core_bearish_penalty_start"]:
+        raise ValueError("action_core_bearish_penalty_full must be greater than action_core_bearish_penalty_start")
+    if effective["action_potential_diff_full_score"] <= effective["action_potential_diff_minimum"]:
+        raise ValueError("action_potential_diff_full_score must be greater than action_potential_diff_minimum")
+    for key in (
+        "action_band_lower_multiplier",
+        "action_band_upper_multiplier",
+        "action_speculative_band_lower_multiplier",
+        "action_speculative_band_upper_multiplier",
+        "action_strong_add_below_target_multiplier",
+        "action_strong_trim_above_target_multiplier",
+    ):
+        if effective[key] <= 0:
+            raise ValueError(f"{key} must be greater than 0")
+    bucket_total = sum(float(effective[key]) for key in ACTION_PLAN_BUCKET_KEYS.values()) + float(effective["action_bucket_cash_target"])
+    if bucket_total > 100.0 + 1e-9:
+        raise ValueError("Action Plan bucket targets cannot total more than 100%")
+    return effective
+
+
+def save_action_plan_settings(conn, settings, now=None):
+    now = now or utc_now_iso()
+    effective = validate_action_plan_settings(settings)
+    for key in ACTION_PLAN_DEFAULT_SETTINGS:
+        if key not in settings:
+            continue
+        value = effective[key]
+        stored = "1" if key in ACTION_PLAN_BOOL_SETTINGS and value else "0" if key in ACTION_PLAN_BOOL_SETTINGS else str(value)
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            (key, stored, now),
+        )
+
+
 def choose_final_probabilities(ai_probs, backend_probs, settings):
     mode = settings.get("probability_source_mode", "hybrid")
     mode_used = mode
@@ -1639,6 +1792,7 @@ def get_general_configuration(conn):
         "scenario_outlier_filter_enabled": scenario["scenario_outlier_filter_enabled"],
         "rating_settings": get_rating_settings(conn),
         "scenario_probability_settings": get_scenario_probability_settings(conn),
+        "action_plan_settings": get_action_plan_settings(conn),
     }
 
 
@@ -1772,6 +1926,10 @@ def save_general_configuration(conn, settings):
                 """,
                 (key, str(value), now),
             )
+
+    action_plan_settings_payload = settings.get("action_plan_settings")
+    if action_plan_settings_payload is not None:
+        save_action_plan_settings(conn, action_plan_settings_payload, now=now)
 
     if scenario_payload:
         save_scenario_generation_config(conn, scenario_payload)
@@ -5441,6 +5599,275 @@ def load_positions_cache(conn):
     ]
 
 
+def _clamp(value, low=0.0, high=1.0):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return low
+    if not math.isfinite(number):
+        return low
+    return max(low, min(high, number))
+
+
+def _score_range(value, low, high):
+    if high <= low:
+        return 0.0
+    return _clamp((float(value or 0.0) - low) / (high - low), 0.0, 1.0)
+
+
+def _trigger_price(expected_price, required_upside):
+    expected = safe_number(expected_price)
+    required = safe_number(required_upside)
+    if expected is None or required is None or expected <= 0:
+        return None
+    denominator = 1.0 + required / 100.0
+    return expected / denominator if denominator > 0 else None
+
+
+def _distance_to_trigger(current_price, trigger_price):
+    current = safe_number(current_price)
+    trigger = safe_number(trigger_price)
+    if current is None or trigger is None or trigger <= 0:
+        return None
+    return ((current / trigger) - 1.0) * 100.0
+
+
+def _is_action_plan_eligible(analysis, owned, settings):
+    rating = analysis.get("rating") or "Hold"
+    if owned and settings["action_include_current_positions"]:
+        return True
+    if rating == "Strong Buy" and settings["action_include_strong_buy"]:
+        return True
+    if rating == "Buy" and settings["action_include_buy"]:
+        return True
+    if rating == "Speculative Buy" and settings["action_include_speculative_buy"]:
+        return True
+    if rating == "Hold" and owned and settings["action_include_hold_only_if_owned"]:
+        return True
+    if rating in {"Sell", "Strong Sell"} and owned and settings["action_include_sell_only_if_owned"]:
+        return True
+    return False
+
+
+def _rating_cap_for_action_plan(rating, settings):
+    caps = [settings["action_max_single_stock_weight"]]
+    if rating == "Strong Buy":
+        caps.append(settings["action_max_strong_buy_stock_weight"])
+    elif rating == "Buy":
+        caps.append(settings["action_max_buy_stock_weight"])
+    elif rating == "Speculative Buy":
+        caps.append(settings["action_max_speculative_buy_stock_weight"])
+    elif rating == "Hold":
+        caps.append(min(settings["action_max_buy_stock_weight"], settings["action_max_single_stock_weight"]))
+    elif rating in {"Sell", "Strong Sell"}:
+        caps.append(0.0)
+    return min(caps)
+
+
+def _target_band(target_mid, rating, settings):
+    if rating == "Speculative Buy":
+        low = target_mid * settings["action_speculative_band_lower_multiplier"]
+        high = target_mid * settings["action_speculative_band_upper_multiplier"]
+    else:
+        low = target_mid * settings["action_band_lower_multiplier"]
+        high = target_mid * settings["action_band_upper_multiplier"]
+    min_width = settings["action_min_absolute_band_width"]
+    if high - low < min_width:
+        half = min_width / 2.0
+        low = target_mid - half
+        high = target_mid + half
+    return max(0.0, low), max(0.0, high)
+
+
+def _choose_action_plan_decision(row, settings):
+    rating = row["rating"]
+    current_weight = row["current_position_weight"]
+    target_mid = row["target_weight_mid"]
+    target_low = row["target_weight_low"]
+    target_high = row["target_weight_high"]
+    current_price = row.get("current_price")
+    expected_price = row.get("expected_price")
+    upside = row.get("upside")
+    if row.get("final_scenario_stale"):
+        return "Re-evaluate", None, None, None, "Final Scenario overlay is stale; re-evaluate before taking action."
+    if safe_number(current_price) is None or safe_number(expected_price) is None or safe_number(upside) is None:
+        return "Re-evaluate", None, None, None, "Missing current price, expected price, or upside."
+
+    add_trigger = _trigger_price(expected_price, settings["action_add_required_upside"])
+    strong_add_trigger = _trigger_price(expected_price, settings["action_strong_add_required_upside"])
+    starter_trigger = _trigger_price(expected_price, settings["action_starter_buy_required_upside"])
+    trim_trigger = _trigger_price(expected_price, settings["action_trim_remaining_upside"])
+    sell_trigger = _trigger_price(expected_price, settings["action_sell_remaining_upside"])
+    min_gap = settings["action_min_trade_gap_percent"]
+
+    if rating in {"Sell", "Strong Sell"} and current_weight > 0:
+        return "Sell", sell_trigger, "above", _distance_to_trigger(current_price, sell_trigger), "Rating is Sell/Strong Sell and the position is currently owned."
+    if current_weight > target_high * settings["action_strong_trim_above_target_multiplier"] and current_weight - target_high >= min_gap:
+        return "Strong Trim", trim_trigger, "above", _distance_to_trigger(current_price, trim_trigger), "Position is far above the target band, so a strong trim is suggested."
+    if (current_weight > target_high and current_weight - target_high >= min_gap) or (trim_trigger is not None and current_price >= trim_trigger and current_weight > target_mid):
+        return "Trim", trim_trigger, "above", _distance_to_trigger(current_price, trim_trigger), "Position is above target band or price reached the trim trigger."
+    if rating in {"Strong Buy", "Buy"} and row["core_conviction_score"] > 0 and current_weight < target_low * settings["action_strong_add_below_target_multiplier"] and target_low - current_weight >= min_gap and strong_add_trigger is not None and current_price <= strong_add_trigger:
+        return "Strong Add", strong_add_trigger, "below", _distance_to_trigger(current_price, strong_add_trigger), "High upside and positive Core confidence; position is far below target and price is below Strong Add trigger."
+    if rating in {"Strong Buy", "Buy"} and current_weight < target_low and target_low - current_weight >= min_gap and add_trigger is not None and current_price <= add_trigger:
+        return "Add", add_trigger, "below", _distance_to_trigger(current_price, add_trigger), "Attractive rating; current position is below target band and price is below Add trigger."
+    if rating == "Speculative Buy" and current_weight <= settings["action_starter_buy_max_initial_weight"] and target_mid > 0 and starter_trigger is not None and current_price <= starter_trigger:
+        return "Starter Buy", starter_trigger, "below", _distance_to_trigger(current_price, starter_trigger), "Speculative Buy is eligible for a capped starter position and price is below Starter Buy trigger."
+    relevant_buy_trigger = starter_trigger if rating == "Speculative Buy" else add_trigger
+    if target_mid > 0 and current_weight < target_low and relevant_buy_trigger is not None and current_price > relevant_buy_trigger:
+        return "Watch", relevant_buy_trigger, "below", _distance_to_trigger(current_price, relevant_buy_trigger), "Attractive enough for a target weight, but current price is above the required margin-of-safety trigger."
+    return "Hold", None, None, None, "Current position is inside the target band or no action threshold is met."
+
+
+def build_action_plan(conn):
+    settings = get_action_plan_settings(conn)
+    analysis_items = list_analysis_symbols(conn)
+    positions = load_positions_cache(conn)
+    positions_by_symbol = {normalize_symbol(row.get("symbol")): row for row in positions if normalize_symbol(row.get("symbol"))}
+    total_portfolio_value = sum(abs(safe_number(row.get("marketValue")) or 0.0) for row in positions)
+    symbols = sorted({normalize_symbol(item.get("symbol")) for item in analysis_items if normalize_symbol(item.get("symbol"))} | set(positions_by_symbol.keys()))
+    analysis_by_symbol = {normalize_symbol(item.get("symbol")): item for item in analysis_items if normalize_symbol(item.get("symbol"))}
+
+    candidates = []
+    for symbol in symbols:
+        analysis = analysis_by_symbol.get(symbol)
+        if not analysis:
+            continue
+        position = positions_by_symbol.get(symbol)
+        market_value = abs(safe_number(position.get("marketValue")) or 0.0) if position else 0.0
+        current_position_weight = (market_value / total_portfolio_value * 100.0) if total_portfolio_value > 0 else 0.0
+        owned = market_value > 0
+        if not _is_action_plan_eligible(analysis, owned, settings):
+            continue
+        upside = safe_number(analysis.get("upside"))
+        core_diff = safe_number(analysis.get("core_confidence_diff")) or 0.0
+        core_bearish = safe_number(analysis.get("core_bearish_confidence")) or 0.0
+        potential_diff = safe_number(analysis.get("potential_confidence_diff"))
+        potential_bull = safe_number(analysis.get("potential_bullish_confidence"))
+        upside_score = _score_range(upside or 0.0, settings["action_upside_zero_score"], settings["action_upside_full_score"])
+        core_conviction_score = _score_range(core_diff, settings["action_core_diff_zero_score"], settings["action_core_diff_full_score"])
+        penalty_start = settings["action_core_bearish_penalty_start"]
+        penalty_full = settings["action_core_bearish_penalty_full"]
+        if core_bearish <= penalty_start:
+            core_risk_modifier = 1.0
+        elif core_bearish >= penalty_full:
+            core_risk_modifier = 0.5
+        else:
+            core_risk_modifier = 1.0 - ((core_bearish - penalty_start) / (penalty_full - penalty_start)) * 0.5
+        core_score = upside_score * core_conviction_score * core_risk_modifier
+        potential_bonus_weight = 0.0
+        if (
+            upside is not None
+            and potential_diff is not None
+            and potential_bull is not None
+            and upside >= settings["action_potential_bonus_upside_minimum"]
+            and potential_bull >= settings["action_potential_bullish_confidence_minimum"]
+            and potential_diff >= settings["action_potential_diff_minimum"]
+        ):
+            potential_conviction = _score_range(potential_diff, settings["action_potential_diff_minimum"], settings["action_potential_diff_full_score"])
+            potential_bonus_weight = min(settings["action_max_potential_bonus_weight"], settings["action_max_potential_bonus_weight"] * upside_score * potential_conviction)
+        company_bucket_score = core_score
+        if company_bucket_score <= 0 and potential_bonus_weight > 0:
+            company_bucket_score = 0.05
+        candidates.append({
+            **analysis,
+            "symbol": symbol,
+            "current_position_weight": current_position_weight,
+            "company_bucket_score": company_bucket_score,
+            "upside_score": upside_score,
+            "core_conviction_score": core_conviction_score,
+            "core_risk_modifier": core_risk_modifier,
+            "potential_bonus_weight": potential_bonus_weight,
+            "bucket": analysis.get("rating") or "Hold",
+        })
+
+    bucket_score_totals = {}
+    for item in candidates:
+        bucket_score_totals[item["bucket"]] = bucket_score_totals.get(item["bucket"], 0.0) + max(0.0, item["company_bucket_score"])
+
+    rows = []
+    bucket_allocated = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    bucket_counts = {bucket: 0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    for item in candidates:
+        rating = item["bucket"]
+        bucket_counts[rating] = bucket_counts.get(rating, 0) + 1
+        bucket_target = settings.get(ACTION_PLAN_BUCKET_KEYS.get(rating, "action_bucket_hold_target"), 0.0)
+        score_total = bucket_score_totals.get(rating, 0.0)
+        raw_target = bucket_target * item["company_bucket_score"] / score_total if score_total > 0 else 0.0
+        target_before_caps = raw_target + item["potential_bonus_weight"]
+        cap = _rating_cap_for_action_plan(rating, settings)
+        core_diff = safe_number(item.get("core_confidence_diff")) or 0.0
+        if core_diff < -0.5:
+            cap = min(cap, settings["action_max_very_negative_core_weight"])
+        elif core_diff < 0:
+            cap = min(cap, settings["action_max_negative_core_weight"])
+        target_mid = min(target_before_caps, cap)
+        target_low, target_high = _target_band(target_mid, rating, settings)
+        row = {
+            "symbol": item["symbol"],
+            "company_name": item.get("company_name"),
+            "rating": rating,
+            "current_price": item.get("current_price"),
+            "expected_price": item.get("expected_price"),
+            "expected_cagr": item.get("expected_cagr"),
+            "upside": item.get("upside"),
+            "core_confidence_diff": item.get("core_confidence_diff"),
+            "core_bullish_confidence": item.get("core_bullish_confidence"),
+            "core_bearish_confidence": item.get("core_bearish_confidence"),
+            "potential_confidence_diff": item.get("potential_confidence_diff"),
+            "potential_bullish_confidence": item.get("potential_bullish_confidence"),
+            "potential_bearish_confidence": item.get("potential_bearish_confidence"),
+            "current_position_weight": item["current_position_weight"],
+            "target_weight_mid": target_mid,
+            "target_weight_low": target_low,
+            "target_weight_high": target_high,
+            "position_gap_to_mid": target_mid - item["current_position_weight"],
+            "bucket": rating,
+            "bucket_target_percent": bucket_target,
+            "upside_score": item["upside_score"],
+            "core_conviction_score": item["core_conviction_score"],
+            "potential_bonus_weight": item["potential_bonus_weight"],
+            "uses_final_scenario_overlay": item.get("uses_final_scenario_overlay"),
+            "final_scenario_stale": item.get("final_scenario_stale"),
+        }
+        action, trigger_price, trigger_direction, distance, reason = _choose_action_plan_decision(row, settings)
+        row.update({
+            "action": action,
+            "trigger_price": trigger_price,
+            "trigger_direction": trigger_direction,
+            "distance_to_trigger_percent": distance,
+            "reason": reason if score_total > 0 or action in {"Sell", "Re-evaluate"} else "No positive attractiveness/conviction score.",
+            "action_priority": ACTION_PLAN_ACTION_PRIORITY.get(action, 99),
+        })
+        bucket_allocated[rating] = bucket_allocated.get(rating, 0.0) + target_mid
+        rows.append(row)
+
+    rows.sort(key=lambda row: (row["action_priority"], -abs(row.get("position_gap_to_mid") or 0.0), row["symbol"]))
+    bucket_summary = []
+    for bucket, key in ACTION_PLAN_BUCKET_KEYS.items():
+        target = settings[key]
+        allocated = bucket_allocated.get(bucket, 0.0)
+        bucket_summary.append({
+            "bucket": bucket,
+            "bucket_target_percent": target,
+            "eligible_count": bucket_counts.get(bucket, 0),
+            "allocated_target_percent": allocated,
+            "unallocated_due_to_caps_percent": max(0.0, target - allocated),
+        })
+    configured_total = sum(settings[key] for key in ACTION_PLAN_BUCKET_KEYS.values()) + settings["action_bucket_cash_target"]
+    allocated_total = sum(bucket_allocated.values())
+    return {
+        "action_plan": rows,
+        "settings": settings,
+        "summary": {
+            "total_portfolio_value": total_portfolio_value,
+            "configured_bucket_total": configured_total,
+            "allocated_target_total": allocated_total,
+            "unallocated_target_total": max(0.0, configured_total - allocated_total),
+            "bucket_summary": bucket_summary,
+        },
+    }
+
+
 def overlay_cached_market_fields(live_rows, cached_rows):
     cached_by_symbol = {
         normalize_symbol(item.get("symbol")): item
@@ -7179,6 +7606,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if len(parts) == 2 and parts[0].isdigit() and parts[1] == "external-scenarios":
                 return self.handle_external_scenarios_get(int(parts[0]))
             return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
+        if path == "/api/action-plan":
+            return self.handle_action_plan_get()
         if path.startswith("/api/analysis/"):
             symbol = normalize_symbol(path[len("/api/analysis/") :])
             if not symbol:
@@ -8368,6 +8797,17 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             )
         finally:
             conn.close()
+
+    def handle_action_plan_get(self):
+        try:
+            conn = get_db_connection()
+            try:
+                self._send_json(build_action_plan(conn))
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.exception("Unable to build Action Plan")
+            self._send_json({"error": "Unable to build Action Plan.", "details": str(exc)}, status=500)
 
     def handle_configuration_general_get(self):
         conn = get_db_connection()

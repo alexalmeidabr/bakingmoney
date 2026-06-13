@@ -1316,6 +1316,11 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-sort-key="costBasis" class="sortable">Cost Value</th>', html)
         self.assertIn('id="tws-data-toggle"', html)
         self.assertIn('Data from TWS', html)
+        self.assertIn('data-view="action-plan"', html)
+        self.assertIn('id="action-plan-table"', html)
+        self.assertIn('data-action-plan-setting="action_bucket_buy_target"', html)
+        self.assertIn('async function loadActionPlan()', js)
+        self.assertIn('/api/action-plan', js)
 
     def test_tws_data_toggle_is_wired_in_frontend(self):
         from pathlib import Path
@@ -2273,6 +2278,70 @@ class EarningsReviewTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class ActionPlanFeatureTests(unittest.TestCase):
+    def test_build_action_plan_uses_effective_analysis_and_cached_positions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    analysis = [
+                        {
+                            "symbol": "BUY",
+                            "company_name": "Buy Co",
+                            "rating": "Buy",
+                            "current_price": 50.0,
+                            "expected_price": 100.0,
+                            "expected_cagr": 14.9,
+                            "upside": 100.0,
+                            "core_confidence_diff": 1.5,
+                            "core_bullish_confidence": 7.0,
+                            "core_bearish_confidence": 3.0,
+                            "potential_confidence_diff": 0.5,
+                            "potential_bullish_confidence": 5.0,
+                            "potential_bearish_confidence": 4.5,
+                            "uses_final_scenario_overlay": True,
+                            "final_scenario_stale": False,
+                        },
+                        {
+                            "symbol": "SELL",
+                            "company_name": "Sell Co",
+                            "rating": "Sell",
+                            "current_price": 20.0,
+                            "expected_price": 18.0,
+                            "expected_cagr": -2.0,
+                            "upside": -10.0,
+                            "core_confidence_diff": -1.0,
+                            "core_bullish_confidence": 3.0,
+                            "core_bearish_confidence": 6.0,
+                            "potential_confidence_diff": None,
+                            "potential_bullish_confidence": None,
+                            "potential_bearish_confidence": None,
+                            "final_scenario_stale": False,
+                        },
+                    ]
+                    positions = [{"symbol": "SELL", "position": 10, "marketValue": 1000.0}]
+                    with mock.patch.object(web_server, "list_analysis_symbols", return_value=analysis), \
+                         mock.patch.object(web_server, "load_positions_cache", return_value=positions):
+                        payload = web_server.build_action_plan(conn)
+                    rows = {row["symbol"]: row for row in payload["action_plan"]}
+                    self.assertEqual(rows["BUY"]["action"], "Strong Add")
+                    self.assertEqual(rows["BUY"]["current_position_weight"], 0.0)
+                    self.assertGreater(rows["BUY"]["target_weight_mid"], 0)
+                    self.assertEqual(rows["SELL"]["action"], "Sell")
+                    self.assertEqual(rows["SELL"]["current_position_weight"], 100.0)
+                    self.assertEqual(payload["summary"]["total_portfolio_value"], 1000.0)
+                finally:
+                    conn.close()
+
+    def test_action_plan_settings_reject_bucket_total_above_100(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_bucket_buy_target"] = 90.0
+        with self.assertRaisesRegex(ValueError, "bucket targets"):
+            web_server.validate_action_plan_settings(settings)
 
 class ExternalScenarioOverlayTests(unittest.TestCase):
     def _seed_version_with_scenarios(self, conn, symbol="EXT"):

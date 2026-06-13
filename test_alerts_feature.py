@@ -1321,6 +1321,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-action-plan-setting="action_bucket_buy_target"', html)
         self.assertIn('async function loadActionPlan()', js)
         self.assertIn('/api/action-plan', js)
+        self.assertIn("openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'action_plan' })", js)
+        self.assertIn("analysisDetailOrigin === 'action_plan'", js)
+        self.assertIn('← Back to Action Plan', js)
+        self.assertIn("setView('action-plan', { skipLoad: true })", js)
 
     def test_tws_data_toggle_is_wired_in_frontend(self):
         from pathlib import Path

@@ -813,7 +813,7 @@ function renderActionPlan(payload) {
     row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td>${escapeHtml(item.action)}</td><td>${formatCurrencyValue(item.trigger_price, 'USD')}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td class="${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td>${escapeHtml(item.rating || 'Hold')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td>${formatPercent(item.current_position_weight)}</td><td>${targetBand}</td><td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td>${escapeHtml(item.reason)}</td>`;
     actionPlanTableBody.appendChild(row);
   });
-  actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'analysis' })));
+  actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'action_plan' })));
 }
 
 function syncSelectAllCheckbox() {
@@ -829,13 +829,21 @@ function showAnalysisList() { analysisListView.classList.remove('hidden'); analy
 function updateAnalysisBackButton() {
   if (analysisDetailOrigin === 'positions') {
     analysisBackBtn.textContent = '← Back to My Positions';
+  } else if (analysisDetailOrigin === 'action_plan') {
+    analysisBackBtn.textContent = '← Back to Action Plan';
   } else {
     analysisBackBtn.textContent = '← Back to Analysis';
   }
 }
-function showAnalysisDetailFromPositionsOrigin() {
+function showAnalysisDetailFromOriginMenu(originView) {
   views.forEach((view) => view.classList.toggle('active', view.id === 'analysis'));
-  menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === 'positions'));
+  menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === originView));
+}
+function showAnalysisDetailFromPositionsOrigin() {
+  showAnalysisDetailFromOriginMenu('positions');
+}
+function showAnalysisDetailFromActionPlanOrigin() {
+  showAnalysisDetailFromOriginMenu('action-plan');
 }
 function loadBackupView() {
   if (!backupStatusEl) return;
@@ -929,12 +937,13 @@ async function exportBackupFile() {
   }
 }
 
-function setView(targetView) {
+function setView(targetView, options = {}) {
+  const skipLoad = options.skipLoad === true;
   menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === targetView));
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
-  if (targetView === 'analysis') { showAnalysisList(); loadAnalysis(); }
-  if (targetView === 'positions') loadPositions();
-  if (targetView === 'action-plan') loadActionPlan();
+  if (targetView === 'analysis') { showAnalysisList(); if (!skipLoad) loadAnalysis(); }
+  if (targetView === 'positions' && !skipLoad) loadPositions();
+  if (targetView === 'action-plan' && !skipLoad) loadActionPlan();
   if (targetView === 'alerts') loadAlerts();
   if (targetView === 'prompt') loadPromptConfiguration();
   if (targetView === 'configuration') loadGeneralConfiguration();
@@ -1452,11 +1461,13 @@ function renderVariablesTable() {
 }
 
 async function openAnalysisDetailForSymbol(symbol, options = {}) {
-  const origin = options.origin === 'positions' ? 'positions' : 'analysis';
+  const origin = ['positions', 'action_plan'].includes(options.origin) ? options.origin : 'analysis';
   analysisDetailOrigin = origin;
 
   if (origin === 'positions') {
     showAnalysisDetailFromPositionsOrigin();
+  } else if (origin === 'action_plan') {
+    showAnalysisDetailFromActionPlanOrigin();
   } else {
     setView('analysis');
   }
@@ -1477,6 +1488,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   analysisListView.classList.add('hidden');
   analysisDetailView.classList.remove('hidden');
   if (analysisDetailOrigin === 'positions') showAnalysisDetailFromPositionsOrigin();
+  if (analysisDetailOrigin === 'action_plan') showAnalysisDetailFromActionPlanOrigin();
   updateAnalysisBackButton();
   isEditingVariables = false;
   activeAnalysisVariableCategory = 'Core Driver';
@@ -3585,6 +3597,10 @@ analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') 
 analysisBackBtn.addEventListener('click', () => {
   if (analysisDetailOrigin === 'positions') {
     setView('positions');
+    return;
+  }
+  if (analysisDetailOrigin === 'action_plan') {
+    setView('action-plan', { skipLoad: true });
     return;
   }
   showAnalysisList();

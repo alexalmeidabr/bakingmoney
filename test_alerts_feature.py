@@ -1425,6 +1425,8 @@ class AlertsUiStructureTests(unittest.TestCase):
             "analysisExternalScenarioNotesEl.value = item ? (item.source_notes || '') : formatLocalDateForExternalScenarioNotes();",
             js,
         )
+        self.assertIn("{ name: 'Bear', price_low: 80, price_high: 100, probability: 25 }", js)
+        self.assertNotIn("{ name: 'Bear', price_low: 80, price_high: 100, cagr_low", js)
 
     def test_external_scenario_bakingmoney_tab_is_not_forced_back_to_final(self):
         from pathlib import Path
@@ -2328,7 +2330,13 @@ class ExternalScenarioOverlayTests(unittest.TestCase):
                 conn = web_server.get_db_connection()
                 try:
                     _, version_id = self._seed_version_with_scenarios(conn)
-                    item = web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    payload_without_cagr = self._external_payload(weight=30)
+                    scenario_payload = json.loads(payload_without_cagr["scenario_json"])
+                    for scenario in scenario_payload["scenarios"]:
+                        scenario.pop("cagr_low", None)
+                        scenario.pop("cagr_high", None)
+                    payload_without_cagr["scenario_json"] = json.dumps(scenario_payload)
+                    item = web_server.create_external_scenario(conn, version_id, payload_without_cagr)
                     self.assertEqual(item["title"], "External")
                     self.assertAlmostEqual(item["external_weight"], 0.30)
                     self.assertEqual([s["scenario_name"] for s in item["scenarios"]], ["Bear", "Base", "Bull"])
@@ -2366,18 +2374,57 @@ class ExternalScenarioOverlayTests(unittest.TestCase):
                     self.assertEqual(bear["scenario_name"], "Bear")
                     self.assertAlmostEqual(bear["price_low"], 77.0)
                     self.assertAlmostEqual(bear["price_high"], 88.5)
-                    self.assertAlmostEqual(bear["cagr_low"], -4.9)
-                    self.assertAlmostEqual(bear["cagr_high"], -2.3)
-                    self.assertAlmostEqual(bear["cagr_mid"], -3.6)
+                    self.assertAlmostEqual(bear["cagr_low"], web_server.compute_scenario_cagr(bear["price_low"], 100.0))
+                    self.assertAlmostEqual(bear["cagr_high"], web_server.compute_scenario_cagr(bear["price_high"], 100.0))
+                    self.assertAlmostEqual(bear["cagr_mid"], web_server.compute_scenario_cagr(bear["price_mid"], 100.0))
                     self.assertAlmostEqual(sum(s["probability"] for s in overlay["scenarios"]), 1.0)
                     self.assertIsNotNone(overlay["expected_price"])
-                    self.assertIsNotNone(overlay["expected_cagr"])
+                    self.assertAlmostEqual(overlay["expected_cagr"], web_server.calculate_expected_cagr_from_price(overlay["expected_price"], 100.0))
+                    edit_payload = json.loads(web_server.list_external_scenarios(conn, version_id)[0]["scenario_json"])
+                    self.assertNotIn("cagr_low", edit_payload["scenarios"][0])
+                    self.assertNotIn("cagr_high", edit_payload["scenarios"][0])
 
                     first = web_server.list_external_scenarios(conn, version_id)[0]
                     web_server.update_external_scenario(conn, version_id, first["id"], self._external_payload(weight=80, title="High weight"))
                     web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30, title="Second"))
                     with self.assertRaisesRegex(ValueError, "more than 100%"):
                         web_server.recalculate_final_scenario_overlay(conn, version_id)
+                finally:
+                    conn.close()
+
+    def test_price_refresh_recalculates_dynamic_cagr_without_changing_scenario_prices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn)
+                    web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    overlay_before = web_server.recalculate_final_scenario_overlay(conn, version_id)
+                    original_bear = conn.execute(
+                        "SELECT price_low, price_high FROM analysis_version_scenarios WHERE analysis_version_id = ? AND scenario_name = 'Bear'",
+                        (version_id,),
+                    ).fetchone()
+
+                    with mock.patch.object(web_server, "fetch_ib_prices", return_value=({"EXT": 200.0}, [])):
+                        result = web_server.refresh_latest_analysis_market_prices(conn)
+
+                    self.assertEqual(result["updated"], 1)
+                    version_row = conn.execute("SELECT current_price, expected_price, expected_cagr, upside FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+                    self.assertEqual(version_row["current_price"], 200.0)
+                    self.assertAlmostEqual(version_row["expected_cagr"], web_server.calculate_expected_cagr_from_price(version_row["expected_price"], 200.0))
+                    self.assertAlmostEqual(version_row["upside"], web_server.calculate_upside(version_row["expected_price"], 200.0))
+                    refreshed_bear = conn.execute(
+                        "SELECT price_low, price_high, cagr_low FROM analysis_version_scenarios WHERE analysis_version_id = ? AND scenario_name = 'Bear'",
+                        (version_id,),
+                    ).fetchone()
+                    self.assertEqual(refreshed_bear["price_low"], original_bear["price_low"])
+                    self.assertEqual(refreshed_bear["price_high"], original_bear["price_high"])
+                    self.assertAlmostEqual(refreshed_bear["cagr_low"], web_server.compute_scenario_cagr(original_bear["price_low"], 200.0))
+                    overlay_after = web_server.get_final_scenario_overlay(conn, version_id)
+                    self.assertAlmostEqual(overlay_after["expected_price"], overlay_before["expected_price"])
+                    self.assertAlmostEqual(overlay_after["expected_cagr"], web_server.calculate_expected_cagr_from_price(overlay_after["expected_price"], 200.0))
                 finally:
                     conn.close()
 

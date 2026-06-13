@@ -943,9 +943,9 @@ function renderAnalysisReleaseSummaryCard() {
 function getExternalScenarioTemplate() {
   return JSON.stringify({
     scenarios: [
-      { name: 'Bear', price_low: 80, price_high: 100, cagr_low: -5, cagr_high: 0, probability: 25 },
-      { name: 'Base', price_low: 120, price_high: 150, cagr_low: 4, cagr_high: 8, probability: 50 },
-      { name: 'Bull', price_low: 180, price_high: 220, cagr_low: 12, cagr_high: 17, probability: 25 },
+      { name: 'Bear', price_low: 80, price_high: 100, probability: 25 },
+      { name: 'Base', price_low: 120, price_high: 150, probability: 50 },
+      { name: 'Bull', price_low: 180, price_high: 220, probability: 25 },
     ],
   }, null, 2);
 }

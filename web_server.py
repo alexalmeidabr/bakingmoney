@@ -358,6 +358,7 @@ Rules:
 - The Bull case should reflect stronger materialization of the most important bullish variables.
 - The Base case should represent normal execution and currently visible trajectory, not a scenario where most bullish variables work well.
 - Probabilities must sum to 100.
+- Do not output CAGR fields. CAGR is calculated by BakingMoney from current price and scenario target prices.
 
 Base-case discipline:
 
@@ -2956,9 +2957,9 @@ def validate_step2_key_variables(payload):
         "symbol": symbol,
         "assumptions": "temp",
         "scenarios": [
-            {"name": "Bear", "price_low": 1, "price_high": 2, "cagr_low": -1, "cagr_high": 0, "probability": 34},
-            {"name": "Base", "price_low": 2, "price_high": 3, "cagr_low": 0, "cagr_high": 1, "probability": 33},
-            {"name": "Bull", "price_low": 3, "price_high": 4, "cagr_low": 1, "cagr_high": 2, "probability": 33},
+            {"name": "Bear", "price_low": 1, "price_high": 2, "probability": 34},
+            {"name": "Base", "price_low": 2, "price_high": 3, "probability": 33},
+            {"name": "Bull", "price_low": 3, "price_high": 4, "probability": 33},
         ],
         "key_variables": key_variables,
     }
@@ -3162,8 +3163,6 @@ def request_ai_analysis(symbol, current_price=None):
                     "name": s["scenario_name"],
                     "price_low": s["price_low"],
                     "price_high": s["price_high"],
-                    "cagr_low": s["cagr_low"],
-                    "cagr_high": s["cagr_high"],
                     "probability": s["probability"],
                 }
                 for s in scenario_parsed["scenarios"]
@@ -3310,7 +3309,13 @@ def enrich_scenarios_with_midpoints(scenarios, current_price, years=5, default_c
     return populated
 
 
+def calculate_expected_cagr_from_price(expected_price, current_price, years=5):
+    return compute_scenario_cagr(expected_price, current_price, years=years)
+
+
 def calculate_expected_cagr(scenarios):
+    # Backward-compatible fallback for legacy callers only. New analysis and
+    # overlay flows derive expected CAGR from expected_price/current_price.
     weighted = 0.0
     total_prob = 0.0
     for scenario in scenarios or []:
@@ -3961,6 +3966,70 @@ def remove_earnings_release_calendar_symbol(conn, entry_id):
     return delete_earnings_calendar_entry(conn, entry_id)
 
 
+
+
+def recalculate_version_dynamic_price_metrics(conn, version_id, current_price):
+    scenario_rows = conn.execute(
+        """
+        SELECT id, scenario_name, price_low, price_high, probability
+        FROM analysis_version_scenarios
+        WHERE analysis_version_id = ?
+        ORDER BY CASE scenario_name WHEN 'Bear' THEN 1 WHEN 'Base' THEN 2 WHEN 'Bull' THEN 3 ELSE 99 END
+        """,
+        (version_id,),
+    ).fetchall()
+    scenarios = enrich_scenarios_with_midpoints([dict(row) for row in scenario_rows], current_price=current_price)
+    for scenario in scenarios:
+        conn.execute(
+            """
+            UPDATE analysis_version_scenarios
+            SET price_mid = ?, cagr_low = ?, cagr_mid = ?, cagr_high = ?
+            WHERE id = ?
+            """,
+            (
+                scenario.get("price_mid"),
+                scenario.get("cagr_low"),
+                scenario.get("cagr_mid"),
+                scenario.get("cagr_high"),
+                scenario.get("id"),
+            ),
+        )
+    version = conn.execute("SELECT expected_price FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+    expected_price = version["expected_price"] if version else calculate_expected_price(scenarios)
+    expected_cagr = calculate_expected_cagr_from_price(expected_price, current_price)
+    upside = calculate_upside(expected_price, current_price)
+    conn.execute(
+        """
+        UPDATE analysis_versions
+        SET expected_cagr = ?, upside = ?
+        WHERE id = ?
+        """,
+        (expected_cagr, upside, version_id),
+    )
+
+    overlay = conn.execute(
+        "SELECT final_scenarios_json, expected_price, is_stale FROM analysis_final_scenario_overlays WHERE analysis_version_id = ?",
+        (version_id,),
+    ).fetchone()
+    if overlay and not bool(overlay["is_stale"]):
+        try:
+            final_scenarios = json.loads(overlay["final_scenarios_json"] or "[]")
+        except json.JSONDecodeError:
+            final_scenarios = []
+        enriched_final = enrich_scenarios_with_midpoints(final_scenarios, current_price=current_price, default_cagr=None)
+        final_expected_price = overlay["expected_price"] if overlay["expected_price"] is not None else calculate_expected_price(enriched_final)
+        final_expected_cagr = calculate_expected_cagr_from_price(final_expected_price, current_price)
+        final_upside = calculate_upside(final_expected_price, current_price)
+        conn.execute(
+            """
+            UPDATE analysis_final_scenario_overlays
+            SET final_scenarios_json = ?, expected_cagr = ?, upside = ?, updated_at = ?
+            WHERE analysis_version_id = ?
+            """,
+            (json.dumps(enriched_final), final_expected_cagr, final_upside, utc_now_iso(), version_id),
+        )
+
+
 def refresh_latest_analysis_market_prices(conn):
     rows = conn.execute(
         """
@@ -3991,15 +4060,11 @@ def refresh_latest_analysis_market_prices(conn):
         if latest_price is None:
             skipped += 1
             continue
-        new_upside = calculate_upside(row["expected_price"], latest_price)
         conn.execute(
-            """
-            UPDATE analysis_versions
-            SET current_price = ?, upside = ?
-            WHERE id = ?
-            """,
-            (latest_price, new_upside, row["version_id"]),
+            "UPDATE analysis_versions SET current_price = ? WHERE id = ?",
+            (latest_price, row["version_id"]),
         )
+        recalculate_version_dynamic_price_metrics(conn, row["version_id"], latest_price)
         updated += 1
 
     if updated:
@@ -4148,6 +4213,8 @@ def _version_payload(conn, version_row):
         (version_row["id"],),
     ).fetchall()
 
+    enriched_scenarios = enrich_scenarios_with_midpoints([dict(s) for s in scenarios], current_price=version_row["current_price"], default_cagr=None)
+
     confidence_breakdown = calculate_confidence_breakdown([dict(v) for v in key_variables])
     bullish_confidence = confidence_breakdown["bullish_confidence"]
     bearish_confidence = confidence_breakdown["bearish_confidence"]
@@ -4221,7 +4288,7 @@ def _version_payload(conn, version_row):
         "final_scenario_probabilities": probability_meta.get("final_scenario_probabilities"),
         "probability_source_mode_used": probability_meta.get("probability_source_mode_used"),
         "backend_probability_meta": probability_meta.get("backend_probability_meta"),
-        "scenarios": [dict(s) for s in scenarios],
+        "scenarios": enriched_scenarios,
         "key_variables": [dict(v) for v in key_variables],
         "scenario_passes": [
             {
@@ -4276,7 +4343,7 @@ def _safe_external_float(value, field_name):
     return number
 
 
-def _normalize_external_scenario_payload(raw_scenarios):
+def _normalize_external_scenario_payload(raw_scenarios, current_price=None):
     if isinstance(raw_scenarios, str):
         try:
             raw_scenarios = json.loads(raw_scenarios)
@@ -4301,23 +4368,17 @@ def _normalize_external_scenario_payload(raw_scenarios):
             raise ValueError("Duplicate scenario names are not allowed")
         price_low = _safe_external_float(item.get("price_low"), f"{name}.price_low")
         price_high = _safe_external_float(item.get("price_high"), f"{name}.price_high")
-        cagr_low = _safe_external_float(item.get("cagr_low"), f"{name}.cagr_low")
-        cagr_high = _safe_external_float(item.get("cagr_high"), f"{name}.cagr_high")
         probability = _safe_external_float(item.get("probability"), f"{name}.probability")
         if price_low <= 0 or price_high <= 0:
             raise ValueError(f"{name} price values must be greater than 0")
         if price_low > price_high:
             raise ValueError(f"{name} price_low cannot exceed price_high")
-        if cagr_low > cagr_high:
-            raise ValueError(f"{name} cagr_low cannot exceed cagr_high")
         if probability < 0:
             raise ValueError(f"{name} probability cannot be negative")
         by_name[name] = {
             "scenario_name": name,
             "price_low": price_low,
             "price_high": price_high,
-            "cagr_low": cagr_low,
-            "cagr_high": cagr_high,
             "probability": probability,
         }
 
@@ -4337,20 +4398,12 @@ def _normalize_external_scenario_payload(raw_scenarios):
     for name in EXTERNAL_SCENARIO_NAMES:
         item = dict(by_name[name])
         item["probability"] = item["probability"] / divisor
-        normalized.append(_populate_external_scenario_midpoints(item))
+        normalized.append(enrich_scenario_with_midpoints(item, current_price=current_price, default_cagr=None))
     return _normalize_probabilities(normalized)
 
 
-
-
-def _populate_external_scenario_midpoints(item):
-    cloned = dict(item)
-    cloned["price_mid"] = compute_price_mid(cloned.get("price_low"), cloned.get("price_high"))
-    try:
-        cloned["cagr_mid"] = (float(cloned.get("cagr_low")) + float(cloned.get("cagr_high"))) / 2.0
-    except (TypeError, ValueError):
-        cloned["cagr_mid"] = None
-    return cloned
+def _populate_external_scenario_midpoints(item, current_price=None):
+    return enrich_scenario_with_midpoints(item, current_price=current_price, default_cagr=None)
 
 
 def _external_scenario_json_for_edit(scenarios):
@@ -4360,8 +4413,6 @@ def _external_scenario_json_for_edit(scenarios):
                 "name": item.get("scenario_name") or item.get("name"),
                 "price_low": item.get("price_low"),
                 "price_high": item.get("price_high"),
-                "cagr_low": item.get("cagr_low"),
-                "cagr_high": item.get("cagr_high"),
                 "probability": round(float(item.get("probability") or 0) * 100.0, 6),
             }
             for item in scenarios
@@ -4419,7 +4470,7 @@ def _delete_final_overlay_if_no_external_scenarios(conn, version_id):
     return False
 
 
-def _normalize_external_scenario_record_payload(payload):
+def _normalize_external_scenario_record_payload(payload, current_price=None):
     payload = payload or {}
     title = str(payload.get("title") or "").strip()
     if not title:
@@ -4433,13 +4484,14 @@ def _normalize_external_scenario_record_payload(payload):
         raw_scenarios = payload.get("scenarios_json")
     if raw_scenarios is None:
         raw_scenarios = {"scenarios": payload.get("scenarios")}
-    scenarios = _normalize_external_scenario_payload(raw_scenarios)
+    scenarios = _normalize_external_scenario_payload(raw_scenarios, current_price=current_price)
     return title, source_notes, external_weight, scenarios
 
 
 def create_external_scenario(conn, version_id, payload):
     version_id = _analysis_version_exists(conn, version_id)
-    title, source_notes, external_weight, scenarios = _normalize_external_scenario_record_payload(payload)
+    version = conn.execute("SELECT current_price FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+    title, source_notes, external_weight, scenarios = _normalize_external_scenario_record_payload(payload, current_price=version["current_price"] if version else None)
     now = utc_now_iso()
     cur = conn.execute(
         """
@@ -4467,7 +4519,8 @@ def update_external_scenario(conn, version_id, external_id, payload):
     ).fetchone()
     if not existing:
         raise ValueError("External scenario not found")
-    title, source_notes, external_weight, scenarios = _normalize_external_scenario_record_payload(payload)
+    version = conn.execute("SELECT current_price FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+    title, source_notes, external_weight, scenarios = _normalize_external_scenario_record_payload(payload, current_price=version["current_price"] if version else None)
     now = utc_now_iso()
     conn.execute(
         """
@@ -4604,8 +4657,6 @@ def recalculate_final_scenario_overlay(conn, version_id):
             "scenario_name": name,
             "price_low": float(base["price_low"]) * bakingmoney_weight,
             "price_high": float(base["price_high"]) * bakingmoney_weight,
-            "cagr_low": float(base["cagr_low"]) * bakingmoney_weight,
-            "cagr_high": float(base["cagr_high"]) * bakingmoney_weight,
             "probability": float(base["probability"]) * bakingmoney_weight,
         }
         for external in external_scenarios:
@@ -4613,14 +4664,15 @@ def recalculate_final_scenario_overlay(conn, version_id):
             weight = float(external["external_weight"] or 0)
             blended["price_low"] += float(scenario["price_low"]) * weight
             blended["price_high"] += float(scenario["price_high"]) * weight
-            blended["cagr_low"] += float(scenario["cagr_low"]) * weight
-            blended["cagr_high"] += float(scenario["cagr_high"]) * weight
             blended["probability"] += float(scenario["probability"]) * weight
         final_scenarios.append(blended)
 
-    final_scenarios = [_populate_external_scenario_midpoints(item) for item in _normalize_probabilities(final_scenarios)]
+    final_scenarios = [
+        enrich_scenario_with_midpoints(item, current_price=version["current_price"], default_cagr=None)
+        for item in _normalize_probabilities(final_scenarios)
+    ]
     expected_price = calculate_expected_price(final_scenarios)
-    expected_cagr = calculate_expected_cagr(final_scenarios)
+    expected_cagr = calculate_expected_cagr_from_price(expected_price, version["current_price"])
     upside = calculate_upside(expected_price, version["current_price"])
     now = utc_now_iso()
     conn.execute(
@@ -4781,7 +4833,7 @@ def _insert_analysis_version(
 
     scenarios_with_cagr = enrich_scenarios_with_midpoints(scenarios, current_price=current_price)
     expected_price = calculate_expected_price(scenarios_with_cagr)
-    expected_cagr = calculate_expected_cagr(scenarios_with_cagr)
+    expected_cagr = calculate_expected_cagr_from_price(expected_price, current_price)
     upside = calculate_upside(expected_price, current_price)
     confidence = calculate_overall_confidence(key_variables)
 
@@ -5082,8 +5134,6 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
                     "name": s["scenario_name"],
                     "price_low": s["price_low"],
                     "price_high": s["price_high"],
-                    "cagr_low": s["cagr_low"],
-                    "cagr_high": s["cagr_high"],
                     "probability": s["probability"],
                 }
                 for s in scenario_parsed["scenarios"]
@@ -5203,8 +5253,6 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
                     "name": s["scenario_name"],
                     "price_low": s["price_low"],
                     "price_high": s["price_high"],
-                    "cagr_low": s["cagr_low"],
-                    "cagr_high": s["cagr_high"],
                     "probability": s["probability"],
                 }
                 for s in scenario_parsed["scenarios"]

@@ -36,6 +36,18 @@ class AnalysisServiceTests(unittest.TestCase):
         parsed = parse_analysis_payload(payload)
         self.assertEqual(parsed["symbol"], "NBIS")
         self.assertAlmostEqual(parsed["scenarios"][0]["probability"], 0.25)
+        self.assertNotIn("cagr_low", parsed["scenarios"][0])
+        self.assertNotIn("cagr_high", parsed["scenarios"][0])
+
+
+    def test_parse_payload_accepts_scenarios_without_cagr_fields(self):
+        payload = build_valid_payload()
+        for scenario in payload["scenarios"]:
+            scenario.pop("cagr_low", None)
+            scenario.pop("cagr_high", None)
+        parsed = parse_analysis_payload(payload)
+        self.assertEqual([s["scenario_name"] for s in parsed["scenarios"]], ["Bear", "Base", "Bull"])
+        self.assertNotIn("cagr_low", parsed["scenarios"][0])
 
     def test_parse_payload_invalid_scenarios(self):
         payload = build_valid_payload()

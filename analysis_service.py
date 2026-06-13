@@ -104,14 +104,10 @@ def parse_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         price_low = _safe_float(item.get("price_low"), f"{scenario_name}.price_low")
         price_high = _safe_float(item.get("price_high"), f"{scenario_name}.price_high")
-        cagr_low = _safe_float(item.get("cagr_low"), f"{scenario_name}.cagr_low")
-        cagr_high = _safe_float(item.get("cagr_high"), f"{scenario_name}.cagr_high")
         probability = _safe_float(item.get("probability"), f"{scenario_name}.probability")
 
         if price_low > price_high:
             raise AnalysisValidationError(f"{scenario_name} price_low cannot exceed price_high")
-        if cagr_low > cagr_high:
-            raise AnalysisValidationError(f"{scenario_name} cagr_low cannot exceed cagr_high")
 
         probability_normalized = _normalize_probability(probability)
         if probability_normalized < 0:
@@ -122,8 +118,6 @@ def parse_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "scenario_name": scenario_name,
                 "price_low": price_low,
                 "price_high": price_high,
-                "cagr_low": cagr_low,
-                "cagr_high": cagr_high,
                 "probability": probability_normalized,
             }
         )

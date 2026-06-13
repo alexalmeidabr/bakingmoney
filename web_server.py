@@ -5645,6 +5645,101 @@ def _distance_to_trigger(current_price, trigger_price):
     return ((current / trigger) - 1.0) * 100.0
 
 
+def _format_action_amount_label(direction, amount):
+    if amount is None:
+        return "N/A" if direction in {"add", "trim", "sell"} else "—"
+    rounded = f"${amount:,.0f}"
+    if direction == "add":
+        return f"Add about {rounded}"
+    if direction == "trim":
+        return f"Trim about {rounded}"
+    if direction == "sell":
+        return f"Sell about {rounded}"
+    return "—"
+
+
+def _action_amount_fields(action, current_weight, target_mid, total_portfolio_value, market_value):
+    total = safe_number(total_portfolio_value)
+    current = safe_number(current_weight)
+    target = safe_number(target_mid)
+    market = safe_number(market_value)
+    amount_to_mid = None
+    if total is not None and total > 0 and current is not None and target is not None:
+        amount_to_mid = abs(target - current) / 100.0 * total
+
+    direction = "none"
+    amount = None
+    if action in {"Strong Add", "Add", "Starter Buy"}:
+        direction = "add"
+        if total is not None and total > 0 and current is not None and target is not None and target > current:
+            amount = (target - current) / 100.0 * total
+    elif action in {"Strong Trim", "Trim"}:
+        direction = "trim"
+        if total is not None and total > 0 and current is not None and target is not None and current > target:
+            amount = (current - target) / 100.0 * total
+    elif action == "Sell":
+        direction = "sell"
+        if market is not None and market > 0:
+            amount = market
+        elif total is not None and total > 0 and current is not None:
+            amount = current / 100.0 * total
+
+    return {
+        "action_amount": amount,
+        "action_amount_label": _format_action_amount_label(direction, amount),
+        "action_amount_direction": direction,
+        "action_amount_to_mid": amount_to_mid,
+    }
+
+
+def _action_plan_trigger_breakdown(expected_price, current_price, settings, relevant_trigger_price, relevant_trigger_type):
+    strong_add = _trigger_price(expected_price, settings["action_strong_add_required_upside"])
+    add = _trigger_price(expected_price, settings["action_add_required_upside"])
+    starter = _trigger_price(expected_price, settings["action_starter_buy_required_upside"])
+    trim = _trigger_price(expected_price, settings["action_trim_remaining_upside"])
+    sell = _trigger_price(expected_price, settings["action_sell_remaining_upside"])
+    return {
+        "strong_add_trigger_price": strong_add,
+        "add_trigger_price": add,
+        "starter_buy_trigger_price": starter,
+        "trim_trigger_price": trim,
+        "sell_trigger_price": sell,
+        "relevant_trigger_price": relevant_trigger_price,
+        "relevant_trigger_type": relevant_trigger_type,
+        "distance_to_relevant_trigger_percent": _distance_to_trigger(current_price, relevant_trigger_price),
+        "formula": "Trigger price = expected price / (1 + required upside)",
+    }
+
+
+def _action_plan_decision_path(row, action):
+    path = []
+    if row.get("final_scenario_stale"):
+        path.append({"status": "warning", "text": "Final Scenario overlay is stale."})
+    path.append({"status": "pass", "text": f"Rating is {row.get('rating') or 'Hold'}."})
+    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    target_low = safe_number(row.get("target_weight_low")) or 0.0
+    target_high = safe_number(row.get("target_weight_high")) or 0.0
+    target_mid = safe_number(row.get("target_weight_mid")) or 0.0
+    if current_weight < target_low:
+        path.append({"status": "pass", "text": "Current position is below the target band."})
+    elif current_weight > target_high:
+        path.append({"status": "pass", "text": "Current position is above the target band."})
+    else:
+        path.append({"status": "pass", "text": "Current position is inside the target band."})
+    if action in {"Strong Add", "Add", "Starter Buy"}:
+        path.append({"status": "pass", "text": "Current price is at or below the relevant buy trigger."})
+    elif action in {"Trim", "Strong Trim", "Sell"}:
+        path.append({"status": "pass", "text": "Position reduction rule is active for this symbol."})
+    elif action == "Watch":
+        path.append({"status": "fail", "text": "Current price is above the relevant buy trigger."})
+    elif action == "Re-evaluate":
+        path.append({"status": "warning", "text": "Required price, upside, portfolio, or scenario freshness data is incomplete."})
+    else:
+        path.append({"status": "pass", "text": f"Current weight {current_weight:.2f}% is near target midpoint {target_mid:.2f}%."})
+    path.append({"status": "result", "text": f"Action = {action}."})
+    return path
+
+
 def _is_action_plan_eligible(analysis, owned, settings):
     rating = analysis.get("rating") or "Hold"
     if owned and settings["action_include_current_positions"]:
@@ -5768,6 +5863,7 @@ def build_action_plan(conn):
             core_risk_modifier = 1.0 - ((core_bearish - penalty_start) / (penalty_full - penalty_start)) * 0.5
         core_score = upside_score * core_conviction_score * core_risk_modifier
         potential_bonus_weight = 0.0
+        potential_conviction = 0.0
         if (
             upside is not None
             and potential_diff is not None
@@ -5789,7 +5885,10 @@ def build_action_plan(conn):
             "upside_score": upside_score,
             "core_conviction_score": core_conviction_score,
             "core_risk_modifier": core_risk_modifier,
+            "core_score": core_score,
             "potential_bonus_weight": potential_bonus_weight,
+            "potential_conviction_score": potential_conviction,
+            "current_position_market_value": market_value,
             "bucket": analysis.get("rating") or "Hold",
         })
 
@@ -5815,6 +5914,7 @@ def build_action_plan(conn):
             cap = min(cap, settings["action_max_negative_core_weight"])
         target_mid = min(target_before_caps, cap)
         target_low, target_high = _target_band(target_mid, rating, settings)
+        bucket_share = (item["company_bucket_score"] / score_total * 100.0) if score_total > 0 else 0.0
         row = {
             "symbol": item["symbol"],
             "company_name": item.get("company_name"),
@@ -5830,6 +5930,8 @@ def build_action_plan(conn):
             "potential_bullish_confidence": item.get("potential_bullish_confidence"),
             "potential_bearish_confidence": item.get("potential_bearish_confidence"),
             "current_position_weight": item["current_position_weight"],
+            "current_position_market_value": item.get("current_position_market_value"),
+            "total_portfolio_value": total_portfolio_value,
             "target_weight_mid": target_mid,
             "target_weight_low": target_low,
             "target_weight_high": target_high,
@@ -5839,10 +5941,44 @@ def build_action_plan(conn):
             "upside_score": item["upside_score"],
             "core_conviction_score": item["core_conviction_score"],
             "potential_bonus_weight": item["potential_bonus_weight"],
+            "score_breakdown": {
+                "upside_score": item["upside_score"],
+                "core_conviction_score": item["core_conviction_score"],
+                "core_risk_modifier": item["core_risk_modifier"],
+                "core_score": item["core_score"],
+                "potential_conviction_score": item.get("potential_conviction_score", 0.0),
+                "potential_bonus_weight": item["potential_bonus_weight"],
+                "company_bucket_score": item["company_bucket_score"],
+            },
+            "target_weight_breakdown": {
+                "rating_bucket": rating,
+                "bucket_target_percent": bucket_target,
+                "eligible_count_in_bucket": bucket_counts.get(rating, 0),
+                "company_bucket_score": item["company_bucket_score"],
+                "total_bucket_score": score_total,
+                "bucket_share_percent": bucket_share,
+                "raw_target_weight": raw_target,
+                "potential_bonus_weight": item["potential_bonus_weight"],
+                "target_before_caps": target_before_caps,
+                "cap_applied": cap,
+                "target_weight_mid": target_mid,
+                "target_weight_low": target_low,
+                "target_weight_high": target_high,
+            },
             "uses_final_scenario_overlay": item.get("uses_final_scenario_overlay"),
             "final_scenario_stale": item.get("final_scenario_stale"),
         }
         action, trigger_price, trigger_direction, distance, reason = _choose_action_plan_decision(row, settings)
+        amount_fields = _action_amount_fields(action, item["current_position_weight"], target_mid, total_portfolio_value, item.get("current_position_market_value"))
+        trigger_type_by_action = {
+            "Strong Add": "strong_add",
+            "Add": "add",
+            "Starter Buy": "starter_buy",
+            "Trim": "trim",
+            "Strong Trim": "trim",
+            "Sell": "sell",
+            "Watch": "starter_buy" if rating == "Speculative Buy" else "add",
+        }
         row.update({
             "action": action,
             "trigger_price": trigger_price,
@@ -5850,7 +5986,10 @@ def build_action_plan(conn):
             "distance_to_trigger_percent": distance,
             "reason": reason if score_total > 0 or action in {"Sell", "Re-evaluate"} else "No positive attractiveness/conviction score.",
             "action_priority": ACTION_PLAN_ACTION_PRIORITY.get(action, 99),
+            **amount_fields,
+            "trigger_breakdown": _action_plan_trigger_breakdown(item.get("expected_price"), item.get("current_price"), settings, trigger_price, trigger_type_by_action.get(action)),
         })
+        row["decision_path"] = _action_plan_decision_path(row, action)
         bucket_allocated[rating] = bucket_allocated.get(rating, 0.0) + target_mid
         rows.append(row)
 
@@ -5879,6 +6018,26 @@ def build_action_plan(conn):
             "bucket_summary": bucket_summary,
         },
     }
+
+
+def get_action_plan_detail(conn, symbol):
+    normalized = normalize_symbol(symbol)
+    payload = build_action_plan(conn)
+    row = next((item for item in payload.get("action_plan", []) if normalize_symbol(item.get("symbol")) == normalized), None)
+    if not row:
+        return None
+    detail = get_analysis_detail(conn, normalized)
+    variables = []
+    if detail and detail.get("version"):
+        variables = detail["version"].get("key_variables") or []
+    row = dict(row)
+    row["action_relevant_key_variables"] = sorted(
+        variables,
+        key=lambda item: (safe_number(item.get("importance")) or 0.0, safe_number(item.get("confidence")) or 0.0),
+        reverse=True,
+    )[:10]
+    row["summary"] = payload.get("summary", {})
+    return row
 
 
 def overlay_cached_market_fields(live_rows, cached_rows):
@@ -7619,6 +7778,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if len(parts) == 2 and parts[0].isdigit() and parts[1] == "external-scenarios":
                 return self.handle_external_scenarios_get(int(parts[0]))
             return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
+        if path.startswith("/api/action-plan/"):
+            symbol = normalize_symbol(path[len("/api/action-plan/") :])
+            if not symbol:
+                return self._send_json({"error": "Invalid action plan symbol"}, status=400)
+            return self.handle_action_plan_detail_get(symbol)
         if path == "/api/action-plan":
             return self.handle_action_plan_get()
         if path.startswith("/api/analysis/"):
@@ -8821,6 +8985,20 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             logger.exception("Unable to build Action Plan")
             self._send_json({"error": "Unable to build Action Plan.", "details": str(exc)}, status=500)
+
+    def handle_action_plan_detail_get(self, symbol):
+        try:
+            conn = get_db_connection()
+            try:
+                detail = get_action_plan_detail(conn, symbol)
+                if not detail:
+                    return self._send_json({"error": "Action Plan symbol not found"}, status=404)
+                self._send_json({"action_detail": detail})
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.exception("Unable to build Action Plan detail")
+            self._send_json({"error": "Unable to build Action Plan detail.", "details": str(exc)}, status=500)
 
     def handle_configuration_general_get(self):
         conn = get_db_connection()

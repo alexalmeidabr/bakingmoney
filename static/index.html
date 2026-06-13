@@ -674,6 +674,7 @@
               <button id="action-plan-refresh-btn">Refresh Action Plan</button>
             </div>
           </div>
+          <div id="action-plan-list-view">
           <p id="action-plan-status" class="status">Loading Action Plan…</p>
           <div id="action-plan-summary" class="summary-grid"></div>
           <div class="filter-row action-plan-filter-row">
@@ -725,6 +726,7 @@
                 <tr>
                   <th>Symbol</th>
                   <th>Action</th>
+                  <th>Action Amount</th>
                   <th>Trigger Price</th>
                   <th>Current Price</th>
                   <th>Distance</th>
@@ -740,6 +742,16 @@
               </thead>
               <tbody></tbody>
             </table>
+          </div>
+          </div>
+          <div id="action-plan-detail-view" class="hidden">
+            <div class="detail-header">
+              <button id="action-plan-detail-back-btn">← Back to Action Plan</button>
+              <button id="action-plan-open-analysis-btn">Open Full Analysis</button>
+            </div>
+            <h3 id="action-plan-detail-title">Action Detail</h3>
+            <p id="action-plan-detail-status" class="status"></p>
+            <div id="action-plan-detail-content"></div>
           </div>
         </section>
 

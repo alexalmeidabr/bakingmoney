@@ -33,6 +33,13 @@ const actionPlanStatusEl = document.getElementById('action-plan-status');
 const actionPlanSummaryEl = document.getElementById('action-plan-summary');
 const actionPlanTableBody = document.querySelector('#action-plan-table tbody');
 const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
+const actionPlanListViewEl = document.getElementById('action-plan-list-view');
+const actionPlanDetailViewEl = document.getElementById('action-plan-detail-view');
+const actionPlanDetailBackBtn = document.getElementById('action-plan-detail-back-btn');
+const actionPlanOpenAnalysisBtn = document.getElementById('action-plan-open-analysis-btn');
+const actionPlanDetailTitleEl = document.getElementById('action-plan-detail-title');
+const actionPlanDetailStatusEl = document.getElementById('action-plan-detail-status');
+const actionPlanDetailContentEl = document.getElementById('action-plan-detail-content');
 const actionPlanRatingFilterEl = document.getElementById('action-plan-rating-filter');
 const actionPlanRatingFilterToggleEl = document.getElementById('action-plan-rating-filter-toggle');
 const actionPlanRatingFilterLabelEl = document.getElementById('action-plan-rating-filter-label');
@@ -240,6 +247,7 @@ let latestPositions = [];
 let positionSort = { key: 'marketValue', direction: 'desc' };
 let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
+let selectedActionPlanDetail = null;
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
 let ratingFilters = new Set();
@@ -907,8 +915,138 @@ function renderAnalysisList() {
   syncSelectAllCheckbox();
 }
 
+function showActionPlanList() {
+  selectedActionPlanDetail = null;
+  actionPlanListViewEl.classList.remove('hidden');
+  actionPlanDetailViewEl.classList.add('hidden');
+}
+
+function showActionPlanDetailView() {
+  actionPlanListViewEl.classList.add('hidden');
+  actionPlanDetailViewEl.classList.remove('hidden');
+}
+
+function getActionPlanAmountDetailLabel(item) {
+  const label = item?.action_amount_label || '—';
+  if (!item || item.action_amount_direction === 'none') return 'No action amount is needed for this recommendation.';
+  if (item.action_amount_direction === 'sell') return `${label} based on current position market value.`;
+  return `${label} to reach the calculated target midpoint.`;
+}
+
+function renderActionPlanMetricList(items) {
+  return `<dl class="action-detail-metrics">${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`).join('')}</dl>`;
+}
+
+function renderDecisionPath(path) {
+  const rows = (path || []).map((item) => `<li class="decision-${escapeHtml(item.status || 'pass')}"><strong>${escapeHtml(String(item.status || '').toUpperCase())}:</strong> ${escapeHtml(item.text || '')}</li>`).join('');
+  return `<ul class="decision-path">${rows || '<li>No decision path available.</li>'}</ul>`;
+}
+
+function renderActionRelevantVariables(variables) {
+  if (!Array.isArray(variables) || !variables.length) return '<p>No key variables available.</p>';
+  const rows = variables.map((item) => `<tr><td>${escapeHtml(item.variable || item.variable_text || '')}</td><td>${escapeHtml(item.type || item.variable_type || '')}</td><td>${escapeHtml(item.driver_category || 'Core Driver')}</td><td>${formatNumber(item.confidence)}</td><td>${formatNumber(item.importance)}</td></tr>`).join('');
+  return `<div class="table-wrap compact-table"><table><thead><tr><th>Variable</th><th>Type</th><th>Driver</th><th>Confidence</th><th>Importance</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function renderActionPlanDetail(item) {
+  if (!item) return;
+  selectedActionPlanDetail = item;
+  actionPlanDetailTitleEl.textContent = `Action Detail: ${item.symbol}`;
+  actionPlanDetailStatusEl.textContent = item.reason || '';
+  actionPlanDetailStatusEl.className = item.final_scenario_stale ? 'status warning' : 'status';
+  const tb = item.target_weight_breakdown || {};
+  const sb = item.score_breakdown || {};
+  const trig = item.trigger_breakdown || {};
+  actionPlanDetailContentEl.innerHTML = `
+    <section class="detail-card"><h4>Action Summary</h4>${renderActionPlanMetricList([
+      ['Symbol', escapeHtml(item.symbol || '')],
+      ['Company Name', escapeHtml(item.company_name || 'N/A')],
+      ['Action', escapeHtml(item.action || 'Hold')],
+      ['Action Amount', escapeHtml(item.action_amount_label || '—')],
+      ['Rating', escapeHtml(item.rating || 'Hold')],
+      ['Current Price', formatCurrencyValue(item.current_price, 'USD')],
+      ['Expected Price', formatCurrencyValue(item.expected_price, 'USD')],
+      ['Upside', formatPercent(item.upside)],
+      ['Current Weight', formatPercent(item.current_position_weight)],
+      ['Target Mid', formatPercent(item.target_weight_mid)],
+      ['Target Band', `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}`],
+      ['Gap to Mid', formatPercent(item.position_gap_to_mid)],
+      ['Trigger Price', formatCurrencyValue(item.trigger_price, 'USD')],
+      ['Distance to Trigger', formatPercent(item.distance_to_trigger_percent)],
+    ])}<p>${escapeHtml(item.reason || '')}</p></section>
+    <section class="detail-card"><h4>Position vs Target Band</h4>${renderActionPlanMetricList([
+      ['Total Portfolio Value Used', formatCurrencyValue(item.total_portfolio_value, 'USD')],
+      ['Current Position Market Value', formatCurrencyValue(item.current_position_market_value, 'USD')],
+      ['Current Position Weight', formatPercent(item.current_position_weight)],
+      ['Target Low', formatPercent(item.target_weight_low)],
+      ['Target Mid', formatPercent(item.target_weight_mid)],
+      ['Target High', formatPercent(item.target_weight_high)],
+      ['Action Amount to Mid', formatCurrencyValue(item.action_amount_to_mid, 'USD')],
+    ])}<p>${escapeHtml(getActionPlanAmountDetailLabel(item))}</p></section>
+    <section class="detail-card"><h4>Trigger Prices</h4>${renderActionPlanMetricList([
+      ['Strong Add Trigger', formatCurrencyValue(trig.strong_add_trigger_price, 'USD')],
+      ['Add Trigger', formatCurrencyValue(trig.add_trigger_price, 'USD')],
+      ['Starter Buy Trigger', formatCurrencyValue(trig.starter_buy_trigger_price, 'USD')],
+      ['Trim Trigger', formatCurrencyValue(trig.trim_trigger_price, 'USD')],
+      ['Sell Trigger', formatCurrencyValue(trig.sell_trigger_price, 'USD')],
+      ['Relevant Trigger', formatCurrencyValue(trig.relevant_trigger_price, 'USD')],
+      ['Relevant Trigger Type', escapeHtml(trig.relevant_trigger_type || 'N/A')],
+      ['Distance to Relevant Trigger', formatPercent(trig.distance_to_relevant_trigger_percent)],
+    ])}<p>Trigger price = expected price / (1 + required upside).</p></section>
+    <section class="detail-card"><h4>Target Weight Calculation</h4>${renderActionPlanMetricList([
+      ['Rating Bucket', escapeHtml(tb.rating_bucket || item.bucket || '')],
+      ['Bucket Target', formatPercent(tb.bucket_target_percent)],
+      ['Eligible Count in Bucket', formatNumber(tb.eligible_count_in_bucket)],
+      ['Company Bucket Score', formatNumber(tb.company_bucket_score)],
+      ['Total Bucket Score', formatNumber(tb.total_bucket_score)],
+      ['Bucket Share', formatPercent(tb.bucket_share_percent)],
+      ['Raw Target Weight', formatPercent(tb.raw_target_weight)],
+      ['Potential Bonus Weight', formatPercent(tb.potential_bonus_weight)],
+      ['Target Before Caps', formatPercent(tb.target_before_caps)],
+      ['Cap Applied', formatPercent(tb.cap_applied)],
+      ['Final Target Mid', formatPercent(tb.target_weight_mid)],
+      ['Target Band', `${formatPercent(tb.target_weight_low)} – ${formatPercent(tb.target_weight_high)}`],
+    ])}</section>
+    <section class="detail-card"><h4>Score Breakdown</h4>${renderActionPlanMetricList([
+      ['Upside Score', formatNumber(sb.upside_score)],
+      ['Core Conviction Score', formatNumber(sb.core_conviction_score)],
+      ['Core Risk Modifier', formatNumber(sb.core_risk_modifier)],
+      ['Core Score', formatNumber(sb.core_score)],
+      ['Potential Conviction Score', formatNumber(sb.potential_conviction_score)],
+      ['Potential Bonus Weight', formatPercent(sb.potential_bonus_weight)],
+      ['Company Bucket Score', formatNumber(sb.company_bucket_score)],
+    ])}</section>
+    <section class="detail-card"><h4>Decision Path</h4>${renderDecisionPath(item.decision_path)}</section>
+    <section class="detail-card"><h4>Scenario Context</h4>${renderActionPlanMetricList([
+      ['Current Price', formatCurrencyValue(item.current_price, 'USD')],
+      ['Expected Price', formatCurrencyValue(item.expected_price, 'USD')],
+      ['Upside', formatPercent(item.upside)],
+      ['Expected CAGR', formatPercent(item.expected_cagr)],
+      ['Using Final Scenario Overlay', item.uses_final_scenario_overlay ? 'Yes' : 'No'],
+      ['Final Scenario Stale', item.final_scenario_stale ? 'Yes' : 'No'],
+    ])}</section>
+    <section class="detail-card"><h4>Action-Relevant Key Variables</h4>${renderActionRelevantVariables(item.action_relevant_key_variables)}</section>`;
+  showActionPlanDetailView();
+}
+
+async function openActionPlanDetail(symbol) {
+  const cached = (latestActionPlanPayload.action_plan || []).find((item) => item.symbol === symbol);
+  renderActionPlanDetail(cached || { symbol, action: 'Loading…' });
+  actionPlanDetailStatusEl.textContent = `Loading ${symbol} Action Detail…`;
+  try {
+    const response = await fetch(`/api/action-plan/${encodeURIComponent(symbol)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load Action Detail'));
+    renderActionPlanDetail(payload.action_detail);
+  } catch (error) {
+    actionPlanDetailStatusEl.textContent = `Error: ${error.message}`;
+    actionPlanDetailStatusEl.className = 'status error';
+  }
+}
+
 async function loadActionPlan() {
   if (!actionPlanTableBody) return;
+  showActionPlanList();
   actionPlanStatusEl.textContent = 'Loading Action Plan…';
   actionPlanStatusEl.className = 'status';
   try {
@@ -950,10 +1088,10 @@ function renderActionPlan() {
   getFilteredActionPlanItems().forEach((item) => {
     const row = document.createElement('tr');
     const targetBand = `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)} (mid ${formatPercent(item.target_weight_mid)})`;
-    row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td>${escapeHtml(item.action)}</td><td>${formatCurrencyValue(item.trigger_price, 'USD')}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td class="${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td>${escapeHtml(item.rating || 'Hold')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td>${formatPercent(item.current_position_weight)}</td><td>${targetBand}</td><td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td>${escapeHtml(item.reason)}</td>`;
+    row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td>${escapeHtml(item.action)}</td><td>${escapeHtml(item.action_amount_label || '—')}</td><td>${formatCurrencyValue(item.trigger_price, 'USD')}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td class="${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td>${escapeHtml(item.rating || 'Hold')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td>${formatPercent(item.current_position_weight)}</td><td>${targetBand}</td><td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td>${escapeHtml(item.reason)}</td>`;
     actionPlanTableBody.appendChild(row);
   });
-  actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'action_plan' })));
+  actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
 }
 
 function syncSelectAllCheckbox() {
@@ -4016,6 +4154,11 @@ configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
 configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
 actionPlanRefreshBtn.addEventListener('click', loadActionPlan);
+actionPlanDetailBackBtn.addEventListener('click', showActionPlanList);
+actionPlanOpenAnalysisBtn.addEventListener('click', () => {
+  if (!selectedActionPlanDetail?.symbol) return;
+  openAnalysisDetailForSymbol(selectedActionPlanDetail.symbol, { origin: 'action_plan' });
+});
 configActionPlanInputs.forEach((input) => input.addEventListener('input', updateActionPlanBucketTotal));
 twsDataToggleEl.addEventListener('change', () => updateTwsDataToggle(Boolean(twsDataToggleEl.checked)));
 backupExportBtn.addEventListener('click', exportBackupFile);

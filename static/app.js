@@ -33,6 +33,18 @@ const actionPlanStatusEl = document.getElementById('action-plan-status');
 const actionPlanSummaryEl = document.getElementById('action-plan-summary');
 const actionPlanTableBody = document.querySelector('#action-plan-table tbody');
 const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
+const actionPlanRatingFilterEl = document.getElementById('action-plan-rating-filter');
+const actionPlanRatingFilterToggleEl = document.getElementById('action-plan-rating-filter-toggle');
+const actionPlanRatingFilterLabelEl = document.getElementById('action-plan-rating-filter-label');
+const actionPlanRatingFilterPanelEl = document.getElementById('action-plan-rating-filter-panel');
+const actionPlanRatingFilterSelectAllEl = document.getElementById('action-plan-rating-filter-select-all');
+const actionPlanRatingFilterClearEl = document.getElementById('action-plan-rating-filter-clear');
+const actionPlanActionFilterEl = document.getElementById('action-plan-action-filter');
+const actionPlanActionFilterToggleEl = document.getElementById('action-plan-action-filter-toggle');
+const actionPlanActionFilterLabelEl = document.getElementById('action-plan-action-filter-label');
+const actionPlanActionFilterPanelEl = document.getElementById('action-plan-action-filter-panel');
+const actionPlanActionFilterSelectAllEl = document.getElementById('action-plan-action-filter-select-all');
+const actionPlanActionFilterClearEl = document.getElementById('action-plan-action-filter-clear');
 const analysisRerunSelectedBtn = document.getElementById('analysis-rerun-selected-btn');
 const analysisCheckEventsBtn = document.getElementById('analysis-check-events-btn');
 
@@ -227,10 +239,13 @@ const earningsCalendarReleaseDateHeaderEl = document.getElementById('earnings-ca
 let latestPositions = [];
 let positionSort = { key: 'marketValue', direction: 'desc' };
 let latestAnalysis = [];
+let latestActionPlanPayload = { action_plan: [], summary: {} };
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
 let ratingFilters = new Set();
 let positionRatingFilters = new Set();
+let actionPlanRatingFilters = new Set();
+let actionPlanActionFilters = new Set();
 let selectedAnalysisSymbols = new Set();
 let analysisDetailState = null;
 let analysisDetailOrigin = 'analysis';
@@ -353,6 +368,26 @@ const RATING_FILTER_OPTIONS = [
 
 const RATING_FILTER_LABEL_BY_KEY = Object.fromEntries(RATING_FILTER_OPTIONS.map((option) => [option.key, option.label]));
 
+const ACTION_PLAN_ACTION_FILTER_OPTIONS = [
+  { key: 'strong_add', label: 'Strong Add' },
+  { key: 'add', label: 'Add' },
+  { key: 'starter_buy', label: 'Starter Buy' },
+  { key: 'trim', label: 'Trim' },
+  { key: 'strong_trim', label: 'Strong Trim' },
+  { key: 'sell', label: 'Sell' },
+  { key: 'watch', label: 'Watch' },
+  { key: 'hold', label: 'Hold' },
+  { key: 're_evaluate', label: 'Re-evaluate' },
+];
+
+const ACTION_PLAN_ACTION_FILTER_LABEL_BY_KEY = Object.fromEntries(
+  ACTION_PLAN_ACTION_FILTER_OPTIONS.map((option) => [option.key, option.label])
+);
+
+const ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL = Object.fromEntries(
+  ACTION_PLAN_ACTION_FILTER_OPTIONS.map((option) => [option.label, option.key])
+);
+
 const EARNINGS_CALENDAR_DATE_FILTER_OPTIONS = [
   { key: 'past', label: 'Past' },
   { key: 'yesterday', label: 'Yesterday' },
@@ -367,6 +402,10 @@ const EARNINGS_CALENDAR_DATE_FILTER_LABEL_BY_KEY = Object.fromEntries(
 
 function getAllRatingFilterKeys() {
   return new Set(RATING_FILTER_OPTIONS.map((option) => option.key));
+}
+
+function getAllActionPlanActionFilterKeys() {
+  return new Set(ACTION_PLAN_ACTION_FILTER_OPTIONS.map((option) => option.key));
 }
 
 function getAllEarningsCalendarDateFilterKeys() {
@@ -393,6 +432,26 @@ function setSelectedPositionRatings(keys) {
   updatePositionRatingFilterLabel();
 }
 
+function setSelectedActionPlanRatings(keys) {
+  actionPlanRatingFilters = new Set(keys);
+  if (actionPlanRatingFilterPanelEl) {
+    actionPlanRatingFilterPanelEl.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = actionPlanRatingFilters.has(checkbox.value);
+    });
+  }
+  updateActionPlanRatingFilterLabel();
+}
+
+function setSelectedActionPlanActions(keys) {
+  actionPlanActionFilters = new Set(keys);
+  if (actionPlanActionFilterPanelEl) {
+    actionPlanActionFilterPanelEl.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = actionPlanActionFilters.has(checkbox.value);
+    });
+  }
+  updateActionPlanActionFilterLabel();
+}
+
 function setSelectedEarningsCalendarDateFilters(keys) {
   earningsCalendarDateFilters = new Set(keys);
   if (earningsCalendarDateFilterPanelEl) {
@@ -409,6 +468,14 @@ function getSelectedRatings() {
 
 function getSelectedPositionRatings() {
   return new Set(positionRatingFilters);
+}
+
+function getSelectedActionPlanRatings() {
+  return new Set(actionPlanRatingFilters);
+}
+
+function getSelectedActionPlanActions() {
+  return new Set(actionPlanActionFilters);
 }
 
 function getSelectedEarningsCalendarDateFilters() {
@@ -455,6 +522,46 @@ function updatePositionRatingFilterLabel() {
   positionsRatingFilterLabelEl.textContent = `${selectedCount} selected`;
 }
 
+function updateActionPlanRatingFilterLabel() {
+  const selected = Array.from(getSelectedActionPlanRatings());
+  const totalCount = RATING_FILTER_OPTIONS.length;
+  const selectedCount = selected.length;
+
+  if (!actionPlanRatingFilterLabelEl) return;
+
+  if (selectedCount === 0 || selectedCount === totalCount) {
+    actionPlanRatingFilterLabelEl.textContent = 'All';
+    return;
+  }
+
+  if (selectedCount === 1) {
+    actionPlanRatingFilterLabelEl.textContent = RATING_FILTER_LABEL_BY_KEY[selected[0]] || 'All';
+    return;
+  }
+
+  actionPlanRatingFilterLabelEl.textContent = `${selectedCount} selected`;
+}
+
+function updateActionPlanActionFilterLabel() {
+  const selected = Array.from(getSelectedActionPlanActions());
+  const totalCount = ACTION_PLAN_ACTION_FILTER_OPTIONS.length;
+  const selectedCount = selected.length;
+
+  if (!actionPlanActionFilterLabelEl) return;
+
+  if (selectedCount === 0 || selectedCount === totalCount) {
+    actionPlanActionFilterLabelEl.textContent = 'All';
+    return;
+  }
+
+  if (selectedCount === 1) {
+    actionPlanActionFilterLabelEl.textContent = ACTION_PLAN_ACTION_FILTER_LABEL_BY_KEY[selected[0]] || 'All';
+    return;
+  }
+
+  actionPlanActionFilterLabelEl.textContent = `${selectedCount} selected`;
+}
+
 function updateEarningsCalendarDateFilterLabel() {
   const selected = Array.from(getSelectedEarningsCalendarDateFilters());
   const selectedCount = selected.length;
@@ -488,6 +595,20 @@ function setPositionsRatingFilterOpen(isOpen) {
   positionsRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
   positionsRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
   positionsRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function setActionPlanRatingFilterOpen(isOpen) {
+  if (!actionPlanRatingFilterEl || !actionPlanRatingFilterPanelEl || !actionPlanRatingFilterToggleEl) return;
+  actionPlanRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
+  actionPlanRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
+  actionPlanRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function setActionPlanActionFilterOpen(isOpen) {
+  if (!actionPlanActionFilterEl || !actionPlanActionFilterPanelEl || !actionPlanActionFilterToggleEl) return;
+  actionPlanActionFilterEl.dataset.open = isOpen ? 'true' : 'false';
+  actionPlanActionFilterPanelEl.classList.toggle('hidden', !isOpen);
+  actionPlanActionFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
 }
 
 function setEarningsCalendarDateFilterOpen(isOpen) {
@@ -794,7 +915,8 @@ async function loadActionPlan() {
     const response = await fetch('/api/action-plan');
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load Action Plan'));
-    renderActionPlan(payload);
+    latestActionPlanPayload = payload || { action_plan: [], summary: {} };
+    renderActionPlan();
     actionPlanStatusEl.textContent = `Loaded ${payload.action_plan?.length || 0} Action Plan rows.`;
     actionPlanStatusEl.className = 'status';
   } catch (error) {
@@ -803,11 +925,29 @@ async function loadActionPlan() {
   }
 }
 
-function renderActionPlan(payload) {
+function getFilteredActionPlanItems() {
+  let items = latestActionPlanPayload.action_plan || [];
+
+  const selectedRatings = getSelectedActionPlanRatings();
+  if (selectedRatings.size > 0 && selectedRatings.size < RATING_FILTER_OPTIONS.length) {
+    const expectedRatings = new Set(Array.from(selectedRatings).map((key) => RATING_FILTER_LABEL_BY_KEY[key]).filter(Boolean));
+    items = items.filter((item) => expectedRatings.has(item.rating || 'Hold'));
+  }
+
+  const selectedActions = getSelectedActionPlanActions();
+  if (selectedActions.size > 0 && selectedActions.size < ACTION_PLAN_ACTION_FILTER_OPTIONS.length) {
+    items = items.filter((item) => selectedActions.has(ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL[item.action || '']));
+  }
+
+  return items;
+}
+
+function renderActionPlan() {
+  const payload = latestActionPlanPayload || { action_plan: [], summary: {} };
   const summary = payload.summary || {};
   actionPlanSummaryEl.innerHTML = `<div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Configured Bucket Total</div><div class="value">${formatPercent(summary.configured_bucket_total)}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated / Cash</div><div class="value">${formatPercent(summary.unallocated_target_total)}</div></div>`;
   actionPlanTableBody.innerHTML = '';
-  (payload.action_plan || []).forEach((item) => {
+  getFilteredActionPlanItems().forEach((item) => {
     const row = document.createElement('tr');
     const targetBand = `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)} (mid ${formatPercent(item.target_weight_mid)})`;
     row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td>${escapeHtml(item.action)}</td><td>${formatCurrencyValue(item.trigger_price, 'USD')}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td class="${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td>${escapeHtml(item.rating || 'Hold')}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td>${formatPercent(item.current_position_weight)}</td><td>${targetBand}</td><td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td>${escapeHtml(item.reason)}</td>`;
@@ -3513,6 +3653,14 @@ positionsRatingFilterToggleEl.addEventListener('click', () => {
   const isOpen = positionsRatingFilterEl?.dataset.open === 'true';
   setPositionsRatingFilterOpen(!isOpen);
 });
+actionPlanRatingFilterToggleEl.addEventListener('click', () => {
+  const isOpen = actionPlanRatingFilterEl?.dataset.open === 'true';
+  setActionPlanRatingFilterOpen(!isOpen);
+});
+actionPlanActionFilterToggleEl.addEventListener('click', () => {
+  const isOpen = actionPlanActionFilterEl?.dataset.open === 'true';
+  setActionPlanActionFilterOpen(!isOpen);
+});
 earningsCalendarDateFilterToggleEl.addEventListener('click', () => {
   const isOpen = earningsCalendarDateFilterEl?.dataset.open === 'true';
   setEarningsCalendarDateFilterOpen(!isOpen);
@@ -3535,6 +3683,24 @@ positionsRatingFilterPanelEl.addEventListener('change', (event) => {
   setSelectedPositionRatings(next);
   renderPositions();
 });
+actionPlanRatingFilterPanelEl.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+  const next = getSelectedActionPlanRatings();
+  if (target.checked) next.add(target.value);
+  else next.delete(target.value);
+  setSelectedActionPlanRatings(next);
+  renderActionPlan();
+});
+actionPlanActionFilterPanelEl.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+  const next = getSelectedActionPlanActions();
+  if (target.checked) next.add(target.value);
+  else next.delete(target.value);
+  setSelectedActionPlanActions(next);
+  renderActionPlan();
+});
 earningsCalendarDateFilterPanelEl.addEventListener('change', (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
@@ -3552,6 +3718,14 @@ positionsRatingFilterSelectAllEl.addEventListener('click', () => {
   setSelectedPositionRatings(getAllRatingFilterKeys());
   renderPositions();
 });
+actionPlanRatingFilterSelectAllEl.addEventListener('click', () => {
+  setSelectedActionPlanRatings(getAllRatingFilterKeys());
+  renderActionPlan();
+});
+actionPlanActionFilterSelectAllEl.addEventListener('click', () => {
+  setSelectedActionPlanActions(getAllActionPlanActionFilterKeys());
+  renderActionPlan();
+});
 earningsCalendarDateFilterSelectAllEl.addEventListener('click', () => {
   setSelectedEarningsCalendarDateFilters(getAllEarningsCalendarDateFilterKeys());
   renderEarningsCalendarTable();
@@ -3564,6 +3738,14 @@ positionsRatingFilterClearEl.addEventListener('click', () => {
   setSelectedPositionRatings(new Set());
   renderPositions();
 });
+actionPlanRatingFilterClearEl.addEventListener('click', () => {
+  setSelectedActionPlanRatings(new Set());
+  renderActionPlan();
+});
+actionPlanActionFilterClearEl.addEventListener('click', () => {
+  setSelectedActionPlanActions(new Set());
+  renderActionPlan();
+});
 earningsCalendarDateFilterClearEl.addEventListener('click', () => {
   setSelectedEarningsCalendarDateFilters(new Set());
   renderEarningsCalendarTable();
@@ -3572,12 +3754,16 @@ document.addEventListener('click', (event) => {
   if (!(event.target instanceof Node)) return;
   if (analysisRatingFilterEl && !analysisRatingFilterEl.contains(event.target)) setRatingFilterOpen(false);
   if (positionsRatingFilterEl && !positionsRatingFilterEl.contains(event.target)) setPositionsRatingFilterOpen(false);
+  if (actionPlanRatingFilterEl && !actionPlanRatingFilterEl.contains(event.target)) setActionPlanRatingFilterOpen(false);
+  if (actionPlanActionFilterEl && !actionPlanActionFilterEl.contains(event.target)) setActionPlanActionFilterOpen(false);
   if (earningsCalendarDateFilterEl && !earningsCalendarDateFilterEl.contains(event.target)) setEarningsCalendarDateFilterOpen(false);
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   setRatingFilterOpen(false);
   setPositionsRatingFilterOpen(false);
+  setActionPlanRatingFilterOpen(false);
+  setActionPlanActionFilterOpen(false);
   setEarningsCalendarDateFilterOpen(false);
 });
 analysisSelectAllEl.addEventListener('change', () => {
@@ -3835,9 +4021,13 @@ updateAnalysisSortHeaderState();
 setSelectedRatings(getAllRatingFilterKeys());
 setRatingFilterOpen(false);
 setSelectedPositionRatings(getAllRatingFilterKeys());
+setSelectedActionPlanRatings(getAllRatingFilterKeys());
+setSelectedActionPlanActions(getAllActionPlanActionFilterKeys());
 setSelectedEarningsCalendarDateFilters(new Set());
 setEarningsReviewTab('workflow');
 setPositionsRatingFilterOpen(false);
+setActionPlanRatingFilterOpen(false);
+setActionPlanActionFilterOpen(false);
 setEarningsCalendarDateFilterOpen(false);
 loadTwsDataToggleState();
 

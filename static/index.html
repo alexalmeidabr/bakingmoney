@@ -676,6 +676,49 @@
           </div>
           <p id="action-plan-status" class="status">Loading Action Plan…</p>
           <div id="action-plan-summary" class="summary-grid"></div>
+          <div class="filter-row action-plan-filter-row">
+            <label for="action-plan-rating-filter-toggle" class="inline-control-label">Rating Filter</label>
+            <div id="action-plan-rating-filter" class="rating-filter" data-open="false">
+              <button id="action-plan-rating-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                <span id="action-plan-rating-filter-label" class="rating-filter-label-text">All</span>
+                <span class="rating-filter-caret" aria-hidden="true">▼</span>
+              </button>
+              <div id="action-plan-rating-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Action Plan rating filter options">
+                <div class="rating-filter-actions">
+                  <button id="action-plan-rating-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                  <button id="action-plan-rating-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                </div>
+                <label class="rating-filter-option"><input type="checkbox" value="strong_buy" /> <span class="rating-filter-option-label">Strong Buy</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="buy" /> <span class="rating-filter-option-label">Buy</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="speculative_buy" /> <span class="rating-filter-option-label">Speculative Buy</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="hold" /> <span class="rating-filter-option-label">Hold</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="sell" /> <span class="rating-filter-option-label">Sell</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="strong_sell" /> <span class="rating-filter-option-label">Strong Sell</span></label>
+              </div>
+            </div>
+            <label for="action-plan-action-filter-toggle" class="inline-control-label">Action Filter</label>
+            <div id="action-plan-action-filter" class="rating-filter" data-open="false">
+              <button id="action-plan-action-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                <span id="action-plan-action-filter-label" class="rating-filter-label-text">All</span>
+                <span class="rating-filter-caret" aria-hidden="true">▼</span>
+              </button>
+              <div id="action-plan-action-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Action Plan action filter options">
+                <div class="rating-filter-actions">
+                  <button id="action-plan-action-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                  <button id="action-plan-action-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                </div>
+                <label class="rating-filter-option"><input type="checkbox" value="strong_add" /> <span class="rating-filter-option-label">Strong Add</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="add" /> <span class="rating-filter-option-label">Add</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="starter_buy" /> <span class="rating-filter-option-label">Starter Buy</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="trim" /> <span class="rating-filter-option-label">Trim</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="strong_trim" /> <span class="rating-filter-option-label">Strong Trim</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="sell" /> <span class="rating-filter-option-label">Sell</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="watch" /> <span class="rating-filter-option-label">Watch</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="hold" /> <span class="rating-filter-option-label">Hold</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="re_evaluate" /> <span class="rating-filter-option-label">Re-evaluate</span></label>
+              </div>
+            </div>
+          </div>
           <div class="table-wrap">
             <table id="action-plan-table">
               <thead>

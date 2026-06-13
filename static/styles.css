@@ -540,6 +540,19 @@ th.sortable[data-sort-direction='desc']::after {
   align-self: center;
 }
 
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  margin: 12px 0 16px;
+}
+
+.action-plan-filter-row {
+  position: relative;
+  z-index: 5;
+}
+
 #analysis-portfolio-filter {
   border: 1px solid var(--border);
   border-radius: 8px;

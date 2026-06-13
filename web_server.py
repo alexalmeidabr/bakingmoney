@@ -1660,13 +1660,26 @@ def get_scenario_probability_settings(conn):
     }
 
 
+def get_action_plan_numeric_setting(conn, key, default):
+    raw = _get_setting_value(conn, key)
+    if raw is None:
+        return float(default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(value):
+        return float(default)
+    return value
+
+
 def get_action_plan_settings(conn):
     settings = {}
     for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
         if key in ACTION_PLAN_BOOL_SETTINGS:
             settings[key] = get_bool_setting(conn, key, bool(default))
         else:
-            settings[key] = get_float_setting(conn, key, float(default))
+            settings[key] = get_action_plan_numeric_setting(conn, key, float(default))
     return settings
 
 

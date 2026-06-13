@@ -2349,6 +2349,31 @@ class ActionPlanFeatureTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_action_plan_settings_persist_bucket_values_outside_generic_float_clamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    action_settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+                    action_settings.update({
+                        "action_bucket_strong_buy_target": 40.0,
+                        "action_bucket_buy_target": 20.0,
+                        "action_bucket_speculative_buy_target": 10.0,
+                        "action_bucket_hold_target": 5.0,
+                        "action_bucket_cash_target": 25.0,
+                        "action_bucket_sell_target": 0.0,
+                        "action_bucket_strong_sell_target": 0.0,
+                    })
+                    web_server.save_general_configuration(conn, {"action_plan_settings": action_settings})
+                    loaded = web_server.get_general_configuration(conn)["action_plan_settings"]
+                    self.assertEqual(loaded["action_bucket_strong_buy_target"], 40.0)
+                    self.assertEqual(loaded["action_bucket_sell_target"], 0.0)
+                    self.assertEqual(loaded["action_bucket_strong_sell_target"], 0.0)
+                finally:
+                    conn.close()
+
     def test_action_plan_settings_reject_bucket_total_above_100(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["action_bucket_buy_target"] = 90.0

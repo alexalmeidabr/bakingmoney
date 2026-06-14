@@ -668,7 +668,8 @@ th.sortable[data-sort-direction='desc']::after {
   padding: 10px;
 }
 
-#earnings-calendar-date-filter .rating-filter-panel {
+#earnings-calendar-date-filter .rating-filter-panel,
+.earnings-calendar-multiselect .rating-filter-panel {
   left: auto;
   right: 0;
   width: min(280px, calc(100vw - 48px));
@@ -678,7 +679,8 @@ th.sortable[data-sort-direction='desc']::after {
   padding: 12px;
 }
 
-#earnings-calendar-date-filter .rating-filter-option {
+#earnings-calendar-date-filter .rating-filter-option,
+.earnings-calendar-multiselect .rating-filter-option {
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -688,12 +690,14 @@ th.sortable[data-sort-direction='desc']::after {
   padding: 9px 12px;
 }
 
-#earnings-calendar-date-filter .rating-filter-option input[type="checkbox"] {
+#earnings-calendar-date-filter .rating-filter-option input[type="checkbox"],
+.earnings-calendar-multiselect .rating-filter-option input[type="checkbox"] {
   flex: 0 0 auto;
   margin: 0;
 }
 
-#earnings-calendar-date-filter .rating-filter-option-label {
+#earnings-calendar-date-filter .rating-filter-option-label,
+.earnings-calendar-multiselect .rating-filter-option-label {
   display: inline-block;
   flex: 0 1 auto;
   min-width: 0;

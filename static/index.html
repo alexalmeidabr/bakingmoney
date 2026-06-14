@@ -414,7 +414,7 @@
                   <option value="not_in_portfolio">Not in Portfolio</option>
                 </select>
                 <label for="earnings-calendar-date-filter-toggle" class="inline-control-label">Release Date Filter</label>
-                <div id="earnings-calendar-date-filter" class="rating-filter" data-open="false">
+                <div id="earnings-calendar-date-filter" class="rating-filter earnings-calendar-multiselect" data-open="false">
                   <button id="earnings-calendar-date-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
                     <span id="earnings-calendar-date-filter-label" class="rating-filter-label-text">All</span>
                     <span class="rating-filter-caret" aria-hidden="true">▼</span>
@@ -429,6 +429,37 @@
                     <label class="rating-filter-option"><input type="checkbox" value="today" /> <span class="rating-filter-option-label">Today</span></label>
                     <label class="rating-filter-option"><input type="checkbox" value="tomorrow" /> <span class="rating-filter-option-label">Tomorrow</span></label>
                     <label class="rating-filter-option"><input type="checkbox" value="future" /> <span class="rating-filter-option-label">Future</span></label>
+                  </div>
+                </div>
+                <label for="earnings-calendar-fiscal-year-filter-toggle" class="inline-control-label">Fiscal Year Filter</label>
+                <div id="earnings-calendar-fiscal-year-filter" class="rating-filter earnings-calendar-multiselect" data-open="false">
+                  <button id="earnings-calendar-fiscal-year-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="earnings-calendar-fiscal-year-filter-label" class="rating-filter-label-text">All</span>
+                    <span class="rating-filter-caret" aria-hidden="true">▼</span>
+                  </button>
+                  <div id="earnings-calendar-fiscal-year-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Fiscal year filter options">
+                    <div class="rating-filter-actions">
+                      <button id="earnings-calendar-fiscal-year-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                      <button id="earnings-calendar-fiscal-year-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                    </div>
+                    <div id="earnings-calendar-fiscal-year-filter-options"></div>
+                  </div>
+                </div>
+                <label for="earnings-calendar-fiscal-quarter-filter-toggle" class="inline-control-label">Fiscal Quarter Filter</label>
+                <div id="earnings-calendar-fiscal-quarter-filter" class="rating-filter earnings-calendar-multiselect" data-open="false">
+                  <button id="earnings-calendar-fiscal-quarter-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="earnings-calendar-fiscal-quarter-filter-label" class="rating-filter-label-text">All</span>
+                    <span class="rating-filter-caret" aria-hidden="true">▼</span>
+                  </button>
+                  <div id="earnings-calendar-fiscal-quarter-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Fiscal quarter filter options">
+                    <div class="rating-filter-actions">
+                      <button id="earnings-calendar-fiscal-quarter-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                      <button id="earnings-calendar-fiscal-quarter-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                    </div>
+                    <label class="rating-filter-option"><input type="checkbox" value="Q1" /> <span class="rating-filter-option-label">Q1</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="Q2" /> <span class="rating-filter-option-label">Q2</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="Q3" /> <span class="rating-filter-option-label">Q3</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="Q4" /> <span class="rating-filter-option-label">Q4</span></label>
                   </div>
                 </div>
               </div>

@@ -237,6 +237,19 @@ const earningsCalendarDateFilterLabelEl = document.getElementById('earnings-cale
 const earningsCalendarDateFilterPanelEl = document.getElementById('earnings-calendar-date-filter-panel');
 const earningsCalendarDateFilterSelectAllEl = document.getElementById('earnings-calendar-date-filter-select-all');
 const earningsCalendarDateFilterClearEl = document.getElementById('earnings-calendar-date-filter-clear');
+const earningsCalendarFiscalYearFilterEl = document.getElementById('earnings-calendar-fiscal-year-filter');
+const earningsCalendarFiscalYearFilterToggleEl = document.getElementById('earnings-calendar-fiscal-year-filter-toggle');
+const earningsCalendarFiscalYearFilterLabelEl = document.getElementById('earnings-calendar-fiscal-year-filter-label');
+const earningsCalendarFiscalYearFilterPanelEl = document.getElementById('earnings-calendar-fiscal-year-filter-panel');
+const earningsCalendarFiscalYearFilterOptionsEl = document.getElementById('earnings-calendar-fiscal-year-filter-options');
+const earningsCalendarFiscalYearFilterSelectAllEl = document.getElementById('earnings-calendar-fiscal-year-filter-select-all');
+const earningsCalendarFiscalYearFilterClearEl = document.getElementById('earnings-calendar-fiscal-year-filter-clear');
+const earningsCalendarFiscalQuarterFilterEl = document.getElementById('earnings-calendar-fiscal-quarter-filter');
+const earningsCalendarFiscalQuarterFilterToggleEl = document.getElementById('earnings-calendar-fiscal-quarter-filter-toggle');
+const earningsCalendarFiscalQuarterFilterLabelEl = document.getElementById('earnings-calendar-fiscal-quarter-filter-label');
+const earningsCalendarFiscalQuarterFilterPanelEl = document.getElementById('earnings-calendar-fiscal-quarter-filter-panel');
+const earningsCalendarFiscalQuarterFilterSelectAllEl = document.getElementById('earnings-calendar-fiscal-quarter-filter-select-all');
+const earningsCalendarFiscalQuarterFilterClearEl = document.getElementById('earnings-calendar-fiscal-quarter-filter-clear');
 const earningsCalendarAddSymbolEl = document.getElementById('earnings-calendar-add-symbol');
 const earningsCalendarAddFiscalYearEl = document.getElementById('earnings-calendar-add-fiscal-year');
 const earningsCalendarAddFiscalQuarterEl = document.getElementById('earnings-calendar-add-fiscal-quarter');
@@ -282,6 +295,8 @@ let earningsReviewActiveTab = 'workflow';
 let earningsCalendarItems = [];
 let earningsCalendarPortfolioFilter = 'all';
 let earningsCalendarDateFilters = new Set();
+let earningsCalendarFiscalYearFilters = new Set();
+let earningsCalendarFiscalQuarterFilters = new Set();
 let earningsCalendarReleaseDateSortDirection = 'asc';
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
@@ -412,6 +427,8 @@ const EARNINGS_CALENDAR_DATE_FILTER_LABEL_BY_KEY = Object.fromEntries(
   EARNINGS_CALENDAR_DATE_FILTER_OPTIONS.map((option) => [option.key, option.label])
 );
 
+const EARNINGS_CALENDAR_QUARTER_FILTER_OPTIONS = ['Q1', 'Q2', 'Q3', 'Q4'];
+
 function getAllRatingFilterKeys() {
   return new Set(RATING_FILTER_OPTIONS.map((option) => option.key));
 }
@@ -422,6 +439,14 @@ function getAllActionPlanActionFilterKeys() {
 
 function getAllEarningsCalendarDateFilterKeys() {
   return new Set(EARNINGS_CALENDAR_DATE_FILTER_OPTIONS.map((option) => option.key));
+}
+
+function getAllEarningsCalendarFiscalYearKeys() {
+  return new Set(getAvailableEarningsCalendarFiscalYears());
+}
+
+function getAllEarningsCalendarFiscalQuarterKeys() {
+  return new Set(EARNINGS_CALENDAR_QUARTER_FILTER_OPTIONS);
 }
 
 function setSelectedRatings(keys) {
@@ -474,6 +499,45 @@ function setSelectedEarningsCalendarDateFilters(keys) {
   updateEarningsCalendarDateFilterLabel();
 }
 
+function setSelectedEarningsCalendarFiscalYears(keys) {
+  earningsCalendarFiscalYearFilters = new Set(Array.from(keys || []).map(String));
+  if (earningsCalendarFiscalYearFilterPanelEl) {
+    earningsCalendarFiscalYearFilterPanelEl.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = earningsCalendarFiscalYearFilters.has(checkbox.value);
+    });
+  }
+  updateEarningsCalendarFiscalYearFilterLabel();
+}
+
+function setSelectedEarningsCalendarFiscalQuarters(keys) {
+  earningsCalendarFiscalQuarterFilters = new Set(keys || []);
+  if (earningsCalendarFiscalQuarterFilterPanelEl) {
+    earningsCalendarFiscalQuarterFilterPanelEl.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = earningsCalendarFiscalQuarterFilters.has(checkbox.value);
+    });
+  }
+  updateEarningsCalendarFiscalQuarterFilterLabel();
+}
+
+function getAvailableEarningsCalendarFiscalYears() {
+  return Array.from(new Set(earningsCalendarItems
+    .map((item) => item?.fiscal_year)
+    .filter((year) => year !== null && year !== undefined && String(year).trim() !== '')
+    .map((year) => String(year))))
+    .sort((a, b) => Number(b) - Number(a));
+}
+
+function syncEarningsCalendarFiscalYearFilterOptions() {
+  const years = getAvailableEarningsCalendarFiscalYears();
+  const available = new Set(years);
+  const preserved = Array.from(earningsCalendarFiscalYearFilters).filter((year) => available.has(year));
+  earningsCalendarFiscalYearFilters = new Set(preserved);
+  if (earningsCalendarFiscalYearFilterOptionsEl) {
+    earningsCalendarFiscalYearFilterOptionsEl.innerHTML = years.map((year) => `<label class="rating-filter-option"><input type="checkbox" value="${escapeHtml(year)}" ${earningsCalendarFiscalYearFilters.has(year) ? 'checked' : ''} /> <span class="rating-filter-option-label">${escapeHtml(year)}</span></label>`).join('') || '<p class="muted small-text">No fiscal years</p>';
+  }
+  updateEarningsCalendarFiscalYearFilterLabel();
+}
+
 function getSelectedRatings() {
   return new Set(ratingFilters);
 }
@@ -492,6 +556,14 @@ function getSelectedActionPlanActions() {
 
 function getSelectedEarningsCalendarDateFilters() {
   return new Set(earningsCalendarDateFilters);
+}
+
+function getSelectedEarningsCalendarFiscalYears() {
+  return new Set(earningsCalendarFiscalYearFilters);
+}
+
+function getSelectedEarningsCalendarFiscalQuarters() {
+  return new Set(earningsCalendarFiscalQuarterFilters);
 }
 
 function updateRatingFilterLabel() {
@@ -595,6 +667,30 @@ function updateEarningsCalendarDateFilterLabel() {
   earningsCalendarDateFilterLabelEl.textContent = `${selectedCount} selected`;
 }
 
+function updateEarningsCalendarFiscalYearFilterLabel() {
+  const selected = Array.from(getSelectedEarningsCalendarFiscalYears());
+  const selectedCount = selected.length;
+  const totalCount = getAvailableEarningsCalendarFiscalYears().length;
+  if (!earningsCalendarFiscalYearFilterLabelEl) return;
+  if (selectedCount === 0 || selectedCount === totalCount) {
+    earningsCalendarFiscalYearFilterLabelEl.textContent = 'All';
+    return;
+  }
+  earningsCalendarFiscalYearFilterLabelEl.textContent = selectedCount === 1 ? selected[0] : `${selectedCount} selected`;
+}
+
+function updateEarningsCalendarFiscalQuarterFilterLabel() {
+  const selected = Array.from(getSelectedEarningsCalendarFiscalQuarters());
+  const selectedCount = selected.length;
+  const totalCount = EARNINGS_CALENDAR_QUARTER_FILTER_OPTIONS.length;
+  if (!earningsCalendarFiscalQuarterFilterLabelEl) return;
+  if (selectedCount === 0 || selectedCount === totalCount) {
+    earningsCalendarFiscalQuarterFilterLabelEl.textContent = 'All';
+    return;
+  }
+  earningsCalendarFiscalQuarterFilterLabelEl.textContent = selectedCount === 1 ? selected[0] : `${selectedCount} selected`;
+}
+
 function setRatingFilterOpen(isOpen) {
   if (!analysisRatingFilterEl || !analysisRatingFilterPanelEl || !analysisRatingFilterToggleEl) return;
   analysisRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
@@ -628,6 +724,20 @@ function setEarningsCalendarDateFilterOpen(isOpen) {
   earningsCalendarDateFilterEl.dataset.open = isOpen ? 'true' : 'false';
   earningsCalendarDateFilterPanelEl.classList.toggle('hidden', !isOpen);
   earningsCalendarDateFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function setEarningsCalendarFiscalYearFilterOpen(isOpen) {
+  if (!earningsCalendarFiscalYearFilterEl || !earningsCalendarFiscalYearFilterPanelEl || !earningsCalendarFiscalYearFilterToggleEl) return;
+  earningsCalendarFiscalYearFilterEl.dataset.open = isOpen ? 'true' : 'false';
+  earningsCalendarFiscalYearFilterPanelEl.classList.toggle('hidden', !isOpen);
+  earningsCalendarFiscalYearFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function setEarningsCalendarFiscalQuarterFilterOpen(isOpen) {
+  if (!earningsCalendarFiscalQuarterFilterEl || !earningsCalendarFiscalQuarterFilterPanelEl || !earningsCalendarFiscalQuarterFilterToggleEl) return;
+  earningsCalendarFiscalQuarterFilterEl.dataset.open = isOpen ? 'true' : 'false';
+  earningsCalendarFiscalQuarterFilterPanelEl.classList.toggle('hidden', !isOpen);
+  earningsCalendarFiscalQuarterFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
 }
 
 function loadCachedPositions() {
@@ -2757,12 +2867,19 @@ function getFilteredAndSortedEarningsCalendarItems() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const selectedDateFilters = getSelectedEarningsCalendarDateFilters();
+  const selectedFiscalYears = getSelectedEarningsCalendarFiscalYears();
+  const selectedFiscalQuarters = getSelectedEarningsCalendarFiscalQuarters();
+  const availableYearCount = getAvailableEarningsCalendarFiscalYears().length;
   const hasSpecificDateFilter = selectedDateFilters.size > 0;
+  const hasSpecificYearFilter = selectedFiscalYears.size > 0 && selectedFiscalYears.size < availableYearCount;
+  const hasSpecificQuarterFilter = selectedFiscalQuarters.size > 0 && selectedFiscalQuarters.size < EARNINGS_CALENDAR_QUARTER_FILTER_OPTIONS.length;
   const filtered = earningsCalendarItems.filter((item) => {
     if (earningsCalendarPortfolioFilter === 'in_portfolio' && !item.in_portfolio) return false;
     if (earningsCalendarPortfolioFilter === 'not_in_portfolio' && item.in_portfolio) return false;
-    if (!hasSpecificDateFilter) return true;
-    return releaseDateMatchesEarningsCalendarDateFilters(item.release_date, today, selectedDateFilters);
+    if (hasSpecificDateFilter && !releaseDateMatchesEarningsCalendarDateFilters(item.release_date, today, selectedDateFilters)) return false;
+    if (hasSpecificYearFilter && !selectedFiscalYears.has(String(item.fiscal_year ?? ''))) return false;
+    if (hasSpecificQuarterFilter && !selectedFiscalQuarters.has(String(item.fiscal_quarter ?? ''))) return false;
+    return true;
   });
   return filtered.sort((a, b) => {
     const left = parseCalendarDate(a.release_date);
@@ -2799,6 +2916,8 @@ function parseEarningsCalendarFiscalYear(value) {
 
 function renderEarningsCalendarTable() {
   earningsCalendarTableBody.innerHTML = '';
+  syncEarningsCalendarFiscalYearFilterOptions();
+  setSelectedEarningsCalendarFiscalQuarters(earningsCalendarFiscalQuarterFilters);
   const items = getFilteredAndSortedEarningsCalendarItems();
   earningsCalendarReleaseDateHeaderEl.dataset.sortDirection = earningsCalendarReleaseDateSortDirection;
   items.forEach((item) => {
@@ -3835,6 +3954,14 @@ earningsCalendarDateFilterToggleEl.addEventListener('click', () => {
   const isOpen = earningsCalendarDateFilterEl?.dataset.open === 'true';
   setEarningsCalendarDateFilterOpen(!isOpen);
 });
+earningsCalendarFiscalYearFilterToggleEl.addEventListener('click', () => {
+  const isOpen = earningsCalendarFiscalYearFilterEl?.dataset.open === 'true';
+  setEarningsCalendarFiscalYearFilterOpen(!isOpen);
+});
+earningsCalendarFiscalQuarterFilterToggleEl.addEventListener('click', () => {
+  const isOpen = earningsCalendarFiscalQuarterFilterEl?.dataset.open === 'true';
+  setEarningsCalendarFiscalQuarterFilterOpen(!isOpen);
+});
 analysisRatingFilterPanelEl.addEventListener('change', (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
@@ -3880,6 +4007,24 @@ earningsCalendarDateFilterPanelEl.addEventListener('change', (event) => {
   setSelectedEarningsCalendarDateFilters(next);
   renderEarningsCalendarTable();
 });
+earningsCalendarFiscalYearFilterPanelEl.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+  const next = getSelectedEarningsCalendarFiscalYears();
+  if (target.checked) next.add(target.value);
+  else next.delete(target.value);
+  setSelectedEarningsCalendarFiscalYears(next);
+  renderEarningsCalendarTable();
+});
+earningsCalendarFiscalQuarterFilterPanelEl.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+  const next = getSelectedEarningsCalendarFiscalQuarters();
+  if (target.checked) next.add(target.value);
+  else next.delete(target.value);
+  setSelectedEarningsCalendarFiscalQuarters(next);
+  renderEarningsCalendarTable();
+});
 analysisRatingFilterSelectAllEl.addEventListener('click', () => {
   setSelectedRatings(getAllRatingFilterKeys());
   renderAnalysisList();
@@ -3898,6 +4043,14 @@ actionPlanActionFilterSelectAllEl.addEventListener('click', () => {
 });
 earningsCalendarDateFilterSelectAllEl.addEventListener('click', () => {
   setSelectedEarningsCalendarDateFilters(getAllEarningsCalendarDateFilterKeys());
+  renderEarningsCalendarTable();
+});
+earningsCalendarFiscalYearFilterSelectAllEl.addEventListener('click', () => {
+  setSelectedEarningsCalendarFiscalYears(getAllEarningsCalendarFiscalYearKeys());
+  renderEarningsCalendarTable();
+});
+earningsCalendarFiscalQuarterFilterSelectAllEl.addEventListener('click', () => {
+  setSelectedEarningsCalendarFiscalQuarters(getAllEarningsCalendarFiscalQuarterKeys());
   renderEarningsCalendarTable();
 });
 analysisRatingFilterClearEl.addEventListener('click', () => {
@@ -3920,6 +4073,14 @@ earningsCalendarDateFilterClearEl.addEventListener('click', () => {
   setSelectedEarningsCalendarDateFilters(new Set());
   renderEarningsCalendarTable();
 });
+earningsCalendarFiscalYearFilterClearEl.addEventListener('click', () => {
+  setSelectedEarningsCalendarFiscalYears(new Set());
+  renderEarningsCalendarTable();
+});
+earningsCalendarFiscalQuarterFilterClearEl.addEventListener('click', () => {
+  setSelectedEarningsCalendarFiscalQuarters(new Set());
+  renderEarningsCalendarTable();
+});
 document.addEventListener('click', (event) => {
   if (!(event.target instanceof Node)) return;
   if (analysisRatingFilterEl && !analysisRatingFilterEl.contains(event.target)) setRatingFilterOpen(false);
@@ -3927,6 +4088,8 @@ document.addEventListener('click', (event) => {
   if (actionPlanRatingFilterEl && !actionPlanRatingFilterEl.contains(event.target)) setActionPlanRatingFilterOpen(false);
   if (actionPlanActionFilterEl && !actionPlanActionFilterEl.contains(event.target)) setActionPlanActionFilterOpen(false);
   if (earningsCalendarDateFilterEl && !earningsCalendarDateFilterEl.contains(event.target)) setEarningsCalendarDateFilterOpen(false);
+  if (earningsCalendarFiscalYearFilterEl && !earningsCalendarFiscalYearFilterEl.contains(event.target)) setEarningsCalendarFiscalYearFilterOpen(false);
+  if (earningsCalendarFiscalQuarterFilterEl && !earningsCalendarFiscalQuarterFilterEl.contains(event.target)) setEarningsCalendarFiscalQuarterFilterOpen(false);
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
@@ -3935,6 +4098,8 @@ document.addEventListener('keydown', (event) => {
   setActionPlanRatingFilterOpen(false);
   setActionPlanActionFilterOpen(false);
   setEarningsCalendarDateFilterOpen(false);
+  setEarningsCalendarFiscalYearFilterOpen(false);
+  setEarningsCalendarFiscalQuarterFilterOpen(false);
 });
 analysisSelectAllEl.addEventListener('change', () => {
   const visibleItems = getFilteredAnalysisItems();

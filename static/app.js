@@ -359,6 +359,8 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_starter_buy_required_upside: 75.0,
   action_trim_remaining_upside: 10.0,
   action_sell_remaining_upside: 0.0,
+  action_treat_cash_equivalents_as_cash: true,
+  action_cash_equivalent_symbols: 'SGOV',
 };
 
 let savedGeneralSettings = null;
@@ -982,7 +984,7 @@ function renderActionPlanDetail(item) {
       ['Target Mid', formatPercent(item.target_weight_mid)],
       ['Target High', formatPercent(item.target_weight_high)],
       ['Action Amount to Mid', formatCurrencyValue(item.action_amount_to_mid, 'USD')],
-    ])}<p>${escapeHtml(getActionPlanAmountDetailLabel(item))}</p></section>
+    ])}<p>${escapeHtml(getActionPlanAmountDetailLabel(item))}</p><p>${escapeHtml(item.action_amount_cash_note || '')}</p></section>
     <section class="detail-card"><h4>Trigger Prices</h4>${renderActionPlanMetricList([
       ['Strong Add Trigger', formatCurrencyValue(trig.strong_add_trigger_price, 'USD')],
       ['Add Trigger', formatCurrencyValue(trig.add_trigger_price, 'USD')],
@@ -1083,7 +1085,9 @@ function getFilteredActionPlanItems() {
 function renderActionPlan() {
   const payload = latestActionPlanPayload || { action_plan: [], summary: {} };
   const summary = payload.summary || {};
-  actionPlanSummaryEl.innerHTML = `<div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Configured Bucket Total</div><div class="value">${formatPercent(summary.configured_bucket_total)}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated / Cash</div><div class="value">${formatPercent(summary.unallocated_target_total)}</div></div>`;
+  const cashEquivalentNote = (summary.cash_equivalent_symbols || []).length ? `<p class="status">Cash-like holdings include ${escapeHtml((summary.cash_equivalent_symbols || []).join(', '))}.</p>` : '';
+  const portfolioWarning = summary.portfolio_value_warning ? `<p class="status warning">${escapeHtml(summary.portfolio_value_warning)}</p>` : '';
+  actionPlanSummaryEl.innerHTML = `<div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.portfolio_value_used ?? summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(summary.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(summary.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available %</div><div class="value">${formatPercent(summary.cash_like_available_percent)}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated Target Capacity</div><div class="value">${formatPercent(summary.unallocated_target_capacity ?? summary.unallocated_target_total)}</div></div>${portfolioWarning}${cashEquivalentNote}`;
   actionPlanTableBody.innerHTML = '';
   getFilteredActionPlanItems().forEach((item) => {
     const row = document.createElement('tr');
@@ -3595,7 +3599,9 @@ function getActionPlanSettingsFromForm() {
   const settings = {};
   configActionPlanInputs.forEach((input) => {
     const key = input.dataset.actionPlanSetting;
-    settings[key] = input.type === 'checkbox' ? input.checked : Number(input.value);
+    if (input.type === 'checkbox') settings[key] = input.checked;
+    else if (input.type === 'text') settings[key] = input.value;
+    else settings[key] = Number(input.value);
   });
   return settings;
 }
@@ -3621,6 +3627,7 @@ function updateActionPlanBucketTotal() {
 function validateActionPlanSettings(settings) {
   for (const [key, value] of Object.entries(settings)) {
     if (typeof value === 'boolean') continue;
+    if (key === 'action_cash_equivalent_symbols') continue;
     if (!Number.isFinite(value)) return `${key} must be numeric.`;
     if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score'].includes(key)) return `${key} cannot be negative.`;
   }

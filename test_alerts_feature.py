@@ -1319,6 +1319,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-view="action-plan"', html)
         self.assertIn('id="action-plan-table"', html)
         self.assertIn('Action Amount', html)
+        self.assertIn('Cash-like Available', js)
+        self.assertIn('Unallocated Target Capacity', js)
+        self.assertIn('id="config-action-cash-equivalent-symbols"', html)
+        self.assertIn('id="config-action-treat-cash-equivalents-as-cash"', html)
         self.assertIn('id="action-plan-detail-view"', html)
         self.assertIn('id="action-plan-open-analysis-btn"', html)
         self.assertIn('Open Full Analysis', html)
@@ -2364,6 +2368,73 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertEqual(rows["SELL"]["action_amount"], 1000.0)
                     self.assertIn("Sell about", rows["SELL"]["action_amount_label"])
                     self.assertEqual(payload["summary"]["total_portfolio_value"], 1000.0)
+                finally:
+                    conn.close()
+
+    def test_action_plan_uses_cached_cash_and_excludes_cash_equivalents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.save_portfolio_summary_cache(conn, {
+                        "account_id": "DU123",
+                        "base_currency": "USD",
+                        "net_liquidation": 2000.0,
+                        "settled_cash": 100.0,
+                    })
+                    analysis = [
+                        {
+                            "symbol": "BUY",
+                            "company_name": "Buy Co",
+                            "rating": "Buy",
+                            "current_price": 50.0,
+                            "expected_price": 100.0,
+                            "expected_cagr": 14.9,
+                            "upside": 100.0,
+                            "core_confidence_diff": 1.5,
+                            "core_bullish_confidence": 7.0,
+                            "core_bearish_confidence": 3.0,
+                            "potential_confidence_diff": 0.5,
+                            "potential_bullish_confidence": 6.0,
+                            "potential_bearish_confidence": 5.5,
+                            "final_scenario_stale": False,
+                        },
+                        {
+                            "symbol": "SGOV",
+                            "company_name": "Cash ETF",
+                            "rating": "Buy",
+                            "current_price": 100.0,
+                            "expected_price": 101.0,
+                            "expected_cagr": 1.0,
+                            "upside": 1.0,
+                            "core_confidence_diff": 0.0,
+                            "core_bullish_confidence": 5.0,
+                            "core_bearish_confidence": 5.0,
+                            "final_scenario_stale": False,
+                        },
+                    ]
+                    positions = [
+                        {"symbol": "BUY", "position": 10, "marketValue": 500.0, "price": 50.0},
+                        {"symbol": "SGOV", "position": 10, "marketValue": 1000.0, "price": 100.0},
+                    ]
+                    with mock.patch.object(web_server, "list_analysis_symbols", return_value=analysis), \
+                         mock.patch.object(web_server, "load_positions_cache", return_value=positions):
+                        payload = web_server.build_action_plan(conn)
+                    symbols = {row["symbol"] for row in payload["action_plan"]}
+                    self.assertIn("BUY", symbols)
+                    self.assertNotIn("SGOV", symbols)
+                    summary = payload["summary"]
+                    self.assertEqual(summary["portfolio_value_used"], 2000.0)
+                    self.assertEqual(summary["portfolio_value_source"], "ibkr_net_liquidation")
+                    self.assertEqual(summary["actual_cash"], 100.0)
+                    self.assertEqual(summary["cash_equivalent_value"], 1000.0)
+                    self.assertEqual(summary["cash_like_available"], 1100.0)
+                    self.assertEqual(summary["cash_equivalent_symbols"], ["SGOV"])
+                    row = next(item for item in payload["action_plan"] if item["symbol"] == "BUY")
+                    self.assertAlmostEqual(row["current_position_weight"], 25.0)
+                    self.assertIn(row["action_amount_cash_covered"], {True, False, None})
                 finally:
                     conn.close()
 

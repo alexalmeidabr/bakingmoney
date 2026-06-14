@@ -238,6 +238,8 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_redistribute_capped_excess": False,
     "action_allow_bucket_underallocation": True,
     "action_show_unallocated_bucket_amount": True,
+    "action_treat_cash_equivalents_as_cash": True,
+    "action_cash_equivalent_symbols": "SGOV",
 }
 ACTION_PLAN_BOOL_SETTINGS = {
     "action_include_current_positions",
@@ -250,6 +252,10 @@ ACTION_PLAN_BOOL_SETTINGS = {
     "action_redistribute_capped_excess",
     "action_allow_bucket_underallocation",
     "action_show_unallocated_bucket_amount",
+    "action_treat_cash_equivalents_as_cash",
+}
+ACTION_PLAN_TEXT_SETTINGS = {
+    "action_cash_equivalent_symbols",
 }
 ACTION_PLAN_BUCKET_KEYS = {
     "Strong Buy": "action_bucket_strong_buy_target",
@@ -1678,6 +1684,9 @@ def get_action_plan_settings(conn):
     for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
         if key in ACTION_PLAN_BOOL_SETTINGS:
             settings[key] = get_bool_setting(conn, key, bool(default))
+        elif key in ACTION_PLAN_TEXT_SETTINGS:
+            raw = _get_setting_value(conn, key)
+            settings[key] = str(raw if raw is not None else default)
         else:
             settings[key] = get_action_plan_numeric_setting(conn, key, float(default))
     return settings
@@ -1688,7 +1697,11 @@ def validate_action_plan_settings(settings):
         raise ValueError("action_plan_settings must be an object")
     effective = {**ACTION_PLAN_DEFAULT_SETTINGS, **settings}
     for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
-        if key in ACTION_PLAN_BOOL_SETTINGS:
+        if key in ACTION_PLAN_BOOL_SETTINGS or key in ACTION_PLAN_TEXT_SETTINGS:
+            if key in ACTION_PLAN_TEXT_SETTINGS:
+                raw_symbols = str(effective.get(key, "") or "")
+                normalized_symbols = sorted({normalize_symbol(part) for part in raw_symbols.split(",") if normalize_symbol(part)})
+                effective[key] = ",".join(normalized_symbols)
             continue
         try:
             value = float(effective[key])
@@ -1730,7 +1743,10 @@ def save_action_plan_settings(conn, settings, now=None):
         if key not in settings:
             continue
         value = effective[key]
-        stored = "1" if key in ACTION_PLAN_BOOL_SETTINGS and value else "0" if key in ACTION_PLAN_BOOL_SETTINGS else str(value)
+        if key in ACTION_PLAN_BOOL_SETTINGS:
+            stored = "1" if value else "0"
+        else:
+            stored = str(value)
         conn.execute(
             """
             INSERT INTO app_settings (key, value, updated_at)
@@ -2597,6 +2613,22 @@ def init_db():
               unrealized_pnl REAL,
               daily_pnl REAL,
               currency TEXT,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio_summary_cache (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              account_id TEXT,
+              base_currency TEXT,
+              net_liquidation REAL,
+              total_cash_value REAL,
+              settled_cash REAL,
+              available_funds REAL,
+              buying_power REAL,
+              excess_liquidity REAL,
               updated_at TEXT NOT NULL
             )
             """
@@ -5612,6 +5644,83 @@ def load_positions_cache(conn):
     ]
 
 
+def _account_summary_number(summary_items, tag):
+    for item in summary_items or []:
+        if getattr(item, "tag", None) == tag:
+            value = safe_number(getattr(item, "value", None))
+            if value is not None:
+                return value
+    return None
+
+
+def fetch_ib_portfolio_summary(ib):
+    items = ib.accountSummary() or []
+    account_id = next((getattr(item, "account", None) for item in items if getattr(item, "account", None)), None)
+    base_currency = next((getattr(item, "currency", None) for item in items if getattr(item, "currency", None)), None)
+    return {
+        "account_id": account_id,
+        "base_currency": base_currency,
+        "net_liquidation": _account_summary_number(items, "NetLiquidation"),
+        "total_cash_value": _account_summary_number(items, "TotalCashValue"),
+        "settled_cash": _account_summary_number(items, "SettledCash"),
+        "available_funds": _account_summary_number(items, "AvailableFunds"),
+        "buying_power": _account_summary_number(items, "BuyingPower"),
+        "excess_liquidity": _account_summary_number(items, "ExcessLiquidity"),
+    }
+
+
+def save_portfolio_summary_cache(conn, summary):
+    if not isinstance(summary, dict):
+        return
+    conn.execute(
+        """
+        INSERT INTO portfolio_summary_cache (
+          id, account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
+          available_funds, buying_power, excess_liquidity, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          account_id = excluded.account_id,
+          base_currency = excluded.base_currency,
+          net_liquidation = excluded.net_liquidation,
+          total_cash_value = excluded.total_cash_value,
+          settled_cash = excluded.settled_cash,
+          available_funds = excluded.available_funds,
+          buying_power = excluded.buying_power,
+          excess_liquidity = excluded.excess_liquidity,
+          updated_at = excluded.updated_at
+        """,
+        (
+            summary.get("account_id"),
+            summary.get("base_currency"),
+            summary.get("net_liquidation"),
+            summary.get("total_cash_value"),
+            summary.get("settled_cash"),
+            summary.get("available_funds"),
+            summary.get("buying_power"),
+            summary.get("excess_liquidity"),
+            utc_now_iso(),
+        ),
+    )
+    conn.commit()
+
+
+def load_portfolio_summary_cache(conn):
+    row = conn.execute(
+        """
+        SELECT account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
+               available_funds, buying_power, excess_liquidity, updated_at
+        FROM portfolio_summary_cache
+        WHERE id = 1
+        """
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _parse_cash_equivalent_symbols(settings):
+    raw = settings.get("action_cash_equivalent_symbols", "")
+    return sorted({normalize_symbol(part) for part in str(raw or "").split(",") if normalize_symbol(part)})
+
+
 def _clamp(value, low=0.0, high=1.0):
     try:
         number = float(value)
@@ -5830,9 +5939,54 @@ def build_action_plan(conn):
     settings = get_action_plan_settings(conn)
     analysis_items = list_analysis_symbols(conn)
     positions = load_positions_cache(conn)
+    portfolio_summary = load_portfolio_summary_cache(conn) or {}
     positions_by_symbol = {normalize_symbol(row.get("symbol")): row for row in positions if normalize_symbol(row.get("symbol"))}
-    total_portfolio_value = sum(abs(safe_number(row.get("marketValue")) or 0.0) for row in positions)
+    positions_market_value = sum(abs(safe_number(row.get("marketValue")) or 0.0) for row in positions)
+    actual_cash = safe_number(portfolio_summary.get("settled_cash"))
+    actual_cash_source = "ibkr_settled_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = safe_number(portfolio_summary.get("total_cash_value"))
+        actual_cash_source = "ibkr_total_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = 0.0
+
+    cash_equivalent_symbols = _parse_cash_equivalent_symbols(settings)
+    treat_cash_equivalents = bool(settings.get("action_treat_cash_equivalents_as_cash", True))
+    cash_equivalent_positions = []
+    cash_equivalent_value = 0.0
+    if treat_cash_equivalents:
+        for symbol in cash_equivalent_symbols:
+            position = positions_by_symbol.get(symbol)
+            if not position:
+                continue
+            market_value = abs(safe_number(position.get("marketValue")) or 0.0)
+            cash_equivalent_value += market_value
+            cash_equivalent_positions.append({
+                "symbol": symbol,
+                "market_value": market_value,
+                "position": position.get("position"),
+                "price": position.get("price"),
+            })
+    cash_like_available = actual_cash + cash_equivalent_value
+
+    net_liquidation = safe_number(portfolio_summary.get("net_liquidation"))
+    total_cash_value = safe_number(portfolio_summary.get("total_cash_value"))
+    if net_liquidation is not None and net_liquidation > 0:
+        total_portfolio_value = net_liquidation
+        portfolio_value_source = "ibkr_net_liquidation"
+        portfolio_value_warning = None
+    elif positions_market_value > 0 and actual_cash_source != "unknown":
+        total_portfolio_value = positions_market_value + actual_cash
+        portfolio_value_source = "positions_plus_cash"
+        portfolio_value_warning = None
+    else:
+        total_portfolio_value = positions_market_value
+        portfolio_value_source = "positions_only"
+        portfolio_value_warning = "Portfolio value is based only on cached positions; cash is not included because IBKR account summary is unavailable."
+
     symbols = sorted({normalize_symbol(item.get("symbol")) for item in analysis_items if normalize_symbol(item.get("symbol"))} | set(positions_by_symbol.keys()))
+    if treat_cash_equivalents:
+        symbols = [symbol for symbol in symbols if symbol not in set(cash_equivalent_symbols)]
     analysis_by_symbol = {normalize_symbol(item.get("symbol")): item for item in analysis_items if normalize_symbol(item.get("symbol"))}
 
     candidates = []
@@ -5970,6 +6124,13 @@ def build_action_plan(conn):
         }
         action, trigger_price, trigger_direction, distance, reason = _choose_action_plan_decision(row, settings)
         amount_fields = _action_amount_fields(action, item["current_position_weight"], target_mid, total_portfolio_value, item.get("current_position_market_value"))
+        cash_covered = None
+        cash_shortfall = None
+        cash_note = None
+        if amount_fields["action_amount_direction"] == "add" and amount_fields.get("action_amount") is not None:
+            cash_covered = amount_fields["action_amount"] <= cash_like_available + 1e-9
+            cash_shortfall = max(0.0, amount_fields["action_amount"] - cash_like_available)
+            cash_note = "Covered by cash-like available." if cash_covered else "Requires more than current cash-like available; would require selling/reallocating other positions."
         trigger_type_by_action = {
             "Strong Add": "strong_add",
             "Add": "add",
@@ -5987,6 +6148,10 @@ def build_action_plan(conn):
             "reason": reason if score_total > 0 or action in {"Sell", "Re-evaluate"} else "No positive attractiveness/conviction score.",
             "action_priority": ACTION_PLAN_ACTION_PRIORITY.get(action, 99),
             **amount_fields,
+            "cash_like_available": cash_like_available,
+            "action_amount_cash_covered": cash_covered,
+            "action_amount_cash_shortfall": cash_shortfall,
+            "action_amount_cash_note": cash_note,
             "trigger_breakdown": _action_plan_trigger_breakdown(item.get("expected_price"), item.get("current_price"), settings, trigger_price, trigger_type_by_action.get(action)),
         })
         row["decision_path"] = _action_plan_decision_path(row, action)
@@ -6012,9 +6177,22 @@ def build_action_plan(conn):
         "settings": settings,
         "summary": {
             "total_portfolio_value": total_portfolio_value,
+            "portfolio_value_used": total_portfolio_value,
+            "portfolio_value_source": portfolio_value_source,
+            "portfolio_value_warning": portfolio_value_warning,
+            "actual_cash": actual_cash,
+            "actual_cash_source": actual_cash_source,
+            "cash_equivalent_symbols": cash_equivalent_symbols,
+            "cash_equivalent_value": cash_equivalent_value,
+            "cash_like_available": cash_like_available,
+            "cash_like_available_percent": (cash_like_available / total_portfolio_value * 100.0) if total_portfolio_value > 0 else None,
+            "configured_cash_target_percent": settings["action_bucket_cash_target"],
+            "cash_like_vs_target_gap_percent": ((cash_like_available / total_portfolio_value * 100.0) - settings["action_bucket_cash_target"]) if total_portfolio_value > 0 else None,
             "configured_bucket_total": configured_total,
             "allocated_target_total": allocated_total,
+            "unallocated_target_capacity": max(0.0, configured_total - allocated_total),
             "unallocated_target_total": max(0.0, configured_total - allocated_total),
+            "cash_equivalent_positions": cash_equivalent_positions,
             "bucket_summary": bucket_summary,
         },
     }
@@ -8091,6 +8269,13 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             ensure_event_loop()
             ib = get_ib_connection()
             positions = ib.positions()
+            account_summary = None
+            account_summary_warning = None
+            try:
+                account_summary = fetch_ib_portfolio_summary(ib)
+            except Exception as exc:
+                logger.warning("Unable to fetch IBKR account summary during positions refresh: %s", exc)
+                account_summary_warning = "IBKR account summary/cash could not be updated."
             logger.info("Positions API using live IBKR path positions_count=%s", len(positions))
             contracts = [p.contract for p in positions if p.contract]
             tickers_by_conid = {}
@@ -8160,12 +8345,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 warning_message = None
                 if tws_data_enabled:
                     save_positions_cache(conn, effective_data)
+                    if account_summary:
+                        save_portfolio_summary_cache(conn, account_summary)
                 else:
                     cached_rows = load_positions_cache(conn)
                     effective_data = overlay_cached_market_fields(data, cached_rows)
                     if cached_rows:
                         save_positions_cache(conn, effective_data)
                     warning_message = "Data from TWS is disabled. Showing latest cached market values when available."
+                if account_summary_warning:
+                    warning_message = " ".join([part for part in [warning_message, account_summary_warning] if part])
                 payload = build_positions_payload(
                     conn,
                     effective_data,

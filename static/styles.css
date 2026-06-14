@@ -1190,3 +1190,91 @@ th.sortable[data-sort-direction='desc']::after {
   min-width: 115px;
   white-space: nowrap;
 }
+
+#action-plan-table .symbol-column,
+#action-plan-table .symbol-cell {
+  width: 5%;
+  min-width: 68px;
+}
+
+#action-plan-table .action-column,
+#action-plan-table .action-cell {
+  width: 6%;
+  min-width: 82px;
+}
+
+#action-plan-table .action-amount-column,
+#action-plan-table .action-amount-cell {
+  width: 10.5%;
+  min-width: 150px;
+  white-space: nowrap;
+}
+
+#action-plan-table .trigger-price-column,
+#action-plan-table .trigger-price-cell,
+#action-plan-table .current-price-column,
+#action-plan-table .current-price-cell {
+  width: 8.5%;
+  min-width: 122px;
+  white-space: nowrap;
+}
+
+#action-plan-table .distance-column,
+#action-plan-table .distance-cell {
+  width: 6.5%;
+  min-width: 94px;
+  white-space: nowrap;
+}
+
+#action-plan-table .rating-column,
+#action-plan-table .rating-cell {
+  width: 7.5%;
+  min-width: 98px;
+}
+
+#action-plan-table .upside-column,
+#action-plan-table .upside-cell,
+#action-plan-table .gap-column,
+#action-plan-table .gap-cell {
+  width: 6.5%;
+  min-width: 86px;
+  white-space: nowrap;
+}
+
+#action-plan-table .core-confidence-column,
+#action-plan-table .core-confidence-cell,
+#action-plan-table .potential-confidence-column,
+#action-plan-table .potential-confidence-cell {
+  width: 10%;
+  min-width: 132px;
+}
+
+#action-plan-table .current-weight-column,
+#action-plan-table .current-weight-cell {
+  width: 8%;
+  min-width: 112px;
+  white-space: nowrap;
+}
+
+#action-plan-table .target-band-column,
+#action-plan-table .target-band-cell {
+  width: 12%;
+  min-width: 150px;
+  white-space: normal;
+  overflow-wrap: normal;
+}
+
+#action-plan-table .target-band-range,
+#action-plan-table .target-band-mid {
+  display: block;
+  white-space: nowrap;
+}
+
+#action-plan-table .reason-column,
+#action-plan-table .reason-cell {
+  width: auto;
+  max-width: 360px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}

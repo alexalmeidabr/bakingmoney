@@ -2629,6 +2629,8 @@ def init_db():
               available_funds REAL,
               buying_power REAL,
               excess_liquidity REAL,
+              ledger_cash_usd REAL,
+              actual_cash REAL,
               updated_at TEXT NOT NULL
             )
             """
@@ -2686,6 +2688,8 @@ def init_db():
         ensure_column_exists(conn, "analysis_version_scenarios", "cagr_mid", "REAL")
         ensure_column_exists(conn, "analysis_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
         ensure_column_exists(conn, "analysis_version_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
+        ensure_column_exists(conn, "portfolio_summary_cache", "ledger_cash_usd", "REAL")
+        ensure_column_exists(conn, "portfolio_summary_cache", "actual_cash", "REAL")
 
         has_roots = conn.execute("SELECT 1 FROM analysis_roots LIMIT 1").fetchone()
         if not has_roots:
@@ -5644,28 +5648,108 @@ def load_positions_cache(conn):
     ]
 
 
-def _account_summary_number(summary_items, tag):
-    for item in summary_items or []:
-        if getattr(item, "tag", None) == tag:
-            value = safe_number(getattr(item, "value", None))
-            if value is not None:
-                return value
+def _account_summary_item_value(item):
+    raw_value = getattr(item, "value", None)
+    numeric = safe_number(raw_value)
+    if numeric is not None:
+        return numeric
+    if isinstance(raw_value, str):
+        cleaned = raw_value.replace(",", "").strip()
+        try:
+            value = float(cleaned)
+        except ValueError:
+            return None
+        return value if math.isfinite(value) else None
     return None
+
+
+def _account_summary_currency(item):
+    currency = (getattr(item, "currency", None) or "").strip().upper()
+    return currency or None
+
+
+def _account_summary_number(summary_items, tag, currency=None):
+    wanted_currency = currency.upper() if currency else None
+    for item in summary_items or []:
+        if getattr(item, "tag", None) != tag:
+            continue
+        if wanted_currency and _account_summary_currency(item) != wanted_currency:
+            continue
+        value = _account_summary_item_value(item)
+        if value is not None:
+            return value
+    return None
+
+
+def _account_summary_number_preferred(summary_items, tag, preferred_currency="USD", fallback_currency=None):
+    for currency in (preferred_currency, fallback_currency):
+        if not currency:
+            continue
+        value = _account_summary_number(summary_items, tag, currency)
+        if value is not None:
+            return value
+    return _account_summary_number(summary_items, tag)
+
+
+def _choose_account_cash(summary_items, base_currency=None):
+    preferred = ("USD", base_currency)
+    cash_preferences = (
+        ("CashBalance", "ibkr_ledger_cash_balance"),
+        ("TotalCashBalance", "ibkr_ledger_total_cash_balance"),
+        ("SettledCash", "ibkr_settled_cash"),
+        ("TotalCashValue", "ibkr_total_cash"),
+    )
+    for tag, source in cash_preferences:
+        for currency in preferred:
+            if not currency:
+                continue
+            value = _account_summary_number(summary_items, tag, currency)
+            if value is not None:
+                return value, source, tag, currency.upper()
+    for tag, source in cash_preferences:
+        value = _account_summary_number(summary_items, tag)
+        if value is not None:
+            return value, source, tag, None
+    return None, "unknown", None, None
 
 
 def fetch_ib_portfolio_summary(ib):
     items = ib.accountSummary() or []
+    tag_currency_pairs = sorted({
+        f"{getattr(item, 'tag', '')}:{_account_summary_currency(item) or 'NO_CURRENCY'}"
+        for item in items
+    })
+    logger.info("IBKR account summary returned %s rows; tags/currencies=%s", len(items), tag_currency_pairs[:80])
     account_id = next((getattr(item, "account", None) for item in items if getattr(item, "account", None)), None)
-    base_currency = next((getattr(item, "currency", None) for item in items if getattr(item, "currency", None)), None)
+    base_currency = next((
+        _account_summary_currency(item)
+        for item in items
+        if _account_summary_currency(item) and getattr(item, "tag", None) in {"NetLiquidation", "TotalCashValue", "SettledCash"}
+    ), None)
+    net_liquidation = _account_summary_number_preferred(items, "NetLiquidation", "USD", base_currency)
+    total_cash_value = _account_summary_number_preferred(items, "TotalCashValue", "USD", base_currency)
+    settled_cash = _account_summary_number_preferred(items, "SettledCash", "USD", base_currency)
+    ledger_cash_usd = _account_summary_number(items, "CashBalance", "USD")
+    if ledger_cash_usd is None:
+        ledger_cash_usd = _account_summary_number(items, "TotalCashBalance", "USD")
+    actual_cash, actual_cash_source, actual_cash_tag, actual_cash_currency = _choose_account_cash(items, base_currency)
+    if actual_cash is None and items:
+        logger.warning("IBKR account summary returned rows but no cash tags were usable; tags/currencies=%s", tag_currency_pairs[:80])
     return {
         "account_id": account_id,
-        "base_currency": base_currency,
-        "net_liquidation": _account_summary_number(items, "NetLiquidation"),
-        "total_cash_value": _account_summary_number(items, "TotalCashValue"),
-        "settled_cash": _account_summary_number(items, "SettledCash"),
-        "available_funds": _account_summary_number(items, "AvailableFunds"),
-        "buying_power": _account_summary_number(items, "BuyingPower"),
-        "excess_liquidity": _account_summary_number(items, "ExcessLiquidity"),
+        "base_currency": base_currency or "USD",
+        "net_liquidation": net_liquidation,
+        "total_cash_value": total_cash_value,
+        "settled_cash": settled_cash,
+        "available_funds": _account_summary_number_preferred(items, "AvailableFunds", "USD", base_currency),
+        "buying_power": _account_summary_number_preferred(items, "BuyingPower", "USD", base_currency),
+        "excess_liquidity": _account_summary_number_preferred(items, "ExcessLiquidity", "USD", base_currency),
+        "ledger_cash_usd": ledger_cash_usd,
+        "actual_cash": actual_cash,
+        "actual_cash_source": actual_cash_source,
+        "actual_cash_tag": actual_cash_tag,
+        "actual_cash_currency": actual_cash_currency,
+        "available_tags": tag_currency_pairs,
     }
 
 
@@ -5676,8 +5760,8 @@ def save_portfolio_summary_cache(conn, summary):
         """
         INSERT INTO portfolio_summary_cache (
           id, account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
-          available_funds, buying_power, excess_liquidity, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          available_funds, buying_power, excess_liquidity, ledger_cash_usd, actual_cash, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           account_id = excluded.account_id,
           base_currency = excluded.base_currency,
@@ -5687,6 +5771,8 @@ def save_portfolio_summary_cache(conn, summary):
           available_funds = excluded.available_funds,
           buying_power = excluded.buying_power,
           excess_liquidity = excluded.excess_liquidity,
+          ledger_cash_usd = excluded.ledger_cash_usd,
+          actual_cash = excluded.actual_cash,
           updated_at = excluded.updated_at
         """,
         (
@@ -5698,6 +5784,8 @@ def save_portfolio_summary_cache(conn, summary):
             summary.get("available_funds"),
             summary.get("buying_power"),
             summary.get("excess_liquidity"),
+            summary.get("ledger_cash_usd"),
+            summary.get("actual_cash"),
             utc_now_iso(),
         ),
     )
@@ -5708,7 +5796,7 @@ def load_portfolio_summary_cache(conn):
     row = conn.execute(
         """
         SELECT account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
-               available_funds, buying_power, excess_liquidity, updated_at
+               available_funds, buying_power, excess_liquidity, ledger_cash_usd, actual_cash, updated_at
         FROM portfolio_summary_cache
         WHERE id = 1
         """
@@ -5942,8 +6030,14 @@ def build_action_plan(conn):
     portfolio_summary = load_portfolio_summary_cache(conn) or {}
     positions_by_symbol = {normalize_symbol(row.get("symbol")): row for row in positions if normalize_symbol(row.get("symbol"))}
     positions_market_value = sum(abs(safe_number(row.get("marketValue")) or 0.0) for row in positions)
-    actual_cash = safe_number(portfolio_summary.get("settled_cash"))
-    actual_cash_source = "ibkr_settled_cash" if actual_cash is not None else "unknown"
+    actual_cash = safe_number(portfolio_summary.get("actual_cash"))
+    actual_cash_source = "ibkr_actual_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = safe_number(portfolio_summary.get("ledger_cash_usd"))
+        actual_cash_source = "ibkr_ledger_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = safe_number(portfolio_summary.get("settled_cash"))
+        actual_cash_source = "ibkr_settled_cash" if actual_cash is not None else "unknown"
     if actual_cash is None:
         actual_cash = safe_number(portfolio_summary.get("total_cash_value"))
         actual_cash_source = "ibkr_total_cash" if actual_cash is not None else "unknown"

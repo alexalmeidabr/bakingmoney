@@ -2371,6 +2371,26 @@ class ActionPlanFeatureTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_ibkr_account_summary_prefers_usd_ledger_cash(self):
+        summary_items = [
+            types.SimpleNamespace(tag="NetLiquidation", value="122917.74", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="SettledCash", value="1043.88", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="TotalCashValue", value="900.00", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="CashBalance", value="1043.88", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="TotalCashBalance", value="1043.88", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="AvailableFunds", value="5000", currency="USD", account="DU123"),
+        ]
+        ib = types.SimpleNamespace(accountSummary=lambda: summary_items)
+
+        summary = web_server.fetch_ib_portfolio_summary(ib)
+
+        self.assertEqual(summary["account_id"], "DU123")
+        self.assertEqual(summary["net_liquidation"], 122917.74)
+        self.assertEqual(summary["ledger_cash_usd"], 1043.88)
+        self.assertEqual(summary["actual_cash"], 1043.88)
+        self.assertEqual(summary["actual_cash_source"], "ibkr_ledger_cash_balance")
+        self.assertIn("CashBalance:USD", summary["available_tags"])
+
     def test_action_plan_uses_cached_cash_and_excludes_cash_equivalents(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")

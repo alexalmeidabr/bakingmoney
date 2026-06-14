@@ -1083,3 +1083,64 @@ th.sortable[data-sort-direction='desc']::after {
 .decision-path li {
   margin: 6px 0;
 }
+
+#action-plan {
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+#action-plan-summary {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  width: 100%;
+  min-width: 0;
+  align-items: stretch;
+}
+
+#action-plan-summary .summary-item {
+  min-width: 0;
+}
+
+#action-plan-summary .status {
+  grid-column: 1 / -1;
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+#action-plan .table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+#action-plan-table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 0;
+  font-size: 0.85rem;
+}
+
+#action-plan-table th,
+#action-plan-table td {
+  padding: 8px;
+  vertical-align: top;
+}
+
+#action-plan-table th:not(:last-child),
+#action-plan-table td:not(:last-child) {
+  white-space: nowrap;
+}
+
+#action-plan-table th:nth-child(12),
+#action-plan-table td:nth-child(12),
+#action-plan-table th:nth-child(14),
+#action-plan-table td:nth-child(14) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+#action-plan-table th:nth-child(14),
+#action-plan-table td:nth-child(14) {
+  width: 24%;
+  max-width: 320px;
+}

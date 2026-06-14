@@ -1266,6 +1266,7 @@ class AlertsUiStructureTests(unittest.TestCase):
     def test_alerts_filter_logic_is_frontend_driven(self):
         from pathlib import Path
         js = Path('static/app.js').read_text(encoding='utf-8')
+        css = Path('static/styles.css').read_text(encoding='utf-8')
         self.assertIn("let alertsStatusFilter = 'New';", js)
         self.assertIn('function getFilteredAlerts()', js)
         self.assertIn("alertsStatusFilterEl.addEventListener('change'", js)
@@ -1310,6 +1311,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-sort-key="core_confidence_diff" class="sortable">Confidence</th>', html)
         self.assertIn('data-sort-key="potential_confidence_diff" class="sortable">Potential Confidence</th>', html)
         js = Path('static/app.js').read_text(encoding='utf-8')
+        css = Path('static/styles.css').read_text(encoding='utf-8')
         self.assertIn('<td>${formatPotentialConfidenceDisplay(item)}</td>', js)
         self.assertIn('const potentialConfidenceValue = formatPotentialConfidenceDisplay(position);', js)
         self.assertIn('function parseKeyVariableImportPayload()', js)
@@ -1329,6 +1331,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="config-action-treat-cash-equivalents-as-cash"', html)
         self.assertIn('id="action-plan-detail-view"', html)
         self.assertIn('id="action-plan-open-analysis-btn"', html)
+        self.assertIn('#action-plan-summary .status', css)
+        self.assertIn('#action-plan-table th:nth-child(14)', css)
         self.assertIn('Open Full Analysis', html)
         self.assertIn('id="action-plan-rating-filter"', html)
         self.assertIn('id="action-plan-action-filter"', html)

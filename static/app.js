@@ -298,6 +298,7 @@ let earningsCalendarDateFilters = new Set();
 let earningsCalendarFiscalYearFilters = new Set();
 let earningsCalendarFiscalQuarterFilters = new Set();
 let earningsCalendarReleaseDateSortDirection = 'asc';
+let earningsCalendarAddFormDefaultsApplied = false;
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
   hybrid_ai_weight: 0.70,
@@ -459,11 +460,25 @@ function getCurrentCalendarQuarter() {
   return `Q${quarter}`;
 }
 
-function applyEarningsCalendarEntryDefaults({ force = false } = {}) {
-  if (earningsCalendarAddFiscalYearEl && (force || !String(earningsCalendarAddFiscalYearEl.value || '').trim())) {
+function resetEarningsCalendarAddFormDefaults() {
+  if (earningsCalendarAddFiscalYearEl) {
     earningsCalendarAddFiscalYearEl.value = String(getCurrentCalendarYear());
   }
-  if (earningsCalendarAddFiscalQuarterEl && (force || !earningsCalendarAddFiscalQuarterEl.value)) {
+  if (earningsCalendarAddFiscalQuarterEl) {
+    earningsCalendarAddFiscalQuarterEl.value = getCurrentCalendarQuarter();
+  }
+  earningsCalendarAddFormDefaultsApplied = true;
+}
+
+function applyEarningsCalendarEntryDefaults({ force = false } = {}) {
+  if (force || !earningsCalendarAddFormDefaultsApplied) {
+    resetEarningsCalendarAddFormDefaults();
+    return;
+  }
+  if (earningsCalendarAddFiscalYearEl && !String(earningsCalendarAddFiscalYearEl.value || '').trim()) {
+    earningsCalendarAddFiscalYearEl.value = String(getCurrentCalendarYear());
+  }
+  if (earningsCalendarAddFiscalQuarterEl && !earningsCalendarAddFiscalQuarterEl.value) {
     earningsCalendarAddFiscalQuarterEl.value = getCurrentCalendarQuarter();
   }
 }

@@ -4,6 +4,8 @@ const views = document.querySelectorAll('.view');
 const positionsStatusEl = document.getElementById('status');
 const positionsTable = document.getElementById('positions-table');
 const positionsTableBody = positionsTable.querySelector('tbody');
+const positionsPortfolioSummaryEl = document.getElementById('positions-portfolio-summary');
+const positionsPortfolioSummaryWarningEl = document.getElementById('positions-portfolio-summary-warning');
 const refreshBtn = document.getElementById('refresh-btn');
 const positionSortHeaders = document.querySelectorAll('#positions-table th.sortable');
 const positionsRatingFilterEl = document.getElementById('positions-rating-filter');
@@ -803,6 +805,21 @@ const sortAnalysis = (items) => [...items].sort((a, b) => {
 
 function updateSortHeaderState() { positionSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === positionSort.key ? positionSort.direction : ''; }); }
 function updateAnalysisSortHeaderState() { analysisSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === analysisSort.key ? analysisSort.direction : ''; }); }
+
+function renderPositionsPortfolioSummary(summary = latestPositionsPortfolioSummary) {
+  if (!positionsPortfolioSummaryEl) return;
+  const data = summary || {};
+  positionsPortfolioSummaryEl.innerHTML = `<div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(data.portfolio_value_used ?? data.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(data.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(data.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(data.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available %</div><div class="value">${formatPercent(data.cash_like_available_percent)}</div></div>`;
+  if (positionsPortfolioSummaryWarningEl) {
+    if (data.portfolio_value_warning) {
+      positionsPortfolioSummaryWarningEl.textContent = data.portfolio_value_warning;
+      positionsPortfolioSummaryWarningEl.className = 'status warning';
+    } else {
+      positionsPortfolioSummaryWarningEl.textContent = '';
+      positionsPortfolioSummaryWarningEl.className = 'status hidden';
+    }
+  }
+}
 
 function renderPositions() {
   positionsTableBody.innerHTML = '';
@@ -2071,6 +2088,8 @@ async function loadPositions(options = {}) {
       first: Array.isArray(analysisPayload?.analysis) ? (analysisPayload.analysis[0] || null) : null,
     });
 
+    latestPositionsPortfolioSummary = positionsPayload.portfolio_summary || null;
+    renderPositionsPortfolioSummary(latestPositionsPortfolioSummary);
     latestPositions = mergePositionsWithAnalysis(
       positionsPayload.positions || [],
       analysisResponseOk ? analysisPayload : [],
@@ -2108,6 +2127,7 @@ async function loadPositions(options = {}) {
         withRating: latestPositions.filter((row) => !!row.rating).length,
       });
       updateSortHeaderState();
+      renderPositionsPortfolioSummary(latestPositionsPortfolioSummary);
       renderPositions();
       positionsTable.classList.remove('hidden');
       positionsStatusEl.textContent = `Warning: ${error.message} Showing latest loaded positions.`;

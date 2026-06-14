@@ -5809,6 +5809,82 @@ def _parse_cash_equivalent_symbols(settings):
     return sorted({normalize_symbol(part) for part in str(raw or "").split(",") if normalize_symbol(part)})
 
 
+def build_portfolio_cash_summary(conn, positions, settings=None):
+    if settings is None:
+        try:
+            settings = get_action_plan_settings(conn)
+        except AttributeError:
+            settings = dict(ACTION_PLAN_DEFAULT_SETTINGS)
+    try:
+        portfolio_summary = load_portfolio_summary_cache(conn) or {}
+    except AttributeError:
+        portfolio_summary = {}
+    positions = positions or []
+    positions_by_symbol = {normalize_symbol(row.get("symbol")): row for row in positions if normalize_symbol(row.get("symbol"))}
+    positions_market_value = sum(abs(safe_number(row.get("marketValue")) or 0.0) for row in positions)
+
+    actual_cash = safe_number(portfolio_summary.get("actual_cash"))
+    actual_cash_source = "ibkr_actual_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = safe_number(portfolio_summary.get("ledger_cash_usd"))
+        actual_cash_source = "ibkr_ledger_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = safe_number(portfolio_summary.get("settled_cash"))
+        actual_cash_source = "ibkr_settled_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = safe_number(portfolio_summary.get("total_cash_value"))
+        actual_cash_source = "ibkr_total_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = 0.0
+
+    cash_equivalent_symbols = _parse_cash_equivalent_symbols(settings)
+    treat_cash_equivalents = bool(settings.get("action_treat_cash_equivalents_as_cash", True))
+    cash_equivalent_positions = []
+    cash_equivalent_value = 0.0
+    if treat_cash_equivalents:
+        for symbol in cash_equivalent_symbols:
+            position = positions_by_symbol.get(symbol)
+            if not position:
+                continue
+            market_value = abs(safe_number(position.get("marketValue")) or 0.0)
+            cash_equivalent_value += market_value
+            cash_equivalent_positions.append({
+                "symbol": symbol,
+                "market_value": market_value,
+                "position": position.get("position"),
+                "price": position.get("price"),
+            })
+
+    cash_like_available = actual_cash + cash_equivalent_value
+    net_liquidation = safe_number(portfolio_summary.get("net_liquidation"))
+    if net_liquidation is not None and net_liquidation > 0:
+        total_portfolio_value = net_liquidation
+        portfolio_value_source = "ibkr_net_liquidation"
+        portfolio_value_warning = None
+    elif positions_market_value > 0 and actual_cash_source != "unknown":
+        total_portfolio_value = positions_market_value + actual_cash
+        portfolio_value_source = "positions_plus_cash"
+        portfolio_value_warning = None
+    else:
+        total_portfolio_value = positions_market_value
+        portfolio_value_source = "positions_only"
+        portfolio_value_warning = "Portfolio value is based only on cached positions; cash is not included because IBKR account summary is unavailable."
+
+    return {
+        "total_portfolio_value": total_portfolio_value,
+        "portfolio_value_used": total_portfolio_value,
+        "portfolio_value_source": portfolio_value_source,
+        "portfolio_value_warning": portfolio_value_warning,
+        "actual_cash": actual_cash,
+        "actual_cash_source": actual_cash_source,
+        "cash_equivalent_symbols": cash_equivalent_symbols,
+        "cash_equivalent_value": cash_equivalent_value,
+        "cash_like_available": cash_like_available,
+        "cash_like_available_percent": (cash_like_available / total_portfolio_value * 100.0) if total_portfolio_value > 0 else None,
+        "cash_equivalent_positions": cash_equivalent_positions,
+    }
+
+
 def _clamp(value, low=0.0, high=1.0):
     try:
         number = float(value)
@@ -6027,56 +6103,18 @@ def build_action_plan(conn):
     settings = get_action_plan_settings(conn)
     analysis_items = list_analysis_symbols(conn)
     positions = load_positions_cache(conn)
-    portfolio_summary = load_portfolio_summary_cache(conn) or {}
     positions_by_symbol = {normalize_symbol(row.get("symbol")): row for row in positions if normalize_symbol(row.get("symbol"))}
-    positions_market_value = sum(abs(safe_number(row.get("marketValue")) or 0.0) for row in positions)
-    actual_cash = safe_number(portfolio_summary.get("actual_cash"))
-    actual_cash_source = "ibkr_actual_cash" if actual_cash is not None else "unknown"
-    if actual_cash is None:
-        actual_cash = safe_number(portfolio_summary.get("ledger_cash_usd"))
-        actual_cash_source = "ibkr_ledger_cash" if actual_cash is not None else "unknown"
-    if actual_cash is None:
-        actual_cash = safe_number(portfolio_summary.get("settled_cash"))
-        actual_cash_source = "ibkr_settled_cash" if actual_cash is not None else "unknown"
-    if actual_cash is None:
-        actual_cash = safe_number(portfolio_summary.get("total_cash_value"))
-        actual_cash_source = "ibkr_total_cash" if actual_cash is not None else "unknown"
-    if actual_cash is None:
-        actual_cash = 0.0
-
-    cash_equivalent_symbols = _parse_cash_equivalent_symbols(settings)
+    portfolio_cash_summary = build_portfolio_cash_summary(conn, positions, settings)
+    total_portfolio_value = portfolio_cash_summary["portfolio_value_used"]
+    portfolio_value_source = portfolio_cash_summary["portfolio_value_source"]
+    portfolio_value_warning = portfolio_cash_summary["portfolio_value_warning"]
+    actual_cash = portfolio_cash_summary["actual_cash"]
+    actual_cash_source = portfolio_cash_summary["actual_cash_source"]
+    cash_equivalent_symbols = portfolio_cash_summary["cash_equivalent_symbols"]
+    cash_equivalent_value = portfolio_cash_summary["cash_equivalent_value"]
+    cash_equivalent_positions = portfolio_cash_summary["cash_equivalent_positions"]
+    cash_like_available = portfolio_cash_summary["cash_like_available"]
     treat_cash_equivalents = bool(settings.get("action_treat_cash_equivalents_as_cash", True))
-    cash_equivalent_positions = []
-    cash_equivalent_value = 0.0
-    if treat_cash_equivalents:
-        for symbol in cash_equivalent_symbols:
-            position = positions_by_symbol.get(symbol)
-            if not position:
-                continue
-            market_value = abs(safe_number(position.get("marketValue")) or 0.0)
-            cash_equivalent_value += market_value
-            cash_equivalent_positions.append({
-                "symbol": symbol,
-                "market_value": market_value,
-                "position": position.get("position"),
-                "price": position.get("price"),
-            })
-    cash_like_available = actual_cash + cash_equivalent_value
-
-    net_liquidation = safe_number(portfolio_summary.get("net_liquidation"))
-    total_cash_value = safe_number(portfolio_summary.get("total_cash_value"))
-    if net_liquidation is not None and net_liquidation > 0:
-        total_portfolio_value = net_liquidation
-        portfolio_value_source = "ibkr_net_liquidation"
-        portfolio_value_warning = None
-    elif positions_market_value > 0 and actual_cash_source != "unknown":
-        total_portfolio_value = positions_market_value + actual_cash
-        portfolio_value_source = "positions_plus_cash"
-        portfolio_value_warning = None
-    else:
-        total_portfolio_value = positions_market_value
-        portfolio_value_source = "positions_only"
-        portfolio_value_warning = "Portfolio value is based only on cached positions; cash is not included because IBKR account summary is unavailable."
 
     symbols = sorted({normalize_symbol(item.get("symbol")) for item in analysis_items if normalize_symbol(item.get("symbol"))} | set(positions_by_symbol.keys()))
     if treat_cash_equivalents:
@@ -6345,6 +6383,7 @@ def build_positions_payload(conn, positions, data_source, warning=None):
     payload = {
         "positions": merge_positions_with_latest_analysis(normalized_positions, analysis_items),
         "data_source": data_source,
+        "portfolio_summary": build_portfolio_cash_summary(conn, normalized_positions),
     }
     if warning:
         payload["warning"] = warning

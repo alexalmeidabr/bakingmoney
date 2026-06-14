@@ -316,6 +316,8 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(payload["positions"][0]["upside"], 22.0)
         self.assertAlmostEqual(payload["positions"][0]["unrealizedPnLPercent"], 25.0)
         self.assertAlmostEqual(payload["positions"][0]["costBasis"], 800.0)
+        self.assertIn("portfolio_summary", payload)
+        self.assertEqual(payload["portfolio_summary"]["portfolio_value_source"], "positions_only")
 
     def test_build_positions_payload_with_empty_cache_returns_empty_positions(self):
         class DummyConn:
@@ -325,6 +327,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
             payload = web_server.build_positions_payload(DummyConn(), [], data_source="empty", warning="none")
 
         self.assertEqual(payload["positions"], [])
+        self.assertIn("portfolio_summary", payload)
 
     def test_compute_cost_basis_uses_abs_quantity_times_avg_cost(self):
         self.assertEqual(web_server.compute_cost_basis({"position": 10, "avgCost": 80}), 800)
@@ -1321,6 +1324,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Action Amount', html)
         self.assertIn('Cash-like Available', js)
         self.assertIn('Unallocated Target Capacity', js)
+        self.assertIn('id="positions-portfolio-summary"', html)
         self.assertIn('id="config-action-cash-equivalent-symbols"', html)
         self.assertIn('id="config-action-treat-cash-equivalents-as-cash"', html)
         self.assertIn('id="action-plan-detail-view"', html)

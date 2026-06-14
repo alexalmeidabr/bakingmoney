@@ -1148,3 +1148,25 @@ th.sortable[data-sort-direction='desc']::after {
   width: 24%;
   max-width: 320px;
 }
+
+#action-plan-table th:nth-child(9),
+#action-plan-table td:nth-child(9),
+#action-plan-table th:nth-child(10),
+#action-plan-table td:nth-child(10) {
+  width: 10%;
+  min-width: 132px;
+}
+
+#action-plan-table th:nth-child(11),
+#action-plan-table td:nth-child(11) {
+  width: 8%;
+  min-width: 112px;
+}
+
+#action-plan-table th:nth-child(9),
+#action-plan-table th:nth-child(10),
+#action-plan-table th:nth-child(11) {
+  white-space: normal;
+  overflow-wrap: normal;
+  line-height: 1.25;
+}

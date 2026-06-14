@@ -1170,3 +1170,23 @@ th.sortable[data-sort-direction='desc']::after {
   overflow-wrap: normal;
   line-height: 1.25;
 }
+
+#action-plan-table th,
+#action-plan-table td {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+#action-plan-table th:nth-child(3),
+#action-plan-table td:nth-child(3) {
+  width: 11%;
+  min-width: 140px;
+  white-space: nowrap;
+}
+
+#action-plan-table th:nth-child(4),
+#action-plan-table td:nth-child(4) {
+  width: 8.5%;
+  min-width: 115px;
+  white-space: nowrap;
+}

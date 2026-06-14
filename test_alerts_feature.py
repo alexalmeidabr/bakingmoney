@@ -1335,6 +1335,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('#action-plan-table th:nth-child(14)', css)
         self.assertIn('#action-plan-table th:nth-child(10)', css)
         self.assertIn('min-width: 132px;', css)
+        self.assertIn('#action-plan-table th:nth-child(3)', css)
+        self.assertIn('min-width: 140px;', css)
         self.assertIn('Open Full Analysis', html)
         self.assertIn('id="action-plan-rating-filter"', html)
         self.assertIn('id="action-plan-action-filter"', html)

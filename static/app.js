@@ -449,6 +449,25 @@ function getAllEarningsCalendarFiscalQuarterKeys() {
   return new Set(EARNINGS_CALENDAR_QUARTER_FILTER_OPTIONS);
 }
 
+function getCurrentCalendarYear() {
+  return new Date().getFullYear();
+}
+
+function getCurrentCalendarQuarter() {
+  const month = new Date().getMonth();
+  const quarter = Math.floor(month / 3) + 1;
+  return `Q${quarter}`;
+}
+
+function applyEarningsCalendarEntryDefaults({ force = false } = {}) {
+  if (earningsCalendarAddFiscalYearEl && (force || !String(earningsCalendarAddFiscalYearEl.value || '').trim())) {
+    earningsCalendarAddFiscalYearEl.value = String(getCurrentCalendarYear());
+  }
+  if (earningsCalendarAddFiscalQuarterEl && (force || !earningsCalendarAddFiscalQuarterEl.value)) {
+    earningsCalendarAddFiscalQuarterEl.value = getCurrentCalendarQuarter();
+  }
+}
+
 function setSelectedRatings(keys) {
   ratingFilters = new Set(keys);
   if (analysisRatingFilterPanelEl) {
@@ -3088,6 +3107,7 @@ async function createEarningsCalendarEntry() {
     earningsCalendarAddSymbolEl.value = '';
     earningsCalendarAddReleaseDateEl.value = '';
     earningsCalendarAddReleaseTimingEl.value = '';
+    applyEarningsCalendarEntryDefaults({ force: true });
     await loadEarningsCalendar();
   } catch (error) {
     earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
@@ -3098,6 +3118,7 @@ async function createEarningsCalendarEntry() {
 }
 
 async function loadEarningsCalendar() {
+  applyEarningsCalendarEntryDefaults();
   earningsCalendarPortfolioFilterEl.value = earningsCalendarPortfolioFilter;
   setSelectedEarningsCalendarDateFilters(earningsCalendarDateFilters);
   earningsCalendarStatusEl.textContent = 'Loading calendar entries…';

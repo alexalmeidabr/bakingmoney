@@ -291,7 +291,7 @@ let earningsReviewItems = [];
 let earningsReviewSelectedSymbol = null;
 let earningsReviewSelectedRecordId = null;
 let earningsReviewSymbolHistory = null;
-let earningsReviewActiveTab = 'workflow';
+let earningsReviewActiveTab = 'calendar';
 let earningsCalendarItems = [];
 let earningsCalendarPortfolioFilter = 'all';
 let earningsCalendarDateFilters = new Set();
@@ -1397,6 +1397,7 @@ menuItems.forEach((item) => item.addEventListener('click', () => {
   setView(target);
   if (target === 'earnings-review') {
     setEarningsReviewHash(null);
+    setEarningsReviewTab('calendar');
     loadEarningsReview();
   }
 }));
@@ -4400,7 +4401,7 @@ setSelectedPositionRatings(getAllRatingFilterKeys());
 setSelectedActionPlanRatings(getAllRatingFilterKeys());
 setSelectedActionPlanActions(getAllActionPlanActionFilterKeys());
 setSelectedEarningsCalendarDateFilters(new Set());
-setEarningsReviewTab('workflow');
+setEarningsReviewTab('calendar');
 setPositionsRatingFilterOpen(false);
 setActionPlanRatingFilterOpen(false);
 setActionPlanActionFilterOpen(false);
@@ -4411,6 +4412,7 @@ async function handleInitialRoute() {
   const hash = (window.location.hash || '').replace(/^#/, '');
   if (hash === 'earnings-review') {
     setView('earnings-review');
+    setEarningsReviewTab('calendar');
     await loadEarningsReview();
     return;
   }
@@ -4435,6 +4437,7 @@ async function handleInitialRoute() {
 window.addEventListener('hashchange', async () => {
   const hash = (window.location.hash || '').replace(/^#/, '');
   if (hash === 'earnings-review') {
+    setEarningsReviewTab('calendar');
     if (document.getElementById('earnings-review').classList.contains('active')) {
       await loadEarningsReview();
     } else {

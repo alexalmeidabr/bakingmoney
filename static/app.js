@@ -34,6 +34,7 @@ const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-price
 const actionPlanStatusEl = document.getElementById('action-plan-status');
 const actionPlanSummaryEl = document.getElementById('action-plan-summary');
 const actionPlanTableBody = document.querySelector('#action-plan-table tbody');
+const actionPlanSortHeaders = document.querySelectorAll('#action-plan-table th.sortable');
 const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
 const actionPlanListViewEl = document.getElementById('action-plan-list-view');
 const actionPlanDetailViewEl = document.getElementById('action-plan-detail-view');
@@ -263,6 +264,7 @@ let positionSort = { key: 'marketValue', direction: 'desc' };
 let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
 let selectedActionPlanDetail = null;
+let actionPlanSort = { key: null, direction: 'asc' };
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
 let ratingFilters = new Set();
@@ -949,6 +951,7 @@ const sortAnalysis = (items) => [...items].sort((a, b) => {
 
 function updateSortHeaderState() { positionSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === positionSort.key ? positionSort.direction : ''; }); }
 function updateAnalysisSortHeaderState() { analysisSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === analysisSort.key ? analysisSort.direction : ''; }); }
+function updateActionPlanSortHeaderState() { actionPlanSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanSort.key ? actionPlanSort.direction : ''; }); }
 
 function renderPositionsPortfolioSummary(summary = latestPositionsPortfolioSummary) {
   if (!positionsPortfolioSummaryEl) return;
@@ -1243,6 +1246,40 @@ function getFilteredActionPlanItems() {
   return items;
 }
 
+function getActionPlanNumericSortValue(item, key) {
+  if (!item || !key) return null;
+  if (key === 'core_confidence_diff') {
+    const direct = Number(item.core_confidence_diff);
+    if (Number.isFinite(direct)) return direct;
+    const bullish = Number(item.core_bullish_confidence);
+    const bearish = Number(item.core_bearish_confidence);
+    return Number.isFinite(bullish) && Number.isFinite(bearish) ? bullish - bearish : null;
+  }
+  if (key === 'potential_confidence_diff') {
+    const direct = Number(item.potential_confidence_diff);
+    if (Number.isFinite(direct)) return direct;
+    const bullish = Number(item.potential_bullish_confidence);
+    const bearish = Number(item.potential_bearish_confidence);
+    return Number.isFinite(bullish) && Number.isFinite(bearish) ? bullish - bearish : null;
+  }
+  const value = Number(item[key]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function sortActionPlanItems(items) {
+  if (!actionPlanSort.key) return items;
+  const directionMultiplier = actionPlanSort.direction === 'desc' ? -1 : 1;
+  return items.map((item, index) => ({ item, index })).sort((left, right) => {
+    const leftValue = getActionPlanNumericSortValue(left.item, actionPlanSort.key);
+    const rightValue = getActionPlanNumericSortValue(right.item, actionPlanSort.key);
+    if (leftValue == null && rightValue == null) return left.index - right.index;
+    if (leftValue == null) return 1;
+    if (rightValue == null) return -1;
+    const delta = leftValue - rightValue;
+    return delta === 0 ? left.index - right.index : delta * directionMultiplier;
+  }).map((entry) => entry.item);
+}
+
 function renderActionPlan() {
   const payload = latestActionPlanPayload || { action_plan: [], summary: {} };
   const summary = payload.summary || {};
@@ -1250,7 +1287,7 @@ function renderActionPlan() {
   const portfolioWarning = summary.portfolio_value_warning ? `<p class="status warning">${escapeHtml(summary.portfolio_value_warning)}</p>` : '';
   actionPlanSummaryEl.innerHTML = `<div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.portfolio_value_used ?? summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(summary.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(summary.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available %</div><div class="value">${formatPercent(summary.cash_like_available_percent)}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated Target Capacity</div><div class="value">${formatPercent(summary.unallocated_target_capacity ?? summary.unallocated_target_total)}</div></div>${portfolioWarning}${cashEquivalentNote}`;
   actionPlanTableBody.innerHTML = '';
-  getFilteredActionPlanItems().forEach((item) => {
+  sortActionPlanItems(getFilteredActionPlanItems()).forEach((item) => {
     const row = document.createElement('tr');
     const targetBand = `<span class="target-band-range">${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.target_weight_mid)})</span>`;
     row.innerHTML = `<td class="symbol-cell"><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action)}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="reason-cell">${escapeHtml(item.reason)}</td>`;
@@ -3967,6 +4004,11 @@ analysisSortHeaders.forEach((header) => header.addEventListener('click', () => {
   if (analysisSort.key === sortKey) analysisSort.direction = analysisSort.direction === 'asc' ? 'desc' : 'asc'; else analysisSort = { key: sortKey, direction: 'asc' };
   updateAnalysisSortHeaderState(); renderAnalysisList();
 }));
+actionPlanSortHeaders.forEach((header) => header.addEventListener('click', () => {
+  const { sortKey } = header.dataset; if (!sortKey) return;
+  if (actionPlanSort.key === sortKey) actionPlanSort.direction = actionPlanSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanSort = { key: sortKey, direction: 'asc' };
+  updateActionPlanSortHeaderState(); renderActionPlan();
+}));
 analysisPortfolioFilterEl.addEventListener('change', () => {
   portfolioFilter = analysisPortfolioFilterEl.value || 'all';
   renderAnalysisList();
@@ -4395,6 +4437,7 @@ backupImportBtn.addEventListener('click', restoreBackupFile);
 
 updateSortHeaderState();
 updateAnalysisSortHeaderState();
+updateActionPlanSortHeaderState();
 setSelectedRatings(getAllRatingFilterKeys());
 setRatingFilterOpen(false);
 setSelectedPositionRatings(getAllRatingFilterKeys());

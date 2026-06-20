@@ -251,6 +251,8 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_min_target_weight_to_show": 0.5,
     "action_band_lower_multiplier": 0.8,
     "action_band_upper_multiplier": 1.2,
+    "action_target_band_lower_multiplier": 0.8,
+    "action_target_band_upper_multiplier": 1.2,
     "action_speculative_band_lower_multiplier": 0.7,
     "action_speculative_band_upper_multiplier": 1.3,
     "action_min_absolute_band_width": 0.5,
@@ -1787,9 +1789,15 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{key} must be between 0 and 1")
     if effective["action_trigger_max_required_upside"] <= effective["action_trigger_min_required_upside"]:
         raise ValueError("action_trigger_max_required_upside must be greater than action_trigger_min_required_upside")
+    if effective["action_target_band_lower_multiplier"] >= 1.0:
+        raise ValueError("action_target_band_lower_multiplier must be >= 0 and < 1")
+    if effective["action_target_band_upper_multiplier"] <= 1.0:
+        raise ValueError("action_target_band_upper_multiplier must be greater than 1")
     for key in (
         "action_band_lower_multiplier",
         "action_band_upper_multiplier",
+        "action_target_band_lower_multiplier",
+        "action_target_band_upper_multiplier",
         "action_speculative_band_lower_multiplier",
         "action_speculative_band_upper_multiplier",
         "action_strong_add_below_target_multiplier",
@@ -6271,18 +6279,25 @@ def _rating_cap_for_action_plan(rating, settings):
 
 
 def _target_band(target_mid, rating, settings):
+    target = safe_number(target_mid) or 0.0
+    if target <= 0:
+        return 0.0, 0.0
     if rating == "Speculative Buy":
-        low = target_mid * settings["action_speculative_band_lower_multiplier"]
-        high = target_mid * settings["action_speculative_band_upper_multiplier"]
+        low_multiplier = settings["action_speculative_band_lower_multiplier"]
+        high_multiplier = settings["action_speculative_band_upper_multiplier"]
     else:
-        low = target_mid * settings["action_band_lower_multiplier"]
-        high = target_mid * settings["action_band_upper_multiplier"]
+        low_multiplier = settings.get("action_target_band_lower_multiplier", settings["action_band_lower_multiplier"])
+        high_multiplier = settings.get("action_target_band_upper_multiplier", settings["action_band_upper_multiplier"])
+    low = target * low_multiplier
+    high = target * high_multiplier
     min_width = settings["action_min_absolute_band_width"]
     if high - low < min_width:
         half = min_width / 2.0
-        low = target_mid - half
-        high = target_mid + half
-    return max(0.0, low), max(0.0, high)
+        low = min(low, target - half)
+        high = max(high, target + half)
+    low = max(0.0, min(low, target))
+    high = max(target, high)
+    return low, high
 
 
 def _choose_action_plan_decision(row, settings):

@@ -2443,6 +2443,10 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertEqual(rows["BUY"]["action"], "Strong Add")
                     self.assertEqual(rows["BUY"]["current_position_weight"], 0.0)
                     self.assertGreater(rows["BUY"]["target_weight_mid"], 0)
+                    self.assertLess(rows["BUY"]["target_weight_low"], rows["BUY"]["target_weight_mid"])
+                    self.assertGreater(rows["BUY"]["target_weight_high"], rows["BUY"]["target_weight_mid"])
+                    self.assertAlmostEqual(rows["BUY"]["target_weight_low"], rows["BUY"]["target_weight_mid"] * 0.8)
+                    self.assertAlmostEqual(rows["BUY"]["target_weight_high"], rows["BUY"]["target_weight_mid"] * 1.2)
                     self.assertEqual(rows["BUY"]["action_amount_direction"], "add")
                     self.assertGreater(rows["BUY"]["action_amount"], 0)
                     self.assertIn("Add about", rows["BUY"]["action_amount_label"])
@@ -2629,6 +2633,14 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings["action_bucket_sizing_potential_weight"] = 0.0
         with self.assertRaisesRegex(ValueError, "Bucket sizing weights"):
             web_server.validate_action_plan_settings(settings)
+
+    def test_action_plan_target_band_wraps_target_mid_with_tolerance(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        low, high = web_server._target_band(7.84, "Strong Buy", settings)
+        self.assertAlmostEqual(low, 6.272)
+        self.assertAlmostEqual(high, 9.408)
+        zero_low, zero_high = web_server._target_band(0.0, "Buy", settings)
+        self.assertEqual((zero_low, zero_high), (0.0, 0.0))
 
     def test_action_plan_overweight_high_upside_holds_until_trim_trigger(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

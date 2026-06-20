@@ -401,6 +401,8 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_min_target_weight_to_show: 0.5,
   action_band_lower_multiplier: 0.8,
   action_band_upper_multiplier: 1.2,
+  action_target_band_lower_multiplier: 0.8,
+  action_target_band_upper_multiplier: 1.2,
   action_speculative_band_lower_multiplier: 0.7,
   action_speculative_band_upper_multiplier: 1.3,
   action_min_absolute_band_width: 0.5,
@@ -4095,6 +4097,8 @@ function validateActionPlanSettings(settings) {
     if (bucketSizingWeightTotal <= 0) return 'Bucket sizing weights must total more than 0.';
     if (settings.action_bucket_sizing_risk_penalty_strength < 0 || settings.action_bucket_sizing_risk_penalty_strength > 1) return 'Bucket sizing risk penalty strength must be between 0 and 1.';
   }
+  if (settings.action_target_band_lower_multiplier < 0 || settings.action_target_band_lower_multiplier >= 1) return 'Target band lower multiplier must be >= 0 and < 1.';
+  if (settings.action_target_band_upper_multiplier <= 1) return 'Target band upper multiplier must be greater than 1.';
   if (settings.action_upside_full_score <= settings.action_upside_zero_score) return 'Action Plan upside full score must be greater than zero score.';
   if (settings.action_core_diff_full_score <= settings.action_core_diff_zero_score) return 'Action Plan core diff full score must be greater than zero score.';
   if (settings.action_core_bearish_penalty_full <= settings.action_core_bearish_penalty_start) return 'Action Plan core bearish penalty full must be greater than start.';

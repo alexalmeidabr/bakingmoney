@@ -1394,7 +1394,16 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('/api/action-plan/${encodeURIComponent(symbol)}', js)
         self.assertIn('function renderActionPlanDetail(item)', js)
         self.assertIn('function formatTriggerDistanceLabel(item)', js)
+        self.assertIn('function isHoldInsideTargetWithoutActiveTrigger(item)', js)
+        self.assertIn('function formatRelevantTriggerPrice(item)', js)
+        self.assertIn('function formatDynamicRequiredUpside(item)', js)
+        self.assertIn("['Trigger Price', formatRelevantTriggerPrice(item)]", js)
         self.assertIn("['Distance to Trigger', formatTriggerDistanceLabel(item)]", js)
+        self.assertIn("['Relevant Trigger', formatRelevantTriggerPrice(item)]", js)
+        self.assertIn("['Dynamic Required Upside', formatDynamicRequiredUpside(item)]", js)
+        self.assertIn('No active trigger', js)
+        self.assertIn('Position inside target band', js)
+        self.assertIn('Not applicable', js)
         self.assertIn('action_amount_label', js)
         self.assertIn('setSelectedActionPlanRatings(getAllRatingFilterKeys())', js)
         self.assertIn('setSelectedActionPlanActions(getAllActionPlanActionFilterKeys())', js)
@@ -2664,6 +2673,33 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(high, 9.408)
         zero_low, zero_high = web_server._target_band(0.0, "Buy", settings)
         self.assertEqual((zero_low, zero_high), (0.0, 0.0))
+
+
+    def test_action_plan_inside_target_hold_has_no_active_trigger(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        row = {
+            "rating": "Strong Buy",
+            "current_position_weight": 6.70,
+            "target_weight_low": 6.27,
+            "target_weight_mid": 7.84,
+            "target_weight_high": 9.41,
+            "current_price": 366.40,
+            "expected_price": 604.93,
+            "upside": 65.10,
+            "allocation_score": 0.74,
+            "bucket_sizing_score": 0.78,
+            "weighted_count": 1.0,
+            "core_conviction_score": 0.8,
+        }
+        action, trigger_price, _, distance, reason = web_server._choose_action_plan_decision(row, settings)
+        self.assertEqual(action, "Hold")
+        self.assertEqual(row["position_status"], "INSIDE_TARGET")
+        self.assertIsNone(trigger_price)
+        self.assertIsNone(distance)
+        self.assertEqual(row["relevant_trigger_type"], "hold")
+        self.assertIsNone(row["relevant_trigger_price"])
+        self.assertIsNone(row["dynamic_required_upside"])
+        self.assertIn("inside target band", reason)
 
     def test_action_plan_overweight_high_upside_holds_until_trim_trigger(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

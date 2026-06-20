@@ -1163,7 +1163,36 @@ function renderActionRelevantVariables(variables) {
   return `<div class="table-wrap compact-table"><table><thead><tr><th>Variable</th><th>Type</th><th>Driver</th><th>Confidence</th><th>Importance</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
+function isHoldInsideTargetWithoutActiveTrigger(item) {
+  const trig = item?.trigger_breakdown || {};
+  const triggerType = String(trig.relevant_trigger_type || item?.relevant_trigger_type || '').toLowerCase();
+  const positionStatus = trig.position_status || item?.position_status;
+  const triggerPrice = trig.relevant_trigger_price ?? item?.relevant_trigger_price ?? item?.trigger_price;
+  return triggerType === 'hold' || (item?.action === 'Hold' && positionStatus === 'INSIDE_TARGET' && !isFiniteNumber(triggerPrice));
+}
+
+function formatRelevantTriggerType(item) {
+  const trig = item?.trigger_breakdown || {};
+  const triggerType = trig.relevant_trigger_type || item?.relevant_trigger_type;
+  if (isHoldInsideTargetWithoutActiveTrigger(item)) return 'Hold';
+  return triggerType ? escapeHtml(String(triggerType).replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())) : 'N/A';
+}
+
+function formatRelevantTriggerPrice(item) {
+  if (isHoldInsideTargetWithoutActiveTrigger(item)) return 'No active trigger';
+  const trig = item?.trigger_breakdown || {};
+  return formatCurrencyValue(trig.relevant_trigger_price ?? item?.relevant_trigger_price ?? item?.trigger_price, 'USD');
+}
+
+function formatDynamicRequiredUpside(item) {
+  if (isHoldInsideTargetWithoutActiveTrigger(item)) return 'Not applicable';
+  const trig = item?.trigger_breakdown || {};
+  const required = trig.dynamic_required_upside ?? item?.dynamic_required_upside;
+  return isFiniteNumber(required) ? formatPercent(required * 100) : 'N/A';
+}
+
 function formatTriggerDistanceLabel(item) {
+  if (isHoldInsideTargetWithoutActiveTrigger(item)) return 'Position inside target band';
   const triggerLabel = item?.trigger_breakdown?.distance_to_relevant_trigger_label || item?.distance_to_relevant_trigger_label;
   if (triggerLabel) return escapeHtml(triggerLabel);
   const distance = item?.distance_to_trigger_percent ?? item?.trigger_breakdown?.distance_to_relevant_trigger_percent;
@@ -1196,7 +1225,7 @@ function renderActionPlanDetail(item) {
       ['Target Mid', formatPercent(item.target_weight_mid)],
       ['Target Band', `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}`],
       ['Gap to Mid', formatPercent(item.position_gap_to_mid)],
-      ['Trigger Price', formatCurrencyValue(item.trigger_price, 'USD')],
+      ['Trigger Price', formatRelevantTriggerPrice(item)],
       ['Distance to Trigger', formatTriggerDistanceLabel(item)],
     ])}<p>${escapeHtml(item.reason || '')}</p></section>
     <section class="detail-card"><h4>Position vs Target Band</h4>${renderActionPlanMetricList([
@@ -1215,11 +1244,11 @@ function renderActionPlanDetail(item) {
       ['Strong Add Trigger', formatCurrencyValue(trig.strong_add_trigger_price, 'USD')],
       ['Trim Trigger', formatCurrencyValue(trig.trim_trigger_price, 'USD')],
       ['Sell Trigger', formatCurrencyValue(trig.sell_trigger_price, 'USD')],
-      ['Relevant Trigger', formatCurrencyValue(trig.relevant_trigger_price, 'USD')],
-      ['Relevant Trigger Type', escapeHtml(trig.relevant_trigger_type || 'N/A')],
-      ['Dynamic Required Upside', formatPercent((trig.dynamic_required_upside ?? item.dynamic_required_upside) * 100)],
+      ['Relevant Trigger', formatRelevantTriggerPrice(item)],
+      ['Relevant Trigger Type', formatRelevantTriggerType(item)],
+      ['Dynamic Required Upside', formatDynamicRequiredUpside(item)],
       ['Trigger Quality Score', formatNumber(trig.trigger_quality_score ?? item.trigger_quality_score)],
-      ['Distance to Relevant Trigger', escapeHtml(trig.distance_to_relevant_trigger_label || 'N/A')],
+      ['Distance to Relevant Trigger', formatTriggerDistanceLabel(item)],
     ])}<p>Buy triggers use allocation-aware required upside; trim/sell triggers use remaining-upside thresholds.</p></section>
     <section class="detail-card"><h4>Target Weight Calculation</h4>${renderActionPlanMetricList([
       ['Rating Bucket', escapeHtml(tb.rating_bucket || item.bucket || '')],

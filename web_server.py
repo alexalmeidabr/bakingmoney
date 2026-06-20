@@ -204,6 +204,10 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_weighted_count_full_score": 0.75,
     "action_weighted_count_max_contribution": 1.0,
     "action_max_potential_score_contribution": 0.20,
+    "action_bucket_sizing_upside_weight": 0.50,
+    "action_bucket_sizing_core_weight": 0.40,
+    "action_bucket_sizing_potential_weight": 0.10,
+    "action_bucket_sizing_risk_penalty_strength": 0.50,
     "action_strong_buy_weight_per_effective_stock": 5.0,
     "action_strong_buy_max_effective_count": 6.0,
     "action_strong_buy_max_bucket_target": 45.0,
@@ -1768,6 +1772,15 @@ def validate_action_plan_settings(settings):
             raise ValueError("action_weighted_count_max_contribution must be > 0 and <= 1")
         if effective["action_max_potential_score_contribution"] > 1.0:
             raise ValueError("action_max_potential_score_contribution must be between 0 and 1")
+        bucket_sizing_weight_total = sum(effective[key] for key in (
+            "action_bucket_sizing_upside_weight",
+            "action_bucket_sizing_core_weight",
+            "action_bucket_sizing_potential_weight",
+        ))
+        if bucket_sizing_weight_total <= 0:
+            raise ValueError("Bucket sizing weights must total more than 0")
+        if effective["action_bucket_sizing_risk_penalty_strength"] > 1.0:
+            raise ValueError("action_bucket_sizing_risk_penalty_strength must be between 0 and 1")
         for bucket_key in ("strong_buy", "buy", "speculative_buy", "hold"):
             for suffix in ("weight_per_effective_stock", "max_effective_count"):
                 if effective[f"action_{bucket_key}_{suffix}"] < 0:
@@ -6274,14 +6287,30 @@ def build_action_plan(conn):
         fixed_bucket_score = core_score
         if fixed_bucket_score <= 0 and legacy_potential_bonus_weight > 0:
             fixed_bucket_score = 0.05
+        bucket_sizing_weight_total = sum(settings[key] for key in (
+            "action_bucket_sizing_upside_weight",
+            "action_bucket_sizing_core_weight",
+            "action_bucket_sizing_potential_weight",
+        ))
+        normalized_bucket_sizing_weights = {
+            "upside": settings["action_bucket_sizing_upside_weight"] / bucket_sizing_weight_total,
+            "core": settings["action_bucket_sizing_core_weight"] / bucket_sizing_weight_total,
+            "potential": settings["action_bucket_sizing_potential_weight"] / bucket_sizing_weight_total,
+        } if bucket_sizing_weight_total > 0 else {"upside": 0.5, "core": 0.4, "potential": 0.1}
+        bucket_sizing_risk_modifier = 1.0 - ((1.0 - core_risk_modifier) * settings["action_bucket_sizing_risk_penalty_strength"])
+        bucket_sizing_score = _clamp((
+            normalized_bucket_sizing_weights["upside"] * upside_score
+            + normalized_bucket_sizing_weights["core"] * core_conviction_score
+            + normalized_bucket_sizing_weights["potential"] * potential_conviction
+        ) * bucket_sizing_risk_modifier, 0.0, 1.0)
         weighted_count = 0.0
-        if weighted_count_enabled and rating not in {"Sell", "Strong Sell"} and allocation_score > 0:
+        if weighted_count_enabled and rating not in {"Sell", "Strong Sell"}:
             weighted_count = _clamp(
-                (allocation_score - settings["action_weighted_count_min_score"]) / (settings["action_weighted_count_full_score"] - settings["action_weighted_count_min_score"]),
+                (bucket_sizing_score - settings["action_weighted_count_min_score"]) / (settings["action_weighted_count_full_score"] - settings["action_weighted_count_min_score"]),
                 0.0,
                 settings["action_weighted_count_max_contribution"],
             )
-        elif rating not in {"Sell", "Strong Sell"} and allocation_score > 0:
+        elif rating not in {"Sell", "Strong Sell"} and bucket_sizing_score > 0:
             weighted_count = 1.0
         candidates.append({
             **analysis,
@@ -6290,6 +6319,8 @@ def build_action_plan(conn):
             "company_bucket_score": allocation_score if dynamic_mode else fixed_bucket_score,
             "company_allocation_score": allocation_score,
             "allocation_score": allocation_score,
+            "bucket_sizing_score": bucket_sizing_score,
+            "bucket_sizing_risk_modifier": bucket_sizing_risk_modifier,
             "weighted_count": weighted_count,
             "upside_score": upside_score,
             "core_conviction_score": core_conviction_score,
@@ -6383,6 +6414,8 @@ def build_action_plan(conn):
             "company_allocation_score": item["company_allocation_score"],
             "allocation_score": item["allocation_score"],
             "company_bucket_score": item["company_bucket_score"],
+            "bucket_sizing_score": item["bucket_sizing_score"],
+            "bucket_sizing_risk_modifier": item["bucket_sizing_risk_modifier"],
             "weighted_count": item["weighted_count"],
             "weighted_eligible_count": item["weighted_count"],
             "weighted_count_contribution": item["weighted_count"],
@@ -6397,6 +6430,8 @@ def build_action_plan(conn):
                 "company_allocation_score": item["company_allocation_score"],
                 "allocation_score": item["allocation_score"],
                 "company_bucket_score": item["company_bucket_score"],
+                "bucket_sizing_score": item["bucket_sizing_score"],
+                "bucket_sizing_risk_modifier": item["bucket_sizing_risk_modifier"],
                 "weighted_count": item["weighted_count"],
             },
             "target_weight_breakdown": {
@@ -6409,6 +6444,9 @@ def build_action_plan(conn):
                 "company_allocation_score": item["company_allocation_score"],
                 "allocation_score": item["allocation_score"],
                 "company_bucket_score": item["company_bucket_score"],
+                "bucket_sizing_score": item["bucket_sizing_score"],
+                "bucket_sizing_risk_modifier": item["bucket_sizing_risk_modifier"],
+                "weighted_count": item["weighted_count"],
                 "total_bucket_allocation_score": score_total,
                 "total_bucket_score": score_total,
                 "weighted_count_contribution": item["weighted_count"],

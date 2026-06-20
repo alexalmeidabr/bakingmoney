@@ -352,6 +352,10 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_weighted_count_full_score: 0.75,
   action_weighted_count_max_contribution: 1.0,
   action_max_potential_score_contribution: 0.20,
+  action_bucket_sizing_upside_weight: 0.50,
+  action_bucket_sizing_core_weight: 0.40,
+  action_bucket_sizing_potential_weight: 0.10,
+  action_bucket_sizing_risk_penalty_strength: 0.50,
   action_strong_buy_weight_per_effective_stock: 5.0,
   action_strong_buy_max_effective_count: 6.0,
   action_strong_buy_max_bucket_target: 45.0,
@@ -1196,8 +1200,9 @@ function renderActionPlanDetail(item) {
       ['Eligible Count in Bucket', formatNumber(tb.eligible_count_in_bucket)],
       ['Weighted Eligible Count in Bucket', formatNumber(tb.weighted_eligible_count_in_bucket)],
       ['Company Allocation Score', formatNumber(tb.company_allocation_score ?? tb.company_bucket_score)],
+      ['Bucket Sizing Score', formatNumber(tb.bucket_sizing_score ?? item.bucket_sizing_score)],
+      ['Weighted Count', formatNumber(tb.weighted_count ?? tb.weighted_count_contribution ?? item.weighted_count)],
       ['Total Bucket Allocation Score', formatNumber(tb.total_bucket_allocation_score ?? tb.total_bucket_score)],
-      ['Weighted Count Contribution', formatNumber(tb.weighted_count_contribution ?? item.weighted_count)],
       ['Bucket Share', formatPercent(tb.bucket_share_percent)],
       ['Target Before Caps', formatPercent(tb.target_before_caps ?? item.target_mid_before_caps)],
       ['Cap Applied', formatPercent(tb.cap_applied)],
@@ -1214,6 +1219,8 @@ function renderActionPlanDetail(item) {
       ['Potential Conviction Score', formatNumber(sb.potential_conviction_score)],
       ['Potential Score Component', formatNumber(sb.potential_score_component)],
       ['Allocation Score', formatNumber(sb.company_allocation_score ?? sb.allocation_score ?? sb.company_bucket_score)],
+      ['Bucket Sizing Score', formatNumber(sb.bucket_sizing_score ?? item.bucket_sizing_score)],
+      ['Bucket Sizing Risk Modifier', formatNumber(sb.bucket_sizing_risk_modifier ?? item.bucket_sizing_risk_modifier)],
       ['Weighted Count', formatNumber(sb.weighted_count ?? item.weighted_count)],
     ])}</section>
     <section class="detail-card"><h4>Decision Path</h4>${renderDecisionPath(item.decision_path)}</section>
@@ -1407,13 +1414,14 @@ function renderActionPlanBucketCompanyTable(rows) {
       <td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td>
       <td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td>
       <td>${formatNumber(item.company_allocation_score ?? tb.company_allocation_score ?? tb.company_bucket_score ?? item?.score_breakdown?.company_allocation_score)}</td>
-      <td>${formatNumber(item.weighted_count ?? tb.weighted_count_contribution ?? item?.score_breakdown?.weighted_count)}</td>
+      <td>${formatNumber(item.bucket_sizing_score ?? tb.bucket_sizing_score ?? item?.score_breakdown?.bucket_sizing_score)}</td>
+      <td>${formatNumber(item.weighted_count ?? tb.weighted_count ?? tb.weighted_count_contribution ?? item?.score_breakdown?.weighted_count)}</td>
       <td>${formatPercent(item.target_mid_before_caps ?? tb.target_mid_before_caps ?? tb.target_before_caps)}</td>
       <td>${formatPercent(item.target_mid_after_caps ?? tb.target_mid_after_caps ?? tb.target_weight_mid ?? item.target_weight_mid)}</td>
       <td class="wrap-cell">${escapeHtml(getCapReason(item))}</td>
     </tr>`;
   }).join('');
-  return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Company Name</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Action Amount</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Target Mid After Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Company Name</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Action Amount</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Target Mid After Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderActionPlanBucketPanel(bucket) {
@@ -4028,8 +4036,16 @@ function updateActionPlanBucketTotal() {
   const settings = getActionPlanSettingsFromForm();
   const total = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
     .reduce((sum, key) => sum + (Number.isFinite(settings[key]) ? settings[key] : 0), 0);
-  configActionPlanTotalEl.textContent = `Bucket total: ${formatPercent(total)}`;
-  configActionPlanTotalEl.className = total > 100 ? 'status error' : 'status';
+  const dynamicEnabled = Boolean(settings.action_use_dynamic_bucket_sizing);
+  configActionPlanTotalEl.textContent = dynamicEnabled
+    ? 'Fixed bucket targets are used only when Dynamic Bucket Sizing is off.'
+    : `Bucket total: ${formatPercent(total)}`;
+  configActionPlanTotalEl.className = (!dynamicEnabled && total > 100) ? 'status error' : 'status';
+  document.querySelectorAll('[data-fixed-bucket-setting="true"]').forEach((el) => {
+    el.classList.toggle('hidden', dynamicEnabled);
+    const input = el.querySelector('input');
+    if (input) input.disabled = dynamicEnabled;
+  });
 }
 
 function validateActionPlanSettings(settings) {
@@ -4048,6 +4064,9 @@ function validateActionPlanSettings(settings) {
     if (settings.action_weighted_count_min_score < 0 || settings.action_weighted_count_full_score > 1) return 'Weighted count score thresholds must be between 0 and 1.';
     if (settings.action_weighted_count_max_contribution <= 0 || settings.action_weighted_count_max_contribution > 1) return 'Weighted count max contribution must be > 0 and <= 1.';
     if (settings.action_max_potential_score_contribution < 0 || settings.action_max_potential_score_contribution > 1) return 'Max potential score contribution must be between 0 and 1.';
+    const bucketSizingWeightTotal = settings.action_bucket_sizing_upside_weight + settings.action_bucket_sizing_core_weight + settings.action_bucket_sizing_potential_weight;
+    if (bucketSizingWeightTotal <= 0) return 'Bucket sizing weights must total more than 0.';
+    if (settings.action_bucket_sizing_risk_penalty_strength < 0 || settings.action_bucket_sizing_risk_penalty_strength > 1) return 'Bucket sizing risk penalty strength must be between 0 and 1.';
   }
   if (settings.action_upside_full_score <= settings.action_upside_zero_score) return 'Action Plan upside full score must be greater than zero score.';
   if (settings.action_core_diff_full_score <= settings.action_core_diff_zero_score) return 'Action Plan core diff full score must be greater than zero score.';

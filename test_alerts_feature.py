@@ -2445,7 +2445,10 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertIn("weighted_eligible_count_in_bucket", rows["BUY"]["target_weight_breakdown"])
                     self.assertIn("company_allocation_score", rows["BUY"])
                     self.assertIn("weighted_count", rows["BUY"])
+                    self.assertIn("bucket_sizing_score", rows["BUY"])
+                    self.assertIn("bucket_sizing_risk_modifier", rows["BUY"])
                     self.assertNotEqual(rows["BUY"]["weighted_count"], rows["BUY"]["company_allocation_score"])
+                    self.assertNotEqual(rows["BUY"]["bucket_sizing_score"], rows["BUY"]["company_allocation_score"])
                     self.assertAlmostEqual(
                         rows["BUY"]["target_weight_breakdown"]["weighted_eligible_count_in_bucket"],
                         buy_weighted_count := rows["BUY"]["weighted_count"],
@@ -2453,6 +2456,8 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertGreater(buy_weighted_count, 0)
                     self.assertEqual(rows["BUY"]["potential_bonus_weight"], 0.0)
                     self.assertGreater(rows["BUY"]["potential_score_component"], 0)
+                    self.assertIn("bucket_sizing_score", rows["BUY"]["score_breakdown"])
+                    self.assertIn("bucket_sizing_score", rows["BUY"]["target_weight_breakdown"])
                     self.assertIn("trigger_breakdown", rows["BUY"])
                     self.assertIn("decision_path", rows["BUY"])
                     self.assertEqual(rows["SELL"]["action"], "Sell")
@@ -2604,6 +2609,14 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings["action_bucket_buy_target"] = 90.0
         effective = web_server.validate_action_plan_settings(settings)
         self.assertTrue(effective["action_use_dynamic_bucket_sizing"])
+
+    def test_dynamic_action_plan_settings_reject_zero_bucket_sizing_weights(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_bucket_sizing_upside_weight"] = 0.0
+        settings["action_bucket_sizing_core_weight"] = 0.0
+        settings["action_bucket_sizing_potential_weight"] = 0.0
+        with self.assertRaisesRegex(ValueError, "Bucket sizing weights"):
+            web_server.validate_action_plan_settings(settings)
 
 class ExternalScenarioOverlayTests(unittest.TestCase):
     def _seed_version_with_scenarios(self, conn, symbol="EXT"):

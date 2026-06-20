@@ -1401,7 +1401,7 @@ function renderActionPlanBucketCompanyTable(rows) {
   const body = rows.map((item) => {
     const tb = item.target_weight_breakdown || {};
     const targetBand = `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}`;
-    const currentPrice = isFiniteNumber(item.current_price) ? formatCurrencyValue(item.current_price, 'USD') : '—';
+    const marketValue = isFiniteNumber(item.current_position_market_value) ? formatCurrencyValue(item.current_position_market_value, 'USD') : '—';
     return `<tr>
       <td><button class="symbol-link action-plan-bucket-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td>
       <td class="wrap-cell">${escapeHtml(item.company_name || '—')}</td>
@@ -1411,7 +1411,7 @@ function renderActionPlanBucketCompanyTable(rows) {
       <td>${targetBand}</td>
       <td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td>
       <td>${escapeHtml(item.action_amount_label || '—')}</td>
-      <td>${currentPrice}</td>
+      <td>${marketValue}</td>
       <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
       <td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td>
       <td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td>
@@ -1422,7 +1422,7 @@ function renderActionPlanBucketCompanyTable(rows) {
       <td class="wrap-cell">${escapeHtml(getCapReason(item))}</td>
     </tr>`;
   }).join('');
-  return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Company Name</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Action Amount</th><th>Current Price</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Company Name</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Action Amount</th><th>Market Value</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderActionPlanBucketPanel(bucket) {

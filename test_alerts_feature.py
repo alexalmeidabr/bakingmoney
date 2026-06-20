@@ -1384,7 +1384,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Cash / Unallocated', js)
         self.assertIn('Bucket Reconciliation', js)
         self.assertIn('Allocation Score', js)
-        self.assertIn('<th>Action Amount</th><th>Current Price</th><th>Upside</th>', js)
+        self.assertIn('<th>Action Amount</th><th>Market Value</th><th>Upside</th>', js)
         self.assertIn('<th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Cap Reason</th>', js)
         self.assertNotIn('<th>Target Mid Before Caps</th><th>Target Mid After Caps</th><th>Cap Reason</th>', js)
         self.assertIn('function openActionPlanDetail(symbol)', js)

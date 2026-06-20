@@ -263,6 +263,19 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_starter_buy_required_upside": 75.0,
     "action_trim_remaining_upside": 10.0,
     "action_sell_remaining_upside": 0.0,
+    "action_starter_buy_base_required_upside": 0.25,
+    "action_add_base_required_upside": 0.30,
+    "action_strong_add_base_required_upside": 0.40,
+    "action_hold_extra_add_required_upside": 0.50,
+    "action_trim_remaining_upside_threshold": 0.10,
+    "action_sell_remaining_upside_threshold": 0.00,
+    "action_underweight_discount_max": 0.10,
+    "action_quality_discount_max": 0.10,
+    "action_overweight_penalty_max": 0.15,
+    "action_low_quality_penalty_max": 0.15,
+    "action_trigger_min_required_upside": 0.10,
+    "action_trigger_max_required_upside": 0.80,
+    "action_strong_trim_gap_threshold": 0.25,
     "action_redistribute_capped_excess": False,
     "action_allow_bucket_underallocation": True,
     "action_show_unallocated_bucket_amount": True,
@@ -305,6 +318,7 @@ ACTION_PLAN_ACTION_PRIORITY = {
     "Sell": 6,
     "Watch": 7,
     "Hold": 8,
+    "Hold / Overweight": 8,
     "Re-evaluate": 9,
 }
 
@@ -1740,7 +1754,7 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{key} must be numeric")
         if not math.isfinite(value):
             raise ValueError(f"{key} must be finite")
-        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score"}:
+        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold"}:
             raise ValueError(f"{key} cannot be negative")
         effective[key] = value
     if effective["action_upside_full_score"] <= effective["action_upside_zero_score"]:
@@ -1751,6 +1765,28 @@ def validate_action_plan_settings(settings):
         raise ValueError("action_core_bearish_penalty_full must be greater than action_core_bearish_penalty_start")
     if effective["action_potential_diff_full_score"] <= effective["action_potential_diff_minimum"]:
         raise ValueError("action_potential_diff_full_score must be greater than action_potential_diff_minimum")
+    for key in (
+        "action_starter_buy_base_required_upside",
+        "action_add_base_required_upside",
+        "action_strong_add_base_required_upside",
+        "action_hold_extra_add_required_upside",
+    ):
+        if effective[key] > 2.0:
+            raise ValueError(f"{key} must be between 0 and 2")
+    for key in ("action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold"):
+        if effective[key] < -1.0 or effective[key] > 2.0:
+            raise ValueError(f"{key} must be between -1 and 2")
+    for key in (
+        "action_underweight_discount_max",
+        "action_quality_discount_max",
+        "action_overweight_penalty_max",
+        "action_low_quality_penalty_max",
+        "action_strong_trim_gap_threshold",
+    ):
+        if effective[key] > 1.0:
+            raise ValueError(f"{key} must be between 0 and 1")
+    if effective["action_trigger_max_required_upside"] <= effective["action_trigger_min_required_upside"]:
+        raise ValueError("action_trigger_max_required_upside must be greater than action_trigger_min_required_upside")
     for key in (
         "action_band_lower_multiplier",
         "action_band_upper_multiplier",
@@ -6025,22 +6061,151 @@ def _action_amount_fields(action, current_weight, target_mid, total_portfolio_va
     }
 
 
-def _action_plan_trigger_breakdown(expected_price, current_price, settings, relevant_trigger_price, relevant_trigger_type):
-    strong_add = _trigger_price(expected_price, settings["action_strong_add_required_upside"])
-    add = _trigger_price(expected_price, settings["action_add_required_upside"])
-    starter = _trigger_price(expected_price, settings["action_starter_buy_required_upside"])
-    trim = _trigger_price(expected_price, settings["action_trim_remaining_upside"])
-    sell = _trigger_price(expected_price, settings["action_sell_remaining_upside"])
+def _trigger_price_from_required_upside(expected_price, required_upside_ratio):
+    expected = safe_number(expected_price)
+    required = safe_number(required_upside_ratio)
+    if expected is None or required is None or expected <= 0:
+        return None
+    denominator = 1.0 + required
+    return expected / denominator if denominator > 0 else None
+
+
+def _trigger_price_distance_label(current_price, trigger_price, trigger_type):
+    current = safe_number(current_price)
+    trigger = safe_number(trigger_price)
+    if current is None or trigger is None or trigger <= 0:
+        return "N/A"
+    pct = abs((current - trigger) / trigger * 100.0)
+    direction = "below" if current < trigger else "above"
+    label_type = (trigger_type or "trigger").replace("_", " ").title()
+    return f"Price is {pct:.2f}% {direction} {label_type} trigger"
+
+
+def _position_status(current_weight, target_low, target_mid, target_high):
+    if target_mid <= 0:
+        return "NO_TARGET"
+    if current_weight < target_low:
+        return "BELOW_TARGET"
+    if current_weight > target_high:
+        return "ABOVE_TARGET"
+    return "INSIDE_TARGET"
+
+
+def _trigger_quality_score(row):
+    return _clamp(
+        0.60 * (safe_number(row.get("allocation_score")) or 0.0)
+        + 0.30 * (safe_number(row.get("bucket_sizing_score")) or 0.0)
+        + 0.10 * (safe_number(row.get("weighted_count")) or 0.0),
+        0.0,
+        1.0,
+    )
+
+
+def calculate_dynamic_required_upside(action_type, base_required_upside, current_weight, target_low, target_mid, target_high, allocation_score, bucket_sizing_score, weighted_count, settings):
+    trigger_quality_score = _clamp(
+        0.60 * (safe_number(allocation_score) or 0.0)
+        + 0.30 * (safe_number(bucket_sizing_score) or 0.0)
+        + 0.10 * (safe_number(weighted_count) or 0.0),
+        0.0,
+        1.0,
+    )
+    current = safe_number(current_weight) or 0.0
+    target = safe_number(target_mid) or 0.0
+    underweight_strength = _clamp((target - current) / target, 0.0, 1.0) if target > 0 and current < target else 0.0
+    overweight_strength = _clamp((current - target) / target, 0.0, 1.0) if target > 0 and current > target else 0.0
+    dynamic_required = (
+        float(base_required_upside or 0.0)
+        - underweight_strength * settings["action_underweight_discount_max"]
+        - trigger_quality_score * settings["action_quality_discount_max"]
+        + overweight_strength * settings["action_overweight_penalty_max"]
+        + (1.0 - trigger_quality_score) * settings["action_low_quality_penalty_max"]
+    )
+    return _clamp(dynamic_required, settings["action_trigger_min_required_upside"], settings["action_trigger_max_required_upside"]), trigger_quality_score
+
+
+def _action_plan_trigger_context(row, settings):
+    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    target_low = safe_number(row.get("target_weight_low")) or 0.0
+    target_mid = safe_number(row.get("target_weight_mid")) or 0.0
+    target_high = safe_number(row.get("target_weight_high")) or 0.0
+    current_price = safe_number(row.get("current_price"))
+    expected_price = safe_number(row.get("expected_price"))
+    remaining_upside = (expected_price / current_price - 1.0) if current_price and expected_price else None
+    status = _position_status(current_weight, target_low, target_mid, target_high)
+    starter_required, quality = calculate_dynamic_required_upside(
+        "starter_buy",
+        settings["action_starter_buy_base_required_upside"],
+        current_weight,
+        target_low,
+        target_mid,
+        target_high,
+        row.get("allocation_score"),
+        row.get("bucket_sizing_score"),
+        row.get("weighted_count"),
+        settings,
+    )
+    add_required, _ = calculate_dynamic_required_upside(
+        "add",
+        settings["action_add_base_required_upside"],
+        current_weight,
+        target_low,
+        target_mid,
+        target_high,
+        row.get("allocation_score"),
+        row.get("bucket_sizing_score"),
+        row.get("weighted_count"),
+        settings,
+    )
+    strong_required, _ = calculate_dynamic_required_upside(
+        "strong_add",
+        settings["action_strong_add_base_required_upside"],
+        current_weight,
+        target_low,
+        target_mid,
+        target_high,
+        row.get("allocation_score"),
+        row.get("bucket_sizing_score"),
+        row.get("weighted_count"),
+        settings,
+    )
+    trim_trigger = _trigger_price_from_required_upside(expected_price, settings["action_trim_remaining_upside_threshold"])
+    sell_trigger = _trigger_price_from_required_upside(expected_price, settings["action_sell_remaining_upside_threshold"])
     return {
-        "strong_add_trigger_price": strong_add,
-        "add_trigger_price": add,
-        "starter_buy_trigger_price": starter,
-        "trim_trigger_price": trim,
-        "sell_trigger_price": sell,
-        "relevant_trigger_price": relevant_trigger_price,
-        "relevant_trigger_type": relevant_trigger_type,
-        "distance_to_relevant_trigger_percent": _distance_to_trigger(current_price, relevant_trigger_price),
-        "formula": "Trigger price = expected price / (1 + required upside)",
+        "position_status": status,
+        "remaining_upside": remaining_upside,
+        "trigger_quality_score": quality,
+        "starter_buy_required_upside": starter_required,
+        "add_required_upside": add_required,
+        "strong_add_required_upside": strong_required,
+        "starter_buy_trigger_price": _trigger_price_from_required_upside(expected_price, starter_required),
+        "add_trigger_price": _trigger_price_from_required_upside(expected_price, add_required),
+        "strong_add_trigger_price": _trigger_price_from_required_upside(expected_price, strong_required),
+        "trim_trigger_price": trim_trigger,
+        "sell_trigger_price": sell_trigger,
+    }
+
+
+def _action_plan_trigger_breakdown(row):
+    trigger_type = row.get("relevant_trigger_type")
+    trigger_price = row.get("relevant_trigger_price")
+    return {
+        "position_status": row.get("position_status"),
+        "remaining_upside": row.get("remaining_upside"),
+        "trigger_quality_score": row.get("trigger_quality_score"),
+        "dynamic_required_upside": row.get("dynamic_required_upside"),
+        "starter_buy_required_upside": row.get("starter_buy_required_upside"),
+        "add_required_upside": row.get("add_required_upside"),
+        "strong_add_required_upside": row.get("strong_add_required_upside"),
+        "starter_buy_trigger_price": row.get("starter_buy_trigger_price"),
+        "add_trigger_price": row.get("add_trigger_price"),
+        "strong_add_trigger_price": row.get("strong_add_trigger_price"),
+        "trim_trigger_price": row.get("trim_trigger_price"),
+        "sell_trigger_price": row.get("sell_trigger_price"),
+        "relevant_trigger_price": trigger_price,
+        "relevant_trigger_type": trigger_type,
+        "distance_to_relevant_trigger_percent": _distance_to_trigger(row.get("current_price"), trigger_price),
+        "distance_to_relevant_trigger_label": _trigger_price_distance_label(row.get("current_price"), trigger_price, trigger_type),
+        "formula": "Buy triggers use allocation-aware required upside; trim/sell triggers use remaining-upside thresholds.",
     }
 
 
@@ -6122,41 +6287,77 @@ def _target_band(target_mid, rating, settings):
 
 def _choose_action_plan_decision(row, settings):
     rating = row["rating"]
-    current_weight = row["current_position_weight"]
-    target_mid = row["target_weight_mid"]
-    target_low = row["target_weight_low"]
-    target_high = row["target_weight_high"]
-    current_price = row.get("current_price")
-    expected_price = row.get("expected_price")
-    upside = row.get("upside")
+    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    target_mid = safe_number(row.get("target_weight_mid")) or 0.0
+    target_low = safe_number(row.get("target_weight_low")) or 0.0
+    target_high = safe_number(row.get("target_weight_high")) or 0.0
+    current_price = safe_number(row.get("current_price"))
+    expected_price = safe_number(row.get("expected_price"))
+    upside = safe_number(row.get("upside"))
     if row.get("final_scenario_stale"):
         return "Re-evaluate", None, None, None, "Final Scenario overlay is stale; re-evaluate before taking action."
-    if safe_number(current_price) is None or safe_number(expected_price) is None or safe_number(upside) is None:
+    if current_price is None or expected_price is None or upside is None:
         return "Re-evaluate", None, None, None, "Missing current price, expected price, or upside."
 
-    add_trigger = _trigger_price(expected_price, settings["action_add_required_upside"])
-    strong_add_trigger = _trigger_price(expected_price, settings["action_strong_add_required_upside"])
-    starter_trigger = _trigger_price(expected_price, settings["action_starter_buy_required_upside"])
-    trim_trigger = _trigger_price(expected_price, settings["action_trim_remaining_upside"])
-    sell_trigger = _trigger_price(expected_price, settings["action_sell_remaining_upside"])
-    min_gap = settings["action_min_trade_gap_percent"]
+    context = _action_plan_trigger_context(row, settings)
+    row.update(context)
+    position_status = context["position_status"]
+    strong_trigger = context["strong_add_trigger_price"]
+    add_trigger = context["add_trigger_price"]
+    starter_trigger = context["starter_buy_trigger_price"]
+    trim_trigger = context["trim_trigger_price"]
+    sell_trigger = context["sell_trigger_price"]
+    quality = context["trigger_quality_score"]
 
-    if rating in {"Sell", "Strong Sell"} and current_weight > 0:
-        return "Sell", sell_trigger, "above", _distance_to_trigger(current_price, sell_trigger), "Rating is Sell/Strong Sell and the position is currently owned."
-    if current_weight > target_high * settings["action_strong_trim_above_target_multiplier"] and current_weight - target_high >= min_gap:
-        return "Strong Trim", trim_trigger, "above", _distance_to_trigger(current_price, trim_trigger), "Position is far above the target band, so a strong trim is suggested."
-    if (current_weight > target_high and current_weight - target_high >= min_gap) or (trim_trigger is not None and current_price >= trim_trigger and current_weight > target_mid):
-        return "Trim", trim_trigger, "above", _distance_to_trigger(current_price, trim_trigger), "Position is above target band or price reached the trim trigger."
-    if rating in {"Strong Buy", "Buy"} and row["core_conviction_score"] > 0 and current_weight < target_low * settings["action_strong_add_below_target_multiplier"] and target_low - current_weight >= min_gap and strong_add_trigger is not None and current_price <= strong_add_trigger:
-        return "Strong Add", strong_add_trigger, "below", _distance_to_trigger(current_price, strong_add_trigger), "High upside and positive Core confidence; position is far below target and price is below Strong Add trigger."
-    if rating in {"Strong Buy", "Buy"} and current_weight < target_low and target_low - current_weight >= min_gap and add_trigger is not None and current_price <= add_trigger:
-        return "Add", add_trigger, "below", _distance_to_trigger(current_price, add_trigger), "Attractive rating; current position is below target band and price is below Add trigger."
-    if rating == "Speculative Buy" and current_weight <= settings["action_starter_buy_max_initial_weight"] and target_mid > 0 and starter_trigger is not None and current_price <= starter_trigger:
-        return "Starter Buy", starter_trigger, "below", _distance_to_trigger(current_price, starter_trigger), "Speculative Buy is eligible for a capped starter position and price is below Starter Buy trigger."
-    relevant_buy_trigger = starter_trigger if rating == "Speculative Buy" else add_trigger
-    if target_mid > 0 and current_weight < target_low and relevant_buy_trigger is not None and current_price > relevant_buy_trigger:
-        return "Watch", relevant_buy_trigger, "below", _distance_to_trigger(current_price, relevant_buy_trigger), "Attractive enough for a target weight, but current price is above the required margin-of-safety trigger."
-    return "Hold", None, None, None, "Current position is inside the target band or no action threshold is met."
+    def choose(action, trigger, trigger_type, required, reason):
+        row["relevant_trigger_price"] = trigger
+        row["relevant_trigger_type"] = trigger_type
+        row["dynamic_required_upside"] = required
+        return action, trigger, "below" if trigger_type in {"strong_add", "add", "starter_buy"} else "above", _distance_to_trigger(current_price, trigger), reason
+
+    if rating == "Strong Sell":
+        return choose("Sell", sell_trigger, "sell", settings["action_sell_remaining_upside_threshold"], "Rating is Strong Sell; target allocation should be zero or near zero.")
+    if rating == "Sell" or target_mid <= 0:
+        return choose("Sell", sell_trigger, "sell", settings["action_sell_remaining_upside_threshold"], "Target allocation is zero or rating is Sell.")
+
+    if position_status == "BELOW_TARGET":
+        if strong_trigger is not None and current_price <= strong_trigger and quality >= 0.50:
+            return choose("Strong Add", strong_trigger, "strong_add", context["strong_add_required_upside"], "Position is below target band, trigger quality is high, and current price is below the allocation-aware Strong Add trigger.")
+        if add_trigger is not None and current_price <= add_trigger:
+            return choose("Add", add_trigger, "add", context["add_required_upside"], "Position is below target band and current price is below the allocation-aware Add trigger.")
+        if current_weight <= settings["action_starter_buy_max_initial_weight"] and starter_trigger is not None and current_price <= starter_trigger:
+            return choose("Starter Buy", starter_trigger, "starter_buy", context["starter_buy_required_upside"], "Position is below target band and current price is below the allocation-aware Starter Buy trigger.")
+        return choose("Watch", add_trigger, "add", context["add_required_upside"], "Position is below target band, but current price is above the allocation-aware Add trigger.")
+
+    if position_status == "INSIDE_TARGET":
+        room_to_mid = target_mid - current_weight
+        if room_to_mid > settings["action_min_trade_gap_percent"] and strong_trigger is not None and current_price <= strong_trigger and quality >= 0.80:
+            return choose("Add", strong_trigger, "strong_add", context["strong_add_required_upside"], "Position is inside target band but price is extremely attractive and there is room toward target mid.")
+        row["relevant_trigger_price"] = None
+        row["relevant_trigger_type"] = "hold"
+        row["dynamic_required_upside"] = None
+        return "Hold", None, None, None, "Position is inside target band."
+
+    if position_status == "ABOVE_TARGET":
+        overweight_ratio = ((current_weight - target_high) / target_mid) if target_mid > 0 else 0.0
+        hard_cap = _rating_cap_for_action_plan(rating, settings)
+        hard_cap_exceeded = current_weight > hard_cap + settings["action_min_trade_gap_percent"]
+        trim_reached = trim_trigger is not None and current_price >= trim_trigger
+        if trim_reached or hard_cap_exceeded:
+            action = "Strong Trim" if overweight_ratio >= settings["action_strong_trim_gap_threshold"] or hard_cap_exceeded else "Trim"
+            reason = "Position is above target band and current price has reached the Trim trigger."
+            if hard_cap_exceeded:
+                reason = "Position is above target band and exceeds the hard risk cap."
+            return choose(action, trim_trigger, "trim", settings["action_trim_remaining_upside_threshold"], reason)
+        row["relevant_trigger_price"] = trim_trigger
+        row["relevant_trigger_type"] = "trim"
+        row["dynamic_required_upside"] = settings["action_trim_remaining_upside_threshold"]
+        return "Hold / Overweight", trim_trigger, "above", _distance_to_trigger(current_price, trim_trigger), "Position is above target band, but current price is below the Trim trigger and remaining upside is still attractive."
+
+    row["relevant_trigger_price"] = None
+    row["relevant_trigger_type"] = "hold"
+    row["dynamic_required_upside"] = None
+    return "Hold", None, None, None, "No allocation-aware trigger condition is active."
 
 
 def _action_plan_cap_details(rating, core_diff, settings):
@@ -6495,7 +6696,7 @@ def build_action_plan(conn):
             "action_amount_cash_covered": cash_covered,
             "action_amount_cash_shortfall": cash_shortfall,
             "action_amount_cash_note": cash_note,
-            "trigger_breakdown": _action_plan_trigger_breakdown(item.get("expected_price"), item.get("current_price"), settings, trigger_price, trigger_type_by_action.get(action)),
+            "trigger_breakdown": _action_plan_trigger_breakdown(row),
         })
         row["decision_path"] = _action_plan_decision_path(row, action)
         bucket_allocated[rating] = bucket_allocated.get(rating, 0.0) + target_mid

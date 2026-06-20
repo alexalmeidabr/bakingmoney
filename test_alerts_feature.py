@@ -2462,6 +2462,13 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertIn("bucket_sizing_score", rows["BUY"]["score_breakdown"])
                     self.assertIn("bucket_sizing_score", rows["BUY"]["target_weight_breakdown"])
                     self.assertIn("trigger_breakdown", rows["BUY"])
+                    buy_triggers = rows["BUY"]["trigger_breakdown"]
+                    self.assertEqual(rows["BUY"].get("position_status"), "BELOW_TARGET")
+                    self.assertEqual(buy_triggers["relevant_trigger_type"], "strong_add")
+                    self.assertIn("allocation-aware Strong Add trigger", rows["BUY"]["reason"])
+                    self.assertNotEqual(buy_triggers["strong_add_trigger_price"], buy_triggers["add_trigger_price"])
+                    self.assertNotEqual(buy_triggers["add_trigger_price"], buy_triggers["starter_buy_trigger_price"])
+                    self.assertIn("Price is", buy_triggers["distance_to_relevant_trigger_label"])
                     self.assertIn("decision_path", rows["BUY"])
                     self.assertEqual(rows["SELL"]["action"], "Sell")
                     self.assertEqual(rows["SELL"]["current_position_weight"], 100.0)
@@ -2620,6 +2627,29 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings["action_bucket_sizing_potential_weight"] = 0.0
         with self.assertRaisesRegex(ValueError, "Bucket sizing weights"):
             web_server.validate_action_plan_settings(settings)
+
+    def test_action_plan_overweight_high_upside_holds_until_trim_trigger(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        row = {
+            "rating": "Strong Buy",
+            "current_position_weight": 7.0,
+            "target_weight_low": 4.0,
+            "target_weight_mid": 5.0,
+            "target_weight_high": 6.0,
+            "current_price": 300.0,
+            "expected_price": 600.0,
+            "upside": 100.0,
+            "allocation_score": 0.8,
+            "bucket_sizing_score": 0.8,
+            "weighted_count": 1.0,
+            "core_conviction_score": 0.8,
+        }
+        action, trigger_price, _, _, reason = web_server._choose_action_plan_decision(row, settings)
+        self.assertEqual(action, "Hold / Overweight")
+        self.assertEqual(row["position_status"], "ABOVE_TARGET")
+        self.assertEqual(row["relevant_trigger_type"], "trim")
+        self.assertGreater(trigger_price, row["current_price"])
+        self.assertIn("remaining upside is still attractive", reason)
 
 class ExternalScenarioOverlayTests(unittest.TestCase):
     def _seed_version_with_scenarios(self, conn, symbol="EXT"):

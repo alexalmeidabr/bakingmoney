@@ -413,6 +413,19 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_starter_buy_required_upside: 75.0,
   action_trim_remaining_upside: 10.0,
   action_sell_remaining_upside: 0.0,
+  action_starter_buy_base_required_upside: 0.25,
+  action_add_base_required_upside: 0.30,
+  action_strong_add_base_required_upside: 0.40,
+  action_hold_extra_add_required_upside: 0.50,
+  action_trim_remaining_upside_threshold: 0.10,
+  action_sell_remaining_upside_threshold: 0.00,
+  action_underweight_discount_max: 0.10,
+  action_quality_discount_max: 0.10,
+  action_overweight_penalty_max: 0.15,
+  action_low_quality_penalty_max: 0.15,
+  action_trigger_min_required_upside: 0.10,
+  action_trigger_max_required_upside: 0.80,
+  action_strong_trim_gap_threshold: 0.25,
   action_treat_cash_equivalents_as_cash: true,
   action_cash_equivalent_symbols: 'SGOV',
 };
@@ -1184,15 +1197,18 @@ function renderActionPlanDetail(item) {
       ['Action Amount to Mid', formatCurrencyValue(item.action_amount_to_mid, 'USD')],
     ])}<p>${escapeHtml(getActionPlanAmountDetailLabel(item))}</p><p>${escapeHtml(item.action_amount_cash_note || '')}</p></section>
     <section class="detail-card"><h4>Trigger Prices</h4>${renderActionPlanMetricList([
-      ['Strong Add Trigger', formatCurrencyValue(trig.strong_add_trigger_price, 'USD')],
-      ['Add Trigger', formatCurrencyValue(trig.add_trigger_price, 'USD')],
+      ['Position Status', escapeHtml(trig.position_status || item.position_status || 'N/A')],
       ['Starter Buy Trigger', formatCurrencyValue(trig.starter_buy_trigger_price, 'USD')],
+      ['Add Trigger', formatCurrencyValue(trig.add_trigger_price, 'USD')],
+      ['Strong Add Trigger', formatCurrencyValue(trig.strong_add_trigger_price, 'USD')],
       ['Trim Trigger', formatCurrencyValue(trig.trim_trigger_price, 'USD')],
       ['Sell Trigger', formatCurrencyValue(trig.sell_trigger_price, 'USD')],
       ['Relevant Trigger', formatCurrencyValue(trig.relevant_trigger_price, 'USD')],
       ['Relevant Trigger Type', escapeHtml(trig.relevant_trigger_type || 'N/A')],
-      ['Distance to Relevant Trigger', formatPercent(trig.distance_to_relevant_trigger_percent)],
-    ])}<p>Trigger price = expected price / (1 + required upside).</p></section>
+      ['Dynamic Required Upside', formatPercent((trig.dynamic_required_upside ?? item.dynamic_required_upside) * 100)],
+      ['Trigger Quality Score', formatNumber(trig.trigger_quality_score ?? item.trigger_quality_score)],
+      ['Distance to Relevant Trigger', escapeHtml(trig.distance_to_relevant_trigger_label || 'N/A')],
+    ])}<p>Buy triggers use allocation-aware required upside; trim/sell triggers use remaining-upside thresholds.</p></section>
     <section class="detail-card"><h4>Target Weight Calculation</h4>${renderActionPlanMetricList([
       ['Rating Bucket', escapeHtml(tb.rating_bucket || item.bucket || '')],
       ['Bucket Raw Target', formatPercent(tb.bucket_raw_target ?? tb.bucket_target_percent)],
@@ -4054,7 +4070,7 @@ function validateActionPlanSettings(settings) {
     if (typeof value === 'boolean') continue;
     if (key === 'action_cash_equivalent_symbols') continue;
     if (!Number.isFinite(value)) return `${key} must be numeric.`;
-    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score'].includes(key)) return `${key} cannot be negative.`;
+    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score', 'action_trim_remaining_upside_threshold', 'action_sell_remaining_upside_threshold'].includes(key)) return `${key} cannot be negative.`;
   }
   const bucketTotal = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
     .reduce((sum, key) => sum + settings[key], 0);
@@ -4073,6 +4089,10 @@ function validateActionPlanSettings(settings) {
   if (settings.action_core_diff_full_score <= settings.action_core_diff_zero_score) return 'Action Plan core diff full score must be greater than zero score.';
   if (settings.action_core_bearish_penalty_full <= settings.action_core_bearish_penalty_start) return 'Action Plan core bearish penalty full must be greater than start.';
   if (settings.action_potential_diff_full_score <= settings.action_potential_diff_minimum) return 'Action Plan potential diff full score must be greater than minimum.';
+  for (const key of ['action_starter_buy_base_required_upside', 'action_add_base_required_upside', 'action_strong_add_base_required_upside', 'action_hold_extra_add_required_upside']) {
+    if (settings[key] < 0 || settings[key] > 2) return `${key} must be between 0 and 2.`;
+  }
+  if (settings.action_trigger_max_required_upside <= settings.action_trigger_min_required_upside) return 'Trigger max required upside must be greater than trigger min required upside.';
   return null;
 }
 

@@ -6240,6 +6240,7 @@ def build_action_plan(conn):
                 "rating_bucket": rating,
                 "bucket_target_percent": bucket_target,
                 "eligible_count_in_bucket": bucket_counts.get(rating, 0),
+                "weighted_eligible_count_in_bucket": score_total,
                 "company_bucket_score": item["company_bucket_score"],
                 "total_bucket_score": score_total,
                 "bucket_share_percent": bucket_share,
@@ -6299,6 +6300,7 @@ def build_action_plan(conn):
             "bucket": bucket,
             "bucket_target_percent": target,
             "eligible_count": bucket_counts.get(bucket, 0),
+            "weighted_eligible_count": bucket_score_totals.get(bucket, 0.0),
             "allocated_target_percent": allocated,
             "unallocated_due_to_caps_percent": max(0.0, target - allocated),
         })

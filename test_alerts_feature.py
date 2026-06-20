@@ -1370,6 +1370,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('updateActionPlanSortHeaderState(); renderActionPlan();', js)
         self.assertIn('sortActionPlanItems(getFilteredActionPlanItems()).forEach', js)
         self.assertIn('if (leftValue == null) return 1;', js)
+        self.assertIn('Weighted Eligible Count', js)
+        self.assertIn('weighted_eligible_count_in_bucket', js)
         self.assertIn('function openActionPlanDetail(symbol)', js)
         self.assertIn('/api/action-plan/${encodeURIComponent(symbol)}', js)
         self.assertIn('function renderActionPlanDetail(item)', js)
@@ -2426,6 +2428,11 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertGreater(rows["BUY"]["action_amount"], 0)
                     self.assertIn("Add about", rows["BUY"]["action_amount_label"])
                     self.assertIn("target_weight_breakdown", rows["BUY"])
+                    self.assertIn("weighted_eligible_count_in_bucket", rows["BUY"]["target_weight_breakdown"])
+                    self.assertEqual(
+                        rows["BUY"]["target_weight_breakdown"]["weighted_eligible_count_in_bucket"],
+                        rows["BUY"]["target_weight_breakdown"]["total_bucket_score"],
+                    )
                     self.assertIn("trigger_breakdown", rows["BUY"])
                     self.assertIn("decision_path", rows["BUY"])
                     self.assertEqual(rows["SELL"]["action"], "Sell")
@@ -2434,6 +2441,9 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertEqual(rows["SELL"]["action_amount"], 1000.0)
                     self.assertIn("Sell about", rows["SELL"]["action_amount_label"])
                     self.assertEqual(payload["summary"]["total_portfolio_value"], 1000.0)
+                    buy_bucket = next(item for item in payload["summary"]["bucket_summary"] if item["bucket"] == "Buy")
+                    self.assertIn("weighted_eligible_count", buy_bucket)
+                    self.assertGreater(buy_bucket["weighted_eligible_count"], 0)
                 finally:
                     conn.close()
 

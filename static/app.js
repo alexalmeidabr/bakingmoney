@@ -1163,6 +1163,7 @@ function renderActionPlanDetail(item) {
       ['Rating Bucket', escapeHtml(tb.rating_bucket || item.bucket || '')],
       ['Bucket Target', formatPercent(tb.bucket_target_percent)],
       ['Eligible Count in Bucket', formatNumber(tb.eligible_count_in_bucket)],
+      ['Weighted Eligible Count', formatNumber(tb.weighted_eligible_count_in_bucket)],
       ['Company Bucket Score', formatNumber(tb.company_bucket_score)],
       ['Total Bucket Score', formatNumber(tb.total_bucket_score)],
       ['Bucket Share', formatPercent(tb.bucket_share_percent)],

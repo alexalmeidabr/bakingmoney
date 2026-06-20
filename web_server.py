@@ -6582,6 +6582,12 @@ def build_action_plan(conn):
         rating = item["bucket"]
         bucket_target = effective_bucket_targets.get(rating, 0.0)
         bucket_raw_target = raw_bucket_targets.get(rating, 0.0)
+        bucket_prefix = _dynamic_bucket_setting_prefix(rating)
+        bucket_weight_per_effective_stock = settings.get(f"action_{bucket_prefix}_weight_per_effective_stock") if bucket_prefix else None
+        max_effective_count = settings.get(f"action_{bucket_prefix}_max_effective_count") if bucket_prefix else None
+        max_bucket_target = settings.get(f"action_{bucket_prefix}_max_bucket_target") if bucket_prefix else bucket_raw_target
+        weighted_eligible_count_in_bucket = bucket_weighted_counts.get(rating, 0.0)
+        effective_weighted_count_used = min(weighted_eligible_count_in_bucket, max_effective_count) if max_effective_count is not None else weighted_eligible_count_in_bucket
         score_total = bucket_score_totals.get(rating, 0.0)
         bucket_share = (item["company_bucket_score"] / score_total * 100.0) if score_total > 0 else 0.0
         raw_target = bucket_target * item["company_bucket_score"] / score_total if score_total > 0 else 0.0
@@ -6655,8 +6661,12 @@ def build_action_plan(conn):
                 "bucket_target_percent": bucket_target,
                 "bucket_raw_target": bucket_raw_target,
                 "bucket_effective_target": bucket_target,
+                "bucket_weight_per_effective_stock": bucket_weight_per_effective_stock,
+                "max_effective_count": max_effective_count,
+                "effective_weighted_count_used": effective_weighted_count_used,
+                "max_bucket_target": max_bucket_target,
                 "eligible_count_in_bucket": bucket_counts.get(rating, 0),
-                "weighted_eligible_count_in_bucket": bucket_weighted_counts.get(rating, 0.0),
+                "weighted_eligible_count_in_bucket": weighted_eligible_count_in_bucket,
                 "company_allocation_score": item["company_allocation_score"],
                 "allocation_score": item["allocation_score"],
                 "company_bucket_score": item["company_bucket_score"],

@@ -1223,10 +1223,14 @@ function renderActionPlanDetail(item) {
     ])}<p>Buy triggers use allocation-aware required upside; trim/sell triggers use remaining-upside thresholds.</p></section>
     <section class="detail-card"><h4>Target Weight Calculation</h4>${renderActionPlanMetricList([
       ['Rating Bucket', escapeHtml(tb.rating_bucket || item.bucket || '')],
+      ['Bucket Weight / Effective Stock', formatPercent(tb.bucket_weight_per_effective_stock)],
+      ['Weighted Eligible Count in Bucket', formatNumber(tb.weighted_eligible_count_in_bucket)],
+      ['Max Effective Count', formatNumber(tb.max_effective_count)],
+      ['Effective Weighted Count Used', formatNumber(tb.effective_weighted_count_used)],
+      ['Max Bucket Target', formatPercent(tb.max_bucket_target)],
       ['Bucket Raw Target', formatPercent(tb.bucket_raw_target ?? tb.bucket_target_percent)],
       ['Bucket Effective Target', formatPercent(tb.bucket_effective_target ?? tb.bucket_target_percent)],
       ['Eligible Count in Bucket', formatNumber(tb.eligible_count_in_bucket)],
-      ['Weighted Eligible Count in Bucket', formatNumber(tb.weighted_eligible_count_in_bucket)],
       ['Company Allocation Score', formatNumber(tb.company_allocation_score ?? tb.company_bucket_score)],
       ['Bucket Sizing Score', formatNumber(tb.bucket_sizing_score ?? item.bucket_sizing_score)],
       ['Weighted Count', formatNumber(tb.weighted_count ?? tb.weighted_count_contribution ?? item.weighted_count)],

@@ -1376,6 +1376,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('if (leftValue == null) return 1;', js)
         self.assertIn('Weighted Eligible Count', js)
         self.assertIn('weighted_eligible_count_in_bucket', js)
+        self.assertIn('Bucket Weight / Effective Stock', js)
+        self.assertIn('effective_weighted_count_used', js)
+        self.assertIn('Max Bucket Target', js)
         self.assertIn('function renderActionPlanBuckets()', js)
         self.assertIn('function renderActionPlanBucketPanel(bucket)', js)
         self.assertIn('function renderActionPlanBucketCompanyTable(rows)', js)
@@ -2467,6 +2470,26 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertGreater(rows["BUY"]["potential_score_component"], 0)
                     self.assertIn("bucket_sizing_score", rows["BUY"]["score_breakdown"])
                     self.assertIn("bucket_sizing_score", rows["BUY"]["target_weight_breakdown"])
+                    buy_target_breakdown = rows["BUY"]["target_weight_breakdown"]
+                    self.assertEqual(
+                        buy_target_breakdown["bucket_weight_per_effective_stock"],
+                        web_server.ACTION_PLAN_DEFAULT_SETTINGS["action_buy_weight_per_effective_stock"],
+                    )
+                    self.assertEqual(
+                        buy_target_breakdown["max_effective_count"],
+                        web_server.ACTION_PLAN_DEFAULT_SETTINGS["action_buy_max_effective_count"],
+                    )
+                    self.assertEqual(
+                        buy_target_breakdown["max_bucket_target"],
+                        web_server.ACTION_PLAN_DEFAULT_SETTINGS["action_buy_max_bucket_target"],
+                    )
+                    self.assertAlmostEqual(
+                        buy_target_breakdown["effective_weighted_count_used"],
+                        min(
+                            buy_target_breakdown["weighted_eligible_count_in_bucket"],
+                            buy_target_breakdown["max_effective_count"],
+                        ),
+                    )
                     self.assertIn("trigger_breakdown", rows["BUY"])
                     buy_triggers = rows["BUY"]["trigger_breakdown"]
                     self.assertEqual(rows["BUY"].get("position_status"), "BELOW_TARGET")

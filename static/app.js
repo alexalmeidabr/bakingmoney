@@ -1161,6 +1161,16 @@ function renderActionRelevantVariables(variables) {
   return `<div class="table-wrap compact-table"><table><thead><tr><th>Variable</th><th>Type</th><th>Driver</th><th>Confidence</th><th>Importance</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
+function formatTriggerDistanceLabel(item) {
+  const triggerLabel = item?.trigger_breakdown?.distance_to_relevant_trigger_label || item?.distance_to_relevant_trigger_label;
+  if (triggerLabel) return escapeHtml(triggerLabel);
+  const distance = item?.distance_to_trigger_percent ?? item?.trigger_breakdown?.distance_to_relevant_trigger_percent;
+  if (!isFiniteNumber(distance)) return 'N/A';
+  if (Math.abs(distance) < 0.005) return 'At trigger';
+  const direction = distance < 0 ? 'below' : 'above';
+  return `${Math.abs(distance).toFixed(2)}% ${direction} trigger`;
+}
+
 function renderActionPlanDetail(item) {
   if (!item) return;
   selectedActionPlanDetail = item;
@@ -1185,7 +1195,7 @@ function renderActionPlanDetail(item) {
       ['Target Band', `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}`],
       ['Gap to Mid', formatPercent(item.position_gap_to_mid)],
       ['Trigger Price', formatCurrencyValue(item.trigger_price, 'USD')],
-      ['Distance to Trigger', formatPercent(item.distance_to_trigger_percent)],
+      ['Distance to Trigger', formatTriggerDistanceLabel(item)],
     ])}<p>${escapeHtml(item.reason || '')}</p></section>
     <section class="detail-card"><h4>Position vs Target Band</h4>${renderActionPlanMetricList([
       ['Total Portfolio Value Used', formatCurrencyValue(item.total_portfolio_value, 'USD')],

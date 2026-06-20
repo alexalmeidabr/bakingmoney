@@ -1390,6 +1390,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function openActionPlanDetail(symbol)', js)
         self.assertIn('/api/action-plan/${encodeURIComponent(symbol)}', js)
         self.assertIn('function renderActionPlanDetail(item)', js)
+        self.assertIn('function formatTriggerDistanceLabel(item)', js)
+        self.assertIn("['Distance to Trigger', formatTriggerDistanceLabel(item)]", js)
         self.assertIn('action_amount_label', js)
         self.assertIn('setSelectedActionPlanRatings(getAllRatingFilterKeys())', js)
         self.assertIn('setSelectedActionPlanActions(getAllActionPlanActionFilterKeys())', js)

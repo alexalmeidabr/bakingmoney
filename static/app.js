@@ -1403,7 +1403,6 @@ function renderActionPlanBucketCompanyTable(rows) {
     const targetBand = `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}`;
     return `<tr>
       <td><button class="symbol-link action-plan-bucket-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td>
-      <td class="wrap-cell">${escapeHtml(item.company_name || '—')}</td>
       <td>${escapeHtml(item.action || 'Hold')}</td>
       <td>${formatPercent(item.current_position_weight)}</td>
       <td>${formatPercent(item.target_weight_mid)}</td>
@@ -1415,13 +1414,12 @@ function renderActionPlanBucketCompanyTable(rows) {
       <td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td>
       <td>${formatNumber(item.company_allocation_score ?? tb.company_allocation_score ?? tb.company_bucket_score ?? item?.score_breakdown?.company_allocation_score)}</td>
       <td>${formatNumber(item.bucket_sizing_score ?? tb.bucket_sizing_score ?? item?.score_breakdown?.bucket_sizing_score)}</td>
-      <td>${formatNumber(item.weighted_count ?? tb.weighted_count ?? tb.weighted_count_contribution ?? item?.score_breakdown?.weighted_count)}</td>
       <td>${formatPercent(item.target_mid_before_caps ?? tb.target_mid_before_caps ?? tb.target_before_caps)}</td>
       <td>${formatPercent(item.target_mid_after_caps ?? tb.target_mid_after_caps ?? tb.target_weight_mid ?? item.target_weight_mid)}</td>
       <td class="wrap-cell">${escapeHtml(getCapReason(item))}</td>
     </tr>`;
   }).join('');
-  return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Company Name</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Action Amount</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Target Mid After Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Action Amount</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Bucket Sizing Score</th><th>Target Mid Before Caps</th><th>Target Mid After Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderActionPlanBucketPanel(bucket) {

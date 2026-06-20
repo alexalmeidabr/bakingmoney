@@ -196,6 +196,30 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_bucket_cash_target": 10.0,
     "action_bucket_sell_target": 0.0,
     "action_bucket_strong_sell_target": 0.0,
+    "action_use_dynamic_bucket_sizing": True,
+    "action_use_weighted_eligible_count": True,
+    "action_min_cash_unallocated_target": 10.0,
+    "action_redistribute_post_cap_excess": False,
+    "action_weighted_count_min_score": 0.15,
+    "action_weighted_count_full_score": 0.75,
+    "action_weighted_count_max_contribution": 1.0,
+    "action_max_potential_score_contribution": 0.20,
+    "action_strong_buy_weight_per_effective_stock": 5.0,
+    "action_strong_buy_max_effective_count": 6.0,
+    "action_strong_buy_max_bucket_target": 45.0,
+    "action_strong_buy_compression_weight": 0.25,
+    "action_buy_weight_per_effective_stock": 2.5,
+    "action_buy_max_effective_count": 14.0,
+    "action_buy_max_bucket_target": 35.0,
+    "action_buy_compression_weight": 0.75,
+    "action_speculative_buy_weight_per_effective_stock": 1.5,
+    "action_speculative_buy_max_effective_count": 5.0,
+    "action_speculative_buy_max_bucket_target": 7.5,
+    "action_speculative_buy_compression_weight": 1.25,
+    "action_hold_weight_per_effective_stock": 0.8,
+    "action_hold_max_effective_count": 15.0,
+    "action_hold_max_bucket_target": 12.0,
+    "action_hold_compression_weight": 2.0,
     "action_include_current_positions": True,
     "action_include_strong_buy": True,
     "action_include_buy": True,
@@ -249,6 +273,9 @@ ACTION_PLAN_BOOL_SETTINGS = {
     "action_include_hold_only_if_owned",
     "action_include_sell_only_if_owned",
     "action_allow_manual_include_exclude",
+    "action_use_dynamic_bucket_sizing",
+    "action_use_weighted_eligible_count",
+    "action_redistribute_post_cap_excess",
     "action_redistribute_capped_excess",
     "action_allow_bucket_underallocation",
     "action_show_unallocated_bucket_amount",
@@ -1730,9 +1757,29 @@ def validate_action_plan_settings(settings):
     ):
         if effective[key] <= 0:
             raise ValueError(f"{key} must be greater than 0")
-    bucket_total = sum(float(effective[key]) for key in ACTION_PLAN_BUCKET_KEYS.values()) + float(effective["action_bucket_cash_target"])
-    if bucket_total > 100.0 + 1e-9:
-        raise ValueError("Action Plan bucket targets cannot total more than 100%")
+    if effective.get("action_use_dynamic_bucket_sizing", True):
+        if effective["action_min_cash_unallocated_target"] > 50.0:
+            raise ValueError("action_min_cash_unallocated_target must be between 0 and 50")
+        if effective["action_weighted_count_full_score"] <= effective["action_weighted_count_min_score"]:
+            raise ValueError("action_weighted_count_full_score must be greater than action_weighted_count_min_score")
+        if effective["action_weighted_count_min_score"] > 1.0 or effective["action_weighted_count_full_score"] > 1.0:
+            raise ValueError("weighted count score thresholds must be between 0 and 1")
+        if effective["action_weighted_count_max_contribution"] <= 0 or effective["action_weighted_count_max_contribution"] > 1.0:
+            raise ValueError("action_weighted_count_max_contribution must be > 0 and <= 1")
+        if effective["action_max_potential_score_contribution"] > 1.0:
+            raise ValueError("action_max_potential_score_contribution must be between 0 and 1")
+        for bucket_key in ("strong_buy", "buy", "speculative_buy", "hold"):
+            for suffix in ("weight_per_effective_stock", "max_effective_count"):
+                if effective[f"action_{bucket_key}_{suffix}"] < 0:
+                    raise ValueError(f"action_{bucket_key}_{suffix} must be >= 0")
+            if effective[f"action_{bucket_key}_max_bucket_target"] > 100.0:
+                raise ValueError(f"action_{bucket_key}_max_bucket_target must be between 0 and 100")
+            if effective[f"action_{bucket_key}_compression_weight"] <= 0:
+                raise ValueError(f"action_{bucket_key}_compression_weight must be > 0")
+    else:
+        bucket_total = sum(float(effective[key]) for key in ACTION_PLAN_BUCKET_KEYS.values()) + float(effective["action_bucket_cash_target"])
+        if bucket_total > 100.0 + 1e-9:
+            raise ValueError("Action Plan bucket targets cannot total more than 100%")
     return effective
 
 
@@ -6099,8 +6146,68 @@ def _choose_action_plan_decision(row, settings):
     return "Hold", None, None, None, "Current position is inside the target band or no action threshold is met."
 
 
+def _action_plan_cap_details(rating, core_diff, settings):
+    cap_options = [(settings["action_max_single_stock_weight"], f"Capped at {settings['action_max_single_stock_weight']:.2f}% max single stock")]
+    if rating == "Strong Buy":
+        cap_options.append((settings["action_max_strong_buy_stock_weight"], f"Capped at {settings['action_max_strong_buy_stock_weight']:.2f}% Strong Buy max"))
+    elif rating == "Buy":
+        cap_options.append((settings["action_max_buy_stock_weight"], f"Capped at {settings['action_max_buy_stock_weight']:.2f}% Buy max"))
+    elif rating == "Speculative Buy":
+        cap_options.append((settings["action_max_speculative_buy_stock_weight"], f"Capped at {settings['action_max_speculative_buy_stock_weight']:.2f}% Speculative Buy max"))
+    elif rating == "Hold":
+        hold_cap = min(settings["action_max_buy_stock_weight"], settings["action_max_single_stock_weight"])
+        cap_options.append((hold_cap, f"Capped at {hold_cap:.2f}% Hold max"))
+    elif rating in {"Sell", "Strong Sell"}:
+        cap_options.append((0.0, "Capped at 0.00% Sell/Strong Sell target"))
+    if core_diff < -0.5:
+        cap_options.append((settings["action_max_very_negative_core_weight"], f"Capped at {settings['action_max_very_negative_core_weight']:.2f}% very negative core cap"))
+    elif core_diff < 0:
+        cap_options.append((settings["action_max_negative_core_weight"], f"Capped at {settings['action_max_negative_core_weight']:.2f}% negative core cap"))
+    return min(cap_options, key=lambda item: item[0])
+
+
+def _dynamic_bucket_setting_prefix(bucket):
+    return {
+        "Strong Buy": "strong_buy",
+        "Buy": "buy",
+        "Speculative Buy": "speculative_buy",
+        "Hold": "hold",
+    }.get(bucket)
+
+
+def _compress_action_plan_bucket_targets(raw_targets, settings):
+    effective = {bucket: max(0.0, float(value or 0.0)) for bucket, value in raw_targets.items()}
+    max_equity = max(0.0, 100.0 - settings["action_min_cash_unallocated_target"])
+    raw_total = sum(effective.values())
+    if raw_total <= max_equity + 1e-9:
+        return effective, {bucket: 0.0 for bucket in effective}, 0.0
+    remaining = raw_total - max_equity
+    compression = {bucket: 0.0 for bucket in effective}
+    while remaining > 1e-9:
+        weighted = []
+        for bucket, value in effective.items():
+            prefix = _dynamic_bucket_setting_prefix(bucket)
+            if value > 1e-9 and prefix:
+                weighted.append((bucket, value * settings[f"action_{prefix}_compression_weight"]))
+        weight_total = sum(weight for _, weight in weighted)
+        if weight_total <= 0:
+            break
+        reduced = 0.0
+        for bucket, weight in weighted:
+            share = remaining * weight / weight_total
+            reduction = min(effective[bucket], share)
+            effective[bucket] -= reduction
+            compression[bucket] += reduction
+            reduced += reduction
+        if reduced <= 1e-9:
+            break
+        remaining -= reduced
+    return effective, compression, raw_total - sum(effective.values())
+
 def build_action_plan(conn):
     settings = get_action_plan_settings(conn)
+    dynamic_mode = bool(settings.get("action_use_dynamic_bucket_sizing", True))
+    weighted_count_enabled = bool(settings.get("action_use_weighted_eligible_count", True))
     analysis_items = list_analysis_symbols(conn)
     positions = load_positions_cache(conn)
     positions_by_symbol = {normalize_symbol(row.get("symbol")): row for row in positions if normalize_symbol(row.get("symbol"))}
@@ -6132,6 +6239,7 @@ def build_action_plan(conn):
         owned = market_value > 0
         if not _is_action_plan_eligible(analysis, owned, settings):
             continue
+        rating = analysis.get("rating") or "Hold"
         upside = safe_number(analysis.get("upside"))
         core_diff = safe_number(analysis.get("core_confidence_diff")) or 0.0
         core_bearish = safe_number(analysis.get("core_bearish_confidence")) or 0.0
@@ -6147,9 +6255,10 @@ def build_action_plan(conn):
             core_risk_modifier = 0.5
         else:
             core_risk_modifier = 1.0 - ((core_bearish - penalty_start) / (penalty_full - penalty_start)) * 0.5
-        core_score = upside_score * core_conviction_score * core_risk_modifier
-        potential_bonus_weight = 0.0
+        core_score = max(0.0, upside_score * core_conviction_score * core_risk_modifier)
         potential_conviction = 0.0
+        potential_score_component = 0.0
+        legacy_potential_bonus_weight = 0.0
         if (
             upside is not None
             and potential_diff is not None
@@ -6159,49 +6268,82 @@ def build_action_plan(conn):
             and potential_diff >= settings["action_potential_diff_minimum"]
         ):
             potential_conviction = _score_range(potential_diff, settings["action_potential_diff_minimum"], settings["action_potential_diff_full_score"])
-            potential_bonus_weight = min(settings["action_max_potential_bonus_weight"], settings["action_max_potential_bonus_weight"] * upside_score * potential_conviction)
-        company_bucket_score = core_score
-        if company_bucket_score <= 0 and potential_bonus_weight > 0:
-            company_bucket_score = 0.05
+            potential_score_component = potential_conviction * settings["action_max_potential_score_contribution"]
+            legacy_potential_bonus_weight = min(settings["action_max_potential_bonus_weight"], settings["action_max_potential_bonus_weight"] * upside_score * potential_conviction)
+        allocation_score = max(0.0, core_score + potential_score_component)
+        fixed_bucket_score = core_score
+        if fixed_bucket_score <= 0 and legacy_potential_bonus_weight > 0:
+            fixed_bucket_score = 0.05
+        weighted_count = 0.0
+        if weighted_count_enabled and rating not in {"Sell", "Strong Sell"} and allocation_score > 0:
+            weighted_count = _clamp(
+                (allocation_score - settings["action_weighted_count_min_score"]) / (settings["action_weighted_count_full_score"] - settings["action_weighted_count_min_score"]),
+                0.0,
+                settings["action_weighted_count_max_contribution"],
+            )
+        elif rating not in {"Sell", "Strong Sell"} and allocation_score > 0:
+            weighted_count = 1.0
         candidates.append({
             **analysis,
             "symbol": symbol,
             "current_position_weight": current_position_weight,
-            "company_bucket_score": company_bucket_score,
+            "company_bucket_score": allocation_score if dynamic_mode else fixed_bucket_score,
+            "company_allocation_score": allocation_score,
+            "allocation_score": allocation_score,
+            "weighted_count": weighted_count,
             "upside_score": upside_score,
             "core_conviction_score": core_conviction_score,
             "core_risk_modifier": core_risk_modifier,
             "core_score": core_score,
-            "potential_bonus_weight": potential_bonus_weight,
+            "potential_bonus_weight": 0.0 if dynamic_mode else legacy_potential_bonus_weight,
             "potential_conviction_score": potential_conviction,
+            "potential_score_component": potential_score_component,
             "current_position_market_value": market_value,
-            "bucket": analysis.get("rating") or "Hold",
+            "bucket": rating,
         })
 
-    bucket_score_totals = {}
+    equity_buckets = ["Strong Buy", "Buy", "Speculative Buy", "Hold"]
+    bucket_counts = {bucket: 0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    bucket_score_totals = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    bucket_weighted_counts = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
     for item in candidates:
-        bucket_score_totals[item["bucket"]] = bucket_score_totals.get(item["bucket"], 0.0) + max(0.0, item["company_bucket_score"])
+        bucket = item["bucket"]
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+        bucket_score_totals[bucket] = bucket_score_totals.get(bucket, 0.0) + max(0.0, item["company_bucket_score"])
+        bucket_weighted_counts[bucket] = bucket_weighted_counts.get(bucket, 0.0) + max(0.0, item["weighted_count"])
+
+    if dynamic_mode:
+        raw_bucket_targets = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+        for bucket in equity_buckets:
+            prefix = _dynamic_bucket_setting_prefix(bucket)
+            effective_count = min(bucket_weighted_counts.get(bucket, 0.0), settings[f"action_{prefix}_max_effective_count"])
+            raw_bucket_targets[bucket] = min(effective_count * settings[f"action_{prefix}_weight_per_effective_stock"], settings[f"action_{prefix}_max_bucket_target"])
+        effective_bucket_targets, bucket_compression, compression_applied = _compress_action_plan_bucket_targets(raw_bucket_targets, settings)
+        bucket_cash_target = 100.0 - sum(effective_bucket_targets.values())
+    else:
+        raw_bucket_targets = {bucket: settings[key] for bucket, key in ACTION_PLAN_BUCKET_KEYS.items()}
+        effective_bucket_targets = dict(raw_bucket_targets)
+        bucket_compression = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+        compression_applied = 0.0
+        bucket_cash_target = settings["action_bucket_cash_target"]
 
     rows = []
     bucket_allocated = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
     bucket_allocated_before_caps = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
-    bucket_counts = {bucket: 0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    bucket_cap_applied = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
     for item in candidates:
         rating = item["bucket"]
-        bucket_counts[rating] = bucket_counts.get(rating, 0) + 1
-        bucket_target = settings.get(ACTION_PLAN_BUCKET_KEYS.get(rating, "action_bucket_hold_target"), 0.0)
+        bucket_target = effective_bucket_targets.get(rating, 0.0)
+        bucket_raw_target = raw_bucket_targets.get(rating, 0.0)
         score_total = bucket_score_totals.get(rating, 0.0)
-        raw_target = bucket_target * item["company_bucket_score"] / score_total if score_total > 0 else 0.0
-        target_before_caps = raw_target + item["potential_bonus_weight"]
-        cap = _rating_cap_for_action_plan(rating, settings)
-        core_diff = safe_number(item.get("core_confidence_diff")) or 0.0
-        if core_diff < -0.5:
-            cap = min(cap, settings["action_max_very_negative_core_weight"])
-        elif core_diff < 0:
-            cap = min(cap, settings["action_max_negative_core_weight"])
-        target_mid = min(target_before_caps, cap)
-        target_low, target_high = _target_band(target_mid, rating, settings)
         bucket_share = (item["company_bucket_score"] / score_total * 100.0) if score_total > 0 else 0.0
+        raw_target = bucket_target * item["company_bucket_score"] / score_total if score_total > 0 else 0.0
+        target_before_caps = raw_target + (0.0 if dynamic_mode else item["potential_bonus_weight"])
+        cap, cap_reason_text = _action_plan_cap_details(rating, safe_number(item.get("core_confidence_diff")) or 0.0, settings)
+        target_mid = min(target_before_caps, cap)
+        cap_applied = max(0.0, target_before_caps - target_mid)
+        cap_reason = cap_reason_text if cap_applied > 1e-9 else "—"
+        target_low, target_high = _target_band(target_mid, rating, settings)
         row = {
             "symbol": item["symbol"],
             "company_name": item.get("company_name"),
@@ -6222,34 +6364,63 @@ def build_action_plan(conn):
             "target_weight_mid": target_mid,
             "target_weight_low": target_low,
             "target_weight_high": target_high,
+            "target_mid_before_caps": target_before_caps,
+            "target_mid_after_caps": target_mid,
+            "cap_applied": cap_applied,
+            "cap_reason": cap_reason,
             "position_gap_to_mid": target_mid - item["current_position_weight"],
             "bucket": rating,
             "bucket_target_percent": bucket_target,
+            "bucket_raw_target": bucket_raw_target,
+            "bucket_effective_target": bucket_target,
             "upside_score": item["upside_score"],
             "core_conviction_score": item["core_conviction_score"],
+            "core_risk_modifier": item["core_risk_modifier"],
+            "core_score": item["core_score"],
+            "potential_conviction_score": item["potential_conviction_score"],
+            "potential_score_component": item["potential_score_component"],
             "potential_bonus_weight": item["potential_bonus_weight"],
+            "company_allocation_score": item["company_allocation_score"],
+            "allocation_score": item["allocation_score"],
+            "company_bucket_score": item["company_bucket_score"],
+            "weighted_count": item["weighted_count"],
+            "weighted_eligible_count": item["weighted_count"],
+            "weighted_count_contribution": item["weighted_count"],
             "score_breakdown": {
                 "upside_score": item["upside_score"],
                 "core_conviction_score": item["core_conviction_score"],
                 "core_risk_modifier": item["core_risk_modifier"],
                 "core_score": item["core_score"],
-                "potential_conviction_score": item.get("potential_conviction_score", 0.0),
+                "potential_conviction_score": item["potential_conviction_score"],
+                "potential_score_component": item["potential_score_component"],
                 "potential_bonus_weight": item["potential_bonus_weight"],
+                "company_allocation_score": item["company_allocation_score"],
+                "allocation_score": item["allocation_score"],
                 "company_bucket_score": item["company_bucket_score"],
+                "weighted_count": item["weighted_count"],
             },
             "target_weight_breakdown": {
                 "rating_bucket": rating,
                 "bucket_target_percent": bucket_target,
+                "bucket_raw_target": bucket_raw_target,
+                "bucket_effective_target": bucket_target,
                 "eligible_count_in_bucket": bucket_counts.get(rating, 0),
-                "weighted_eligible_count_in_bucket": score_total,
+                "weighted_eligible_count_in_bucket": bucket_weighted_counts.get(rating, 0.0),
+                "company_allocation_score": item["company_allocation_score"],
+                "allocation_score": item["allocation_score"],
                 "company_bucket_score": item["company_bucket_score"],
+                "total_bucket_allocation_score": score_total,
                 "total_bucket_score": score_total,
+                "weighted_count_contribution": item["weighted_count"],
                 "bucket_share_percent": bucket_share,
                 "raw_target_weight": raw_target,
-                "potential_bonus_weight": item["potential_bonus_weight"],
                 "target_before_caps": target_before_caps,
-                "cap_applied": cap,
+                "target_mid_before_caps": target_before_caps,
+                "potential_bonus_weight": item["potential_bonus_weight"],
+                "cap_applied": cap_applied,
+                "cap_reason": cap_reason,
                 "target_weight_mid": target_mid,
+                "target_mid_after_caps": target_mid,
                 "target_weight_low": target_low,
                 "target_weight_high": target_high,
             },
@@ -6291,33 +6462,37 @@ def build_action_plan(conn):
         row["decision_path"] = _action_plan_decision_path(row, action)
         bucket_allocated[rating] = bucket_allocated.get(rating, 0.0) + target_mid
         bucket_allocated_before_caps[rating] = bucket_allocated_before_caps.get(rating, 0.0) + target_before_caps
+        bucket_cap_applied[rating] = bucket_cap_applied.get(rating, 0.0) + cap_applied
         rows.append(row)
 
     rows.sort(key=lambda row: (row["action_priority"], -abs(row.get("position_gap_to_mid") or 0.0), row["symbol"]))
     bucket_summary = []
     for bucket, key in ACTION_PLAN_BUCKET_KEYS.items():
-        target = settings[key]
+        raw_target = raw_bucket_targets.get(bucket, 0.0)
+        effective_target = effective_bucket_targets.get(bucket, 0.0)
         allocated = bucket_allocated.get(bucket, 0.0)
         allocated_before_caps = bucket_allocated_before_caps.get(bucket, 0.0)
-        post_cap_unallocated = max(0.0, target - allocated)
+        post_cap_unallocated = bucket_cap_applied.get(bucket, 0.0)
         eligible_count = bucket_counts.get(bucket, 0)
         status = "Normal"
-        if target <= 0:
+        if raw_target <= 0 and effective_target <= 0:
             status = "Zero target"
         elif eligible_count <= 0:
             status = "Empty"
+        elif bucket_compression.get(bucket, 0.0) > 1e-9:
+            status = "Compressed"
         elif post_cap_unallocated > 1e-9:
-            status = "Underallocated"
-        elif allocated_before_caps - allocated > 1e-9:
             status = "Capped"
+        elif effective_target - allocated > 1e-9:
+            status = "Underallocated"
         bucket_summary.append({
             "bucket": bucket,
-            "bucket_target_percent": target,
+            "bucket_target_percent": effective_target,
             "eligible_count": eligible_count,
-            "weighted_eligible_count": bucket_score_totals.get(bucket, 0.0),
-            "raw_target": target,
-            "effective_target": target,
-            "compression_amount": 0.0,
+            "weighted_eligible_count": bucket_weighted_counts.get(bucket, 0.0),
+            "raw_target": raw_target,
+            "effective_target": effective_target,
+            "compression_amount": bucket_compression.get(bucket, 0.0),
             "allocated_before_caps": allocated_before_caps,
             "allocated_after_caps": allocated,
             "allocated_target_percent": allocated,
@@ -6325,11 +6500,12 @@ def build_action_plan(conn):
             "unallocated_due_to_caps_percent": post_cap_unallocated,
             "status": status,
         })
-    raw_equity_target = sum(settings[key] for key in ACTION_PLAN_BUCKET_KEYS.values())
-    configured_total = raw_equity_target + settings["action_bucket_cash_target"]
+    raw_equity_target = sum(raw_bucket_targets.values())
+    effective_equity_target = sum(effective_bucket_targets.values())
     allocated_total = sum(bucket_allocated.values())
-    post_cap_unallocated_total = sum(item.get("post_cap_unallocated", 0.0) for item in bucket_summary)
-    cash_unallocated_target = settings["action_bucket_cash_target"] + max(0.0, configured_total - allocated_total - settings["action_bucket_cash_target"])
+    post_cap_unallocated_total = sum(bucket_cap_applied.values())
+    total_effective_bucket_target = effective_equity_target + bucket_cash_target
+    rounding_adjustment = 100.0 - total_effective_bucket_target
     return {
         "action_plan": rows,
         "settings": settings,
@@ -6344,26 +6520,27 @@ def build_action_plan(conn):
             "cash_equivalent_value": cash_equivalent_value,
             "cash_like_available": cash_like_available,
             "cash_like_available_percent": (cash_like_available / total_portfolio_value * 100.0) if total_portfolio_value > 0 else None,
-            "configured_cash_target_percent": settings["action_bucket_cash_target"],
-            "cash_like_vs_target_gap_percent": ((cash_like_available / total_portfolio_value * 100.0) - settings["action_bucket_cash_target"]) if total_portfolio_value > 0 else None,
+            "configured_cash_target_percent": bucket_cash_target,
+            "cash_like_vs_target_gap_percent": ((cash_like_available / total_portfolio_value * 100.0) - bucket_cash_target) if total_portfolio_value > 0 else None,
             "raw_equity_target": raw_equity_target,
-            "effective_equity_target": raw_equity_target,
-            "cash_unallocated_target": cash_unallocated_target,
+            "effective_equity_target": effective_equity_target,
+            "cash_unallocated_target": bucket_cash_target,
             "post_cap_unallocated": post_cap_unallocated_total,
             "final_allocated_stock_target": allocated_total,
-            "total_effective_bucket_target": raw_equity_target + settings["action_bucket_cash_target"],
-            "rounding_adjustment": 0.0,
-            "compression_applied": 0.0,
-            "unallocated_due_to_underfilled_buckets": post_cap_unallocated_total,
-            "configured_bucket_total": configured_total,
+            "total_effective_bucket_target": total_effective_bucket_target,
+            "rounding_adjustment": rounding_adjustment,
+            "compression_applied": compression_applied,
+            "unallocated_due_to_underfilled_buckets": max(0.0, effective_equity_target - allocated_total),
+            "dynamic_bucket_sizing_enabled": dynamic_mode,
+            "weighted_eligible_count_enabled": weighted_count_enabled,
+            "configured_bucket_total": total_effective_bucket_target,
             "allocated_target_total": allocated_total,
-            "unallocated_target_capacity": max(0.0, configured_total - allocated_total),
-            "unallocated_target_total": max(0.0, configured_total - allocated_total),
+            "unallocated_target_capacity": max(0.0, 100.0 - allocated_total),
+            "unallocated_target_total": max(0.0, 100.0 - allocated_total),
             "cash_equivalent_positions": cash_equivalent_positions,
             "bucket_summary": bucket_summary,
         },
     }
-
 
 def get_action_plan_detail(conn, symbol):
     normalized = normalize_symbol(symbol)

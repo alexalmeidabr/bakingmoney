@@ -344,6 +344,30 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_bucket_cash_target: 10.0,
   action_bucket_sell_target: 0.0,
   action_bucket_strong_sell_target: 0.0,
+  action_use_dynamic_bucket_sizing: true,
+  action_use_weighted_eligible_count: true,
+  action_min_cash_unallocated_target: 10.0,
+  action_redistribute_post_cap_excess: false,
+  action_weighted_count_min_score: 0.15,
+  action_weighted_count_full_score: 0.75,
+  action_weighted_count_max_contribution: 1.0,
+  action_max_potential_score_contribution: 0.20,
+  action_strong_buy_weight_per_effective_stock: 5.0,
+  action_strong_buy_max_effective_count: 6.0,
+  action_strong_buy_max_bucket_target: 45.0,
+  action_strong_buy_compression_weight: 0.25,
+  action_buy_weight_per_effective_stock: 2.5,
+  action_buy_max_effective_count: 14.0,
+  action_buy_max_bucket_target: 35.0,
+  action_buy_compression_weight: 0.75,
+  action_speculative_buy_weight_per_effective_stock: 1.5,
+  action_speculative_buy_max_effective_count: 5.0,
+  action_speculative_buy_max_bucket_target: 7.5,
+  action_speculative_buy_compression_weight: 1.25,
+  action_hold_weight_per_effective_stock: 0.8,
+  action_hold_max_effective_count: 15.0,
+  action_hold_max_bucket_target: 12.0,
+  action_hold_compression_weight: 2.0,
   action_include_current_positions: true,
   action_include_strong_buy: true,
   action_include_buy: true,
@@ -1167,17 +1191,19 @@ function renderActionPlanDetail(item) {
     ])}<p>Trigger price = expected price / (1 + required upside).</p></section>
     <section class="detail-card"><h4>Target Weight Calculation</h4>${renderActionPlanMetricList([
       ['Rating Bucket', escapeHtml(tb.rating_bucket || item.bucket || '')],
-      ['Bucket Target', formatPercent(tb.bucket_target_percent)],
+      ['Bucket Raw Target', formatPercent(tb.bucket_raw_target ?? tb.bucket_target_percent)],
+      ['Bucket Effective Target', formatPercent(tb.bucket_effective_target ?? tb.bucket_target_percent)],
       ['Eligible Count in Bucket', formatNumber(tb.eligible_count_in_bucket)],
-      ['Weighted Eligible Count', formatNumber(tb.weighted_eligible_count_in_bucket)],
-      ['Company Bucket Score', formatNumber(tb.company_bucket_score)],
-      ['Total Bucket Score', formatNumber(tb.total_bucket_score)],
+      ['Weighted Eligible Count in Bucket', formatNumber(tb.weighted_eligible_count_in_bucket)],
+      ['Company Allocation Score', formatNumber(tb.company_allocation_score ?? tb.company_bucket_score)],
+      ['Total Bucket Allocation Score', formatNumber(tb.total_bucket_allocation_score ?? tb.total_bucket_score)],
+      ['Weighted Count Contribution', formatNumber(tb.weighted_count_contribution ?? item.weighted_count)],
       ['Bucket Share', formatPercent(tb.bucket_share_percent)],
-      ['Raw Target Weight', formatPercent(tb.raw_target_weight)],
-      ['Potential Bonus Weight', formatPercent(tb.potential_bonus_weight)],
-      ['Target Before Caps', formatPercent(tb.target_before_caps)],
+      ['Target Before Caps', formatPercent(tb.target_before_caps ?? item.target_mid_before_caps)],
       ['Cap Applied', formatPercent(tb.cap_applied)],
-      ['Final Target Mid', formatPercent(tb.target_weight_mid)],
+      ['Cap Reason', escapeHtml(tb.cap_reason || item.cap_reason || '—')],
+      ['Target After Caps', formatPercent(tb.target_mid_after_caps ?? item.target_mid_after_caps)],
+      ['Final Target Mid', formatPercent(tb.target_weight_mid ?? item.target_weight_mid)],
       ['Target Band', `${formatPercent(tb.target_weight_low)} – ${formatPercent(tb.target_weight_high)}`],
     ])}</section>
     <section class="detail-card"><h4>Score Breakdown</h4>${renderActionPlanMetricList([
@@ -1186,8 +1212,9 @@ function renderActionPlanDetail(item) {
       ['Core Risk Modifier', formatNumber(sb.core_risk_modifier)],
       ['Core Score', formatNumber(sb.core_score)],
       ['Potential Conviction Score', formatNumber(sb.potential_conviction_score)],
-      ['Potential Bonus Weight', formatPercent(sb.potential_bonus_weight)],
-      ['Company Bucket Score', formatNumber(sb.company_bucket_score)],
+      ['Potential Score Component', formatNumber(sb.potential_score_component)],
+      ['Allocation Score', formatNumber(sb.company_allocation_score ?? sb.allocation_score ?? sb.company_bucket_score)],
+      ['Weighted Count', formatNumber(sb.weighted_count ?? item.weighted_count)],
     ])}</section>
     <section class="detail-card"><h4>Decision Path</h4>${renderDecisionPath(item.decision_path)}</section>
     <section class="detail-card"><h4>Scenario Context</h4>${renderActionPlanMetricList([
@@ -1356,6 +1383,8 @@ function getCapReason(item) {
   const tb = item.target_weight_breakdown || {};
   const before = safeNumberForSort(tb.target_before_caps);
   const after = safeNumberForSort(tb.target_weight_mid ?? item.target_weight_mid);
+  if (item.cap_reason && item.cap_reason !== '—') return item.cap_reason;
+  if (tb.cap_reason && tb.cap_reason !== '—') return tb.cap_reason;
   if (before != null && after != null && before > after + 1e-9) return `Capped at ${formatPercent(tb.cap_applied)}`;
   return '—';
 }
@@ -1377,10 +1406,10 @@ function renderActionPlanBucketCompanyTable(rows) {
       <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
       <td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td>
       <td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td>
-      <td>${formatNumber(tb.company_bucket_score ?? item?.score_breakdown?.company_bucket_score)}</td>
-      <td>${formatNumber(tb.company_bucket_score ?? item?.score_breakdown?.company_bucket_score)}</td>
-      <td>${formatPercent(tb.target_before_caps)}</td>
-      <td>${formatPercent(tb.target_weight_mid ?? item.target_weight_mid)}</td>
+      <td>${formatNumber(item.company_allocation_score ?? tb.company_allocation_score ?? tb.company_bucket_score ?? item?.score_breakdown?.company_allocation_score)}</td>
+      <td>${formatNumber(item.weighted_count ?? tb.weighted_count_contribution ?? item?.score_breakdown?.weighted_count)}</td>
+      <td>${formatPercent(item.target_mid_before_caps ?? tb.target_mid_before_caps ?? tb.target_before_caps)}</td>
+      <td>${formatPercent(item.target_mid_after_caps ?? tb.target_mid_after_caps ?? tb.target_weight_mid ?? item.target_weight_mid)}</td>
       <td class="wrap-cell">${escapeHtml(getCapReason(item))}</td>
     </tr>`;
   }).join('');
@@ -4012,7 +4041,14 @@ function validateActionPlanSettings(settings) {
   }
   const bucketTotal = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
     .reduce((sum, key) => sum + settings[key], 0);
-  if (bucketTotal > 100) return 'Action Plan bucket targets cannot total more than 100%.';
+  if (!settings.action_use_dynamic_bucket_sizing && bucketTotal > 100) return 'Action Plan bucket targets cannot total more than 100%.';
+  if (settings.action_use_dynamic_bucket_sizing) {
+    if (settings.action_min_cash_unallocated_target < 0 || settings.action_min_cash_unallocated_target > 50) return 'Minimum cash/unallocated target must be between 0 and 50%.';
+    if (settings.action_weighted_count_full_score <= settings.action_weighted_count_min_score) return 'Weighted count full score must be greater than minimum score.';
+    if (settings.action_weighted_count_min_score < 0 || settings.action_weighted_count_full_score > 1) return 'Weighted count score thresholds must be between 0 and 1.';
+    if (settings.action_weighted_count_max_contribution <= 0 || settings.action_weighted_count_max_contribution > 1) return 'Weighted count max contribution must be > 0 and <= 1.';
+    if (settings.action_max_potential_score_contribution < 0 || settings.action_max_potential_score_contribution > 1) return 'Max potential score contribution must be between 0 and 1.';
+  }
   if (settings.action_upside_full_score <= settings.action_upside_zero_score) return 'Action Plan upside full score must be greater than zero score.';
   if (settings.action_core_diff_full_score <= settings.action_core_diff_zero_score) return 'Action Plan core diff full score must be greater than zero score.';
   if (settings.action_core_bearish_penalty_full <= settings.action_core_bearish_penalty_start) return 'Action Plan core bearish penalty full must be greater than start.';

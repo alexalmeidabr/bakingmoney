@@ -2443,10 +2443,16 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertIn("Add about", rows["BUY"]["action_amount_label"])
                     self.assertIn("target_weight_breakdown", rows["BUY"])
                     self.assertIn("weighted_eligible_count_in_bucket", rows["BUY"]["target_weight_breakdown"])
-                    self.assertEqual(
+                    self.assertIn("company_allocation_score", rows["BUY"])
+                    self.assertIn("weighted_count", rows["BUY"])
+                    self.assertNotEqual(rows["BUY"]["weighted_count"], rows["BUY"]["company_allocation_score"])
+                    self.assertAlmostEqual(
                         rows["BUY"]["target_weight_breakdown"]["weighted_eligible_count_in_bucket"],
-                        rows["BUY"]["target_weight_breakdown"]["total_bucket_score"],
+                        buy_weighted_count := rows["BUY"]["weighted_count"],
                     )
+                    self.assertGreater(buy_weighted_count, 0)
+                    self.assertEqual(rows["BUY"]["potential_bonus_weight"], 0.0)
+                    self.assertGreater(rows["BUY"]["potential_score_component"], 0)
                     self.assertIn("trigger_breakdown", rows["BUY"])
                     self.assertIn("decision_path", rows["BUY"])
                     self.assertEqual(rows["SELL"]["action"], "Sell")
@@ -2469,6 +2475,8 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertIn("cash_unallocated_target", payload["summary"])
                     self.assertIn("final_allocated_stock_target", payload["summary"])
                     self.assertIn("total_effective_bucket_target", payload["summary"])
+                    self.assertAlmostEqual(payload["summary"]["total_effective_bucket_target"], 100.0)
+                    self.assertTrue(payload["summary"]["dynamic_bucket_sizing_enabled"])
                 finally:
                     conn.close()
 
@@ -2584,11 +2592,18 @@ class ActionPlanFeatureTests(unittest.TestCase):
                 finally:
                     conn.close()
 
-    def test_action_plan_settings_reject_bucket_total_above_100(self):
+    def test_action_plan_settings_reject_bucket_total_above_100_in_fixed_mode(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_use_dynamic_bucket_sizing"] = False
         settings["action_bucket_buy_target"] = 90.0
         with self.assertRaisesRegex(ValueError, "bucket targets"):
             web_server.validate_action_plan_settings(settings)
+
+    def test_dynamic_action_plan_settings_allow_legacy_bucket_targets_above_100(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_bucket_buy_target"] = 90.0
+        effective = web_server.validate_action_plan_settings(settings)
+        self.assertTrue(effective["action_use_dynamic_bucket_sizing"])
 
 class ExternalScenarioOverlayTests(unittest.TestCase):
     def _seed_version_with_scenarios(self, conn, symbol="EXT"):

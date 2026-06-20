@@ -640,6 +640,32 @@
             <h3>Action Plan Settings</h3>
             <p id="config-action-plan-total" class="status">Bucket total: 100%</p>
             <div class="table-actions config-actions settings-grid">
+              <label><input id="config-action-use-dynamic-bucket-sizing" data-action-plan-setting="action_use_dynamic_bucket_sizing" type="checkbox" /> Use dynamic bucket sizing</label>
+              <label><input id="config-action-use-weighted-eligible-count" data-action-plan-setting="action_use_weighted_eligible_count" type="checkbox" /> Use weighted eligible count</label>
+              <label>Minimum cash/unallocated % <input id="config-action-min-cash-unallocated-target" data-action-plan-setting="action_min_cash_unallocated_target" type="number" min="0" max="50" step="0.1" value="10" /></label>
+              <label><input id="config-action-redistribute-post-cap-excess" data-action-plan-setting="action_redistribute_post_cap_excess" type="checkbox" /> Redistribute post-cap excess</label>
+              <label>Weighted count min score <input id="config-action-weighted-count-min-score" data-action-plan-setting="action_weighted_count_min_score" type="number" min="0" max="1" step="0.01" value="0.15" /></label>
+              <label>Weighted count full score <input id="config-action-weighted-count-full-score" data-action-plan-setting="action_weighted_count_full_score" type="number" min="0" max="1" step="0.01" value="0.75" /></label>
+              <label>Weighted count max contribution <input id="config-action-weighted-count-max-contribution" data-action-plan-setting="action_weighted_count_max_contribution" type="number" min="0" max="1" step="0.01" value="1" /></label>
+              <label>Max potential score contribution <input id="config-action-max-potential-score-contribution" data-action-plan-setting="action_max_potential_score_contribution" type="number" min="0" max="1" step="0.01" value="0.2" /></label>
+              <label>Strong Buy weight/effective stock <input id="config-action-strong-buy-weight-per-effective-stock" data-action-plan-setting="action_strong_buy_weight_per_effective_stock" type="number" step="0.1" value="5" /></label>
+              <label>Strong Buy max effective count <input id="config-action-strong-buy-max-effective-count" data-action-plan-setting="action_strong_buy_max_effective_count" type="number" step="0.1" value="6" /></label>
+              <label>Strong Buy max bucket % <input id="config-action-strong-buy-max-bucket-target" data-action-plan-setting="action_strong_buy_max_bucket_target" type="number" step="0.1" value="45" /></label>
+              <label>Strong Buy compression weight <input id="config-action-strong-buy-compression-weight" data-action-plan-setting="action_strong_buy_compression_weight" type="number" step="0.1" value="0.25" /></label>
+              <label>Buy weight/effective stock <input id="config-action-buy-weight-per-effective-stock" data-action-plan-setting="action_buy_weight_per_effective_stock" type="number" step="0.1" value="2.5" /></label>
+              <label>Buy max effective count <input id="config-action-buy-max-effective-count" data-action-plan-setting="action_buy_max_effective_count" type="number" step="0.1" value="14" /></label>
+              <label>Buy max bucket % <input id="config-action-buy-max-bucket-target" data-action-plan-setting="action_buy_max_bucket_target" type="number" step="0.1" value="35" /></label>
+              <label>Buy compression weight <input id="config-action-buy-compression-weight" data-action-plan-setting="action_buy_compression_weight" type="number" step="0.1" value="0.75" /></label>
+              <label>Speculative Buy weight/effective stock <input id="config-action-speculative-buy-weight-per-effective-stock" data-action-plan-setting="action_speculative_buy_weight_per_effective_stock" type="number" step="0.1" value="1.5" /></label>
+              <label>Speculative Buy max effective count <input id="config-action-speculative-buy-max-effective-count" data-action-plan-setting="action_speculative_buy_max_effective_count" type="number" step="0.1" value="5" /></label>
+              <label>Speculative Buy max bucket % <input id="config-action-speculative-buy-max-bucket-target" data-action-plan-setting="action_speculative_buy_max_bucket_target" type="number" step="0.1" value="7.5" /></label>
+              <label>Speculative Buy compression weight <input id="config-action-speculative-buy-compression-weight" data-action-plan-setting="action_speculative_buy_compression_weight" type="number" step="0.1" value="1.25" /></label>
+              <label>Hold weight/effective stock <input id="config-action-hold-weight-per-effective-stock" data-action-plan-setting="action_hold_weight_per_effective_stock" type="number" step="0.1" value="0.8" /></label>
+              <label>Hold max effective count <input id="config-action-hold-max-effective-count" data-action-plan-setting="action_hold_max_effective_count" type="number" step="0.1" value="15" /></label>
+              <label>Hold max bucket % <input id="config-action-hold-max-bucket-target" data-action-plan-setting="action_hold_max_bucket_target" type="number" step="0.1" value="12" /></label>
+              <label>Hold compression weight <input id="config-action-hold-compression-weight" data-action-plan-setting="action_hold_compression_weight" type="number" step="0.1" value="2" /></label>
+            </div>
+            <div class="table-actions config-actions settings-grid">
               <label>Strong Buy bucket % <input id="config-action-bucket-strong-buy-target" data-action-plan-setting="action_bucket_strong_buy_target" type="number" step="0.1" value="0" /></label>
               <label>Buy bucket % <input id="config-action-bucket-buy-target" data-action-plan-setting="action_bucket_buy_target" type="number" step="0.1" value="0" /></label>
               <label>Speculative Buy bucket % <input id="config-action-bucket-speculative-buy-target" data-action-plan-setting="action_bucket_speculative_buy_target" type="number" step="0.1" value="0" /></label>

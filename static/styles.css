@@ -1278,3 +1278,72 @@ th.sortable[data-sort-direction='desc']::after {
   overflow-wrap: anywhere;
   line-height: 1.35;
 }
+
+.action-plan-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.action-plan-tab {
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 8px 14px;
+}
+
+.action-plan-tab.active {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+.action-plan-bucket-panel,
+.action-plan-bucket-total {
+  margin-top: 16px;
+}
+
+.action-plan-bucket-summary {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin: 10px 0;
+}
+
+.action-plan-bucket-messages {
+  background: #f8fafc;
+  border-left: 4px solid #94a3b8;
+  border-radius: 8px;
+  margin: 10px 0;
+  padding: 8px 12px;
+}
+
+.action-plan-bucket-messages p {
+  margin: 4px 0;
+}
+
+.action-plan-bucket-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.action-plan-bucket-table {
+  font-size: 0.84rem;
+  min-width: 1320px;
+  width: 100%;
+}
+
+.action-plan-bucket-table th,
+.action-plan-bucket-table td {
+  padding: 8px 10px;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.action-plan-bucket-table .wrap-cell {
+  max-width: 220px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}

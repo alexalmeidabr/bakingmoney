@@ -34,6 +34,11 @@ const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-price
 const actionPlanStatusEl = document.getElementById('action-plan-status');
 const actionPlanSummaryEl = document.getElementById('action-plan-summary');
 const actionPlanTableBody = document.querySelector('#action-plan-table tbody');
+const actionPlanActionsPanelEl = document.getElementById('action-plan-actions-panel');
+const actionPlanBucketsPanelEl = document.getElementById('action-plan-buckets-panel');
+const actionPlanBucketsContentEl = document.getElementById('action-plan-buckets-content');
+const actionPlanTabActionsBtn = document.getElementById('action-plan-tab-actions');
+const actionPlanTabBucketsBtn = document.getElementById('action-plan-tab-buckets');
 const actionPlanSortHeaders = document.querySelectorAll('#action-plan-table th.sortable');
 const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
 const actionPlanListViewEl = document.getElementById('action-plan-list-view');
@@ -265,6 +270,7 @@ let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
 let selectedActionPlanDetail = null;
 let actionPlanSort = { key: null, direction: 'asc' };
+let actionPlanActiveTab = 'actions';
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
 let ratingFilters = new Set();
@@ -1281,6 +1287,164 @@ function sortActionPlanItems(items) {
   }).map((entry) => entry.item);
 }
 
+function setActionPlanTab(tab) {
+  actionPlanActiveTab = tab === 'buckets' ? 'buckets' : 'actions';
+  const showBuckets = actionPlanActiveTab === 'buckets';
+  actionPlanTabActionsBtn?.classList.toggle('active', !showBuckets);
+  actionPlanTabBucketsBtn?.classList.toggle('active', showBuckets);
+  actionPlanActionsPanelEl?.classList.toggle('hidden', showBuckets);
+  actionPlanBucketsPanelEl?.classList.toggle('hidden', !showBuckets);
+  if (showBuckets) renderActionPlanBuckets();
+}
+
+function getActionPlanBucketRows(bucket) {
+  const rows = Array.isArray(latestActionPlanPayload?.action_plan) ? latestActionPlanPayload.action_plan : [];
+  const bucketNames = bucket === 'Sell / Strong Sell' ? new Set(['Sell', 'Strong Sell']) : new Set([bucket]);
+  return rows.filter((item) => bucketNames.has(item.bucket || item.rating || 'Hold')).sort((a, b) => {
+    const targetDelta = (safeNumberForSort(b.target_weight_mid) ?? -Infinity) - (safeNumberForSort(a.target_weight_mid) ?? -Infinity);
+    if (targetDelta) return targetDelta;
+    const scoreDelta = (safeNumberForSort(b?.score_breakdown?.company_bucket_score) ?? -Infinity) - (safeNumberForSort(a?.score_breakdown?.company_bucket_score) ?? -Infinity);
+    if (scoreDelta) return scoreDelta;
+    return (safeNumberForSort(b.upside) ?? -Infinity) - (safeNumberForSort(a.upside) ?? -Infinity);
+  });
+}
+
+function safeNumberForSort(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function findActionPlanBucketSummary(bucket) {
+  const summaries = latestActionPlanPayload?.summary?.bucket_summary || [];
+  if (bucket === 'Sell / Strong Sell') {
+    const sellBuckets = summaries.filter((item) => item.bucket === 'Sell' || item.bucket === 'Strong Sell');
+    return sellBuckets.reduce((acc, item) => ({
+      bucket,
+      eligible_count: (acc.eligible_count || 0) + (item.eligible_count || 0),
+      weighted_eligible_count: (acc.weighted_eligible_count || 0) + (item.weighted_eligible_count || 0),
+      raw_target: (acc.raw_target || 0) + (item.raw_target ?? item.bucket_target_percent ?? 0),
+      effective_target: (acc.effective_target || 0) + (item.effective_target ?? item.bucket_target_percent ?? 0),
+      compression_amount: (acc.compression_amount || 0) + (item.compression_amount || 0),
+      allocated_before_caps: (acc.allocated_before_caps || 0) + (item.allocated_before_caps || 0),
+      allocated_after_caps: (acc.allocated_after_caps || 0) + (item.allocated_after_caps ?? item.allocated_target_percent ?? 0),
+      post_cap_unallocated: (acc.post_cap_unallocated || 0) + (item.post_cap_unallocated ?? item.unallocated_due_to_caps_percent ?? 0),
+      status: sellBuckets.length ? 'Combined' : 'Empty',
+    }), { bucket, status: 'Empty' });
+  }
+  return summaries.find((item) => item.bucket === bucket) || { bucket, status: 'Empty' };
+}
+
+function getBucketStatus(summary, rows) {
+  if (!rows.length) return 'Empty';
+  if ((summary.raw_target ?? summary.bucket_target_percent ?? 0) <= 0) return 'Zero target';
+  if ((summary.compression_amount || 0) > 0) return 'Compressed';
+  if ((summary.post_cap_unallocated ?? summary.unallocated_due_to_caps_percent ?? 0) > 0) return 'Underallocated';
+  return summary.status || 'Normal';
+}
+
+function renderBucketMessages(bucket, summary, rows) {
+  const messages = [];
+  if ((summary.compression_amount || 0) > 0) messages.push('This bucket was compressed because raw equity demand exceeded available portfolio capacity.');
+  if ((summary.post_cap_unallocated ?? summary.unallocated_due_to_caps_percent ?? 0) > 0) messages.push('This bucket is underallocated because one or more companies hit allocation caps.');
+  if ((summary.weighted_eligible_count || 0) < 0.25 && (summary.eligible_count || 0) > 0) messages.push('This bucket has low weighted eligible count. Eligible companies have relatively weak allocation scores.');
+  if (bucket === 'Speculative Buy') messages.push('Speculative Buy exposure is intentionally capped because these positions have higher uncertainty.');
+  if (!rows.length) messages.push('No eligible companies in this bucket.');
+  return messages.length ? `<div class="action-plan-bucket-messages">${messages.map((message) => `<p>${escapeHtml(message)}</p>`).join('')}</div>` : '';
+}
+
+function getCapReason(item) {
+  const tb = item.target_weight_breakdown || {};
+  const before = safeNumberForSort(tb.target_before_caps);
+  const after = safeNumberForSort(tb.target_weight_mid ?? item.target_weight_mid);
+  if (before != null && after != null && before > after + 1e-9) return `Capped at ${formatPercent(tb.cap_applied)}`;
+  return '—';
+}
+
+function renderActionPlanBucketCompanyTable(rows) {
+  if (!rows.length) return '<p class="muted">No companies in this bucket.</p>';
+  const body = rows.map((item) => {
+    const tb = item.target_weight_breakdown || {};
+    const targetBand = `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}`;
+    return `<tr>
+      <td><button class="symbol-link action-plan-bucket-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td>
+      <td class="wrap-cell">${escapeHtml(item.company_name || '—')}</td>
+      <td>${escapeHtml(item.action || 'Hold')}</td>
+      <td>${formatPercent(item.current_position_weight)}</td>
+      <td>${formatPercent(item.target_weight_mid)}</td>
+      <td>${targetBand}</td>
+      <td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td>
+      <td>${escapeHtml(item.action_amount_label || '—')}</td>
+      <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
+      <td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td>
+      <td>${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td>
+      <td>${formatNumber(tb.company_bucket_score ?? item?.score_breakdown?.company_bucket_score)}</td>
+      <td>${formatNumber(tb.company_bucket_score ?? item?.score_breakdown?.company_bucket_score)}</td>
+      <td>${formatPercent(tb.target_before_caps)}</td>
+      <td>${formatPercent(tb.target_weight_mid ?? item.target_weight_mid)}</td>
+      <td class="wrap-cell">${escapeHtml(getCapReason(item))}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Company Name</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Action Amount</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Target Mid After Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function renderActionPlanBucketPanel(bucket) {
+  const rows = getActionPlanBucketRows(bucket);
+  const summary = findActionPlanBucketSummary(bucket);
+  const status = getBucketStatus(summary, rows);
+  const cards = [
+    ['Eligible Companies', formatNumber(summary.eligible_count, 0)],
+    ['Weighted Eligible Count', formatNumber(summary.weighted_eligible_count)],
+    ['Raw Bucket Target', formatPercent(summary.raw_target ?? summary.bucket_target_percent)],
+    ['Effective Bucket Target', formatPercent(summary.effective_target ?? summary.bucket_target_percent)],
+    ['Compression Applied', formatPercent(summary.compression_amount)],
+    ['Allocated After Caps', formatPercent(summary.allocated_after_caps ?? summary.allocated_target_percent)],
+    ['Post-Cap Unallocated', formatPercent(summary.post_cap_unallocated ?? summary.unallocated_due_to_caps_percent)],
+    ['Bucket Status', escapeHtml(status)],
+  ];
+  return `<section class="detail-card action-plan-bucket-panel"><h4>${escapeHtml(bucket)}</h4><div class="summary-grid action-plan-bucket-summary">${cards.map(([label, value]) => `<div class="summary-item"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`).join('')}</div>${renderBucketMessages(bucket, summary, rows)}${renderActionPlanBucketCompanyTable(rows)}</section>`;
+}
+
+function renderActionPlanCashBucketPanel(summary) {
+  const cards = [
+    ['Cash / Unallocated Target', formatPercent(summary.cash_unallocated_target ?? summary.configured_cash_target_percent)],
+    ['Actual Cash', formatCurrencyValue(summary.actual_cash, 'USD')],
+    ['Cash-like Holdings', formatCurrencyValue(summary.cash_equivalent_value, 'USD')],
+    ['Cash-like Available', formatCurrencyValue(summary.cash_like_available, 'USD')],
+    ['Cash-like Available %', formatPercent(summary.cash_like_available_percent)],
+    ['Post-Cap Unallocated', formatPercent(summary.post_cap_unallocated)],
+    ['Underfilled Buckets', formatPercent(summary.unallocated_due_to_underfilled_buckets)],
+    ['Final Allocated Stock Target', formatPercent(summary.final_allocated_stock_target ?? summary.allocated_target_total)],
+    ['Effective Equity Target', formatPercent(summary.effective_equity_target ?? summary.raw_equity_target)],
+    ['Raw Equity Demand', formatPercent(summary.raw_equity_target)],
+    ['Compression Applied', formatPercent(summary.compression_applied)],
+  ];
+  return `<section class="detail-card action-plan-bucket-panel"><h4>Cash / Unallocated</h4><div class="summary-grid action-plan-bucket-summary">${cards.map(([label, value]) => `<div class="summary-item"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`).join('')}</div><p>Cash / Unallocated is the balancing allocation that keeps total effective bucket targets equal to 100%. It may include the minimum cash reserve, unused allocation from underfilled buckets, and allocation not assigned because of stock-level caps.</p></section>`;
+}
+
+function renderActionPlanBuckets() {
+  if (!actionPlanBucketsContentEl) return;
+  const summary = latestActionPlanPayload?.summary || {};
+  const bucketSummary = summary.bucket_summary || [];
+  if (!Array.isArray(bucketSummary) || !bucketSummary.length) {
+    actionPlanBucketsContentEl.innerHTML = '<p class="status warning">Bucket summary is not available. Recalculate or refresh the Action Plan.</p>';
+    return;
+  }
+  const total = summary.total_effective_bucket_target ?? summary.configured_bucket_total;
+  const warning = Math.abs((Number(total) || 0) - 100) > 0.5 ? '<p class="status warning">Bucket targets do not sum to 100%. Please check Action Plan configuration.</p>' : '';
+  const totals = [
+    ['Raw Equity Demand', formatPercent(summary.raw_equity_target)],
+    ['Effective Equity Target', formatPercent(summary.effective_equity_target)],
+    ['Cash / Unallocated Target', formatPercent(summary.cash_unallocated_target ?? summary.configured_cash_target_percent)],
+    ['Post-Cap Unallocated', formatPercent(summary.post_cap_unallocated)],
+    ['Final Allocated Stock Target', formatPercent(summary.final_allocated_stock_target ?? summary.allocated_target_total)],
+    ['Compression Applied', formatPercent(summary.compression_applied)],
+    ['Total Effective Bucket Target', formatPercent(total)],
+  ];
+  const bucketPanels = ['Strong Buy', 'Buy', 'Speculative Buy', 'Hold', 'Sell / Strong Sell'].map(renderActionPlanBucketPanel).join('');
+  actionPlanBucketsContentEl.innerHTML = `<section class="detail-card action-plan-bucket-total"><h4>Bucket Reconciliation</h4><div class="summary-grid action-plan-bucket-summary">${totals.map(([label, value]) => `<div class="summary-item"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`).join('')}</div>${warning}</section>${bucketPanels}${renderActionPlanCashBucketPanel(summary)}`;
+  actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+}
+
 function renderActionPlan() {
   const payload = latestActionPlanPayload || { action_plan: [], summary: {} };
   const summary = payload.summary || {};
@@ -1295,6 +1459,7 @@ function renderActionPlan() {
     actionPlanTableBody.appendChild(row);
   });
   actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+  if (actionPlanActiveTab === 'buckets') renderActionPlanBuckets();
 }
 
 function syncSelectAllCheckbox() {
@@ -4010,6 +4175,8 @@ actionPlanSortHeaders.forEach((header) => header.addEventListener('click', () =>
   if (actionPlanSort.key === sortKey) actionPlanSort.direction = actionPlanSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanSort = { key: sortKey, direction: 'asc' };
   updateActionPlanSortHeaderState(); renderActionPlan();
 }));
+actionPlanTabActionsBtn.addEventListener('click', () => setActionPlanTab('actions'));
+actionPlanTabBucketsBtn.addEventListener('click', () => setActionPlanTab('buckets'));
 analysisPortfolioFilterEl.addEventListener('change', () => {
   portfolioFilter = analysisPortfolioFilterEl.value || 'all';
   renderAnalysisList();

@@ -708,8 +708,13 @@
             </div>
           </div>
           <div id="action-plan-list-view">
+          <div class="action-plan-tabs">
+            <button id="action-plan-tab-actions" class="action-plan-tab active" type="button">Actions</button>
+            <button id="action-plan-tab-buckets" class="action-plan-tab" type="button">Buckets</button>
+          </div>
           <p id="action-plan-status" class="status">Loading Action Plan…</p>
           <div id="action-plan-summary" class="summary-grid"></div>
+          <div id="action-plan-actions-panel">
           <div class="filter-row action-plan-filter-row">
             <label for="action-plan-rating-filter-toggle" class="inline-control-label">Rating Filter</label>
             <div id="action-plan-rating-filter" class="rating-filter" data-open="false">
@@ -775,6 +780,10 @@
               </thead>
               <tbody></tbody>
             </table>
+          </div>
+          </div>
+          <div id="action-plan-buckets-panel" class="hidden">
+            <div id="action-plan-buckets-content"></div>
           </div>
           </div>
           <div id="action-plan-detail-view" class="hidden">

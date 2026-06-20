@@ -6184,6 +6184,7 @@ def build_action_plan(conn):
 
     rows = []
     bucket_allocated = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    bucket_allocated_before_caps = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
     bucket_counts = {bucket: 0 for bucket in ACTION_PLAN_BUCKET_KEYS}
     for item in candidates:
         rating = item["bucket"]
@@ -6289,6 +6290,7 @@ def build_action_plan(conn):
         })
         row["decision_path"] = _action_plan_decision_path(row, action)
         bucket_allocated[rating] = bucket_allocated.get(rating, 0.0) + target_mid
+        bucket_allocated_before_caps[rating] = bucket_allocated_before_caps.get(rating, 0.0) + target_before_caps
         rows.append(row)
 
     rows.sort(key=lambda row: (row["action_priority"], -abs(row.get("position_gap_to_mid") or 0.0), row["symbol"]))
@@ -6296,16 +6298,38 @@ def build_action_plan(conn):
     for bucket, key in ACTION_PLAN_BUCKET_KEYS.items():
         target = settings[key]
         allocated = bucket_allocated.get(bucket, 0.0)
+        allocated_before_caps = bucket_allocated_before_caps.get(bucket, 0.0)
+        post_cap_unallocated = max(0.0, target - allocated)
+        eligible_count = bucket_counts.get(bucket, 0)
+        status = "Normal"
+        if target <= 0:
+            status = "Zero target"
+        elif eligible_count <= 0:
+            status = "Empty"
+        elif post_cap_unallocated > 1e-9:
+            status = "Underallocated"
+        elif allocated_before_caps - allocated > 1e-9:
+            status = "Capped"
         bucket_summary.append({
             "bucket": bucket,
             "bucket_target_percent": target,
-            "eligible_count": bucket_counts.get(bucket, 0),
+            "eligible_count": eligible_count,
             "weighted_eligible_count": bucket_score_totals.get(bucket, 0.0),
+            "raw_target": target,
+            "effective_target": target,
+            "compression_amount": 0.0,
+            "allocated_before_caps": allocated_before_caps,
+            "allocated_after_caps": allocated,
             "allocated_target_percent": allocated,
-            "unallocated_due_to_caps_percent": max(0.0, target - allocated),
+            "post_cap_unallocated": post_cap_unallocated,
+            "unallocated_due_to_caps_percent": post_cap_unallocated,
+            "status": status,
         })
-    configured_total = sum(settings[key] for key in ACTION_PLAN_BUCKET_KEYS.values()) + settings["action_bucket_cash_target"]
+    raw_equity_target = sum(settings[key] for key in ACTION_PLAN_BUCKET_KEYS.values())
+    configured_total = raw_equity_target + settings["action_bucket_cash_target"]
     allocated_total = sum(bucket_allocated.values())
+    post_cap_unallocated_total = sum(item.get("post_cap_unallocated", 0.0) for item in bucket_summary)
+    cash_unallocated_target = settings["action_bucket_cash_target"] + max(0.0, configured_total - allocated_total - settings["action_bucket_cash_target"])
     return {
         "action_plan": rows,
         "settings": settings,
@@ -6322,6 +6346,15 @@ def build_action_plan(conn):
             "cash_like_available_percent": (cash_like_available / total_portfolio_value * 100.0) if total_portfolio_value > 0 else None,
             "configured_cash_target_percent": settings["action_bucket_cash_target"],
             "cash_like_vs_target_gap_percent": ((cash_like_available / total_portfolio_value * 100.0) - settings["action_bucket_cash_target"]) if total_portfolio_value > 0 else None,
+            "raw_equity_target": raw_equity_target,
+            "effective_equity_target": raw_equity_target,
+            "cash_unallocated_target": cash_unallocated_target,
+            "post_cap_unallocated": post_cap_unallocated_total,
+            "final_allocated_stock_target": allocated_total,
+            "total_effective_bucket_target": raw_equity_target + settings["action_bucket_cash_target"],
+            "rounding_adjustment": 0.0,
+            "compression_applied": 0.0,
+            "unallocated_due_to_underfilled_buckets": post_cap_unallocated_total,
             "configured_bucket_total": configured_total,
             "allocated_target_total": allocated_total,
             "unallocated_target_capacity": max(0.0, configured_total - allocated_total),

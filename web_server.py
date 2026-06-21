@@ -204,6 +204,10 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_weighted_count_full_score": 0.75,
     "action_weighted_count_max_contribution": 1.0,
     "action_max_potential_score_contribution": 0.20,
+    "action_allocation_upside_weight": 0.60,
+    "action_allocation_core_weight": 0.30,
+    "action_allocation_potential_weight": 0.10,
+    "action_allocation_risk_penalty_strength": 0.60,
     "action_bucket_sizing_upside_weight": 0.50,
     "action_bucket_sizing_core_weight": 0.40,
     "action_bucket_sizing_potential_weight": 0.10,
@@ -1767,6 +1771,15 @@ def validate_action_plan_settings(settings):
         raise ValueError("action_core_bearish_penalty_full must be greater than action_core_bearish_penalty_start")
     if effective["action_potential_diff_full_score"] <= effective["action_potential_diff_minimum"]:
         raise ValueError("action_potential_diff_full_score must be greater than action_potential_diff_minimum")
+    allocation_weight_total = sum(effective[key] for key in (
+        "action_allocation_upside_weight",
+        "action_allocation_core_weight",
+        "action_allocation_potential_weight",
+    ))
+    if allocation_weight_total <= 0:
+        raise ValueError("Allocation weights must total more than 0")
+    if effective["action_allocation_risk_penalty_strength"] > 1.0:
+        raise ValueError("action_allocation_risk_penalty_strength must be between 0 and 1")
     for key in (
         "action_starter_buy_base_required_upside",
         "action_add_base_required_upside",
@@ -6529,7 +6542,22 @@ def build_action_plan(conn):
             potential_conviction = _score_range(potential_diff, settings["action_potential_diff_minimum"], settings["action_potential_diff_full_score"])
             potential_score_component = potential_conviction * settings["action_max_potential_score_contribution"]
             legacy_potential_bonus_weight = min(settings["action_max_potential_bonus_weight"], settings["action_max_potential_bonus_weight"] * upside_score * potential_conviction)
-        allocation_score = max(0.0, core_score + potential_score_component)
+        allocation_weight_total = sum(settings[key] for key in (
+            "action_allocation_upside_weight",
+            "action_allocation_core_weight",
+            "action_allocation_potential_weight",
+        ))
+        normalized_allocation_weights = {
+            "upside": settings["action_allocation_upside_weight"] / allocation_weight_total,
+            "core": settings["action_allocation_core_weight"] / allocation_weight_total,
+            "potential": settings["action_allocation_potential_weight"] / allocation_weight_total,
+        } if allocation_weight_total > 0 else {"upside": 0.6, "core": 0.3, "potential": 0.1}
+        allocation_risk_modifier = 1.0 - ((1.0 - core_risk_modifier) * settings["action_allocation_risk_penalty_strength"])
+        allocation_score = _clamp((
+            normalized_allocation_weights["upside"] * upside_score
+            + normalized_allocation_weights["core"] * core_conviction_score
+            + normalized_allocation_weights["potential"] * potential_conviction
+        ) * allocation_risk_modifier, 0.0, 1.0)
         fixed_bucket_score = core_score
         if fixed_bucket_score <= 0 and legacy_potential_bonus_weight > 0:
             fixed_bucket_score = 0.05
@@ -6565,6 +6593,11 @@ def build_action_plan(conn):
             "company_bucket_score": allocation_score if dynamic_mode else fixed_bucket_score,
             "company_allocation_score": allocation_score,
             "allocation_score": allocation_score,
+            "allocation_upside_weight_used": normalized_allocation_weights["upside"],
+            "allocation_core_weight_used": normalized_allocation_weights["core"],
+            "allocation_potential_weight_used": normalized_allocation_weights["potential"],
+            "allocation_risk_penalty_strength": settings["action_allocation_risk_penalty_strength"],
+            "allocation_risk_modifier": allocation_risk_modifier,
             "bucket_sizing_score": bucket_sizing_score,
             "bucket_sizing_risk_modifier": bucket_sizing_risk_modifier,
             "weighted_count": weighted_count,
@@ -6675,6 +6708,11 @@ def build_action_plan(conn):
             "potential_bonus_weight": item["potential_bonus_weight"],
             "company_allocation_score": item["company_allocation_score"],
             "allocation_score": item["allocation_score"],
+            "allocation_upside_weight_used": item["allocation_upside_weight_used"],
+            "allocation_core_weight_used": item["allocation_core_weight_used"],
+            "allocation_potential_weight_used": item["allocation_potential_weight_used"],
+            "allocation_risk_penalty_strength": item["allocation_risk_penalty_strength"],
+            "allocation_risk_modifier": item["allocation_risk_modifier"],
             "company_bucket_score": item["company_bucket_score"],
             "bucket_sizing_score": item["bucket_sizing_score"],
             "bucket_sizing_risk_modifier": item["bucket_sizing_risk_modifier"],
@@ -6691,6 +6729,11 @@ def build_action_plan(conn):
                 "potential_bonus_weight": item["potential_bonus_weight"],
                 "company_allocation_score": item["company_allocation_score"],
                 "allocation_score": item["allocation_score"],
+                "allocation_upside_weight_used": item["allocation_upside_weight_used"],
+                "allocation_core_weight_used": item["allocation_core_weight_used"],
+                "allocation_potential_weight_used": item["allocation_potential_weight_used"],
+                "allocation_risk_penalty_strength": item["allocation_risk_penalty_strength"],
+                "allocation_risk_modifier": item["allocation_risk_modifier"],
                 "company_bucket_score": item["company_bucket_score"],
                 "bucket_sizing_score": item["bucket_sizing_score"],
                 "bucket_sizing_risk_modifier": item["bucket_sizing_risk_modifier"],
@@ -6712,6 +6755,11 @@ def build_action_plan(conn):
                 "weighted_eligible_count_in_bucket": weighted_eligible_count_in_bucket,
                 "company_allocation_score": item["company_allocation_score"],
                 "allocation_score": item["allocation_score"],
+                "allocation_upside_weight_used": item["allocation_upside_weight_used"],
+                "allocation_core_weight_used": item["allocation_core_weight_used"],
+                "allocation_potential_weight_used": item["allocation_potential_weight_used"],
+                "allocation_risk_penalty_strength": item["allocation_risk_penalty_strength"],
+                "allocation_risk_modifier": item["allocation_risk_modifier"],
                 "company_bucket_score": item["company_bucket_score"],
                 "bucket_sizing_score": item["bucket_sizing_score"],
                 "bucket_sizing_risk_modifier": item["bucket_sizing_risk_modifier"],

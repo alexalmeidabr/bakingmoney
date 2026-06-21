@@ -352,6 +352,10 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_weighted_count_full_score: 0.75,
   action_weighted_count_max_contribution: 1.0,
   action_max_potential_score_contribution: 0.20,
+  action_allocation_upside_weight: 0.60,
+  action_allocation_core_weight: 0.30,
+  action_allocation_potential_weight: 0.10,
+  action_allocation_risk_penalty_strength: 0.60,
   action_bucket_sizing_upside_weight: 0.50,
   action_bucket_sizing_core_weight: 0.40,
   action_bucket_sizing_potential_weight: 0.10,
@@ -1275,9 +1279,14 @@ function renderActionPlanDetail(item) {
     <section class="detail-card"><h4>Score Breakdown</h4>${renderActionPlanMetricList([
       ['Upside Score', formatNumber(sb.upside_score)],
       ['Core Conviction Score', formatNumber(sb.core_conviction_score)],
-      ['Core Risk Modifier', formatNumber(sb.core_risk_modifier)],
-      ['Core Score', formatNumber(sb.core_score)],
       ['Potential Conviction Score', formatNumber(sb.potential_conviction_score)],
+      ['Core Risk Modifier', formatNumber(sb.core_risk_modifier)],
+      ['Allocation Risk Modifier', formatNumber(sb.allocation_risk_modifier ?? item.allocation_risk_modifier)],
+      ['Allocation Upside Weight Used', formatNumber(sb.allocation_upside_weight_used ?? item.allocation_upside_weight_used)],
+      ['Allocation Core Weight Used', formatNumber(sb.allocation_core_weight_used ?? item.allocation_core_weight_used)],
+      ['Allocation Potential Weight Used', formatNumber(sb.allocation_potential_weight_used ?? item.allocation_potential_weight_used)],
+      ['Allocation Risk Penalty Strength', formatNumber(sb.allocation_risk_penalty_strength ?? item.allocation_risk_penalty_strength)],
+      ['Core Score', formatNumber(sb.core_score)],
       ['Potential Score Component', formatNumber(sb.potential_score_component)],
       ['Allocation Score', formatNumber(sb.company_allocation_score ?? sb.allocation_score ?? sb.company_bucket_score)],
       ['Bucket Sizing Score', formatNumber(sb.bucket_sizing_score ?? item.bucket_sizing_score)],
@@ -4137,6 +4146,9 @@ function validateActionPlanSettings(settings) {
     if (settings.action_weighted_count_min_score < 0 || settings.action_weighted_count_full_score > 1) return 'Weighted count score thresholds must be between 0 and 1.';
     if (settings.action_weighted_count_max_contribution <= 0 || settings.action_weighted_count_max_contribution > 1) return 'Weighted count max contribution must be > 0 and <= 1.';
     if (settings.action_max_potential_score_contribution < 0 || settings.action_max_potential_score_contribution > 1) return 'Max potential score contribution must be between 0 and 1.';
+    const allocationWeightTotal = settings.action_allocation_upside_weight + settings.action_allocation_core_weight + settings.action_allocation_potential_weight;
+    if (allocationWeightTotal <= 0) return 'Allocation weights must total more than 0.';
+    if (settings.action_allocation_risk_penalty_strength < 0 || settings.action_allocation_risk_penalty_strength > 1) return 'Allocation risk penalty strength must be between 0 and 1.';
     const bucketSizingWeightTotal = settings.action_bucket_sizing_upside_weight + settings.action_bucket_sizing_core_weight + settings.action_bucket_sizing_potential_weight;
     if (bucketSizingWeightTotal <= 0) return 'Bucket sizing weights must total more than 0.';
     if (settings.action_bucket_sizing_risk_penalty_strength < 0 || settings.action_bucket_sizing_risk_penalty_strength > 1) return 'Bucket sizing risk penalty strength must be between 0 and 1.';

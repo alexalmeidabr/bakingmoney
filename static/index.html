@@ -648,6 +648,18 @@
               <label>Weighted Count Full Score <input id="config-action-weighted-count-full-score" data-action-plan-setting="action_weighted_count_full_score" type="number" min="0" max="1" step="0.01" value="0.75" /><small>Bucket Sizing Score where the company counts as one full effective stock.</small></label>
               <label>Weighted Count Max Contribution <input id="config-action-weighted-count-max-contribution" data-action-plan-setting="action_weighted_count_max_contribution" type="number" min="0" max="1" step="0.01" value="1" /><small>Maximum bucket-expansion contribution per company.</small></label>
               <label>Max potential score contribution <input id="config-action-max-potential-score-contribution" data-action-plan-setting="action_max_potential_score_contribution" type="number" min="0" max="1" step="0.01" value="0.2" /></label>
+            </div>
+            <h4>Allocation Score Weights</h4>
+            <p class="form-help">Allocation Score determines how each bucket is distributed across companies. It is separate from Bucket Sizing Score, which determines how much each company expands the bucket.</p>
+            <div class="table-actions config-actions settings-grid">
+              <label>Allocation upside weight <input id="config-action-allocation-upside-weight" data-action-plan-setting="action_allocation_upside_weight" type="number" min="0" step="0.01" value="0.6" /></label>
+              <label>Allocation core weight <input id="config-action-allocation-core-weight" data-action-plan-setting="action_allocation_core_weight" type="number" min="0" step="0.01" value="0.3" /></label>
+              <label>Allocation potential weight <input id="config-action-allocation-potential-weight" data-action-plan-setting="action_allocation_potential_weight" type="number" min="0" step="0.01" value="0.1" /></label>
+              <label>Allocation risk penalty strength <input id="config-action-allocation-risk-penalty-strength" data-action-plan-setting="action_allocation_risk_penalty_strength" type="number" min="0" max="1" step="0.01" value="0.6" /></label>
+            </div>
+            <h4>Bucket Sizing Score Weights</h4>
+            <p class="form-help">Bucket Sizing Score determines bucket expansion and weighted count; it is not used to split bucket allocation across companies.</p>
+            <div class="table-actions config-actions settings-grid">
               <label>Bucket sizing upside weight <input id="config-action-bucket-sizing-upside-weight" data-action-plan-setting="action_bucket_sizing_upside_weight" type="number" min="0" step="0.01" value="0.5" /></label>
               <label>Bucket sizing core weight <input id="config-action-bucket-sizing-core-weight" data-action-plan-setting="action_bucket_sizing_core_weight" type="number" min="0" step="0.01" value="0.4" /></label>
               <label>Bucket sizing potential weight <input id="config-action-bucket-sizing-potential-weight" data-action-plan-setting="action_bucket_sizing_potential_weight" type="number" min="0" step="0.01" value="0.1" /></label>

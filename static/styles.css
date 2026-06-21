@@ -1302,6 +1302,13 @@ th.sortable[data-sort-direction='desc']::after {
   color: #fff;
 }
 
+
+.form-help {
+  color: #475569;
+  font-size: 0.9rem;
+  margin: 4px 0 10px;
+}
+
 .action-plan-bucket-panel,
 .action-plan-bucket-total {
   margin-top: 16px;

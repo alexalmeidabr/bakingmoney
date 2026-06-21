@@ -1333,6 +1333,11 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="positions-portfolio-summary"', html)
         self.assertIn('id="config-action-cash-equivalent-symbols"', html)
         self.assertIn('id="config-action-treat-cash-equivalents-as-cash"', html)
+        self.assertIn('Allocation Score Weights', html)
+        self.assertIn('id="config-action-allocation-upside-weight"', html)
+        self.assertIn('id="config-action-allocation-core-weight"', html)
+        self.assertIn('id="config-action-allocation-potential-weight"', html)
+        self.assertIn('id="config-action-allocation-risk-penalty-strength"', html)
         self.assertIn('id="action-plan-detail-view"', html)
         self.assertIn('id="action-plan-open-analysis-btn"', html)
         self.assertIn('#action-plan-summary .status', css)
@@ -1390,6 +1395,11 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Cash / Unallocated', js)
         self.assertIn('Bucket Reconciliation', js)
         self.assertIn('Allocation Score', js)
+        self.assertIn('Allocation Risk Modifier', js)
+        self.assertIn('Allocation Upside Weight Used', js)
+        self.assertIn('Allocation Core Weight Used', js)
+        self.assertIn('Allocation Potential Weight Used', js)
+        self.assertIn('Allocation Risk Penalty Strength', js)
         self.assertIn('<th>Action Amount</th><th>Market Value</th><th>Upside</th>', js)
         self.assertIn('<th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Cap Reason</th>', js)
         self.assertNotIn('<th>Target Mid Before Caps</th><th>Target Mid After Caps</th><th>Cap Reason</th>', js)
@@ -2473,6 +2483,17 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertIn("bucket_sizing_risk_modifier", rows["BUY"])
                     self.assertNotEqual(rows["BUY"]["weighted_count"], rows["BUY"]["company_allocation_score"])
                     self.assertNotEqual(rows["BUY"]["bucket_sizing_score"], rows["BUY"]["company_allocation_score"])
+                    self.assertAlmostEqual(rows["BUY"]["allocation_upside_weight_used"], 0.6)
+                    self.assertAlmostEqual(rows["BUY"]["allocation_core_weight_used"], 0.3)
+                    self.assertAlmostEqual(rows["BUY"]["allocation_potential_weight_used"], 0.1)
+                    self.assertAlmostEqual(rows["BUY"]["allocation_risk_penalty_strength"], 0.6)
+                    self.assertAlmostEqual(rows["BUY"]["allocation_risk_modifier"], 1.0)
+                    expected_allocation_score = (
+                        rows["BUY"]["upside_score"] * 0.6
+                        + rows["BUY"]["core_conviction_score"] * 0.3
+                        + rows["BUY"]["potential_conviction_score"] * 0.1
+                    ) * rows["BUY"]["allocation_risk_modifier"]
+                    self.assertAlmostEqual(rows["BUY"]["company_allocation_score"], expected_allocation_score)
                     self.assertAlmostEqual(
                         rows["BUY"]["target_weight_breakdown"]["weighted_eligible_count_in_bucket"],
                         buy_weighted_count := rows["BUY"]["weighted_count"],
@@ -2480,7 +2501,10 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertGreater(buy_weighted_count, 0)
                     self.assertEqual(rows["BUY"]["potential_bonus_weight"], 0.0)
                     self.assertGreater(rows["BUY"]["potential_score_component"], 0)
+                    self.assertIn("allocation_risk_modifier", rows["BUY"]["score_breakdown"])
+                    self.assertIn("allocation_upside_weight_used", rows["BUY"]["score_breakdown"])
                     self.assertIn("bucket_sizing_score", rows["BUY"]["score_breakdown"])
+                    self.assertIn("allocation_risk_modifier", rows["BUY"]["target_weight_breakdown"])
                     self.assertIn("bucket_sizing_score", rows["BUY"]["target_weight_breakdown"])
                     buy_target_breakdown = rows["BUY"]["target_weight_breakdown"]
                     self.assertEqual(
@@ -2673,6 +2697,21 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings["action_bucket_buy_target"] = 90.0
         effective = web_server.validate_action_plan_settings(settings)
         self.assertTrue(effective["action_use_dynamic_bucket_sizing"])
+
+
+    def test_dynamic_action_plan_settings_reject_zero_allocation_weights(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_allocation_upside_weight"] = 0.0
+        settings["action_allocation_core_weight"] = 0.0
+        settings["action_allocation_potential_weight"] = 0.0
+        with self.assertRaisesRegex(ValueError, "Allocation weights"):
+            web_server.validate_action_plan_settings(settings)
+
+    def test_dynamic_action_plan_settings_reject_allocation_risk_strength_above_one(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_allocation_risk_penalty_strength"] = 1.5
+        with self.assertRaisesRegex(ValueError, "action_allocation_risk_penalty_strength"):
+            web_server.validate_action_plan_settings(settings)
 
     def test_dynamic_action_plan_settings_reject_zero_bucket_sizing_weights(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

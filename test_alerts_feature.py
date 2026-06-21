@@ -1338,6 +1338,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="config-action-allocation-core-weight"', html)
         self.assertIn('id="config-action-allocation-potential-weight"', html)
         self.assertIn('id="config-action-allocation-risk-penalty-strength"', html)
+        self.assertIn('id="config-action-min-executable-trade-amount"', html)
         self.assertIn('id="action-plan-detail-view"', html)
         self.assertIn('id="action-plan-open-analysis-btn"', html)
         self.assertIn('#action-plan-summary .status', css)
@@ -1400,7 +1401,13 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Allocation Core Weight Used', js)
         self.assertIn('Allocation Potential Weight Used', js)
         self.assertIn('Allocation Risk Penalty Strength', js)
-        self.assertIn('<th>Action Amount</th><th>Market Value</th><th>Upside</th>', js)
+        self.assertIn('<th>Target Gap</th><th>Action Amount</th><th>Funding</th><th>Market Value</th>', js)
+        self.assertIn('Available Buy Budget', js)
+        self.assertIn('Total Add Demand', js)
+        self.assertIn('Funded Add Amount', js)
+        self.assertIn('Funding Status', js)
+        self.assertIn('executable_action_amount', js)
+        self.assertIn('target_gap_amount', js)
         self.assertIn('<th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Cap Reason</th>', js)
         self.assertNotIn('<th>Target Mid Before Caps</th><th>Target Mid After Caps</th><th>Cap Reason</th>', js)
         self.assertIn('function openActionPlanDetail(symbol)', js)
@@ -2473,8 +2480,10 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertAlmostEqual(rows["BUY"]["target_weight_low"], rows["BUY"]["target_weight_mid"] * 0.8)
                     self.assertAlmostEqual(rows["BUY"]["target_weight_high"], rows["BUY"]["target_weight_mid"] * 1.2)
                     self.assertEqual(rows["BUY"]["action_amount_direction"], "add")
-                    self.assertGreater(rows["BUY"]["action_amount"], 0)
-                    self.assertIn("Add about", rows["BUY"]["action_amount_label"])
+                    self.assertIn("target_gap_amount", rows["BUY"])
+                    self.assertIn("executable_action_amount", rows["BUY"])
+                    self.assertIn("funding_status", rows["BUY"])
+                    self.assertLessEqual(rows["BUY"]["executable_action_amount"], rows["BUY"]["target_gap_amount"])
                     self.assertIn("target_weight_breakdown", rows["BUY"])
                     self.assertIn("weighted_eligible_count_in_bucket", rows["BUY"]["target_weight_breakdown"])
                     self.assertIn("company_allocation_score", rows["BUY"])
@@ -2538,7 +2547,9 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertEqual(rows["SELL"]["action"], "Sell")
                     self.assertEqual(rows["SELL"]["current_position_weight"], 100.0)
                     self.assertEqual(rows["SELL"]["action_amount_direction"], "sell")
+                    self.assertEqual(rows["SELL"]["executable_action_amount"], 1000.0)
                     self.assertEqual(rows["SELL"]["action_amount"], 1000.0)
+                    self.assertEqual(rows["SELL"]["funding_status"], "Generates proceeds")
                     self.assertIn("Sell about", rows["SELL"]["action_amount_label"])
                     self.assertEqual(payload["summary"]["total_portfolio_value"], 1000.0)
                     buy_bucket = next(item for item in payload["summary"]["bucket_summary"] if item["bucket"] == "Buy")
@@ -2563,6 +2574,14 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertIn("allocated_after_caps", buy_bucket)
                     self.assertIn("post_cap_unallocated", buy_bucket)
                     self.assertIn("status", buy_bucket)
+                    self.assertIn("available_buy_budget", payload["summary"])
+                    self.assertIn("total_add_demand", payload["summary"])
+                    self.assertIn("funded_add_amount", payload["summary"])
+                    self.assertIn("unfunded_add_demand", payload["summary"])
+                    self.assertIn("executable_sell_trim_proceeds", payload["summary"])
+                    self.assertIn("minimum_cash_reserve_amount", payload["summary"])
+                    funded_add_total = sum(row["executable_action_amount"] for row in rows.values() if row["action_amount_direction"] == "add")
+                    self.assertLessEqual(funded_add_total, payload["summary"]["available_buy_budget"] + 1e-6)
                     self.assertIn("raw_equity_target", payload["summary"])
                     self.assertIn("effective_equity_target", payload["summary"])
                     self.assertIn("cash_unallocated_target", payload["summary"])
@@ -2684,6 +2703,55 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertEqual(loaded["action_bucket_strong_sell_target"], 0.0)
                 finally:
                     conn.close()
+
+
+    def test_cash_constrained_execution_caps_adds_to_available_budget(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        rows = [
+            {
+                "symbol": "AAA",
+                "rating": "Strong Buy",
+                "action": "Strong Add",
+                "action_amount": 1500.0,
+                "action_amount_direction": "add",
+                "allocation_score": 0.9,
+                "bucket_sizing_score": 0.8,
+                "trigger_quality_score": 0.9,
+                "upside": 90.0,
+            },
+            {
+                "symbol": "BBB",
+                "rating": "Buy",
+                "action": "Add",
+                "action_amount": 800.0,
+                "action_amount_direction": "add",
+                "allocation_score": 0.6,
+                "bucket_sizing_score": 0.6,
+                "trigger_quality_score": 0.6,
+                "upside": 50.0,
+            },
+            {
+                "symbol": "CCC",
+                "rating": "Hold",
+                "action": "Hold / Overweight",
+                "action_amount": 500.0,
+                "action_amount_direction": "none",
+                "allocation_score": 0.5,
+                "bucket_sizing_score": 0.5,
+                "trigger_quality_score": 0.5,
+                "upside": 30.0,
+            },
+        ]
+        summary = web_server._apply_cash_constrained_execution_layer(rows, 10000.0, 2000.0, settings)
+        executable_add_total = sum(row["executable_action_amount"] for row in rows if row["action_amount_direction"] == "add")
+        self.assertEqual(summary["available_buy_budget"], 1000.0)
+        self.assertEqual(summary["total_add_demand"], 2300.0)
+        self.assertLessEqual(executable_add_total, summary["available_buy_budget"] + 1e-6)
+        self.assertEqual(rows[0]["executable_action_amount"], 1000.0)
+        self.assertEqual(rows[0]["funding_status"], "Partially funded")
+        self.assertEqual(rows[1]["executable_action_amount"], 0.0)
+        self.assertEqual(rows[1]["funding_status"], "Unfunded / Watch")
+        self.assertEqual(rows[2]["funding_status"], "No funding needed")
 
     def test_action_plan_settings_reject_bucket_total_above_100_in_fixed_mode(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

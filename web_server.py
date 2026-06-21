@@ -263,6 +263,7 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_strong_add_below_target_multiplier": 0.5,
     "action_strong_trim_above_target_multiplier": 1.5,
     "action_min_trade_gap_percent": 0.5,
+    "action_min_executable_trade_amount": 100.0,
     "action_starter_buy_max_initial_weight": 1.0,
     "action_add_required_upside": 30.0,
     "action_strong_add_required_upside": 50.0,
@@ -6036,9 +6037,10 @@ def _distance_to_trigger(current_price, trigger_price):
 
 
 def _format_action_amount_label(direction, amount):
-    if amount is None:
-        return "N/A" if direction in {"add", "trim", "sell"} else "—"
-    rounded = f"${amount:,.0f}"
+    numeric_amount = safe_number(amount)
+    if numeric_amount is None or numeric_amount <= 0:
+        return "—"
+    rounded = f"${numeric_amount:,.0f}"
     if direction == "add":
         return f"Add about {rounded}"
     if direction == "trim":
@@ -6081,6 +6083,120 @@ def _action_amount_fields(action, current_weight, target_mid, total_portfolio_va
         "action_amount_to_mid": amount_to_mid,
     }
 
+
+
+def _funding_priority_score(row, total_portfolio_value):
+    base_priority = {
+        ("Strong Buy", "Strong Add"): 100,
+        ("Strong Buy", "Add"): 90,
+        ("Strong Buy", "Starter Buy"): 80,
+        ("Buy", "Strong Add"): 70,
+        ("Buy", "Add"): 60,
+        ("Buy", "Starter Buy"): 50,
+        ("Speculative Buy", "Strong Add"): 40,
+        ("Speculative Buy", "Add"): 35,
+        ("Hold", "Add"): 20,
+    }.get((row.get("rating"), row.get("action")), 0)
+    gap = safe_number(row.get("target_gap_amount")) or 0.0
+    total = safe_number(total_portfolio_value) or 0.0
+    normalized_gap_score = min(gap / total / 0.05, 1.0) if total > 0 else 0.0
+    return (
+        base_priority
+        + 20.0 * (safe_number(row.get("allocation_score")) or 0.0)
+        + 10.0 * (safe_number(row.get("bucket_sizing_score")) or 0.0)
+        + 10.0 * (safe_number(row.get("trigger_quality_score")) or 0.0)
+        + 10.0 * normalized_gap_score
+    )
+
+
+def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings):
+    total = safe_number(total_portfolio_value) or 0.0
+    cash_available = safe_number(cash_like_available) or 0.0
+    minimum_cash_reserve_amount = total * (safe_number(settings.get("action_min_cash_unallocated_target")) or 0.0) / 100.0
+    buy_actions = {"Strong Add", "Add", "Starter Buy"}
+    sell_trim_actions = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
+    executable_sell_trim_proceeds = 0.0
+
+    for row in rows:
+        direction = row.get("action_amount_direction")
+        theoretical_amount = max(0.0, safe_number(row.get("action_amount")) or 0.0)
+        row["target_gap_amount"] = theoretical_amount
+        row["executable_action_amount"] = 0.0
+        row["unfunded_action_amount"] = 0.0
+        row["funding_priority_score"] = 0.0
+        if row.get("action") in sell_trim_actions or direction in {"trim", "sell"}:
+            row["executable_action_amount"] = theoretical_amount
+            row["funding_status"] = "Generates proceeds" if theoretical_amount > 0 else "No funding needed"
+            executable_sell_trim_proceeds += theoretical_amount
+        elif row.get("action") in buy_actions and direction == "add" and theoretical_amount > 0:
+            row["funding_status"] = "Unfunded / Watch"
+        else:
+            row["funding_status"] = "No funding needed"
+
+    available_buy_budget = max(0.0, cash_available + executable_sell_trim_proceeds - minimum_cash_reserve_amount)
+    buy_candidates = [row for row in rows if row.get("action") in buy_actions and row.get("target_gap_amount", 0.0) > 0]
+    total_add_demand = sum(row["target_gap_amount"] for row in buy_candidates)
+    min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
+    remaining_budget = available_buy_budget
+    for row in buy_candidates:
+        row["funding_priority_score"] = _funding_priority_score(row, total)
+    sorted_buy_candidates = sorted(
+        buy_candidates,
+        key=lambda row: (
+            -(safe_number(row.get("funding_priority_score")) or 0.0),
+            ACTION_PLAN_ACTION_PRIORITY.get(row.get("action"), 99),
+            -(safe_number(row.get("allocation_score")) or 0.0),
+            -(safe_number(row.get("upside")) or 0.0),
+            row.get("symbol") or "",
+        ),
+    )
+    for index, row in enumerate(sorted_buy_candidates):
+        demand = row["target_gap_amount"]
+        amount = min(remaining_budget, demand)
+        is_last_candidate = index == len(sorted_buy_candidates) - 1
+        if amount < min_trade and not (is_last_candidate and amount > 0):
+            amount = 0.0
+        row["executable_action_amount"] = amount
+        row["unfunded_action_amount"] = max(0.0, demand - amount)
+        if amount >= demand - 1e-6 and demand > 0:
+            row["funding_status"] = "Fully funded"
+        elif amount > 0:
+            row["funding_status"] = "Partially funded"
+        else:
+            row["funding_status"] = "Unfunded / Watch"
+        remaining_budget = max(0.0, remaining_budget - amount)
+
+    funded_add_amount = sum(row.get("executable_action_amount", 0.0) for row in buy_candidates)
+    unfunded_add_demand = sum(row.get("unfunded_action_amount", 0.0) for row in buy_candidates)
+    for row in rows:
+        executable = safe_number(row.get("executable_action_amount")) or 0.0
+        row["action_amount"] = executable
+        row["action_amount_label"] = _format_action_amount_label(row.get("action_amount_direction"), executable)
+        row["available_buy_budget"] = available_buy_budget
+        row["total_add_demand"] = total_add_demand
+        row["funded_add_amount"] = funded_add_amount
+        row["unfunded_add_demand"] = unfunded_add_demand
+        row["executable_sell_trim_proceeds"] = executable_sell_trim_proceeds
+        row["minimum_cash_reserve_amount"] = minimum_cash_reserve_amount
+        if row.get("action_amount_direction") == "add":
+            if row["funding_status"] == "Fully funded":
+                row["action_amount_cash_note"] = f"Add about ${executable:,.0f} to reach the calculated target midpoint."
+            elif row["funding_status"] == "Partially funded":
+                row["action_amount_cash_note"] = f"Target gap is ${row['target_gap_amount']:,.0f}, but only ${executable:,.0f} is executable now based on available cash and higher-priority actions."
+            else:
+                row["action_amount_cash_note"] = f"Target gap is ${row['target_gap_amount']:,.0f}, but this add is currently unfunded based on available cash and higher-priority actions."
+        elif row.get("action_amount_direction") in {"trim", "sell"}:
+            row["action_amount_cash_note"] = f"Sell/trim about ${executable:,.0f}. This action generates proceeds that can fund buy actions." if executable > 0 else "No funding needed."
+        else:
+            row["action_amount_cash_note"] = "No funding needed."
+    return {
+        "available_buy_budget": available_buy_budget,
+        "total_add_demand": total_add_demand,
+        "funded_add_amount": funded_add_amount,
+        "unfunded_add_demand": unfunded_add_demand,
+        "executable_sell_trim_proceeds": executable_sell_trim_proceeds,
+        "minimum_cash_reserve_amount": minimum_cash_reserve_amount,
+    }
 
 def _trigger_price_from_required_upside(expected_price, required_upside_ratio):
     expected = safe_number(expected_price)
@@ -6784,13 +6900,6 @@ def build_action_plan(conn):
         }
         action, trigger_price, trigger_direction, distance, reason = _choose_action_plan_decision(row, settings)
         amount_fields = _action_amount_fields(action, item["current_position_weight"], target_mid, total_portfolio_value, item.get("current_position_market_value"))
-        cash_covered = None
-        cash_shortfall = None
-        cash_note = None
-        if amount_fields["action_amount_direction"] == "add" and amount_fields.get("action_amount") is not None:
-            cash_covered = amount_fields["action_amount"] <= cash_like_available + 1e-9
-            cash_shortfall = max(0.0, amount_fields["action_amount"] - cash_like_available)
-            cash_note = "Covered by cash-like available." if cash_covered else "Requires more than current cash-like available; would require selling/reallocating other positions."
         trigger_type_by_action = {
             "Strong Add": "strong_add",
             "Add": "add",
@@ -6809,9 +6918,9 @@ def build_action_plan(conn):
             "action_priority": ACTION_PLAN_ACTION_PRIORITY.get(action, 99),
             **amount_fields,
             "cash_like_available": cash_like_available,
-            "action_amount_cash_covered": cash_covered,
-            "action_amount_cash_shortfall": cash_shortfall,
-            "action_amount_cash_note": cash_note,
+            "action_amount_cash_covered": None,
+            "action_amount_cash_shortfall": None,
+            "action_amount_cash_note": None,
             "trigger_breakdown": _action_plan_trigger_breakdown(row),
         })
         row["decision_path"] = _action_plan_decision_path(row, action)
@@ -6820,6 +6929,7 @@ def build_action_plan(conn):
         bucket_cap_applied[rating] = bucket_cap_applied.get(rating, 0.0) + cap_applied
         rows.append(row)
 
+    execution_summary = _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
     rows.sort(key=lambda row: (row["action_priority"], -abs(row.get("position_gap_to_mid") or 0.0), row["symbol"]))
     bucket_summary = []
     for bucket, key in ACTION_PLAN_BUCKET_KEYS.items():
@@ -6884,6 +6994,8 @@ def build_action_plan(conn):
             "cash_equivalent_value": cash_equivalent_value,
             "cash_like_available": cash_like_available,
             "cash_like_available_percent": (cash_like_available / total_portfolio_value * 100.0) if total_portfolio_value > 0 else None,
+            **execution_summary,
+            "execution_warning": "Add demand exceeds available funding. Action amounts have been cash-constrained and prioritized." if execution_summary["total_add_demand"] > execution_summary["available_buy_budget"] + 1e-6 else None,
             "configured_cash_target_percent": bucket_cash_target,
             "cash_like_vs_target_gap_percent": ((cash_like_available / total_portfolio_value * 100.0) - bucket_cash_target) if total_portfolio_value > 0 else None,
             "raw_equity_target": raw_equity_target,

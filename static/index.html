@@ -717,6 +717,7 @@
               <label>Strong Add below target multiplier <input id="config-action-strong-add-below-target-multiplier" data-action-plan-setting="action_strong_add_below_target_multiplier" type="number" step="0.1" value="0" /></label>
               <label>Strong Trim above target multiplier <input id="config-action-strong-trim-above-target-multiplier" data-action-plan-setting="action_strong_trim_above_target_multiplier" type="number" step="0.1" value="0" /></label>
               <label>Minimum trade gap % <input id="config-action-min-trade-gap-percent" data-action-plan-setting="action_min_trade_gap_percent" type="number" step="0.1" value="0" /></label>
+              <label>Minimum executable trade amount <input id="config-action-min-executable-trade-amount" data-action-plan-setting="action_min_executable_trade_amount" type="number" min="0" step="10" value="100" /></label>
               <label>Starter Buy max initial weight % <input id="config-action-starter-buy-max-initial-weight" data-action-plan-setting="action_starter_buy_max_initial_weight" type="number" step="0.1" value="0" /></label>
               <label>Add required upside % <input id="config-action-add-required-upside" data-action-plan-setting="action_add_required_upside" type="number" step="0.1" value="0" /></label>
               <label>Strong Add required upside % <input id="config-action-strong-add-required-upside" data-action-plan-setting="action_strong_add_required_upside" type="number" step="0.1" value="0" /></label>
@@ -821,7 +822,9 @@
                 <tr>
                   <th class="symbol-column">Symbol</th>
                   <th class="action-column">Action</th>
+                  <th class="target-gap-column">Target Gap</th>
                   <th class="action-amount-column">Action Amount</th>
+                  <th class="funding-column">Funding</th>
                   <th class="trigger-price-column">Trigger Price</th>
                   <th class="current-price-column">Current Price</th>
                   <th class="distance-column sortable" data-sort-key="distance_to_trigger_percent">Distance</th>

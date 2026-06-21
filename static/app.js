@@ -413,6 +413,7 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_strong_add_below_target_multiplier: 0.5,
   action_strong_trim_above_target_multiplier: 1.5,
   action_min_trade_gap_percent: 0.5,
+  action_min_executable_trade_amount: 100.0,
   action_starter_buy_max_initial_weight: 1.0,
   action_add_required_upside: 30.0,
   action_strong_add_required_upside: 50.0,
@@ -1220,6 +1221,9 @@ function renderActionPlanDetail(item) {
       ['Symbol', escapeHtml(item.symbol || '')],
       ['Company Name', escapeHtml(item.company_name || 'N/A')],
       ['Action', escapeHtml(item.action || 'Hold')],
+      ['Target Gap Amount', formatCurrencyValue(item.target_gap_amount, 'USD')],
+      ['Executable Action Amount', formatCurrencyValue(item.executable_action_amount, 'USD')],
+      ['Funding Status', escapeHtml(item.funding_status || 'No funding needed')],
       ['Action Amount', escapeHtml(item.action_amount_label || '—')],
       ['Rating', escapeHtml(item.rating || 'Hold')],
       ['Current Price', formatCurrencyValue(item.current_price, 'USD')],
@@ -1239,6 +1243,12 @@ function renderActionPlanDetail(item) {
       ['Target Low', formatPercent(item.target_weight_low)],
       ['Target Mid', formatPercent(item.target_weight_mid)],
       ['Target High', formatPercent(item.target_weight_high)],
+      ['Target Gap Amount', formatCurrencyValue(item.target_gap_amount, 'USD')],
+      ['Executable Action Amount', formatCurrencyValue(item.executable_action_amount, 'USD')],
+      ['Funding Status', escapeHtml(item.funding_status || 'No funding needed')],
+      ['Unfunded Amount', formatCurrencyValue(item.unfunded_action_amount, 'USD')],
+      ['Available Buy Budget', formatCurrencyValue(item.available_buy_budget, 'USD')],
+      ['Funding Priority Score', formatNumber(item.funding_priority_score)],
       ['Action Amount to Mid', formatCurrencyValue(item.action_amount_to_mid, 'USD')],
     ])}<p>${escapeHtml(getActionPlanAmountDetailLabel(item))}</p><p>${escapeHtml(item.action_amount_cash_note || '')}</p></section>
     <section class="detail-card"><h4>Trigger Prices</h4>${renderActionPlanMetricList([
@@ -1483,7 +1493,9 @@ function renderActionPlanBucketCompanyTable(rows) {
       <td>${formatPercent(item.target_weight_mid)}</td>
       <td>${targetBand}</td>
       <td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td>
+      <td>${formatCurrencyValue(item.target_gap_amount, 'USD')}</td>
       <td>${escapeHtml(item.action_amount_label || '—')}</td>
+      <td>${escapeHtml(item.funding_status || 'No funding needed')}</td>
       <td>${marketValue}</td>
       <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
       <td>${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td>
@@ -1495,7 +1507,7 @@ function renderActionPlanBucketCompanyTable(rows) {
       <td class="wrap-cell">${escapeHtml(getCapReason(item))}</td>
     </tr>`;
   }).join('');
-  return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Company Name</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Action Amount</th><th>Market Value</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Company Name</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Target Gap</th><th>Action Amount</th><th>Funding</th><th>Market Value</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderBucketSizingDiagnostic(summary) {
@@ -1569,12 +1581,13 @@ function renderActionPlan() {
   const summary = payload.summary || {};
   const cashEquivalentNote = (summary.cash_equivalent_symbols || []).length ? `<p class="status">Cash-like holdings include ${escapeHtml((summary.cash_equivalent_symbols || []).join(', '))}.</p>` : '';
   const portfolioWarning = summary.portfolio_value_warning ? `<p class="status warning">${escapeHtml(summary.portfolio_value_warning)}</p>` : '';
-  actionPlanSummaryEl.innerHTML = `<div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.portfolio_value_used ?? summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(summary.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(summary.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available %</div><div class="value">${formatPercent(summary.cash_like_available_percent)}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated Target Capacity</div><div class="value">${formatPercent(summary.unallocated_target_capacity ?? summary.unallocated_target_total)}</div></div>${portfolioWarning}${cashEquivalentNote}`;
+  const executionWarning = summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : '';
+  actionPlanSummaryEl.innerHTML = `<div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.portfolio_value_used ?? summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(summary.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(summary.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${formatCurrencyValue(summary.available_buy_budget, 'USD')}</div></div><div class="summary-item"><div class="label">Total Add Demand</div><div class="value">${formatCurrencyValue(summary.total_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Funded Add Amount</div><div class="value">${formatCurrencyValue(summary.funded_add_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Unfunded Add Demand</div><div class="value">${formatCurrencyValue(summary.unfunded_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Executable Sell/Trim Proceeds</div><div class="value">${formatCurrencyValue(summary.executable_sell_trim_proceeds, 'USD')}</div></div><div class="summary-item"><div class="label">Minimum Cash Reserve</div><div class="value">${formatCurrencyValue(summary.minimum_cash_reserve_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated Target Capacity</div><div class="value">${formatPercent(summary.unallocated_target_capacity ?? summary.unallocated_target_total)}</div></div>${portfolioWarning}${executionWarning}${cashEquivalentNote}`;
   actionPlanTableBody.innerHTML = '';
   sortActionPlanItems(getFilteredActionPlanItems()).forEach((item) => {
     const row = document.createElement('tr');
     const targetBand = `<span class="target-band-range">${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.target_weight_mid)})</span>`;
-    row.innerHTML = `<td class="symbol-cell"><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action)}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="reason-cell">${escapeHtml(item.reason)}</td>`;
+    row.innerHTML = `<td class="symbol-cell"><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action)}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="reason-cell">${escapeHtml(item.reason)}</td>`;
     actionPlanTableBody.appendChild(row);
   });
   actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));

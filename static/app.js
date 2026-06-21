@@ -1252,12 +1252,12 @@ function renderActionPlanDetail(item) {
     ])}<p>Buy triggers use allocation-aware required upside; trim/sell triggers use remaining-upside thresholds.</p></section>
     <section class="detail-card"><h4>Target Weight Calculation</h4>${renderActionPlanMetricList([
       ['Rating Bucket', escapeHtml(tb.rating_bucket || item.bucket || '')],
-      ['Bucket Weight / Effective Stock', formatPercent(tb.bucket_weight_per_effective_stock)],
-      ['Weighted Eligible Count in Bucket', formatNumber(tb.weighted_eligible_count_in_bucket)],
+      ['Total Weighted Eligible Count in Bucket', formatNumber(tb.weighted_eligible_count_in_bucket)],
       ['Max Effective Count', formatNumber(tb.max_effective_count)],
-      ['Effective Weighted Count Used', formatNumber(tb.effective_weighted_count_used)],
-      ['Max Bucket Target', formatPercent(tb.max_bucket_target)],
-      ['Bucket Raw Target', formatPercent(tb.bucket_raw_target ?? tb.bucket_target_percent)],
+      ['Weighted Count Used', formatNumber(tb.weighted_count_used ?? tb.effective_weighted_count_used)],
+      ['Bucket Weight / Effective Stock', formatPercent(tb.bucket_weight_per_effective_stock)],
+      ['Uncapped Bucket Target', formatPercent(tb.uncapped_bucket_target)],
+      ['Bucket Raw Target', formatPercent(tb.bucket_raw_target ?? tb.raw_bucket_target ?? tb.bucket_target_percent)],
       ['Bucket Effective Target', formatPercent(tb.bucket_effective_target ?? tb.bucket_target_percent)],
       ['Eligible Count in Bucket', formatNumber(tb.eligible_count_in_bucket)],
       ['Company Allocation Score', formatNumber(tb.company_allocation_score ?? tb.company_bucket_score)],
@@ -1417,7 +1417,9 @@ function findActionPlanBucketSummary(bucket) {
       bucket,
       eligible_count: (acc.eligible_count || 0) + (item.eligible_count || 0),
       weighted_eligible_count: (acc.weighted_eligible_count || 0) + (item.weighted_eligible_count || 0),
-      raw_target: (acc.raw_target || 0) + (item.raw_target ?? item.bucket_target_percent ?? 0),
+      weighted_count_used: (acc.weighted_count_used || 0) + (item.weighted_count_used ?? item.effective_weighted_count_used ?? 0),
+      max_effective_count: null,
+      raw_target: (acc.raw_target || 0) + (item.raw_target ?? item.raw_bucket_target ?? item.bucket_target_percent ?? 0),
       effective_target: (acc.effective_target || 0) + (item.effective_target ?? item.bucket_target_percent ?? 0),
       compression_amount: (acc.compression_amount || 0) + (item.compression_amount || 0),
       allocated_before_caps: (acc.allocated_before_caps || 0) + (item.allocated_before_caps || 0),
@@ -1442,6 +1444,7 @@ function renderBucketMessages(bucket, summary, rows) {
   if ((summary.compression_amount || 0) > 0) messages.push('This bucket was compressed because raw equity demand exceeded available portfolio capacity.');
   if ((summary.post_cap_unallocated ?? summary.unallocated_due_to_caps_percent ?? 0) > 0) messages.push('This bucket is underallocated because one or more companies hit allocation caps.');
   if ((summary.weighted_eligible_count || 0) < 0.25 && (summary.eligible_count || 0) > 0) messages.push('This bucket has low weighted eligible count. Eligible companies have relatively weak allocation scores.');
+  if (isFiniteNumber(summary.max_effective_count) && (summary.weighted_eligible_count || 0) > summary.max_effective_count + 1e-9) messages.push('This bucket is using its max effective count cap for sizing.');
   if (bucket === 'Speculative Buy') messages.push('Speculative Buy exposure is intentionally capped because these positions have higher uncertainty.');
   if (!rows.length) messages.push('No eligible companies in this bucket.');
   return messages.length ? `<div class="action-plan-bucket-messages">${messages.map((message) => `<p>${escapeHtml(message)}</p>`).join('')}</div>` : '';
@@ -1486,21 +1489,29 @@ function renderActionPlanBucketCompanyTable(rows) {
   return `<div class="table-wrap action-plan-bucket-table-wrap"><table class="action-plan-bucket-table"><thead><tr><th>Symbol</th><th>Company Name</th><th>Action</th><th>Current Weight</th><th>Target Mid</th><th>Target Band</th><th>Gap to Mid</th><th>Action Amount</th><th>Market Value</th><th>Upside</th><th>Core Confidence</th><th>Potential Confidence</th><th>Allocation Score</th><th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th><th>Cap Reason</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
+function renderBucketSizingDiagnostic(summary) {
+  const totalWeighted = formatNumber(summary.weighted_eligible_count);
+  const maxEffective = isFiniteNumber(summary.max_effective_count) ? formatNumber(summary.max_effective_count) : 'No cap';
+  const weightPerStock = isFiniteNumber(summary.bucket_weight_per_effective_stock) ? ` · Bucket Weight / Effective Stock: ${formatPercent(summary.bucket_weight_per_effective_stock)}` : '';
+  const uncappedTarget = isFiniteNumber(summary.uncapped_bucket_target) ? ` · Uncapped Bucket Target: ${formatPercent(summary.uncapped_bucket_target)}` : '';
+  return `<p class="action-plan-bucket-diagnostic">Total Weighted Eligible Count: ${totalWeighted} · Max Effective Count: ${maxEffective}${weightPerStock}${uncappedTarget}</p>`;
+}
+
 function renderActionPlanBucketPanel(bucket) {
   const rows = getActionPlanBucketRows(bucket);
   const summary = findActionPlanBucketSummary(bucket);
   const status = getBucketStatus(summary, rows);
   const cards = [
     ['Eligible Companies', formatNumber(summary.eligible_count, 0)],
-    ['Weighted Eligible Count', formatNumber(summary.weighted_eligible_count)],
-    ['Raw Bucket Target', formatPercent(summary.raw_target ?? summary.bucket_target_percent)],
+    ['Weighted Count Used', formatNumber(summary.weighted_count_used ?? summary.effective_weighted_count_used ?? summary.weighted_eligible_count)],
+    ['Raw Bucket Target', formatPercent(summary.raw_target ?? summary.raw_bucket_target ?? summary.bucket_target_percent)],
     ['Effective Bucket Target', formatPercent(summary.effective_target ?? summary.bucket_target_percent)],
     ['Compression Applied', formatPercent(summary.compression_amount)],
     ['Allocated After Caps', formatPercent(summary.allocated_after_caps ?? summary.allocated_target_percent)],
     ['Post-Cap Unallocated', formatPercent(summary.post_cap_unallocated ?? summary.unallocated_due_to_caps_percent)],
     ['Bucket Status', escapeHtml(status)],
   ];
-  return `<section class="detail-card action-plan-bucket-panel"><h4>${escapeHtml(bucket)}</h4><div class="summary-grid action-plan-bucket-summary">${cards.map(([label, value]) => `<div class="summary-item"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`).join('')}</div>${renderBucketMessages(bucket, summary, rows)}${renderActionPlanBucketCompanyTable(rows)}</section>`;
+  return `<section class="detail-card action-plan-bucket-panel"><h4>${escapeHtml(bucket)}</h4><div class="summary-grid action-plan-bucket-summary">${cards.map(([label, value]) => `<div class="summary-item"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`).join('')}</div>${renderBucketSizingDiagnostic(summary)}${renderBucketMessages(bucket, summary, rows)}${renderActionPlanBucketCompanyTable(rows)}</section>`;
 }
 
 function renderActionPlanCashBucketPanel(summary) {

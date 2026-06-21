@@ -1312,6 +1312,12 @@ th.sortable[data-sort-direction='desc']::after {
   margin: 10px 0;
 }
 
+.action-plan-bucket-diagnostic {
+  color: #475569;
+  font-size: 0.88rem;
+  margin: -2px 0 10px;
+}
+
 .action-plan-bucket-messages {
   background: #f8fafc;
   border-left: 4px solid #94a3b8;

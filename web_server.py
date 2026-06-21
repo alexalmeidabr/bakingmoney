@@ -6404,6 +6404,36 @@ def _dynamic_bucket_setting_prefix(bucket):
     }.get(bucket)
 
 
+
+def _action_plan_bucket_sizing_details(bucket, weighted_eligible_count, raw_target, settings, dynamic_mode=True):
+    raw_weighted_count = safe_number(weighted_eligible_count) or 0.0
+    raw_bucket_target = safe_number(raw_target) or 0.0
+    prefix = _dynamic_bucket_setting_prefix(bucket)
+    if dynamic_mode and prefix:
+        bucket_weight = settings[f"action_{prefix}_weight_per_effective_stock"]
+        max_effective_count = settings[f"action_{prefix}_max_effective_count"]
+        bucket_max_target = settings[f"action_{prefix}_max_bucket_target"]
+        weighted_count_used = min(raw_weighted_count, max_effective_count)
+        uncapped_bucket_target = weighted_count_used * bucket_weight
+        raw_bucket_target = min(uncapped_bucket_target, bucket_max_target)
+    else:
+        bucket_weight = None
+        max_effective_count = None
+        bucket_max_target = raw_bucket_target
+        weighted_count_used = raw_weighted_count
+        uncapped_bucket_target = raw_bucket_target
+    return {
+        "weighted_eligible_count": raw_weighted_count,
+        "max_effective_count": max_effective_count,
+        "weighted_count_used": weighted_count_used,
+        "effective_weighted_count_used": weighted_count_used,
+        "bucket_weight_per_effective_stock": bucket_weight,
+        "uncapped_bucket_target": uncapped_bucket_target,
+        "raw_bucket_target": raw_bucket_target,
+        "bucket_max_target": bucket_max_target,
+        "max_bucket_target": bucket_max_target,
+    }
+
 def _compress_action_plan_bucket_targets(raw_targets, settings):
     effective = {bucket: max(0.0, float(value or 0.0)) for bucket, value in raw_targets.items()}
     max_equity = max(0.0, 100.0 - settings["action_min_cash_unallocated_target"])
@@ -6559,16 +6589,23 @@ def build_action_plan(conn):
         bucket_score_totals[bucket] = bucket_score_totals.get(bucket, 0.0) + max(0.0, item["company_bucket_score"])
         bucket_weighted_counts[bucket] = bucket_weighted_counts.get(bucket, 0.0) + max(0.0, item["weighted_count"])
 
+    bucket_sizing_details = {}
     if dynamic_mode:
         raw_bucket_targets = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
         for bucket in equity_buckets:
-            prefix = _dynamic_bucket_setting_prefix(bucket)
-            effective_count = min(bucket_weighted_counts.get(bucket, 0.0), settings[f"action_{prefix}_max_effective_count"])
-            raw_bucket_targets[bucket] = min(effective_count * settings[f"action_{prefix}_weight_per_effective_stock"], settings[f"action_{prefix}_max_bucket_target"])
+            details = _action_plan_bucket_sizing_details(bucket, bucket_weighted_counts.get(bucket, 0.0), 0.0, settings, dynamic_mode=True)
+            bucket_sizing_details[bucket] = details
+            raw_bucket_targets[bucket] = details["raw_bucket_target"]
+        for bucket in ACTION_PLAN_BUCKET_KEYS:
+            bucket_sizing_details.setdefault(bucket, _action_plan_bucket_sizing_details(bucket, bucket_weighted_counts.get(bucket, 0.0), raw_bucket_targets.get(bucket, 0.0), settings, dynamic_mode=True))
         effective_bucket_targets, bucket_compression, compression_applied = _compress_action_plan_bucket_targets(raw_bucket_targets, settings)
         bucket_cash_target = 100.0 - sum(effective_bucket_targets.values())
     else:
         raw_bucket_targets = {bucket: settings[key] for bucket, key in ACTION_PLAN_BUCKET_KEYS.items()}
+        bucket_sizing_details = {
+            bucket: _action_plan_bucket_sizing_details(bucket, bucket_weighted_counts.get(bucket, 0.0), raw_target, settings, dynamic_mode=False)
+            for bucket, raw_target in raw_bucket_targets.items()
+        }
         effective_bucket_targets = dict(raw_bucket_targets)
         bucket_compression = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
         compression_applied = 0.0
@@ -6582,12 +6619,15 @@ def build_action_plan(conn):
         rating = item["bucket"]
         bucket_target = effective_bucket_targets.get(rating, 0.0)
         bucket_raw_target = raw_bucket_targets.get(rating, 0.0)
-        bucket_prefix = _dynamic_bucket_setting_prefix(rating)
-        bucket_weight_per_effective_stock = settings.get(f"action_{bucket_prefix}_weight_per_effective_stock") if bucket_prefix else None
-        max_effective_count = settings.get(f"action_{bucket_prefix}_max_effective_count") if bucket_prefix else None
-        max_bucket_target = settings.get(f"action_{bucket_prefix}_max_bucket_target") if bucket_prefix else bucket_raw_target
-        weighted_eligible_count_in_bucket = bucket_weighted_counts.get(rating, 0.0)
-        effective_weighted_count_used = min(weighted_eligible_count_in_bucket, max_effective_count) if max_effective_count is not None else weighted_eligible_count_in_bucket
+        sizing_detail = bucket_sizing_details.get(rating) or _action_plan_bucket_sizing_details(rating, bucket_weighted_counts.get(rating, 0.0), bucket_raw_target, settings, dynamic_mode)
+        bucket_weight_per_effective_stock = sizing_detail.get("bucket_weight_per_effective_stock")
+        max_effective_count = sizing_detail.get("max_effective_count")
+        max_bucket_target = sizing_detail.get("max_bucket_target")
+        bucket_max_target = sizing_detail.get("bucket_max_target")
+        weighted_eligible_count_in_bucket = sizing_detail.get("weighted_eligible_count", 0.0)
+        weighted_count_used = sizing_detail.get("weighted_count_used", weighted_eligible_count_in_bucket)
+        effective_weighted_count_used = sizing_detail.get("effective_weighted_count_used", weighted_count_used)
+        uncapped_bucket_target = sizing_detail.get("uncapped_bucket_target")
         score_total = bucket_score_totals.get(rating, 0.0)
         bucket_share = (item["company_bucket_score"] / score_total * 100.0) if score_total > 0 else 0.0
         raw_target = bucket_target * item["company_bucket_score"] / score_total if score_total > 0 else 0.0
@@ -6663,7 +6703,10 @@ def build_action_plan(conn):
                 "bucket_effective_target": bucket_target,
                 "bucket_weight_per_effective_stock": bucket_weight_per_effective_stock,
                 "max_effective_count": max_effective_count,
+                "weighted_count_used": weighted_count_used,
                 "effective_weighted_count_used": effective_weighted_count_used,
+                "uncapped_bucket_target": uncapped_bucket_target,
+                "bucket_max_target": bucket_max_target,
                 "max_bucket_target": max_bucket_target,
                 "eligible_count_in_bucket": bucket_counts.get(rating, 0),
                 "weighted_eligible_count_in_bucket": weighted_eligible_count_in_bucket,
@@ -6749,11 +6792,20 @@ def build_action_plan(conn):
             status = "Capped"
         elif effective_target - allocated > 1e-9:
             status = "Underallocated"
+        sizing_detail = bucket_sizing_details.get(bucket) or _action_plan_bucket_sizing_details(bucket, bucket_weighted_counts.get(bucket, 0.0), raw_target, settings, dynamic_mode)
         bucket_summary.append({
             "bucket": bucket,
             "bucket_target_percent": effective_target,
             "eligible_count": eligible_count,
-            "weighted_eligible_count": bucket_weighted_counts.get(bucket, 0.0),
+            "weighted_eligible_count": sizing_detail.get("weighted_eligible_count", bucket_weighted_counts.get(bucket, 0.0)),
+            "max_effective_count": sizing_detail.get("max_effective_count"),
+            "weighted_count_used": sizing_detail.get("weighted_count_used"),
+            "effective_weighted_count_used": sizing_detail.get("effective_weighted_count_used"),
+            "bucket_weight_per_effective_stock": sizing_detail.get("bucket_weight_per_effective_stock"),
+            "uncapped_bucket_target": sizing_detail.get("uncapped_bucket_target"),
+            "raw_bucket_target": sizing_detail.get("raw_bucket_target", raw_target),
+            "bucket_max_target": sizing_detail.get("bucket_max_target"),
+            "max_bucket_target": sizing_detail.get("max_bucket_target"),
             "raw_target": raw_target,
             "effective_target": effective_target,
             "compression_amount": bucket_compression.get(bucket, 0.0),

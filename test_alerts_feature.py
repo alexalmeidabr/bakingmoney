@@ -1374,11 +1374,14 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('updateActionPlanSortHeaderState(); renderActionPlan();', js)
         self.assertIn('sortActionPlanItems(getFilteredActionPlanItems()).forEach', js)
         self.assertIn('if (leftValue == null) return 1;', js)
-        self.assertIn('Weighted Eligible Count', js)
+        self.assertIn('Weighted Count Used', js)
+        self.assertIn('Total Weighted Eligible Count', js)
         self.assertIn('weighted_eligible_count_in_bucket', js)
         self.assertIn('Bucket Weight / Effective Stock', js)
+        self.assertIn('Uncapped Bucket Target', js)
         self.assertIn('effective_weighted_count_used', js)
-        self.assertIn('Max Bucket Target', js)
+        self.assertIn('Max Effective Count', js)
+        self.assertIn('action-plan-bucket-diagnostic', css)
         self.assertIn('function renderActionPlanBuckets()', js)
         self.assertIn('function renderActionPlanBucketPanel(bucket)', js)
         self.assertIn('function renderActionPlanBucketCompanyTable(rows)', js)
@@ -2516,7 +2519,20 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertEqual(payload["summary"]["total_portfolio_value"], 1000.0)
                     buy_bucket = next(item for item in payload["summary"]["bucket_summary"] if item["bucket"] == "Buy")
                     self.assertIn("weighted_eligible_count", buy_bucket)
+                    self.assertIn("weighted_count_used", buy_bucket)
+                    self.assertIn("max_effective_count", buy_bucket)
+                    self.assertIn("bucket_weight_per_effective_stock", buy_bucket)
+                    self.assertIn("uncapped_bucket_target", buy_bucket)
+                    self.assertIn("bucket_max_target", buy_bucket)
                     self.assertGreater(buy_bucket["weighted_eligible_count"], 0)
+                    self.assertAlmostEqual(
+                        buy_bucket["weighted_count_used"],
+                        min(buy_bucket["weighted_eligible_count"], buy_bucket["max_effective_count"]),
+                    )
+                    self.assertAlmostEqual(
+                        buy_bucket["uncapped_bucket_target"],
+                        buy_bucket["weighted_count_used"] * buy_bucket["bucket_weight_per_effective_stock"],
+                    )
                     self.assertIn("raw_target", buy_bucket)
                     self.assertIn("effective_target", buy_bucket)
                     self.assertIn("allocated_before_caps", buy_bucket)
@@ -2665,6 +2681,26 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings["action_bucket_sizing_potential_weight"] = 0.0
         with self.assertRaisesRegex(ValueError, "Bucket sizing weights"):
             web_server.validate_action_plan_settings(settings)
+
+
+    def test_action_plan_bucket_sizing_details_show_effective_count_used(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_buy_weight_per_effective_stock"] = 5.0
+        settings["action_buy_max_effective_count"] = 12.0
+        settings["action_buy_max_bucket_target"] = 45.0
+
+        capped = web_server._action_plan_bucket_sizing_details("Buy", 15.0, 0.0, settings, dynamic_mode=True)
+        self.assertEqual(capped["weighted_eligible_count"], 15.0)
+        self.assertEqual(capped["max_effective_count"], 12.0)
+        self.assertEqual(capped["weighted_count_used"], 12.0)
+        self.assertEqual(capped["uncapped_bucket_target"], 60.0)
+        self.assertEqual(capped["raw_bucket_target"], 45.0)
+        self.assertEqual(capped["bucket_max_target"], 45.0)
+
+        uncapped = web_server._action_plan_bucket_sizing_details("Buy", 6.13, 0.0, settings, dynamic_mode=True)
+        self.assertEqual(uncapped["weighted_count_used"], 6.13)
+        self.assertAlmostEqual(uncapped["uncapped_bucket_target"], 30.65)
+        self.assertAlmostEqual(uncapped["raw_bucket_target"], 30.65)
 
     def test_action_plan_target_band_wraps_target_mid_with_tolerance(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

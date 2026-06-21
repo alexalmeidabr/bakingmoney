@@ -167,6 +167,10 @@ const configScenarioProbabilityBackendBaseMaxEl = document.getElementById('confi
 const configScenarioProbabilityBackendBaseMinEl = document.getElementById('config-scenario-probability-backend-base-min');
 const configActionPlanInputs = document.querySelectorAll('[data-action-plan-setting]');
 const configActionPlanTotalEl = document.getElementById('config-action-plan-total');
+const configHelpModalEl = document.getElementById('config-help-modal');
+const configHelpTitleEl = document.getElementById('config-help-title');
+const configHelpContentEl = document.getElementById('config-help-content');
+const configHelpCloseBtn = document.getElementById('config-help-close-btn');
 const configSaveBtn = document.getElementById('config-save-btn');
 const configCancelBtn = document.getElementById('config-cancel-btn');
 const configRestoreDefaultsBtn = document.getElementById('config-restore-defaults-btn');
@@ -437,6 +441,224 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_treat_cash_equivalents_as_cash: true,
   action_cash_equivalent_symbols: 'SGOV',
 };
+
+const CONFIG_HELP = {};
+let lastConfigHelpTrigger = null;
+
+function addConfigHelp(key, help) {
+  CONFIG_HELP[key] = help;
+}
+
+function registerActionPlanConfigHelp() {
+  addConfigHelp('action_use_dynamic_bucket_sizing', {
+    title: 'Use dynamic bucket sizing',
+    meaning: 'Turns on the dynamic Action Plan bucket model instead of fixed bucket percentages.',
+    usedIn: 'Used when the Action Plan decides each rating bucket target before company-level allocation.',
+    formula: 'Dynamic mode: Raw Bucket Target = min(Weighted Count Used × Weight / Effective Stock, Max Bucket Target)',
+    example: 'When enabled, a Buy bucket with more qualified opportunities grows automatically instead of using a fixed Buy bucket percentage.',
+    tuning: 'Keep this enabled for the intended model. Turn it off only to fall back to legacy fixed bucket targets.',
+    related: ['Weighted Count settings', 'Bucket weight/effective stock', 'Max bucket %'],
+  });
+  addConfigHelp('action_use_weighted_eligible_count', {
+    title: 'Use weighted eligible count',
+    meaning: 'Counts companies by opportunity quality instead of treating every eligible company as exactly one full stock.',
+    usedIn: 'Used in dynamic bucket sizing to decide how much each bucket expands.',
+    formula: 'Weighted Count = clamp((Bucket Sizing Score - Min Score) / (Full Score - Min Score), 0, Max Contribution)',
+    example: 'A company with a medium Bucket Sizing Score might count as 0.50 effective stocks.',
+    tuning: 'Keep enabled when you want weak opportunities to expand buckets less than strong opportunities.',
+    related: ['Weighted Count Min Score', 'Weighted Count Full Score', 'Bucket Sizing Score'],
+  });
+  addConfigHelp('action_min_cash_unallocated_target', {
+    title: 'Minimum cash/unallocated %',
+    meaning: 'Minimum percentage of the portfolio reserved for cash or unallocated capacity.',
+    usedIn: 'Used in bucket reconciliation and the cash-constrained execution layer.',
+    formula: 'Available Buy Budget = Cash-like Available + Executable Sell/Trim Proceeds - Minimum Cash Reserve',
+    example: 'With a $100,000 portfolio and 10% reserve, the execution layer protects $10,000 before funding adds.',
+    tuning: 'Increase this to keep more liquidity. Decrease it to allow more capital to be deployed into stock targets.',
+    related: ['Cash-equivalent symbols', 'Minimum executable trade amount'],
+  });
+  addConfigHelp('action_min_executable_trade_amount', {
+    title: 'Minimum executable trade amount',
+    meaning: 'Minimum dollar amount for a buy/add recommendation to be considered practical to execute now.',
+    usedIn: 'Used only by the cash-constrained execution layer; it does not change target allocations.',
+    formula: 'If an allocated buy amount is below this threshold, it is usually marked Unfunded / Watch.',
+    example: 'If only $40 remains after higher-priority adds and this setting is $100, the remaining add is not recommended as an executable trade.',
+    tuning: 'Raise this to avoid tiny trades. Lower it if you are comfortable with smaller incremental adds.',
+    related: ['Available Buy Budget', 'Total Add Demand', 'Funding Status'],
+  });
+  addConfigHelp('action_weighted_count_min_score', {
+    title: 'Weighted Count Min Score',
+    meaning: 'Minimum Bucket Sizing Score needed before a company expands its bucket.',
+    usedIn: 'Converts Bucket Sizing Score into Weighted Count for bucket expansion.',
+    formula: 'Weighted Count = clamp((Bucket Sizing Score - Min Score) / (Full Score - Min Score), 0, Max Contribution)',
+    example: 'Min score 0.15, full score 0.75, Bucket Sizing Score 0.45 → Weighted Count 0.50.',
+    tuning: 'Increase to make bucket growth more selective. Decrease to let moderate opportunities expand buckets sooner.',
+    related: ['Weighted Count Full Score', 'Weighted Count Max Contribution', 'Bucket Sizing Score'],
+  });
+  addConfigHelp('action_weighted_count_full_score', {
+    title: 'Weighted Count Full Score',
+    meaning: 'Bucket Sizing Score where a company counts as one full effective stock.',
+    usedIn: 'Used with Min Score to scale Weighted Count gradually.',
+    formula: 'Weighted Count reaches Max Contribution when Bucket Sizing Score reaches this value.',
+    example: 'If Full Score is 0.75, a company scoring 0.75 or higher can count as one full effective stock.',
+    tuning: 'Raise this to require stronger opportunities for full bucket expansion. Lower it to fill buckets faster.',
+    related: ['Weighted Count Min Score', 'Weighted Count Max Contribution'],
+  });
+  addConfigHelp('action_weighted_count_max_contribution', {
+    title: 'Weighted Count Max Contribution',
+    meaning: 'Maximum bucket-expansion contribution per company.',
+    usedIn: 'Caps row-level Weighted Count before it is summed into a bucket total.',
+    formula: 'Weighted Count is clamped to this maximum contribution.',
+    example: 'A max contribution of 1.00 means no single company can expand a bucket by more than one effective stock.',
+    tuning: 'Usually keep at 1.00. Lower values make bucket growth more diversified across more names.',
+    related: ['Bucket Sizing Score', 'Max Effective Count'],
+  });
+
+  [
+    ['action_allocation_upside_weight', 'Allocation upside weight', 'how directly upside influences company allocation inside a bucket'],
+    ['action_allocation_core_weight', 'Allocation core weight', 'how much core conviction influences company allocation inside a bucket'],
+    ['action_allocation_potential_weight', 'Allocation potential weight', 'how much potential-driver conviction influences company allocation inside a bucket'],
+  ].forEach(([key, title, meaning]) => addConfigHelp(key, {
+    title,
+    meaning: `Controls ${meaning}. Allocation weights are normalized internally if they do not sum to 1.0.`,
+    usedIn: 'Used by Allocation Score, which distributes each bucket across companies.',
+    formula: 'Allocation Score = (upside weight × upside score + core weight × core conviction score + potential weight × potential conviction score) × allocation risk modifier',
+    example: 'Higher upside weight gives high-upside companies a larger share of the bucket even when conviction is moderate.',
+    tuning: 'Increase this weight to emphasize the factor; decrease it to rely more on the other allocation factors.',
+    related: ['Allocation risk penalty strength', 'Bucket Sizing Score weights'],
+  }));
+  addConfigHelp('action_allocation_risk_penalty_strength', {
+    title: 'Allocation risk penalty strength',
+    meaning: 'Controls how strongly bearish core confidence reduces Allocation Score.',
+    usedIn: 'Used after the weighted Allocation Score blend.',
+    formula: 'Allocation Risk Modifier = 1 - ((1 - Core Risk Modifier) × Risk Penalty Strength)',
+    example: 'If Core Risk Modifier is 0.50 and strength is 0.60, Allocation Risk Modifier is 0.70.',
+    tuning: 'Increase to penalize bearish-core names more. Decrease to let upside and potential contribute more despite core risk.',
+    related: ['Core bearish penalty start', 'Core bearish penalty full'],
+  });
+  [
+    ['action_bucket_sizing_upside_weight', 'Bucket sizing upside weight', 'upside'],
+    ['action_bucket_sizing_core_weight', 'Bucket sizing core weight', 'core conviction'],
+    ['action_bucket_sizing_potential_weight', 'Bucket sizing potential weight', 'potential conviction'],
+  ].forEach(([key, title, factor]) => addConfigHelp(key, {
+    title,
+    meaning: `Controls how much ${factor} contributes to Bucket Sizing Score.`,
+    usedIn: 'Used by Bucket Sizing Score, which controls Weighted Count and bucket expansion.',
+    formula: 'Bucket Sizing Score = (upside weight × upside score + core weight × core conviction score + potential weight × potential conviction score) × bucket sizing risk modifier',
+    example: 'Increasing the upside weight lets companies with attractive upside expand buckets more, even if Allocation Score remains stricter.',
+    tuning: 'Tune separately from Allocation Score. Bucket sizing decides how large buckets become; allocation score decides how that bucket is split.',
+    related: ['Weighted Count Min Score', 'Allocation Score weights'],
+  }));
+  addConfigHelp('action_bucket_sizing_risk_penalty_strength', {
+    title: 'Bucket sizing risk penalty strength',
+    meaning: 'Controls how much core risk reduces Bucket Sizing Score.',
+    usedIn: 'Used before converting Bucket Sizing Score into Weighted Count.',
+    formula: 'Bucket Sizing Risk Modifier = 1 - ((1 - Core Risk Modifier) × Risk Penalty Strength)',
+    example: 'With strength 0.50, a core risk modifier of 0.50 becomes a milder bucket sizing modifier of 0.75.',
+    tuning: 'Increase to make risky names expand buckets less. Decrease to make bucket sizing more opportunity-driven.',
+    related: ['Allocation risk penalty strength', 'Weighted Count'],
+  });
+
+  ['Strong Buy', 'Buy', 'Speculative Buy', 'Hold'].forEach((bucket) => {
+    const prefix = bucket.toLowerCase().replace(/ /g, '_');
+    addConfigHelp(`action_${prefix}_weight_per_effective_stock`, {
+      title: `${bucket} weight/effective stock`,
+      meaning: `Percentage target added to the ${bucket} bucket for each 1.00 effective weighted stock.`,
+      usedIn: `Used in the dynamic ${bucket} raw bucket target calculation.`,
+      formula: 'Uncapped Bucket Target = Weighted Count Used × Weight / Effective Stock',
+      example: `Weighted Count Used = 8 and ${bucket} weight/effective stock = 10% → Uncapped Bucket Target = 80%.`,
+      tuning: `Increase to make the ${bucket} bucket grow faster as more companies qualify. Decrease to keep the bucket smaller.`,
+      related: [`${bucket} max effective count`, `${bucket} max bucket %`],
+    });
+    addConfigHelp(`action_${prefix}_max_effective_count`, {
+      title: `${bucket} max effective count`,
+      meaning: `Caps how many weighted opportunities can expand the ${bucket} bucket.`,
+      usedIn: `Used before multiplying by ${bucket} weight/effective stock.`,
+      formula: 'Weighted Count Used = min(Total Weighted Eligible Count, Max Effective Count)',
+      example: 'Total Weighted Eligible Count = 14 and Max Effective Count = 10 → Weighted Count Used = 10.',
+      tuning: `Increase to let many ${bucket} opportunities expand the bucket. Decrease to limit concentration in this bucket.`,
+      related: [`${bucket} weight/effective stock`, `${bucket} max bucket %`],
+    });
+    addConfigHelp(`action_${prefix}_max_bucket_target`, {
+      title: `${bucket} max bucket %`,
+      meaning: `Maximum portfolio percentage the ${bucket} bucket can receive before compression.`,
+      usedIn: `Caps the dynamic ${bucket} raw bucket target.`,
+      formula: 'Raw Bucket Target = min(Uncapped Bucket Target, Max Bucket Target)',
+      example: 'Uncapped Bucket Target = 120% and Max Bucket = 75% → Raw Bucket Target = 75%.',
+      tuning: `Increase to allow more exposure to ${bucket} names. Decrease to cap this bucket more tightly.`,
+      related: [`${bucket} max effective count`, `${bucket} compression weight`],
+    });
+    addConfigHelp(`action_${prefix}_compression_weight`, {
+      title: `${bucket} compression weight`,
+      meaning: `Controls how much the ${bucket} bucket is reduced when total raw equity demand exceeds available portfolio capacity.`,
+      usedIn: 'Used in bucket reconciliation/compression.',
+      formula: 'Bucket Compression is proportional to Raw Bucket Target × Compression Weight',
+      example: 'A higher compression weight means this bucket gives up more allocation when raw demand exceeds capacity.',
+      tuning: 'Lower values protect a bucket during compression; higher values make it shrink more.',
+      related: ['Minimum cash/unallocated %', 'Raw Equity Demand'],
+    });
+  });
+
+  [
+    ['action_max_single_stock_weight', 'Max single-stock weight %', 'the maximum allowed target for any individual stock'],
+    ['action_max_strong_buy_stock_weight', 'Max Strong Buy stock weight %', 'the max target for a Strong Buy stock'],
+    ['action_max_buy_stock_weight', 'Max Buy stock weight %', 'the max target for a Buy stock'],
+    ['action_max_speculative_buy_stock_weight', 'Max Speculative Buy stock weight %', 'the max target for a Speculative Buy stock'],
+    ['action_max_negative_core_weight', 'Max negative-core stock weight %', 'the max target when core confidence is negative'],
+    ['action_max_very_negative_core_weight', 'Max very-negative-core stock weight %', 'the max target when core confidence is very negative'],
+  ].forEach(([key, title, meaning]) => addConfigHelp(key, {
+    title,
+    meaning: `Controls ${meaning}. The effective stock cap is usually the minimum applicable cap.`,
+    usedIn: 'Applied after target-mid-before-caps is calculated.',
+    formula: 'Target Mid After Caps = min(Target Mid Before Caps, applicable caps)',
+    example: 'If max single-stock weight is 8% and max Strong Buy stock weight is 15%, the effective Strong Buy cap is 8%.',
+    tuning: 'Increase to allow larger individual positions. Decrease to force more diversification or risk control.',
+    related: ['Target Mid Before Caps', 'Cap Reason'],
+  }));
+
+  addConfigHelp('action_upside_zero_score', {
+    title: 'Upside zero score %',
+    meaning: 'Upside percentage that maps to an upside score of 0.00.',
+    usedIn: 'Used by both Allocation Score and Bucket Sizing Score.',
+    formula: 'Upside Score = clamp((Upside - Zero Score) / (Full Score - Zero Score), 0, 1)',
+    example: 'If zero is 10% and full is 100%, then 10% upside maps to 0.00.',
+    tuning: 'Raise this to require more upside before a company gets any upside-score credit.',
+    related: ['Upside full score %'],
+  });
+  addConfigHelp('action_upside_full_score', {
+    title: 'Upside full score %',
+    meaning: 'Upside percentage that maps to a full upside score of 1.00.',
+    usedIn: 'Used by both Allocation Score and Bucket Sizing Score.',
+    formula: 'Upside Score = clamp((Upside - Zero Score) / (Full Score - Zero Score), 0, 1)',
+    example: 'If zero is 10% and full is 100%, then 55% upside maps to about 0.50 and 100% maps to 1.00.',
+    tuning: 'If too low, upside stops differentiating high-upside companies. If too high, upside contributes more gradually.',
+    related: ['Upside zero score %'],
+  });
+
+  [
+    ['action_starter_buy_base_required_upside', 'Starter Buy base required upside', 'base upside required before a starter buy is attractive'],
+    ['action_add_base_required_upside', 'Add base required upside', 'base upside required before adding to an underweight position'],
+    ['action_strong_add_base_required_upside', 'Strong Add base required upside', 'base upside required before a high-priority add'],
+    ['action_trim_remaining_upside_threshold', 'Trim remaining upside threshold', 'remaining upside threshold where trimming becomes reasonable'],
+    ['action_sell_remaining_upside_threshold', 'Sell remaining upside threshold', 'remaining upside threshold where selling becomes reasonable'],
+    ['action_underweight_discount_max', 'Underweight discount max', 'maximum reduction to required upside when a position is under target'],
+    ['action_quality_discount_max', 'Quality discount max', 'maximum reduction to required upside for higher-quality opportunities'],
+    ['action_overweight_penalty_max', 'Overweight penalty max', 'maximum increase to required upside when a position is already overweight'],
+    ['action_low_quality_penalty_max', 'Low-quality penalty max', 'maximum increase to required upside for lower-quality opportunities'],
+    ['action_trigger_min_required_upside', 'Trigger min required upside', 'minimum dynamic required upside after adjustments'],
+    ['action_trigger_max_required_upside', 'Trigger max required upside', 'maximum dynamic required upside after adjustments'],
+  ].forEach(([key, title, meaning]) => addConfigHelp(key, {
+    title,
+    meaning: `Controls ${meaning}.`,
+    usedIn: 'Used by allocation-aware trigger price and action gating logic, not by long-term target allocation.',
+    formula: 'Trigger Price = Expected Price / (1 + Dynamic Required Upside)',
+    example: 'If expected price is $100 and dynamic required upside is 25%, the add trigger is $80.',
+    tuning: 'Higher required upside makes buys more selective. Lower required upside makes actions execute sooner.',
+    related: ['Trigger quality score', 'Target band', 'Current weight'],
+  }));
+}
+
+registerActionPlanConfigHelp();
 
 let savedGeneralSettings = null;
 
@@ -969,6 +1191,82 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function getConfigFieldLabel(labelEl, controlEl) {
+  const clone = labelEl.cloneNode(true);
+  clone.querySelectorAll('input, select, textarea, button, small').forEach((node) => node.remove());
+  const text = clone.textContent.trim().replace(/\s+/g, ' ');
+  if (text) return text;
+  return controlEl?.id?.replace(/^config-/, '').replace(/-/g, ' ') || 'Configuration parameter';
+}
+
+function getConfigHelpKey(controlEl) {
+  return controlEl?.dataset?.actionPlanSetting || controlEl?.id?.replace(/^config-/, '').replace(/-/g, '_') || '';
+}
+
+function getConfigHelpContent(key, label) {
+  return CONFIG_HELP[key] || {
+    title: label || key || 'Configuration parameter',
+    meaning: 'No detailed explanation is available yet.',
+    usedIn: 'This parameter is shown on the Configuration page and is saved with the rest of the app settings.',
+    tuning: 'Use the default unless you have a specific reason to tune this setting.',
+  };
+}
+
+function renderConfigHelpSections(help) {
+  const sections = [
+    ['Meaning', help.meaning],
+    ['Where used', help.usedIn],
+    ['Formula / impact', help.formula, 'pre'],
+    ['Example', help.example, 'pre'],
+    ['Tuning guidance', help.tuning],
+  ].filter(([, value]) => value);
+  const related = Array.isArray(help.related) && help.related.length
+    ? `<section class="config-help-section"><h4>Related parameters</h4><div class="config-help-related">${help.related.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}</div></section>`
+    : '';
+  return `${sections.map(([title, value, type]) => `<section class="config-help-section"><h4>${escapeHtml(title)}</h4>${type === 'pre' ? `<pre>${escapeHtml(value)}</pre>` : `<p>${escapeHtml(value)}</p>`}</section>`).join('')}${related}`;
+}
+
+function openConfigHelpModal(key, label, triggerEl) {
+  if (!configHelpModalEl || !configHelpTitleEl || !configHelpContentEl) return;
+  const help = getConfigHelpContent(key, label);
+  lastConfigHelpTrigger = triggerEl || null;
+  configHelpTitleEl.textContent = help.title || label || 'Configuration Help';
+  configHelpContentEl.innerHTML = renderConfigHelpSections(help);
+  configHelpModalEl.classList.remove('hidden');
+  configHelpCloseBtn?.focus();
+}
+
+function closeConfigHelpModal() {
+  if (!configHelpModalEl) return;
+  configHelpModalEl.classList.add('hidden');
+  if (lastConfigHelpTrigger && typeof lastConfigHelpTrigger.focus === 'function') {
+    lastConfigHelpTrigger.focus();
+  }
+  lastConfigHelpTrigger = null;
+}
+
+function initializeConfigHelpIcons() {
+  document.querySelectorAll('#configuration label').forEach((labelEl) => {
+    const controlEl = labelEl.querySelector('input, select, textarea');
+    if (!controlEl || labelEl.querySelector('.config-help-button')) return;
+    const key = getConfigHelpKey(controlEl);
+    const label = getConfigFieldLabel(labelEl, controlEl);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'config-help-button';
+    button.dataset.configHelpKey = key;
+    button.dataset.configHelpLabel = label;
+    button.setAttribute('aria-label', `Show help for ${label}`);
+    button.textContent = 'i';
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openConfigHelpModal(key, label, button);
+    });
+    const small = labelEl.querySelector('small');
+    labelEl.insertBefore(button, small || null);
+  });
+}
 
 function normalizeDriverCategory(value) {
   return value === 'Potential Driver' ? 'Potential Driver' : 'Core Driver';
@@ -4580,6 +4878,11 @@ document.addEventListener('keydown', (event) => {
   setEarningsCalendarDateFilterOpen(false);
   setEarningsCalendarFiscalYearFilterOpen(false);
   setEarningsCalendarFiscalQuarterFilterOpen(false);
+  closeConfigHelpModal();
+});
+configHelpCloseBtn?.addEventListener('click', closeConfigHelpModal);
+configHelpModalEl?.addEventListener('click', (event) => {
+  if (event.target === configHelpModalEl) closeConfigHelpModal();
 });
 analysisSelectAllEl.addEventListener('change', () => {
   const visibleItems = getFilteredAnalysisItems();
@@ -4850,6 +5153,7 @@ setPositionsRatingFilterOpen(false);
 setActionPlanRatingFilterOpen(false);
 setActionPlanActionFilterOpen(false);
 setEarningsCalendarDateFilterOpen(false);
+initializeConfigHelpIcons();
 loadTwsDataToggleState();
 
 async function handleInitialRoute() {

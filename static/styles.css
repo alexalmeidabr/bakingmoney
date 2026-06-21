@@ -405,6 +405,32 @@ th.sortable[data-sort-direction='desc']::after {
   margin-top: 10px;
 }
 
+.config-help-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.config-help-button:hover,
+.config-help-button:focus {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: #eef6ff;
+  outline: none;
+}
+
 .config-preview {
   background: #0f172a;
   color: #e2e8f0;
@@ -917,6 +943,81 @@ th.sortable[data-sort-direction='desc']::after {
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
   padding: 18px;
   width: min(960px, 100%);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.modal-close-btn {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.modal-close-btn:hover,
+.modal-close-btn:focus {
+  color: var(--accent);
+  border-color: var(--accent);
+  outline: none;
+}
+
+.config-help-modal-content {
+  width: min(720px, 100%);
+}
+
+.config-help-content {
+  display: grid;
+  gap: 12px;
+}
+
+.config-help-section {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.config-help-section h4 {
+  margin: 0 0 6px;
+}
+
+.config-help-section p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.config-help-section pre {
+  margin: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.config-help-related {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.config-help-related span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: var(--muted);
+  padding: 4px 8px;
+  font-size: 0.8rem;
 }
 
 .external-scenario-form,

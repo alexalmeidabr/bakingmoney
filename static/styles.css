@@ -1212,157 +1212,101 @@ th.sortable[data-sort-direction='desc']::after {
   overflow-wrap: anywhere;
 }
 
-#action-plan .table-wrap {
+#action-plan-actions-panel .table-wrap {
   max-width: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 #action-plan-table {
-  table-layout: fixed;
-  width: 100%;
-  min-width: 0;
+  table-layout: auto;
+  width: max-content;
+  min-width: 1900px;
   font-size: 0.85rem;
 }
 
 #action-plan-table th,
 #action-plan-table td {
-  padding: 8px;
+  padding: 8px 12px;
   vertical-align: top;
-}
-
-#action-plan-table th:not(:last-child),
-#action-plan-table td:not(:last-child) {
-  white-space: nowrap;
-}
-
-#action-plan-table th:nth-child(12),
-#action-plan-table td:nth-child(12),
-#action-plan-table th:nth-child(14),
-#action-plan-table td:nth-child(14) {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  line-height: 1.35;
-}
-
-#action-plan-table th:nth-child(14),
-#action-plan-table td:nth-child(14) {
-  width: 24%;
-  max-width: 320px;
-}
-
-#action-plan-table th:nth-child(9),
-#action-plan-table td:nth-child(9),
-#action-plan-table th:nth-child(10),
-#action-plan-table td:nth-child(10) {
-  width: 10%;
-  min-width: 132px;
-}
-
-#action-plan-table th:nth-child(11),
-#action-plan-table td:nth-child(11) {
-  width: 8%;
-  min-width: 112px;
-}
-
-#action-plan-table th:nth-child(9),
-#action-plan-table th:nth-child(10),
-#action-plan-table th:nth-child(11) {
-  white-space: normal;
-  overflow-wrap: normal;
-  line-height: 1.25;
-}
-
-#action-plan-table th,
-#action-plan-table td {
-  padding-left: 10px;
-  padding-right: 10px;
-}
-
-#action-plan-table th:nth-child(3),
-#action-plan-table td:nth-child(3) {
-  width: 11%;
-  min-width: 140px;
-  white-space: nowrap;
-}
-
-#action-plan-table th:nth-child(4),
-#action-plan-table td:nth-child(4) {
-  width: 8.5%;
-  min-width: 115px;
   white-space: nowrap;
 }
 
 #action-plan-table .symbol-column,
 #action-plan-table .symbol-cell {
-  width: 5%;
-  min-width: 68px;
+  min-width: 80px;
 }
 
 #action-plan-table .action-column,
 #action-plan-table .action-cell {
-  width: 6%;
-  min-width: 82px;
+  min-width: 120px;
+}
+
+#action-plan-table .target-gap-column,
+#action-plan-table .target-gap-cell {
+  min-width: 130px;
+  text-align: right;
 }
 
 #action-plan-table .action-amount-column,
 #action-plan-table .action-amount-cell {
-  width: 10.5%;
+  min-width: 160px;
+  text-align: right;
+}
+
+#action-plan-table .funding-column,
+#action-plan-table .funding-cell {
   min-width: 150px;
-  white-space: nowrap;
 }
 
 #action-plan-table .trigger-price-column,
-#action-plan-table .trigger-price-cell,
+#action-plan-table .trigger-price-cell {
+  min-width: 130px;
+  text-align: right;
+}
+
 #action-plan-table .current-price-column,
 #action-plan-table .current-price-cell {
-  width: 8.5%;
-  min-width: 122px;
-  white-space: nowrap;
+  min-width: 120px;
+  text-align: right;
 }
 
 #action-plan-table .distance-column,
 #action-plan-table .distance-cell {
-  width: 6.5%;
-  min-width: 94px;
-  white-space: nowrap;
+  min-width: 100px;
+  text-align: right;
 }
 
 #action-plan-table .rating-column,
 #action-plan-table .rating-cell {
-  width: 7.5%;
-  min-width: 98px;
+  min-width: 120px;
 }
 
 #action-plan-table .upside-column,
-#action-plan-table .upside-cell,
-#action-plan-table .gap-column,
-#action-plan-table .gap-cell {
-  width: 6.5%;
-  min-width: 86px;
-  white-space: nowrap;
+#action-plan-table .upside-cell {
+  min-width: 100px;
+  text-align: right;
 }
 
 #action-plan-table .core-confidence-column,
-#action-plan-table .core-confidence-cell,
+#action-plan-table .core-confidence-cell {
+  min-width: 160px;
+}
+
 #action-plan-table .potential-confidence-column,
 #action-plan-table .potential-confidence-cell {
-  width: 10%;
-  min-width: 132px;
+  min-width: 170px;
 }
 
 #action-plan-table .current-weight-column,
 #action-plan-table .current-weight-cell {
-  width: 8%;
-  min-width: 112px;
-  white-space: nowrap;
+  min-width: 130px;
+  text-align: right;
 }
 
 #action-plan-table .target-band-column,
 #action-plan-table .target-band-cell {
-  width: 12%;
-  min-width: 150px;
-  white-space: normal;
-  overflow-wrap: normal;
+  min-width: 180px;
 }
 
 #action-plan-table .target-band-range,
@@ -1371,10 +1315,16 @@ th.sortable[data-sort-direction='desc']::after {
   white-space: nowrap;
 }
 
+#action-plan-table .gap-column,
+#action-plan-table .gap-cell {
+  min-width: 120px;
+  text-align: right;
+}
+
 #action-plan-table .reason-column,
 #action-plan-table .reason-cell {
-  width: auto;
-  max-width: 360px;
+  min-width: 320px;
+  max-width: 420px;
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.35;

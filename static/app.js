@@ -96,6 +96,8 @@ const analysisVersionPrevBtn = document.getElementById('analysis-version-prev-bt
 const analysisVersionNextBtn = document.getElementById('analysis-version-next-btn');
 const analysisVersionSelect = document.getElementById('analysis-version-select');
 const analysisEditVariablesBtn = document.getElementById('analysis-edit-variables-btn');
+const analysisCopyKeyVarsBtn = document.getElementById('analysis-copy-key-vars-btn');
+const analysisCopyReviewPromptBtn = document.getElementById('analysis-copy-review-prompt-btn');
 const analysisImportVariablesBtn = document.getElementById('analysis-import-variables-btn');
 const analysisKeyVariableImportModalEl = document.getElementById('analysis-key-variable-import-modal');
 const analysisKeyVariableImportJsonEl = document.getElementById('analysis-key-variable-import-json');
@@ -2508,6 +2510,186 @@ function getCurrentAnalysisKeyVariables() {
   return hasSavedEditsForVersion
     ? analysisDetailState.saved_key_variable_edits.key_variables || []
     : analysisDetailState.version.key_variables || [];
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function probabilityToPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.abs(number) <= 1 ? Number((number * 100).toFixed(2)) : Number(number.toFixed(2));
+}
+
+function normalizeCopiedKeyVariable(variable = {}) {
+  return {
+    variable: variable.variable_text || variable.variable || '',
+    type: variable.variable_type || variable.type || 'Bullish',
+    driver_category: normalizeDriverCategory(variable.driver_category),
+    confidence: numberOrNull(variable.confidence),
+    importance: numberOrNull(variable.importance),
+  };
+}
+
+function buildCopiedConfidence(item) {
+  const core = getCoreConfidenceFields(item);
+  const coreBullish = numberOrNull(core.bullish);
+  const coreBearish = numberOrNull(core.bearish);
+  const potentialBullish = numberOrNull(item?.potential_bullish_confidence);
+  const potentialBearish = numberOrNull(item?.potential_bearish_confidence);
+  return {
+    core: {
+      net: numberOrNull(core.diff) ?? (coreBullish !== null && coreBearish !== null ? Number((coreBullish - coreBearish).toFixed(2)) : null),
+      bullish: coreBullish,
+      bearish: coreBearish,
+    },
+    potential: {
+      net: numberOrNull(item?.potential_confidence_diff) ?? (potentialBullish !== null && potentialBearish !== null ? Number((potentialBullish - potentialBearish).toFixed(2)) : null),
+      bullish: potentialBullish,
+      bearish: potentialBearish,
+    },
+  };
+}
+
+function normalizeCopiedScenario(scenario = {}) {
+  return {
+    name: scenario.scenario_name || scenario.name || '',
+    price_low: numberOrNull(scenario.price_low),
+    price_mid: numberOrNull(scenario.price_mid),
+    price_high: numberOrNull(scenario.price_high),
+    probability: probabilityToPercent(scenario.probability),
+  };
+}
+
+function getCopiedScenarioSummary(item) {
+  const overlay = analysisDetailState?.final_scenario_overlay;
+  const useFinal = Boolean(overlay);
+  const scenarios = useFinal ? overlay.scenarios : item.scenarios;
+  return {
+    source: useFinal ? 'Final Scenario Overlay' : 'BakingMoney Scenario',
+    is_stale: useFinal ? Boolean(overlay.is_stale) : false,
+    bakingmoney_weight: useFinal ? numberOrNull(overlay.bakingmoney_weight_percent) : 100,
+    external_weight: useFinal ? numberOrNull(overlay.external_total_weight_percent) : 0,
+    final_expected_price: numberOrNull(useFinal ? overlay.expected_price : item.expected_price),
+    final_expected_cagr: numberOrNull(useFinal ? overlay.expected_cagr : item.expected_cagr),
+    final_upside: numberOrNull(useFinal ? overlay.upside : item.upside),
+    last_recalculated: useFinal ? overlay.recalculated_at || null : null,
+    scenarios: (scenarios || []).map(normalizeCopiedScenario),
+  };
+}
+
+function buildCompanyReviewData() {
+  const item = analysisDetailState?.version;
+  if (!item) return null;
+  const release = getSelectedAnalysisReleaseEntry();
+  const scenarioSummary = getCopiedScenarioSummary(item);
+  return {
+    company_context: {
+      symbol: item.symbol || analysisDetailState?.symbol || null,
+      company_name: item.company_name || null,
+      version: item.version_number ?? analysisDetailState?.selected_version_id ?? null,
+      created_at: item.created_at || null,
+      business_model: getEffectiveBusinessModel() || null,
+      business_summary: getEffectiveBusinessSummary() || null,
+      assumptions: item.assumptions || null,
+    },
+    model_summary: {
+      current_price: numberOrNull(item.current_price),
+      expected_price: numberOrNull(item.expected_price),
+      expected_cagr: numberOrNull(item.expected_cagr),
+      upside: numberOrNull(item.upside),
+      rating: item.rating || null,
+      earnings_release: release ? formatAnalysisReleaseEntry(release) : null,
+      last_recalculated: scenarioSummary.last_recalculated,
+    },
+    confidence: buildCopiedConfidence(item),
+    scenario_summary: scenarioSummary,
+    key_variables: getCurrentAnalysisKeyVariables().map(normalizeCopiedKeyVariable),
+  };
+}
+
+function buildKeyVariablesCopyPayload() {
+  const item = analysisDetailState?.version;
+  if (!item) return null;
+  return {
+    symbol: item.symbol || analysisDetailState?.symbol || null,
+    company_name: item.company_name || null,
+    version: item.version_number ?? analysisDetailState?.selected_version_id ?? null,
+    created_at: item.created_at || null,
+    rating: item.rating || null,
+    current_price: numberOrNull(item.current_price),
+    expected_price: numberOrNull(item.expected_price),
+    upside: numberOrNull(item.upside),
+    expected_cagr: numberOrNull(item.expected_cagr),
+    confidence: buildCopiedConfidence(item),
+    key_variables: getCurrentAnalysisKeyVariables().map(normalizeCopiedKeyVariable),
+  };
+}
+
+function buildReviewPromptText() {
+  const data = buildCompanyReviewData();
+  if (!data) return '';
+  return `Review this company for BakingMoney.
+
+Please check whether the key variables are specific, non-overlapping, material over a 5-year horizon, correctly classified as Core/Potential and Bullish/Bearish, and useful for scenario building. Also check whether the current 5-year scenario and rating make sense based on the company trajectory, risks, valuation, and the key variables.
+
+If changes are needed:
+
+1. Identify the strongest variables.
+2. Identify weak, overlapping, or secondary variables.
+3. Explain any missing risks or drivers.
+4. Provide a revised full key-variable JSON.
+5. If the scenario should be changed, provide an improved external scenario JSON using only name, price_low, price_high, and probability.
+
+Company data:
+\`\`\`json
+${JSON.stringify(data, null, 2)}
+\`\`\``;
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const ok = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  if (!ok) throw new Error('Clipboard copy was not available.');
+}
+
+async function copyAnalysisKeyVariablesJson() {
+  const payload = buildKeyVariablesCopyPayload();
+  if (!payload) return;
+  try {
+    await copyTextToClipboard(JSON.stringify(payload, null, 2));
+    analysisDetailStatus.textContent = 'Copied key variables JSON to clipboard.';
+    analysisDetailStatus.className = 'status';
+  } catch (error) {
+    analysisDetailStatus.textContent = `Error copying key variables JSON: ${error.message}`;
+    analysisDetailStatus.className = 'status error';
+  }
+}
+
+async function copyAnalysisReviewPrompt() {
+  const prompt = buildReviewPromptText();
+  if (!prompt) return;
+  try {
+    await copyTextToClipboard(prompt);
+    analysisDetailStatus.textContent = 'Copied review prompt to clipboard.';
+    analysisDetailStatus.className = 'status';
+  } catch (error) {
+    analysisDetailStatus.textContent = `Error copying review prompt: ${error.message}`;
+    analysisDetailStatus.className = 'status error';
+  }
 }
 
 function normalizeAnalysisVariableForUi(variable = {}) {
@@ -5025,6 +5207,8 @@ analysisVariableTabButtons.forEach((button) => {
     renderVariablesTable();
   });
 });
+analysisCopyKeyVarsBtn.addEventListener('click', copyAnalysisKeyVariablesJson);
+analysisCopyReviewPromptBtn.addEventListener('click', copyAnalysisReviewPrompt);
 analysisEditVariablesBtn.addEventListener('click', () => {
   editableAnalysisVariables = getCurrentAnalysisKeyVariables().map(normalizeAnalysisVariableForUi);
   isEditingVariables = true;

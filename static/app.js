@@ -36,9 +36,15 @@ const actionPlanSummaryEl = document.getElementById('action-plan-summary');
 const actionPlanTableBody = document.querySelector('#action-plan-table tbody');
 const actionPlanActionsPanelEl = document.getElementById('action-plan-actions-panel');
 const actionPlanBucketsPanelEl = document.getElementById('action-plan-buckets-panel');
+const actionPlanBucketActionsTableWrapEl = document.getElementById('action-plan-bucket-actions-table-wrap');
+const actionPlanLinearActionsPanelEl = document.getElementById('action-plan-linear-actions-panel');
+const actionPlanLinearTableBody = document.querySelector('#action-plan-linear-table tbody');
+const actionPlanModeBucketBtn = document.getElementById('action-plan-mode-bucket');
+const actionPlanModeLinearBtn = document.getElementById('action-plan-mode-linear');
 const actionPlanBucketsContentEl = document.getElementById('action-plan-buckets-content');
 const actionPlanTabActionsBtn = document.getElementById('action-plan-tab-actions');
 const actionPlanTabBucketsBtn = document.getElementById('action-plan-tab-buckets');
+const actionPlanTabLinearBtn = document.getElementById('action-plan-tab-linear');
 const actionPlanSortHeaders = document.querySelectorAll('#action-plan-table th.sortable');
 const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
 const actionPlanListViewEl = document.getElementById('action-plan-list-view');
@@ -278,6 +284,7 @@ let selectedActionPlanDetail = null;
 let actionPlanSort = { key: null, direction: 'asc' };
 let actionPlanBucketSorts = {};
 let actionPlanActiveTab = 'actions';
+let actionPlanActionMode = 'bucket';
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
 let ratingFilters = new Set();
@@ -442,6 +449,31 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_strong_trim_gap_threshold: 0.25,
   action_treat_cash_equivalents_as_cash: true,
   action_cash_equivalent_symbols: 'SGOV',
+  linear_allocated_target_total_pct: 100.0,
+  linear_min_expected_cagr: 0.0,
+  linear_full_expected_cagr: 15.0,
+  linear_min_upside: 0.0,
+  linear_full_upside: 80.0,
+  linear_min_core_net: -1.0,
+  linear_full_core_net: 2.0,
+  linear_min_potential_net: -1.0,
+  linear_full_potential_net: 1.5,
+  linear_expected_cagr_weight: 40.0,
+  linear_upside_weight: 20.0,
+  linear_core_confidence_weight: 25.0,
+  linear_potential_confidence_weight: 10.0,
+  linear_confidence_quality_weight: 5.0,
+  linear_min_score_threshold: 0.10,
+  linear_zero_target_if_expected_cagr_negative: true,
+  linear_zero_target_if_upside_negative: true,
+  linear_max_single_stock_pct: 10.0,
+  linear_target_band_tolerance_pct: 15.0,
+  linear_enable_risk_caps: true,
+  linear_negative_core_net_cap_pct: 2.0,
+  linear_low_core_net_threshold: 0.5,
+  linear_low_core_net_cap_pct: 4.0,
+  linear_high_bearish_confidence_threshold: 8.0,
+  linear_high_bearish_confidence_cap_pct: 5.0,
 };
 
 const CONFIG_HELP = {};
@@ -1702,14 +1734,27 @@ function sortActionPlanItems(items) {
   }).map((entry) => entry.item);
 }
 
+function setActionPlanActionMode(mode) {
+  actionPlanActionMode = mode === 'linear' ? 'linear' : 'bucket';
+  actionPlanModeBucketBtn?.classList.toggle('active', actionPlanActionMode === 'bucket');
+  actionPlanModeLinearBtn?.classList.toggle('active', actionPlanActionMode === 'linear');
+  actionPlanBucketActionsTableWrapEl?.classList.toggle('hidden', actionPlanActionMode !== 'bucket');
+  actionPlanLinearActionsPanelEl?.classList.toggle('hidden', actionPlanActionMode !== 'linear');
+  renderActionPlan();
+}
+
 function setActionPlanTab(tab) {
-  actionPlanActiveTab = tab === 'buckets' ? 'buckets' : 'actions';
+  actionPlanActiveTab = tab === 'buckets' ? 'buckets' : (tab === 'linear' ? 'linear' : 'actions');
   const showBuckets = actionPlanActiveTab === 'buckets';
-  actionPlanTabActionsBtn?.classList.toggle('active', !showBuckets);
+  const showLinear = actionPlanActiveTab === 'linear';
+  actionPlanTabActionsBtn?.classList.toggle('active', actionPlanActiveTab === 'actions');
   actionPlanTabBucketsBtn?.classList.toggle('active', showBuckets);
-  actionPlanActionsPanelEl?.classList.toggle('hidden', showBuckets);
+  actionPlanTabLinearBtn?.classList.toggle('active', showLinear);
+  actionPlanActionsPanelEl?.classList.toggle('hidden', showBuckets || showLinear);
   actionPlanBucketsPanelEl?.classList.toggle('hidden', !showBuckets);
+  actionPlanLinearActionsPanelEl?.classList.toggle('hidden', !showLinear && actionPlanActionMode !== 'linear');
   if (showBuckets) renderActionPlanBuckets();
+  renderActionPlan();
 }
 
 function getActionPlanBucketRows(bucket) {
@@ -1950,13 +1995,57 @@ function renderActionPlanBuckets() {
   }));
 }
 
+function renderLinearAllocationRows() {
+  if (!actionPlanLinearTableBody) return;
+  const rows = Array.isArray(latestActionPlanPayload?.linear_action_plan) ? latestActionPlanPayload.linear_action_plan : [];
+  actionPlanLinearTableBody.innerHTML = '';
+  rows.forEach((item) => {
+    const row = document.createElement('tr');
+    const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
+    row.innerHTML = `<td><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td>
+      <td>${escapeHtml(item.company_name || '—')}</td>
+      <td>${escapeHtml(item.rating || 'Hold')}</td>
+      <td>${formatCurrencyValue(item.current_position_market_value, 'USD')}</td>
+      <td>${formatPercent(item.current_position_weight)}</td>
+      <td>${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)}</td>
+      <td>${targetBand}</td>
+      <td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td>
+      <td>${formatCurrencyValue(item.target_gap_amount, 'USD')}</td>
+      <td>${formatNumber(item.linear_allocation_score)}</td>
+      <td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td>
+      <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
+      <td class="${valueClass(item.core_confidence_diff)}">${formatNumber(item.core_confidence_diff)}</td>
+      <td class="${valueClass(item.potential_confidence_diff)}">${formatNumber(item.potential_confidence_diff)}</td>
+      <td>${formatNumber(item.core_bullish_confidence)}</td>
+      <td>${formatNumber(item.core_bearish_confidence)}</td>
+      <td>${formatPercent(item.cap_applied ?? item.linear_cap_applied)}</td>
+      <td>${escapeHtml(item.cap_reason || item.linear_cap_reason || '—')}</td>
+      <td>${escapeHtml(item.funding_status || 'No funding needed')}</td>
+      <td>${escapeHtml(item.action_amount_label || '—')}</td>`;
+    actionPlanLinearTableBody.appendChild(row);
+  });
+  actionPlanLinearTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+}
+
+function renderActionPlanSummaryCards(summary, modeLabel) {
+  if (modeLabel === 'Linear Allocation') {
+    return `<div class="summary-item summary-mode-card"><div class="label">Active Mode</div><div class="value">Linear Allocation</div></div><div class="summary-item"><div class="label">Linear Allocated Target Total</div><div class="value">${formatPercent(summary.linear_allocated_target_total ?? summary.linear_configured_target_total)}</div></div><div class="summary-item"><div class="label">Current Equity Allocation</div><div class="value">${formatPercent(summary.current_equity_allocation)}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${formatCurrencyValue(summary.available_buy_budget, 'USD')}</div></div><div class="summary-item"><div class="label">Total Linear Add Demand</div><div class="value">${formatCurrencyValue(summary.total_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Funded Linear Add Amount</div><div class="value">${formatCurrencyValue(summary.funded_add_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Unfunded Linear Add Demand</div><div class="value">${formatCurrencyValue(summary.unfunded_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Eligible Stocks</div><div class="value">${formatNumber(summary.eligible_stock_count, 0)}</div></div><div class="summary-item"><div class="label">Capped Stocks</div><div class="value">${formatNumber(summary.capped_stock_count, 0)}</div></div>${summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : ''}`;
+  }
+  return `<div class="summary-item summary-mode-card"><div class="label">Active Mode</div><div class="value">Bucket Allocation</div></div><div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.portfolio_value_used ?? summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(summary.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(summary.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${formatCurrencyValue(summary.available_buy_budget, 'USD')}</div></div><div class="summary-item"><div class="label">Total Add Demand</div><div class="value">${formatCurrencyValue(summary.total_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Funded Add Amount</div><div class="value">${formatCurrencyValue(summary.funded_add_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Unfunded Add Demand</div><div class="value">${formatCurrencyValue(summary.unfunded_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Executable Sell/Trim Proceeds</div><div class="value">${formatCurrencyValue(summary.executable_sell_trim_proceeds, 'USD')}</div></div><div class="summary-item"><div class="label">Minimum Cash Reserve</div><div class="value">${formatCurrencyValue(summary.minimum_cash_reserve_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated Target Capacity</div><div class="value">${formatPercent(summary.unallocated_target_capacity ?? summary.unallocated_target_total)}</div></div>`;
+}
+
 function renderActionPlan() {
   const payload = latestActionPlanPayload || { action_plan: [], summary: {} };
   const summary = payload.summary || {};
   const cashEquivalentNote = (summary.cash_equivalent_symbols || []).length ? `<p class="status">Cash-like holdings include ${escapeHtml((summary.cash_equivalent_symbols || []).join(', '))}.</p>` : '';
   const portfolioWarning = summary.portfolio_value_warning ? `<p class="status warning">${escapeHtml(summary.portfolio_value_warning)}</p>` : '';
   const executionWarning = summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : '';
-  actionPlanSummaryEl.innerHTML = `<div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.portfolio_value_used ?? summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(summary.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(summary.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${formatCurrencyValue(summary.available_buy_budget, 'USD')}</div></div><div class="summary-item"><div class="label">Total Add Demand</div><div class="value">${formatCurrencyValue(summary.total_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Funded Add Amount</div><div class="value">${formatCurrencyValue(summary.funded_add_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Unfunded Add Demand</div><div class="value">${formatCurrencyValue(summary.unfunded_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Executable Sell/Trim Proceeds</div><div class="value">${formatCurrencyValue(summary.executable_sell_trim_proceeds, 'USD')}</div></div><div class="summary-item"><div class="label">Minimum Cash Reserve</div><div class="value">${formatCurrencyValue(summary.minimum_cash_reserve_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated Target Capacity</div><div class="value">${formatPercent(summary.unallocated_target_capacity ?? summary.unallocated_target_total)}</div></div>${portfolioWarning}${executionWarning}${cashEquivalentNote}`;
+  const showLinearMode = actionPlanActiveTab === 'linear' || (actionPlanActiveTab === 'actions' && actionPlanActionMode === 'linear');
+  const visibleSummary = showLinearMode ? (summary.linear_summary || {}) : summary;
+  actionPlanSummaryEl.innerHTML = renderActionPlanSummaryCards(visibleSummary, showLinearMode ? 'Linear Allocation' : 'Bucket Allocation') + (showLinearMode ? '' : `${portfolioWarning}${executionWarning}${cashEquivalentNote}`);
+  renderLinearAllocationRows();
+  if (actionPlanBucketActionsTableWrapEl) actionPlanBucketActionsTableWrapEl.classList.toggle('hidden', actionPlanActiveTab !== 'actions' || actionPlanActionMode !== 'bucket');
+  if (actionPlanLinearActionsPanelEl) actionPlanLinearActionsPanelEl.classList.toggle('hidden', !(actionPlanActiveTab === 'linear' || (actionPlanActiveTab === 'actions' && actionPlanActionMode === 'linear')));
   actionPlanTableBody.innerHTML = '';
   sortActionPlanItems(getFilteredActionPlanItems()).forEach((item) => {
     const row = document.createElement('tr');
@@ -4890,6 +4979,9 @@ actionPlanSortHeaders.forEach((header) => header.addEventListener('click', () =>
 }));
 actionPlanTabActionsBtn.addEventListener('click', () => setActionPlanTab('actions'));
 actionPlanTabBucketsBtn.addEventListener('click', () => setActionPlanTab('buckets'));
+actionPlanTabLinearBtn?.addEventListener('click', () => setActionPlanTab('linear'));
+actionPlanModeBucketBtn?.addEventListener('click', () => setActionPlanActionMode('bucket'));
+actionPlanModeLinearBtn?.addEventListener('click', () => setActionPlanActionMode('linear'));
 analysisPortfolioFilterEl.addEventListener('change', () => {
   portfolioFilter = analysisPortfolioFilterEl.value || 'all';
   renderAnalysisList();

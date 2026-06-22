@@ -1417,6 +1417,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function renderActionPlanBucketPanel(bucket)', js)
         self.assertIn('function renderActionPlanBucketCompanyTable(rows, bucket)', js)
         self.assertIn('function setActionPlanTab(tab)', js)
+        self.assertIn('function setActionPlanActionMode(mode)', js)
+        self.assertIn('function renderLinearAllocationRows()', js)
         self.assertIn("actionPlanTabBucketsBtn.addEventListener('click'", js)
         self.assertIn('Cash / Unallocated', js)
         self.assertIn('Bucket Reconciliation', js)
@@ -2605,6 +2607,19 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     self.assertEqual(rows["SELL"]["action_amount"], 1000.0)
                     self.assertEqual(rows["SELL"]["funding_status"], "Generates proceeds")
                     self.assertIn("Sell about", rows["SELL"]["action_amount_label"])
+                    self.assertIn("linear_action_plan", payload)
+                    linear_rows = {row["symbol"]: row for row in payload["linear_action_plan"]}
+                    self.assertIn("BUY", linear_rows)
+                    self.assertIn("linear_allocation_score", linear_rows["BUY"])
+                    self.assertIn("linear_target_weight_mid", linear_rows["BUY"])
+                    self.assertEqual(linear_rows["BUY"].get("mode"), "linear")
+                    linear_summary = payload["summary"].get("linear_summary")
+                    self.assertIsInstance(linear_summary, dict)
+                    self.assertIn("linear_allocated_target_total", linear_summary)
+                    self.assertLessEqual(
+                        sum(row["executable_action_amount"] for row in payload["linear_action_plan"] if row.get("action_amount_direction") == "add"),
+                        linear_summary["available_buy_budget"] + 1e-6,
+                    )
                     self.assertEqual(payload["summary"]["total_portfolio_value"], 1000.0)
                     buy_bucket = next(item for item in payload["summary"]["bucket_summary"] if item["bucket"] == "Buy")
                     self.assertIn("weighted_eligible_count", buy_bucket)

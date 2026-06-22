@@ -739,6 +739,40 @@
               <label>Trigger min required upside <input id="config-action-trigger-min-required-upside" data-action-plan-setting="action_trigger_min_required_upside" type="number" min="0" max="2" step="0.01" value="0.10" /></label>
               <label>Trigger max required upside <input id="config-action-trigger-max-required-upside" data-action-plan-setting="action_trigger_max_required_upside" type="number" min="0" max="2" step="0.01" value="0.80" /></label>
               <label>Strong trim gap threshold <input id="config-action-strong-trim-gap-threshold" data-action-plan-setting="action_strong_trim_gap_threshold" type="number" min="0" max="1" step="0.01" value="0.25" /></label>
+            </div>
+
+            <h4>Linear Allocation Settings</h4>
+            <p class="form-help">Linear Allocation is a separate portfolio-wide model. It does not use bucket weights, bucket caps, weighted count, or bucket compression.</p>
+            <div class="table-actions config-actions settings-grid">
+              <label>Linear allocated target total % <input data-action-plan-setting="linear_allocated_target_total_pct" type="number" min="0" max="100" step="0.1" value="100" /></label>
+              <label>Linear min expected CAGR % <input data-action-plan-setting="linear_min_expected_cagr" type="number" step="0.1" value="0" /></label>
+              <label>Linear full expected CAGR % <input data-action-plan-setting="linear_full_expected_cagr" type="number" step="0.1" value="15" /></label>
+              <label>Linear min upside % <input data-action-plan-setting="linear_min_upside" type="number" step="0.1" value="0" /></label>
+              <label>Linear full upside % <input data-action-plan-setting="linear_full_upside" type="number" step="0.1" value="80" /></label>
+              <label>Linear min core net <input data-action-plan-setting="linear_min_core_net" type="number" step="0.1" value="-1" /></label>
+              <label>Linear full core net <input data-action-plan-setting="linear_full_core_net" type="number" step="0.1" value="2" /></label>
+              <label>Linear min potential net <input data-action-plan-setting="linear_min_potential_net" type="number" step="0.1" value="-1" /></label>
+              <label>Linear full potential net <input data-action-plan-setting="linear_full_potential_net" type="number" step="0.1" value="1.5" /></label>
+              <label>Linear expected CAGR weight <input data-action-plan-setting="linear_expected_cagr_weight" type="number" min="0" step="1" value="40" /></label>
+              <label>Linear upside weight <input data-action-plan-setting="linear_upside_weight" type="number" min="0" step="1" value="20" /></label>
+              <label>Linear core confidence weight <input data-action-plan-setting="linear_core_confidence_weight" type="number" min="0" step="1" value="25" /></label>
+              <label>Linear potential confidence weight <input data-action-plan-setting="linear_potential_confidence_weight" type="number" min="0" step="1" value="10" /></label>
+              <label>Linear confidence quality weight <input data-action-plan-setting="linear_confidence_quality_weight" type="number" min="0" step="1" value="5" /></label>
+              <label>Linear min score threshold <input data-action-plan-setting="linear_min_score_threshold" type="number" min="0" max="1" step="0.01" value="0.10" /></label>
+              <label><input data-action-plan-setting="linear_zero_target_if_expected_cagr_negative" type="checkbox" /> Zero target if expected CAGR negative</label>
+              <label><input data-action-plan-setting="linear_zero_target_if_upside_negative" type="checkbox" /> Zero target if upside negative</label>
+              <label>Linear max single-stock % <input data-action-plan-setting="linear_max_single_stock_pct" type="number" min="0" max="100" step="0.1" value="10" /></label>
+              <label>Linear target band tolerance % <input data-action-plan-setting="linear_target_band_tolerance_pct" type="number" min="0" max="100" step="0.1" value="15" /></label>
+              <label><input data-action-plan-setting="linear_enable_risk_caps" type="checkbox" /> Enable linear risk caps</label>
+              <label>Linear negative core net cap % <input data-action-plan-setting="linear_negative_core_net_cap_pct" type="number" min="0" max="100" step="0.1" value="2" /></label>
+              <label>Linear low core net threshold <input data-action-plan-setting="linear_low_core_net_threshold" type="number" step="0.1" value="0.5" /></label>
+              <label>Linear low core net cap % <input data-action-plan-setting="linear_low_core_net_cap_pct" type="number" min="0" max="100" step="0.1" value="4" /></label>
+              <label>Linear high bearish confidence threshold <input data-action-plan-setting="linear_high_bearish_confidence_threshold" type="number" min="0" max="10" step="0.1" value="8" /></label>
+              <label>Linear high bearish confidence cap % <input data-action-plan-setting="linear_high_bearish_confidence_cap_pct" type="number" min="0" max="100" step="0.1" value="5" /></label>
+            </div>
+            <h4>Shared Portfolio / Cash Settings</h4>
+            <p class="form-help">These settings affect funding and portfolio cash treatment for both Bucket Allocation and Linear Allocation.</p>
+            <div class="table-actions config-actions settings-grid">
               <label><input id="config-action-include-current-positions" data-action-plan-setting="action_include_current_positions" type="checkbox" /> Include current positions</label>
               <label><input id="config-action-include-strong-buy" data-action-plan-setting="action_include_strong_buy" type="checkbox" /> Include Strong Buy</label>
               <label><input id="config-action-include-buy" data-action-plan-setting="action_include_buy" type="checkbox" /> Include Buy</label>
@@ -781,10 +815,16 @@
           <div class="action-plan-tabs">
             <button id="action-plan-tab-actions" class="action-plan-tab active" type="button">Actions</button>
             <button id="action-plan-tab-buckets" class="action-plan-tab" type="button">Buckets</button>
+            <button id="action-plan-tab-linear" class="action-plan-tab" type="button">Linear Allocation</button>
           </div>
           <p id="action-plan-status" class="status">Loading Action Plan…</p>
           <div id="action-plan-summary" class="summary-grid"></div>
           <div id="action-plan-actions-panel">
+          <div class="action-plan-mode-switch" aria-label="Action Plan mode">
+            <span class="mode-switch-label">Actions mode:</span>
+            <button id="action-plan-mode-bucket" class="action-plan-mode-btn active" type="button">Bucket Allocation</button>
+            <button id="action-plan-mode-linear" class="action-plan-mode-btn" type="button">Linear Allocation</button>
+          </div>
           <div class="filter-row action-plan-filter-row">
             <label for="action-plan-rating-filter-toggle" class="inline-control-label">Rating Filter</label>
             <div id="action-plan-rating-filter" class="rating-filter" data-open="false">
@@ -828,7 +868,7 @@
               </div>
             </div>
           </div>
-          <div class="table-wrap">
+          <div id="action-plan-bucket-actions-table-wrap" class="table-wrap">
             <table id="action-plan-table">
               <thead>
                 <tr>
@@ -852,6 +892,38 @@
               </thead>
               <tbody></tbody>
             </table>
+          </div>
+          <div id="action-plan-linear-actions-panel" class="hidden">
+            <p class="status">Linear Allocation uses a continuous portfolio-wide score; rating is shown for context and does not size buckets.</p>
+            <div class="table-wrap action-plan-linear-table-wrap">
+              <table id="action-plan-linear-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Company Name</th>
+                    <th>Current Rating</th>
+                    <th>Current Market Value</th>
+                    <th>Current Weight</th>
+                    <th>Linear Target Mid</th>
+                    <th>Linear Target Band</th>
+                    <th>Gap to Linear Mid</th>
+                    <th>Target Gap Amount</th>
+                    <th>Linear Allocation Score</th>
+                    <th>Expected CAGR</th>
+                    <th>Upside</th>
+                    <th>Core Net</th>
+                    <th>Potential Net</th>
+                    <th>Bullish Core</th>
+                    <th>Bearish Core</th>
+                    <th>Cap Applied</th>
+                    <th>Cap Reason</th>
+                    <th>Funding Status</th>
+                    <th>Executable Action Amount</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
           </div>
           </div>
           <div id="action-plan-buckets-panel" class="hidden">

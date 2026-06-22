@@ -288,6 +288,31 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_show_unallocated_bucket_amount": True,
     "action_treat_cash_equivalents_as_cash": True,
     "action_cash_equivalent_symbols": "SGOV",
+    "linear_allocated_target_total_pct": 100.0,
+    "linear_min_expected_cagr": 0.0,
+    "linear_full_expected_cagr": 15.0,
+    "linear_min_upside": 0.0,
+    "linear_full_upside": 80.0,
+    "linear_min_core_net": -1.0,
+    "linear_full_core_net": 2.0,
+    "linear_min_potential_net": -1.0,
+    "linear_full_potential_net": 1.5,
+    "linear_expected_cagr_weight": 40.0,
+    "linear_upside_weight": 20.0,
+    "linear_core_confidence_weight": 25.0,
+    "linear_potential_confidence_weight": 10.0,
+    "linear_confidence_quality_weight": 5.0,
+    "linear_min_score_threshold": 0.10,
+    "linear_zero_target_if_expected_cagr_negative": True,
+    "linear_zero_target_if_upside_negative": True,
+    "linear_max_single_stock_pct": 10.0,
+    "linear_target_band_tolerance_pct": 15.0,
+    "linear_enable_risk_caps": True,
+    "linear_negative_core_net_cap_pct": 2.0,
+    "linear_low_core_net_threshold": 0.5,
+    "linear_low_core_net_cap_pct": 4.0,
+    "linear_high_bearish_confidence_threshold": 8.0,
+    "linear_high_bearish_confidence_cap_pct": 5.0,
 }
 ACTION_PLAN_BOOL_SETTINGS = {
     "action_include_current_positions",
@@ -304,6 +329,9 @@ ACTION_PLAN_BOOL_SETTINGS = {
     "action_allow_bucket_underallocation",
     "action_show_unallocated_bucket_amount",
     "action_treat_cash_equivalents_as_cash",
+    "linear_zero_target_if_expected_cagr_negative",
+    "linear_zero_target_if_upside_negative",
+    "linear_enable_risk_caps",
 }
 ACTION_PLAN_TEXT_SETTINGS = {
     "action_cash_equivalent_symbols",
@@ -1761,9 +1789,37 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{key} must be numeric")
         if not math.isfinite(value):
             raise ValueError(f"{key} must be finite")
-        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold"}:
+        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold"}:
             raise ValueError(f"{key} cannot be negative")
         effective[key] = value
+
+    for min_key, full_key in (
+        ("linear_min_expected_cagr", "linear_full_expected_cagr"),
+        ("linear_min_upside", "linear_full_upside"),
+        ("linear_min_core_net", "linear_full_core_net"),
+        ("linear_min_potential_net", "linear_full_potential_net"),
+    ):
+        if effective[full_key] <= effective[min_key]:
+            raise ValueError(f"{full_key} must be greater than {min_key}")
+    linear_weight_total = sum(effective[key] for key in (
+        "linear_expected_cagr_weight",
+        "linear_upside_weight",
+        "linear_core_confidence_weight",
+        "linear_potential_confidence_weight",
+        "linear_confidence_quality_weight",
+    ))
+    if linear_weight_total <= 0:
+        raise ValueError("Linear Allocation weights must total more than 0")
+    for key in (
+        "linear_allocated_target_total_pct",
+        "linear_max_single_stock_pct",
+        "linear_target_band_tolerance_pct",
+        "linear_negative_core_net_cap_pct",
+        "linear_low_core_net_cap_pct",
+        "linear_high_bearish_confidence_cap_pct",
+    ):
+        if effective[key] > 100.0:
+            raise ValueError(f"{key} must be between 0 and 100")
     if effective["action_upside_full_score"] <= effective["action_upside_zero_score"]:
         raise ValueError("action_upside_full_score must be greater than action_upside_zero_score")
     if effective["action_core_diff_full_score"] <= effective["action_core_diff_zero_score"]:
@@ -6592,6 +6648,247 @@ def _compress_action_plan_bucket_targets(raw_targets, settings):
         remaining -= reduced
     return effective, compression, raw_total - sum(effective.values())
 
+def _linear_score_range(value, minimum, full):
+    numeric = safe_number(value)
+    minimum = safe_number(minimum)
+    full = safe_number(full)
+    if numeric is None or minimum is None or full is None or full <= minimum:
+        return 0.0
+    return _clamp((numeric - minimum) / (full - minimum), 0.0, 1.0)
+
+
+def _linear_confidence_quality_score(core_bullish, core_bearish, potential_bullish, potential_bearish):
+    core_bullish = safe_number(core_bullish) or 0.0
+    core_bearish = safe_number(core_bearish) or 0.0
+    potential_bullish = safe_number(potential_bullish) or 0.0
+    potential_bearish = safe_number(potential_bearish) or 0.0
+    quality = (0.55 * (core_bullish / 10.0)) + (0.25 * (potential_bullish / 10.0)) + (0.20 * (1.0 - max(core_bearish, potential_bearish) / 10.0))
+    return _clamp(quality, 0.0, 1.0)
+
+
+def _linear_cap_details(row, settings):
+    cap = safe_number(settings.get("linear_max_single_stock_pct")) or 0.0
+    reason = "Linear max single-stock cap"
+    if not settings.get("linear_enable_risk_caps", True):
+        return cap, reason
+    core_net = safe_number(row.get("core_confidence_diff")) or 0.0
+    core_bearish = safe_number(row.get("core_bearish_confidence")) or 0.0
+    risk_caps = []
+    if core_net < 0:
+        risk_caps.append((safe_number(settings.get("linear_negative_core_net_cap_pct")) or cap, "Negative core net cap"))
+    if core_net < (safe_number(settings.get("linear_low_core_net_threshold")) or 0.0):
+        risk_caps.append((safe_number(settings.get("linear_low_core_net_cap_pct")) or cap, "Low core net cap"))
+    if core_bearish >= (safe_number(settings.get("linear_high_bearish_confidence_threshold")) or 0.0):
+        risk_caps.append((safe_number(settings.get("linear_high_bearish_confidence_cap_pct")) or cap, "High bearish confidence cap"))
+    for candidate_cap, candidate_reason in risk_caps:
+        if candidate_cap < cap:
+            cap = candidate_cap
+            reason = candidate_reason
+    return max(0.0, cap), reason
+
+
+def _apply_linear_caps_and_redistribute(rows, target_total):
+    positive_rows = [row for row in rows if (safe_number(row.get("linear_allocation_score")) or 0.0) > 0]
+    for row in rows:
+        row["linear_target_mid_before_caps"] = 0.0
+        row["linear_target_mid"] = 0.0
+        row["linear_cap_applied"] = 0.0
+        row["linear_cap_reason"] = "—"
+    total_score = sum(row["linear_allocation_score"] for row in positive_rows)
+    if target_total <= 0 or total_score <= 0:
+        return 0.0
+    remaining_target = target_total
+    uncapped = list(positive_rows)
+    capped_allocated = 0.0
+    for _ in range(len(positive_rows) + 1):
+        score_total = sum(row["linear_allocation_score"] for row in uncapped)
+        if score_total <= 0 or remaining_target <= 1e-9:
+            break
+        newly_capped = []
+        provisional = []
+        for row in uncapped:
+            target = remaining_target * row["linear_allocation_score"] / score_total
+            if row["linear_target_mid_before_caps"] == 0.0:
+                row["linear_target_mid_before_caps"] = target_total * row["linear_allocation_score"] / total_score
+            cap = safe_number(row.get("linear_effective_cap")) or 0.0
+            if target > cap + 1e-9:
+                row["linear_target_mid"] = cap
+                row["linear_cap_applied"] = max(0.0, row["linear_target_mid_before_caps"] - cap)
+                row["linear_cap_reason"] = row.get("linear_effective_cap_reason") or "Cap applied"
+                newly_capped.append(row)
+                capped_allocated += cap
+            else:
+                provisional.append((row, target))
+        if not newly_capped:
+            for row, target in provisional:
+                row["linear_target_mid"] = target
+                row["linear_cap_reason"] = "—"
+            break
+        remaining_target = max(0.0, target_total - capped_allocated)
+        uncapped = [row for row in uncapped if row not in newly_capped]
+    return sum(safe_number(row.get("linear_target_mid")) or 0.0 for row in rows)
+
+
+def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings):
+    total = safe_number(total_portfolio_value) or 0.0
+    cash_available = safe_number(cash_like_available) or 0.0
+    minimum_cash_reserve_amount = total * (safe_number(settings.get("action_min_cash_unallocated_target")) or 0.0) / 100.0
+    buy_actions = {"Strong Add", "Add", "Starter Buy"}
+    sell_trim_actions = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
+    executable_sell_trim_proceeds = 0.0
+    for row in rows:
+        theoretical_amount = max(0.0, safe_number(row.get("target_gap_amount")) or 0.0)
+        row["executable_action_amount"] = 0.0
+        row["unfunded_action_amount"] = 0.0
+        if row.get("action") in sell_trim_actions:
+            row["executable_action_amount"] = theoretical_amount
+            row["funding_status"] = "Generates proceeds" if theoretical_amount > 0 else "No funding needed"
+            executable_sell_trim_proceeds += theoretical_amount
+        elif row.get("action") in buy_actions and theoretical_amount > 0:
+            row["funding_status"] = "Unfunded / Watch"
+        else:
+            row["funding_status"] = "No funding needed"
+    available_buy_budget = max(0.0, cash_available + executable_sell_trim_proceeds - minimum_cash_reserve_amount)
+    buy_candidates = [row for row in rows if row.get("action") in buy_actions and row.get("target_gap_amount", 0.0) > 0]
+    for row in buy_candidates:
+        gap_score = min((row["target_gap_amount"] / total / 0.05), 1.0) if total > 0 else 0.0
+        row["linear_action_priority"] = (
+            (safe_number(row.get("linear_allocation_score")) or 0.0) * 0.50
+            + gap_score * 0.20
+            + (safe_number(row.get("linear_expected_cagr_score")) or 0.0) * 0.20
+            + (safe_number(row.get("linear_core_net_score")) or 0.0) * 0.10
+        )
+        row["funding_priority_score"] = row["linear_action_priority"]
+    remaining_budget = available_buy_budget
+    min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
+    sorted_candidates = sorted(buy_candidates, key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), -(safe_number(row.get("expected_cagr")) or 0.0), -(safe_number(row.get("upside")) or 0.0), row.get("symbol") or ""))
+    for index, row in enumerate(sorted_candidates):
+        demand = row["target_gap_amount"]
+        amount = min(remaining_budget, demand)
+        if amount < min_trade and not (index == len(sorted_candidates) - 1 and amount > 0):
+            amount = 0.0
+        row["executable_action_amount"] = amount
+        row["unfunded_action_amount"] = max(0.0, demand - amount)
+        row["funding_status"] = "Fully funded" if amount >= demand - 1e-6 and demand > 0 else ("Partially funded" if amount > 0 else "Unfunded / Watch")
+        remaining_budget = max(0.0, remaining_budget - amount)
+    total_add_demand = sum(row.get("target_gap_amount", 0.0) for row in buy_candidates)
+    funded_add_amount = sum(row.get("executable_action_amount", 0.0) for row in buy_candidates)
+    unfunded_add_demand = sum(row.get("unfunded_action_amount", 0.0) for row in buy_candidates)
+    for row in rows:
+        executable = safe_number(row.get("executable_action_amount")) or 0.0
+        row["action_amount"] = executable
+        row["action_amount_label"] = _format_action_amount_label(row.get("action_amount_direction"), executable)
+        row["available_buy_budget"] = available_buy_budget
+        row["total_add_demand"] = total_add_demand
+        row["funded_add_amount"] = funded_add_amount
+        row["unfunded_add_demand"] = unfunded_add_demand
+        row["executable_sell_trim_proceeds"] = executable_sell_trim_proceeds
+        row["minimum_cash_reserve_amount"] = minimum_cash_reserve_amount
+    return {"available_buy_budget": available_buy_budget, "total_add_demand": total_add_demand, "funded_add_amount": funded_add_amount, "unfunded_add_demand": unfunded_add_demand, "executable_sell_trim_proceeds": executable_sell_trim_proceeds, "minimum_cash_reserve_amount": minimum_cash_reserve_amount}
+
+
+def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings):
+    target_total = safe_number(settings.get("linear_allocated_target_total_pct")) or 0.0
+    weight_keys = ["linear_expected_cagr_weight", "linear_upside_weight", "linear_core_confidence_weight", "linear_potential_confidence_weight", "linear_confidence_quality_weight"]
+    weight_total = sum(safe_number(settings.get(key)) or 0.0 for key in weight_keys)
+    weights = {key: ((safe_number(settings.get(key)) or 0.0) / weight_total if weight_total > 0 else 0.0) for key in weight_keys}
+    rows = []
+    for item in candidates:
+        expected_cagr = safe_number(item.get("expected_cagr"))
+        upside = safe_number(item.get("upside"))
+        core_net = safe_number(item.get("core_confidence_diff")) or 0.0
+        potential_net = safe_number(item.get("potential_confidence_diff")) or 0.0
+        expected_cagr_score = _linear_score_range(expected_cagr, settings["linear_min_expected_cagr"], settings["linear_full_expected_cagr"])
+        upside_score = _linear_score_range(upside, settings["linear_min_upside"], settings["linear_full_upside"])
+        core_net_score = _linear_score_range(core_net, settings["linear_min_core_net"], settings["linear_full_core_net"])
+        potential_net_score = _linear_score_range(potential_net, settings["linear_min_potential_net"], settings["linear_full_potential_net"])
+        confidence_quality_score = _linear_confidence_quality_score(item.get("core_bullish_confidence"), item.get("core_bearish_confidence"), item.get("potential_bullish_confidence"), item.get("potential_bearish_confidence"))
+        score = (
+            weights["linear_expected_cagr_weight"] * expected_cagr_score
+            + weights["linear_upside_weight"] * upside_score
+            + weights["linear_core_confidence_weight"] * core_net_score
+            + weights["linear_potential_confidence_weight"] * potential_net_score
+            + weights["linear_confidence_quality_weight"] * confidence_quality_score
+        )
+        if settings.get("linear_zero_target_if_expected_cagr_negative", True) and expected_cagr is not None and expected_cagr < 0:
+            score = 0.0
+        if settings.get("linear_zero_target_if_upside_negative", True) and upside is not None and upside < 0:
+            score = 0.0
+        if score < (safe_number(settings.get("linear_min_score_threshold")) or 0.0):
+            score = 0.0
+        row = {
+            "mode": "linear",
+            "symbol": item.get("symbol"),
+            "company_name": item.get("company_name"),
+            "rating": item.get("rating") or item.get("bucket") or "Hold",
+            "current_price": item.get("current_price"),
+            "expected_price": item.get("expected_price"),
+            "expected_cagr": expected_cagr,
+            "upside": upside,
+            "core_confidence_diff": core_net,
+            "core_bullish_confidence": item.get("core_bullish_confidence"),
+            "core_bearish_confidence": item.get("core_bearish_confidence"),
+            "potential_confidence_diff": potential_net,
+            "potential_bullish_confidence": item.get("potential_bullish_confidence"),
+            "potential_bearish_confidence": item.get("potential_bearish_confidence"),
+            "current_position_weight": item.get("current_position_weight") or 0.0,
+            "current_position_market_value": item.get("current_position_market_value") or 0.0,
+            "total_portfolio_value": total_portfolio_value,
+            "linear_expected_cagr_score": expected_cagr_score,
+            "linear_upside_score": upside_score,
+            "linear_core_net_score": core_net_score,
+            "linear_potential_net_score": potential_net_score,
+            "linear_confidence_quality_score": confidence_quality_score,
+            "linear_allocation_score": _clamp(score, 0.0, 1.0),
+            "linear_weights_used": weights,
+        }
+        cap, cap_reason = _linear_cap_details(row, settings)
+        row["linear_effective_cap"] = cap
+        row["linear_effective_cap_reason"] = cap_reason
+        rows.append(row)
+    allocated_total = _apply_linear_caps_and_redistribute(rows, target_total)
+    tolerance = (safe_number(settings.get("linear_target_band_tolerance_pct")) or 0.0) / 100.0
+    for row in rows:
+        target_mid = safe_number(row.get("linear_target_mid")) or 0.0
+        target_low = target_mid * max(0.0, 1.0 - tolerance) if target_mid > 0 else 0.0
+        target_high = target_mid * (1.0 + tolerance) if target_mid > 0 else 0.0
+        row.update({
+            "target_weight_mid": target_mid,
+            "target_weight_low": target_low,
+            "target_weight_high": target_high,
+            "linear_target_weight_mid": target_mid,
+            "linear_target_weight_low": target_low,
+            "linear_target_weight_high": target_high,
+            "position_gap_to_mid": target_mid - (safe_number(row.get("current_position_weight")) or 0.0),
+            "cap_applied": row.get("linear_cap_applied"),
+            "cap_reason": row.get("linear_cap_reason"),
+        })
+        current_weight = safe_number(row.get("current_position_weight")) or 0.0
+        if target_mid <= 0 and current_weight > 0:
+            action = "Sell"
+        elif current_weight < target_low:
+            action = "Add"
+        elif current_weight > target_high:
+            action = "Trim"
+        else:
+            action = "Hold"
+        amount_fields = _action_amount_fields(action, current_weight, target_mid, total_portfolio_value, row.get("current_position_market_value"))
+        row.update({"action": action, "reason": "Linear Allocation compares current weight with the linear target band; rating is displayed for context only.", **amount_fields})
+    execution = _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
+    rows.sort(key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), row.get("symbol") or ""))
+    summary = {
+        "mode_label": "Linear Allocation",
+        "linear_allocated_target_total": allocated_total,
+        "linear_configured_target_total": target_total,
+        "current_equity_allocation": sum(safe_number(row.get("current_position_weight")) or 0.0 for row in rows),
+        "cash_like_available": cash_like_available,
+        "eligible_stock_count": len(rows),
+        "capped_stock_count": sum(1 for row in rows if (safe_number(row.get("linear_cap_applied")) or 0.0) > 1e-9),
+        **execution,
+        "execution_warning": "Linear add demand exceeds available funding. Action amounts have been cash-constrained and prioritized." if execution["total_add_demand"] > execution["available_buy_budget"] + 1e-6 else None,
+    }
+    return {"rows": rows, "summary": summary}
+
 def build_action_plan(conn):
     settings = get_action_plan_settings(conn)
     dynamic_mode = bool(settings.get("action_use_dynamic_bucket_sizing", True))
@@ -6929,6 +7226,7 @@ def build_action_plan(conn):
         bucket_cap_applied[rating] = bucket_cap_applied.get(rating, 0.0) + cap_applied
         rows.append(row)
 
+    linear_payload = compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings)
     execution_summary = _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
     rows.sort(key=lambda row: (row["action_priority"], -abs(row.get("position_gap_to_mid") or 0.0), row["symbol"]))
     bucket_summary = []
@@ -6982,6 +7280,7 @@ def build_action_plan(conn):
     rounding_adjustment = 100.0 - total_effective_bucket_target
     return {
         "action_plan": rows,
+        "linear_action_plan": linear_payload["rows"],
         "settings": settings,
         "summary": {
             "total_portfolio_value": total_portfolio_value,
@@ -7015,6 +7314,7 @@ def build_action_plan(conn):
             "unallocated_target_total": max(0.0, 100.0 - allocated_total),
             "cash_equivalent_positions": cash_equivalent_positions,
             "bucket_summary": bucket_summary,
+            "linear_summary": linear_payload["summary"],
         },
     }
 

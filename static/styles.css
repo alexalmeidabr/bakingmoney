@@ -1411,3 +1411,39 @@ th.sortable[data-sort-direction='desc']::after {
   overflow-wrap: anywhere;
   white-space: normal;
 }
+
+.action-plan-mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+
+.mode-switch-label {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.action-plan-mode-btn.active,
+.action-plan-tab.active {
+  background: #1d4ed8;
+  color: #ffffff;
+  border-color: #1d4ed8;
+}
+
+.summary-mode-card {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.action-plan-linear-table-wrap table,
+#action-plan-linear-table {
+  min-width: 2200px;
+  table-layout: auto;
+}
+
+#action-plan-linear-table th,
+#action-plan-linear-table td {
+  white-space: nowrap;
+}

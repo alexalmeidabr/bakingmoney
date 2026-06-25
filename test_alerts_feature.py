@@ -1427,6 +1427,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function renderActionPlanBucketCompanyTable(rows, bucket)', js)
         self.assertIn('function setActionPlanTab(tab)', js)
         self.assertIn('function setActionPlanActionMode(mode)', js)
+        self.assertIn("'linear_min_core_net', 'linear_min_potential_net'", js)
+        self.assertIn("linear_full_core_net must be greater than linear_min_core_net", js)
+        self.assertIn("linear_full_potential_net must be greater than linear_min_potential_net", js)
         self.assertIn('function renderLinearAllocationRows()', js)
         self.assertIn('actionPlanLinearActionsTableBody', js)
         self.assertIn('actionPlanLinearDetailTableBody', js)
@@ -2874,6 +2877,30 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings["action_bucket_sizing_core_weight"] = 0.0
         settings["action_bucket_sizing_potential_weight"] = 0.0
         with self.assertRaisesRegex(ValueError, "Bucket sizing weights"):
+            web_server.validate_action_plan_settings(settings)
+
+
+    def test_linear_action_plan_settings_allow_negative_net_confidence_minimums(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_min_core_net"] = -1.0
+        settings["linear_full_core_net"] = 2.0
+        settings["linear_min_potential_net"] = -1.0
+        settings["linear_full_potential_net"] = 1.5
+        effective = web_server.validate_action_plan_settings(settings)
+        self.assertEqual(effective["linear_min_core_net"], -1.0)
+        self.assertEqual(effective["linear_min_potential_net"], -1.0)
+
+    def test_linear_action_plan_settings_reject_invalid_net_confidence_ranges(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_min_core_net"] = 2.0
+        settings["linear_full_core_net"] = 2.0
+        with self.assertRaisesRegex(ValueError, "linear_full_core_net must be greater than linear_min_core_net"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_min_potential_net"] = 1.5
+        settings["linear_full_potential_net"] = 1.5
+        with self.assertRaisesRegex(ValueError, "linear_full_potential_net must be greater than linear_min_potential_net"):
             web_server.validate_action_plan_settings(settings)
 
 

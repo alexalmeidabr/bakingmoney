@@ -4850,7 +4850,7 @@ function validateActionPlanSettings(settings) {
     if (typeof value === 'boolean') continue;
     if (key === 'action_cash_equivalent_symbols') continue;
     if (!Number.isFinite(value)) return `${key} must be numeric.`;
-    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score', 'action_trim_remaining_upside_threshold', 'action_sell_remaining_upside_threshold'].includes(key)) return `${key} cannot be negative.`;
+    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score', 'action_trim_remaining_upside_threshold', 'action_sell_remaining_upside_threshold', 'linear_min_core_net', 'linear_min_potential_net'].includes(key)) return `${key} cannot be negative.`;
   }
   const bucketTotal = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
     .reduce((sum, key) => sum + settings[key], 0);
@@ -4877,6 +4877,8 @@ function validateActionPlanSettings(settings) {
   for (const key of ['action_starter_buy_base_required_upside', 'action_add_base_required_upside', 'action_strong_add_base_required_upside', 'action_hold_extra_add_required_upside']) {
     if (settings[key] < 0 || settings[key] > 2) return `${key} must be between 0 and 2.`;
   }
+  if (settings.linear_full_core_net <= settings.linear_min_core_net) return 'linear_full_core_net must be greater than linear_min_core_net.';
+  if (settings.linear_full_potential_net <= settings.linear_min_potential_net) return 'linear_full_potential_net must be greater than linear_min_potential_net.';
   if (settings.action_trigger_max_required_upside <= settings.action_trigger_min_required_upside) return 'Trigger max required upside must be greater than trigger min required upside.';
   return null;
 }

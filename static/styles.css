@@ -1218,59 +1218,61 @@ th.sortable[data-sort-direction='desc']::after {
   overflow-y: hidden;
 }
 
-#action-plan-table {
+.action-plan-actions-table {
   table-layout: fixed;
   width: 100%;
   min-width: 1900px;
   font-size: 0.85rem;
 }
 
-#action-plan-table th,
-#action-plan-table td {
+.action-plan-actions-table th,
+.action-plan-actions-table td {
   padding: 8px 10px;
   vertical-align: top;
   white-space: nowrap;
 }
 
-#action-plan-table .symbol-column,
-#action-plan-table .symbol-cell { width: 70px; min-width: 70px; }
-#action-plan-table .action-column,
-#action-plan-table .action-cell { width: 120px; min-width: 120px; }
-#action-plan-table .target-gap-column,
-#action-plan-table .target-gap-cell { width: 120px; min-width: 120px; text-align: right; }
-#action-plan-table .action-amount-column,
-#action-plan-table .action-amount-cell { width: 140px; min-width: 140px; text-align: right; }
-#action-plan-table .funding-column,
-#action-plan-table .funding-cell { width: 130px; min-width: 130px; }
-#action-plan-table .trigger-price-column,
-#action-plan-table .trigger-price-cell,
-#action-plan-table .current-price-column,
-#action-plan-table .current-price-cell { width: 120px; min-width: 120px; text-align: right; }
-#action-plan-table .distance-column,
-#action-plan-table .distance-cell,
-#action-plan-table .upside-column,
-#action-plan-table .upside-cell { width: 90px; min-width: 90px; text-align: right; }
-#action-plan-table .rating-column,
-#action-plan-table .rating-cell { width: 110px; min-width: 110px; }
-#action-plan-table .core-confidence-column,
-#action-plan-table .core-confidence-cell { width: 150px; min-width: 150px; }
-#action-plan-table .potential-confidence-column,
-#action-plan-table .potential-confidence-cell { width: 160px; min-width: 160px; }
-#action-plan-table .current-weight-column,
-#action-plan-table .current-weight-cell { width: 120px; min-width: 120px; text-align: right; }
-#action-plan-table .target-band-column,
-#action-plan-table .target-band-cell { width: 150px; min-width: 150px; }
-#action-plan-table .gap-column,
-#action-plan-table .gap-cell { width: 100px; min-width: 100px; text-align: right; }
+.action-plan-actions-table .symbol-column,
+.action-plan-actions-table .symbol-cell { width: 70px; min-width: 70px; }
+.action-plan-actions-table .action-column,
+.action-plan-actions-table .action-cell { width: 120px; min-width: 120px; }
+.action-plan-actions-table .target-gap-column,
+.action-plan-actions-table .target-gap-cell { width: 120px; min-width: 120px; text-align: right; }
+.action-plan-actions-table .action-amount-column,
+.action-plan-actions-table .action-amount-cell { width: 140px; min-width: 140px; text-align: right; }
+.action-plan-actions-table .funding-column,
+.action-plan-actions-table .funding-cell { width: 130px; min-width: 130px; }
+.action-plan-actions-table .trigger-price-column,
+.action-plan-actions-table .trigger-price-cell,
+.action-plan-actions-table .current-price-column,
+.action-plan-actions-table .current-price-cell { width: 120px; min-width: 120px; text-align: right; }
+.action-plan-actions-table .distance-column,
+.action-plan-actions-table .distance-cell,
+.action-plan-actions-table .upside-column,
+.action-plan-actions-table .upside-cell { width: 90px; min-width: 90px; text-align: right; }
+.action-plan-actions-table .rating-column,
+.action-plan-actions-table .rating-cell { width: 110px; min-width: 110px; }
+.action-plan-actions-table .core-confidence-column,
+.action-plan-actions-table .core-confidence-cell { width: 150px; min-width: 150px; }
+.action-plan-actions-table .potential-confidence-column,
+.action-plan-actions-table .potential-confidence-cell { width: 160px; min-width: 160px; }
+.action-plan-actions-table .current-weight-column,
+.action-plan-actions-table .current-weight-cell { width: 120px; min-width: 120px; text-align: right; }
+.action-plan-actions-table .target-band-column,
+.action-plan-actions-table .target-band-cell { width: 150px; min-width: 150px; }
+.action-plan-actions-table .gap-column,
+.action-plan-actions-table .gap-cell { width: 100px; min-width: 100px; text-align: right; }
+.action-plan-actions-table .linear-score-column,
+.action-plan-actions-table .linear-score-cell { width: 100px; min-width: 100px; text-align: right; }
 
-#action-plan-table .target-band-range,
-#action-plan-table .target-band-mid {
+.action-plan-actions-table .target-band-range,
+.action-plan-actions-table .target-band-mid {
   display: block;
   white-space: nowrap;
 }
 
-#action-plan-table .reason-column,
-#action-plan-table .reason-cell {
+.action-plan-actions-table .reason-column,
+.action-plan-actions-table .reason-cell {
   width: 360px;
   min-width: 280px;
   max-width: 420px;
@@ -1281,7 +1283,7 @@ th.sortable[data-sort-direction='desc']::after {
   text-align: left;
 }
 
-#action-plan-table .reason-cell {
+.action-plan-actions-table .reason-cell {
   color: var(--muted);
 }
 
@@ -1393,29 +1395,29 @@ th.sortable[data-sort-direction='desc']::after {
 }
 
 .action-plan-linear-table-wrap table,
-#action-plan-linear-table {
+#action-plan-linear-detail-table {
   min-width: 2200px;
   table-layout: fixed;
   width: 100%;
 }
 
-#action-plan-linear-table th,
-#action-plan-linear-table td {
+#action-plan-linear-detail-table th,
+#action-plan-linear-detail-table td {
   white-space: nowrap;
   text-align: right;
 }
 
-#action-plan-linear-table th:nth-child(1),
-#action-plan-linear-table td:nth-child(1),
-#action-plan-linear-table th:nth-child(2),
-#action-plan-linear-table td:nth-child(2),
-#action-plan-linear-table th:nth-child(3),
-#action-plan-linear-table td:nth-child(3),
-#action-plan-linear-table th:nth-child(18),
-#action-plan-linear-table td:nth-child(18),
-#action-plan-linear-table th:nth-child(19),
-#action-plan-linear-table td:nth-child(19),
-#action-plan-linear-table th:nth-child(20),
-#action-plan-linear-table td:nth-child(20) {
+#action-plan-linear-detail-table th:nth-child(1),
+#action-plan-linear-detail-table td:nth-child(1),
+#action-plan-linear-detail-table th:nth-child(2),
+#action-plan-linear-detail-table td:nth-child(2),
+#action-plan-linear-detail-table th:nth-child(3),
+#action-plan-linear-detail-table td:nth-child(3),
+#action-plan-linear-detail-table th:nth-child(18),
+#action-plan-linear-detail-table td:nth-child(18),
+#action-plan-linear-detail-table th:nth-child(19),
+#action-plan-linear-detail-table td:nth-child(19),
+#action-plan-linear-detail-table th:nth-child(20),
+#action-plan-linear-detail-table td:nth-child(20) {
   text-align: left;
 }

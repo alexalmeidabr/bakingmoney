@@ -869,7 +869,7 @@
             </div>
           </div>
           <div id="action-plan-bucket-actions-table-wrap" class="table-wrap">
-            <table id="action-plan-table">
+            <table id="action-plan-table" class="action-plan-actions-table">
               <thead>
                 <tr>
                   <th class="symbol-column">Symbol</th>
@@ -894,9 +894,39 @@
             </table>
           </div>
           <div id="action-plan-linear-actions-panel" class="hidden">
-            <p class="status">Linear Allocation uses a continuous portfolio-wide score; rating is shown for context and does not size buckets.</p>
+            <p class="status">Linear Allocation action mode uses the same action-focused columns as Bucket Allocation; rating is context only.</p>
+            <div class="table-wrap">
+              <table id="action-plan-linear-actions-table" class="action-plan-actions-table">
+                <thead>
+                  <tr>
+                    <th class="symbol-column">Symbol</th>
+                    <th class="action-column">Action</th>
+                    <th class="target-gap-column">Target Gap</th>
+                    <th class="action-amount-column">Action Amount</th>
+                    <th class="funding-column">Funding</th>
+                    <th class="trigger-price-column">Trigger Price</th>
+                    <th class="current-price-column">Current Price</th>
+                    <th class="distance-column sortable" data-sort-key="distance_to_trigger_percent">Distance</th>
+                    <th class="rating-column">Rating</th>
+                    <th class="upside-column sortable" data-sort-key="upside">Upside</th>
+                    <th class="core-confidence-column sortable" data-sort-key="core_confidence_diff">Core Confidence</th>
+                    <th class="potential-confidence-column sortable" data-sort-key="potential_confidence_diff">Potential Confidence</th>
+                    <th class="current-weight-column sortable" data-sort-key="current_position_weight">Current Weight</th>
+                    <th class="target-band-column">Target Band</th>
+                    <th class="gap-column sortable" data-sort-key="position_gap_to_mid">Gap to Mid</th>
+                    <th class="linear-score-column">Linear Score</th>
+                    <th class="reason-column">Reason</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          </div>
+          <div id="action-plan-linear-detail-panel" class="hidden">
+            <p class="status">Detailed Linear Allocation analysis. These scoring and cap fields are not shown in the compact Actions table.</p>
             <div class="table-wrap action-plan-linear-table-wrap">
-              <table id="action-plan-linear-table">
+              <table id="action-plan-linear-detail-table">
                 <thead>
                   <tr>
                     <th>Symbol</th>
@@ -924,7 +954,6 @@
                 <tbody></tbody>
               </table>
             </div>
-          </div>
           </div>
           <div id="action-plan-buckets-panel" class="hidden">
             <div id="action-plan-buckets-content"></div>

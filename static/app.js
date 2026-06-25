@@ -38,7 +38,9 @@ const actionPlanActionsPanelEl = document.getElementById('action-plan-actions-pa
 const actionPlanBucketsPanelEl = document.getElementById('action-plan-buckets-panel');
 const actionPlanBucketActionsTableWrapEl = document.getElementById('action-plan-bucket-actions-table-wrap');
 const actionPlanLinearActionsPanelEl = document.getElementById('action-plan-linear-actions-panel');
-const actionPlanLinearTableBody = document.querySelector('#action-plan-linear-table tbody');
+const actionPlanLinearDetailPanelEl = document.getElementById('action-plan-linear-detail-panel');
+const actionPlanLinearActionsTableBody = document.querySelector('#action-plan-linear-actions-table tbody');
+const actionPlanLinearDetailTableBody = document.querySelector('#action-plan-linear-detail-table tbody');
 const actionPlanModeBucketBtn = document.getElementById('action-plan-mode-bucket');
 const actionPlanModeLinearBtn = document.getElementById('action-plan-mode-linear');
 const actionPlanBucketsContentEl = document.getElementById('action-plan-buckets-content');
@@ -46,6 +48,7 @@ const actionPlanTabActionsBtn = document.getElementById('action-plan-tab-actions
 const actionPlanTabBucketsBtn = document.getElementById('action-plan-tab-buckets');
 const actionPlanTabLinearBtn = document.getElementById('action-plan-tab-linear');
 const actionPlanSortHeaders = document.querySelectorAll('#action-plan-table th.sortable');
+const actionPlanLinearSortHeaders = document.querySelectorAll('#action-plan-linear-actions-table th.sortable');
 const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
 const actionPlanListViewEl = document.getElementById('action-plan-list-view');
 const actionPlanDetailViewEl = document.getElementById('action-plan-detail-view');
@@ -282,6 +285,7 @@ let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
 let selectedActionPlanDetail = null;
 let actionPlanSort = { key: null, direction: 'asc' };
+let actionPlanLinearSort = { key: null, direction: 'asc' };
 let actionPlanBucketSorts = {};
 let actionPlanActiveTab = 'actions';
 let actionPlanActionMode = 'bucket';
@@ -1338,7 +1342,7 @@ const sortAnalysis = (items) => [...items].sort((a, b) => {
 
 function updateSortHeaderState() { positionSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === positionSort.key ? positionSort.direction : ''; }); }
 function updateAnalysisSortHeaderState() { analysisSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === analysisSort.key ? analysisSort.direction : ''; }); }
-function updateActionPlanSortHeaderState() { actionPlanSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanSort.key ? actionPlanSort.direction : ''; }); }
+function updateActionPlanSortHeaderState() { actionPlanSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanSort.key ? actionPlanSort.direction : ''; }); actionPlanLinearSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanLinearSort.key ? actionPlanLinearSort.direction : ''; }); }
 
 function renderPositionsPortfolioSummary(summary = latestPositionsPortfolioSummary) {
   if (!positionsPortfolioSummaryEl) return;
@@ -1700,6 +1704,20 @@ function getFilteredActionPlanItems() {
   return items;
 }
 
+function getFilteredLinearActionPlanItems() {
+  let items = latestActionPlanPayload.linear_action_plan || [];
+  const selectedRatings = getSelectedActionPlanRatings();
+  if (selectedRatings.size > 0 && selectedRatings.size < RATING_FILTER_OPTIONS.length) {
+    const expectedRatings = new Set(Array.from(selectedRatings).map((key) => RATING_FILTER_LABEL_BY_KEY[key]).filter(Boolean));
+    items = items.filter((item) => expectedRatings.has(item.rating || 'Hold'));
+  }
+  const selectedActions = getSelectedActionPlanActions();
+  if (selectedActions.size > 0 && selectedActions.size < ACTION_PLAN_ACTION_FILTER_OPTIONS.length) {
+    items = items.filter((item) => selectedActions.has(ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL[item.action || '']));
+  }
+  return items;
+}
+
 function getActionPlanNumericSortValue(item, key) {
   if (!item || !key) return null;
   if (key === 'core_confidence_diff') {
@@ -1720,18 +1738,26 @@ function getActionPlanNumericSortValue(item, key) {
   return Number.isFinite(value) ? value : null;
 }
 
-function sortActionPlanItems(items) {
-  if (!actionPlanSort.key) return items;
-  const directionMultiplier = actionPlanSort.direction === 'desc' ? -1 : 1;
+function sortActionPlanItemsWithState(items, sortState) {
+  if (!sortState.key) return items;
+  const directionMultiplier = sortState.direction === 'desc' ? -1 : 1;
   return items.map((item, index) => ({ item, index })).sort((left, right) => {
-    const leftValue = getActionPlanNumericSortValue(left.item, actionPlanSort.key);
-    const rightValue = getActionPlanNumericSortValue(right.item, actionPlanSort.key);
+    const leftValue = getActionPlanNumericSortValue(left.item, sortState.key);
+    const rightValue = getActionPlanNumericSortValue(right.item, sortState.key);
     if (leftValue == null && rightValue == null) return left.index - right.index;
     if (leftValue == null) return 1;
     if (rightValue == null) return -1;
     const delta = leftValue - rightValue;
     return delta === 0 ? left.index - right.index : delta * directionMultiplier;
   }).map((entry) => entry.item);
+}
+
+function sortActionPlanItems(items) {
+  return sortActionPlanItemsWithState(items, actionPlanSort);
+}
+
+function sortLinearActionPlanItems(items) {
+  return sortActionPlanItemsWithState(items, actionPlanLinearSort);
 }
 
 function setActionPlanActionMode(mode) {
@@ -1752,7 +1778,8 @@ function setActionPlanTab(tab) {
   actionPlanTabLinearBtn?.classList.toggle('active', showLinear);
   actionPlanActionsPanelEl?.classList.toggle('hidden', showBuckets || showLinear);
   actionPlanBucketsPanelEl?.classList.toggle('hidden', !showBuckets);
-  actionPlanLinearActionsPanelEl?.classList.toggle('hidden', !showLinear && actionPlanActionMode !== 'linear');
+  actionPlanLinearDetailPanelEl?.classList.toggle('hidden', !showLinear);
+  actionPlanLinearActionsPanelEl?.classList.toggle('hidden', actionPlanActiveTab !== 'actions' || actionPlanActionMode !== 'linear');
   if (showBuckets) renderActionPlanBuckets();
   renderActionPlan();
 }
@@ -1996,35 +2023,48 @@ function renderActionPlanBuckets() {
 }
 
 function renderLinearAllocationRows() {
-  if (!actionPlanLinearTableBody) return;
   const rows = Array.isArray(latestActionPlanPayload?.linear_action_plan) ? latestActionPlanPayload.linear_action_plan : [];
-  actionPlanLinearTableBody.innerHTML = '';
-  rows.forEach((item) => {
-    const row = document.createElement('tr');
-    const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
-    row.innerHTML = `<td><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td>
-      <td>${escapeHtml(item.company_name || '—')}</td>
-      <td>${escapeHtml(item.rating || 'Hold')}</td>
-      <td>${formatCurrencyValue(item.current_position_market_value, 'USD')}</td>
-      <td>${formatPercent(item.current_position_weight)}</td>
-      <td>${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)}</td>
-      <td>${targetBand}</td>
-      <td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td>
-      <td>${formatCurrencyValue(item.target_gap_amount, 'USD')}</td>
-      <td>${formatNumber(item.linear_allocation_score)}</td>
-      <td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td>
-      <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
-      <td class="${valueClass(item.core_confidence_diff)}">${formatNumber(item.core_confidence_diff)}</td>
-      <td class="${valueClass(item.potential_confidence_diff)}">${formatNumber(item.potential_confidence_diff)}</td>
-      <td>${formatNumber(item.core_bullish_confidence)}</td>
-      <td>${formatNumber(item.core_bearish_confidence)}</td>
-      <td>${formatPercent(item.cap_applied ?? item.linear_cap_applied)}</td>
-      <td>${escapeHtml(item.cap_reason || item.linear_cap_reason || '—')}</td>
-      <td>${escapeHtml(item.funding_status || 'No funding needed')}</td>
-      <td>${escapeHtml(item.action_amount_label || '—')}</td>`;
-    actionPlanLinearTableBody.appendChild(row);
-  });
-  actionPlanLinearTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+  const actionRows = sortLinearActionPlanItems(getFilteredLinearActionPlanItems());
+  if (actionPlanLinearActionsTableBody) {
+    actionPlanLinearActionsTableBody.innerHTML = '';
+    actionRows.forEach((item) => {
+      const row = document.createElement('tr');
+      const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
+      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td><td class="reason-cell">${escapeHtml(item.reason)}</td>`;
+      actionPlanLinearActionsTableBody.appendChild(row);
+    });
+    actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+  }
+
+  if (actionPlanLinearDetailTableBody) {
+    actionPlanLinearDetailTableBody.innerHTML = '';
+    rows.forEach((item) => {
+      const row = document.createElement('tr');
+      const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
+      row.innerHTML = `<td><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td>
+        <td>${escapeHtml(item.company_name || '—')}</td>
+        <td>${escapeHtml(item.rating || 'Hold')}</td>
+        <td>${formatCurrencyValue(item.current_position_market_value, 'USD')}</td>
+        <td>${formatPercent(item.current_position_weight)}</td>
+        <td>${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)}</td>
+        <td>${targetBand}</td>
+        <td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td>
+        <td>${formatCurrencyValue(item.target_gap_amount, 'USD')}</td>
+        <td>${formatNumber(item.linear_allocation_score)}</td>
+        <td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td>
+        <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
+        <td class="${valueClass(item.core_confidence_diff)}">${formatNumber(item.core_confidence_diff)}</td>
+        <td class="${valueClass(item.potential_confidence_diff)}">${formatNumber(item.potential_confidence_diff)}</td>
+        <td>${formatNumber(item.core_bullish_confidence)}</td>
+        <td>${formatNumber(item.core_bearish_confidence)}</td>
+        <td>${formatPercent(item.cap_applied ?? item.linear_cap_applied)}</td>
+        <td>${escapeHtml(item.cap_reason || item.linear_cap_reason || '—')}</td>
+        <td>${escapeHtml(item.funding_status || 'No funding needed')}</td>
+        <td>${escapeHtml(item.action_amount_label || '—')}</td>`;
+      actionPlanLinearDetailTableBody.appendChild(row);
+    });
+    actionPlanLinearDetailTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+  }
 }
 
 function renderActionPlanSummaryCards(summary, modeLabel) {
@@ -2045,7 +2085,8 @@ function renderActionPlan() {
   actionPlanSummaryEl.innerHTML = renderActionPlanSummaryCards(visibleSummary, showLinearMode ? 'Linear Allocation' : 'Bucket Allocation') + (showLinearMode ? '' : `${portfolioWarning}${executionWarning}${cashEquivalentNote}`);
   renderLinearAllocationRows();
   if (actionPlanBucketActionsTableWrapEl) actionPlanBucketActionsTableWrapEl.classList.toggle('hidden', actionPlanActiveTab !== 'actions' || actionPlanActionMode !== 'bucket');
-  if (actionPlanLinearActionsPanelEl) actionPlanLinearActionsPanelEl.classList.toggle('hidden', !(actionPlanActiveTab === 'linear' || (actionPlanActiveTab === 'actions' && actionPlanActionMode === 'linear')));
+  if (actionPlanLinearActionsPanelEl) actionPlanLinearActionsPanelEl.classList.toggle('hidden', !(actionPlanActiveTab === 'actions' && actionPlanActionMode === 'linear'));
+  if (actionPlanLinearDetailPanelEl) actionPlanLinearDetailPanelEl.classList.toggle('hidden', actionPlanActiveTab !== 'linear');
   actionPlanTableBody.innerHTML = '';
   sortActionPlanItems(getFilteredActionPlanItems()).forEach((item) => {
     const row = document.createElement('tr');
@@ -4975,6 +5016,11 @@ analysisSortHeaders.forEach((header) => header.addEventListener('click', () => {
 actionPlanSortHeaders.forEach((header) => header.addEventListener('click', () => {
   const { sortKey } = header.dataset; if (!sortKey) return;
   if (actionPlanSort.key === sortKey) actionPlanSort.direction = actionPlanSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanSort = { key: sortKey, direction: 'asc' };
+  updateActionPlanSortHeaderState(); renderActionPlan();
+}));
+actionPlanLinearSortHeaders.forEach((header) => header.addEventListener('click', () => {
+  const { sortKey } = header.dataset; if (!sortKey) return;
+  if (actionPlanLinearSort.key === sortKey) actionPlanLinearSort.direction = actionPlanLinearSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanLinearSort = { key: sortKey, direction: 'asc' };
   updateActionPlanSortHeaderState(); renderActionPlan();
 }));
 actionPlanTabActionsBtn.addEventListener('click', () => setActionPlanTab('actions'));

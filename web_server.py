@@ -23,10 +23,12 @@ from dotenv import load_dotenv
 
 from analysis_service import (
     AnalysisValidationError,
+    calculate_confidence_breakdown,
     calculate_expected_price,
     calculate_overall_confidence,
     calculate_upside,
     extract_json_payload,
+    normalize_driver_category,
     parse_analysis_payload,
 )
 
@@ -54,6 +56,8 @@ BACKUP_REQUIRED_TABLES = (
     "analysis_version_scenarios",
     "analysis_version_key_variables",
     "analysis_version_scenario_passes",
+    "analysis_external_scenarios",
+    "analysis_final_scenario_overlays",
     "analysis_key_variable_edits",
     "analysis_business_model_edits",
     "analysis_business_summary_edits",
@@ -64,6 +68,7 @@ BACKUP_REQUIRED_TABLES = (
     "earnings_review_watchpoints",
     "earnings_review_documents",
     "earnings_review_watchpoint_results",
+    "earnings_calendar_entries",
     "app_settings",
     "positions_cache",
     "thesis_review_alerts",
@@ -131,6 +136,10 @@ RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE = "strong_buy_min_bullish_confi
 RATING_SETTING_BUY_MIN_UPSIDE = "buy_min_upside"
 RATING_SETTING_BUY_MIN_DIFF = "buy_min_diff"
 RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE = "buy_min_bullish_confidence"
+RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE = "speculative_buy_min_upside"
+RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF = "speculative_buy_min_diff"
+RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE = "speculative_buy_min_bullish_confidence"
+RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR = "speculative_buy_min_core_diff_floor"
 RATING_SETTING_STRONG_SELL_MAX_UPSIDE = "strong_sell_max_upside"
 RATING_SETTING_STRONG_SELL_MAX_DIFF = "strong_sell_max_diff"
 RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE = "strong_sell_min_bearish_confidence"
@@ -152,6 +161,10 @@ DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
     SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN: 35.0,
 }
 
+CORE_DRIVER_BACKEND_PROBABILITY_WEIGHT = 1.0
+POTENTIAL_DRIVER_BACKEND_PROBABILITY_MAX_WEIGHT = 0.25
+POTENTIAL_DRIVER_BACKEND_PROBABILITY_CONFIDENCE_FLOOR = 3.0
+
 DEFAULT_RATING_SETTINGS = {
     RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD: 5.0,
     RATING_SETTING_STRONG_BUY_MIN_UPSIDE: 50.0,
@@ -160,6 +173,10 @@ DEFAULT_RATING_SETTINGS = {
     RATING_SETTING_BUY_MIN_UPSIDE: 25.0,
     RATING_SETTING_BUY_MIN_DIFF: 0.5,
     RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE: 5.5,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE: 75.0,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF: 0.1,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE: 4.5,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR: -0.5,
     RATING_SETTING_STRONG_SELL_MAX_UPSIDE: 0.0,
     RATING_SETTING_STRONG_SELL_MAX_DIFF: -1.5,
     RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE: 7.0,
@@ -170,6 +187,175 @@ DEFAULT_RATING_SETTINGS = {
 
 SCENARIO_MAX_BASE_DEVIATION = 0.40
 SCENARIO_MAX_AVG_DEVIATION = 0.30
+
+ACTION_PLAN_DEFAULT_SETTINGS = {
+    "action_bucket_strong_buy_target": 35.0,
+    "action_bucket_buy_target": 30.0,
+    "action_bucket_speculative_buy_target": 15.0,
+    "action_bucket_hold_target": 10.0,
+    "action_bucket_cash_target": 10.0,
+    "action_bucket_sell_target": 0.0,
+    "action_bucket_strong_sell_target": 0.0,
+    "action_use_dynamic_bucket_sizing": True,
+    "action_use_weighted_eligible_count": True,
+    "action_min_cash_unallocated_target": 10.0,
+    "action_redistribute_post_cap_excess": False,
+    "action_weighted_count_min_score": 0.15,
+    "action_weighted_count_full_score": 0.75,
+    "action_weighted_count_max_contribution": 1.0,
+    "action_max_potential_score_contribution": 0.20,
+    "action_allocation_upside_weight": 0.60,
+    "action_allocation_core_weight": 0.30,
+    "action_allocation_potential_weight": 0.10,
+    "action_allocation_risk_penalty_strength": 0.60,
+    "action_bucket_sizing_upside_weight": 0.50,
+    "action_bucket_sizing_core_weight": 0.40,
+    "action_bucket_sizing_potential_weight": 0.10,
+    "action_bucket_sizing_risk_penalty_strength": 0.50,
+    "action_strong_buy_weight_per_effective_stock": 5.0,
+    "action_strong_buy_max_effective_count": 6.0,
+    "action_strong_buy_max_bucket_target": 45.0,
+    "action_strong_buy_compression_weight": 0.25,
+    "action_buy_weight_per_effective_stock": 2.5,
+    "action_buy_max_effective_count": 14.0,
+    "action_buy_max_bucket_target": 35.0,
+    "action_buy_compression_weight": 0.75,
+    "action_speculative_buy_weight_per_effective_stock": 1.5,
+    "action_speculative_buy_max_effective_count": 5.0,
+    "action_speculative_buy_max_bucket_target": 7.5,
+    "action_speculative_buy_compression_weight": 1.25,
+    "action_hold_weight_per_effective_stock": 0.8,
+    "action_hold_max_effective_count": 15.0,
+    "action_hold_max_bucket_target": 12.0,
+    "action_hold_compression_weight": 2.0,
+    "action_include_current_positions": True,
+    "action_include_strong_buy": True,
+    "action_include_buy": True,
+    "action_include_speculative_buy": True,
+    "action_include_hold_only_if_owned": True,
+    "action_include_sell_only_if_owned": True,
+    "action_allow_manual_include_exclude": False,
+    "action_upside_zero_score": 10.0,
+    "action_upside_full_score": 100.0,
+    "action_core_diff_zero_score": -0.5,
+    "action_core_diff_full_score": 2.0,
+    "action_core_bearish_penalty_start": 5.0,
+    "action_core_bearish_penalty_full": 8.0,
+    "action_max_potential_bonus_weight": 2.0,
+    "action_potential_diff_minimum": 0.25,
+    "action_potential_diff_full_score": 2.0,
+    "action_potential_bullish_confidence_minimum": 4.5,
+    "action_potential_bonus_upside_minimum": 50.0,
+    "action_max_single_stock_weight": 8.0,
+    "action_max_strong_buy_stock_weight": 8.0,
+    "action_max_buy_stock_weight": 6.0,
+    "action_max_speculative_buy_stock_weight": 3.0,
+    "action_max_negative_core_weight": 2.0,
+    "action_max_very_negative_core_weight": 1.0,
+    "action_min_target_weight_to_show": 0.5,
+    "action_band_lower_multiplier": 0.8,
+    "action_band_upper_multiplier": 1.2,
+    "action_target_band_lower_multiplier": 0.8,
+    "action_target_band_upper_multiplier": 1.2,
+    "action_speculative_band_lower_multiplier": 0.7,
+    "action_speculative_band_upper_multiplier": 1.3,
+    "action_min_absolute_band_width": 0.5,
+    "action_strong_add_below_target_multiplier": 0.5,
+    "action_strong_trim_above_target_multiplier": 1.5,
+    "action_min_trade_gap_percent": 0.5,
+    "action_min_executable_trade_amount": 100.0,
+    "action_starter_buy_max_initial_weight": 1.0,
+    "action_add_required_upside": 30.0,
+    "action_strong_add_required_upside": 50.0,
+    "action_starter_buy_required_upside": 75.0,
+    "action_trim_remaining_upside": 10.0,
+    "action_sell_remaining_upside": 0.0,
+    "action_starter_buy_base_required_upside": 0.25,
+    "action_add_base_required_upside": 0.30,
+    "action_strong_add_base_required_upside": 0.40,
+    "action_hold_extra_add_required_upside": 0.50,
+    "action_trim_remaining_upside_threshold": 0.10,
+    "action_sell_remaining_upside_threshold": 0.00,
+    "action_underweight_discount_max": 0.10,
+    "action_quality_discount_max": 0.10,
+    "action_overweight_penalty_max": 0.15,
+    "action_low_quality_penalty_max": 0.15,
+    "action_trigger_min_required_upside": 0.10,
+    "action_trigger_max_required_upside": 0.80,
+    "action_strong_trim_gap_threshold": 0.25,
+    "action_redistribute_capped_excess": False,
+    "action_allow_bucket_underallocation": True,
+    "action_show_unallocated_bucket_amount": True,
+    "action_treat_cash_equivalents_as_cash": True,
+    "action_cash_equivalent_symbols": "SGOV",
+    "linear_allocated_target_total_pct": 100.0,
+    "linear_min_expected_cagr": 0.0,
+    "linear_full_expected_cagr": 15.0,
+    "linear_min_upside": 0.0,
+    "linear_full_upside": 80.0,
+    "linear_min_core_net": -1.0,
+    "linear_full_core_net": 2.0,
+    "linear_min_potential_net": -1.0,
+    "linear_full_potential_net": 1.5,
+    "linear_expected_cagr_weight": 40.0,
+    "linear_upside_weight": 20.0,
+    "linear_core_confidence_weight": 25.0,
+    "linear_potential_confidence_weight": 10.0,
+    "linear_confidence_quality_weight": 5.0,
+    "linear_min_score_threshold": 0.10,
+    "linear_zero_target_if_expected_cagr_negative": True,
+    "linear_zero_target_if_upside_negative": True,
+    "linear_max_single_stock_pct": 10.0,
+    "linear_target_band_tolerance_pct": 15.0,
+    "linear_enable_risk_caps": True,
+    "linear_negative_core_net_cap_pct": 2.0,
+    "linear_low_core_net_threshold": 0.5,
+    "linear_low_core_net_cap_pct": 4.0,
+    "linear_high_bearish_confidence_threshold": 8.0,
+    "linear_high_bearish_confidence_cap_pct": 5.0,
+}
+ACTION_PLAN_BOOL_SETTINGS = {
+    "action_include_current_positions",
+    "action_include_strong_buy",
+    "action_include_buy",
+    "action_include_speculative_buy",
+    "action_include_hold_only_if_owned",
+    "action_include_sell_only_if_owned",
+    "action_allow_manual_include_exclude",
+    "action_use_dynamic_bucket_sizing",
+    "action_use_weighted_eligible_count",
+    "action_redistribute_post_cap_excess",
+    "action_redistribute_capped_excess",
+    "action_allow_bucket_underallocation",
+    "action_show_unallocated_bucket_amount",
+    "action_treat_cash_equivalents_as_cash",
+    "linear_zero_target_if_expected_cagr_negative",
+    "linear_zero_target_if_upside_negative",
+    "linear_enable_risk_caps",
+}
+ACTION_PLAN_TEXT_SETTINGS = {
+    "action_cash_equivalent_symbols",
+}
+ACTION_PLAN_BUCKET_KEYS = {
+    "Strong Buy": "action_bucket_strong_buy_target",
+    "Buy": "action_bucket_buy_target",
+    "Speculative Buy": "action_bucket_speculative_buy_target",
+    "Hold": "action_bucket_hold_target",
+    "Sell": "action_bucket_sell_target",
+    "Strong Sell": "action_bucket_strong_sell_target",
+}
+ACTION_PLAN_ACTION_PRIORITY = {
+    "Strong Add": 1,
+    "Add": 2,
+    "Starter Buy": 3,
+    "Trim": 4,
+    "Strong Trim": 5,
+    "Sell": 6,
+    "Watch": 7,
+    "Hold": 8,
+    "Hold / Overweight": 8,
+    "Re-evaluate": 9,
+}
 
 DEFAULT_PROMPT_BUSINESS_MODEL = """You are an equity analyst.
 
@@ -230,6 +416,9 @@ Definitions:
 - A key variable is one of the most important company-specific factors that could materially move the stock price over 5 years.
 - Confidence means how strong the current evidence is that this variable is acting in that direction now.
 - Importance means how much this variable could influence the stock price over the 5-year horizon.
+- Driver Category explains whether the variable is tied to the existing material business or to emerging future optionality.
+- Core Driver means the variable is tied to the existing material business, current revenue/margin/cash-flow engine, current customer demand, current cost structure, current competitive position, or an already proven/material segment.
+- Potential Driver means the variable is tied to emerging optionality, new initiatives, early-stage products, future markets, speculative technologies, new business lines, or not-yet-material drivers that could become material over five years but are not yet strongly proven.
 
 What makes a strong key variable:
 - specific
@@ -252,6 +441,14 @@ Guidance:
 - Do not mix bullish and bearish directions in the same variable.
 - Most variables should be business drivers or risks, not secondary consequences.
 - Use scoring discipline: do not give too many 10/10 scores, do not make everything highly important, and do not overstate confidence for speculative optionality.
+- Classify each variable as either Core Driver or Potential Driver.
+- Do not classify a normal future growth driver as Potential Driver just because it is forward-looking.
+- Use Potential Driver only when the variable is genuinely tied to optionality, emerging initiatives, speculative products, new segments, or not-yet-material future drivers.
+- Most companies should normally have more Core Drivers than Potential Drivers.
+- Do not force Potential Drivers if the company has no meaningful optionality.
+- Potential Drivers should usually have lower confidence unless there is strong current evidence.
+- High importance is allowed for Potential Drivers if the possible 5-year upside/downside impact could be large.
+- Both Core Drivers and Potential Drivers can be Bullish or Bearish.
 
 ETF-specific guidance:
 - If the symbol is an ETF, focus mainly on:
@@ -268,6 +465,7 @@ Return ONLY valid JSON in this exact structure:
     {
       "variable": "text",
       "type": "Bullish",
+      "driver_category": "Core Driver",
       "confidence": 0,
       "importance": 0
     }
@@ -281,7 +479,9 @@ Rules:
 - Include only the variables that most likely determine the 5-year outcome, exclude secondary variables unless they are clearly more important than a core driver/risk.
 - Each variable must be specific, causal, and clearly linked to revenue, margins, cash flow, or valuation.
 - Each variable must be clearly and exclusively Bullish or Bearish.
-- Avoid overlap between variables, if two candidate variables describe the same mechanism, keep only the stronger one
+- Each variable must include driver_category.
+- driver_category must be exactly one of: Core Driver, Potential Driver.
+- Avoid overlap between variables, if two candidate variables describe the same mechanism, keep only the stronger one.
 - Keep each variable text concise. Prefer a short phrase or one short sentence, not a full explanation. Do not explicitly include “mechanism:” or “financial consequence:” in the variable text.
 - confidence must be an integer from 0 to 10.
 - importance must be an integer from 0 to 10.
@@ -304,6 +504,7 @@ Task:
 Build Bear, Base, and Bull stock price scenarios over a 5-year horizon using the company name, business model, current price, and key variables above.
 
 Definitions:
+
 - Bear = pessimistic but plausible outcome
 - Base = most likely central outcome
 - Bull = optimistic but plausible outcome
@@ -324,13 +525,36 @@ Rules:
 - Build each scenario primarily from the key variables provided and the business model.
 - The Bear case should reflect stronger materialization of the most important bearish variables.
 - The Bull case should reflect stronger materialization of the most important bullish variables.
-- The Base case must reflect the most likely balance of the variable set and must not simply be a softened Bull case.
+- The Base case should represent normal execution and currently visible trajectory, not a scenario where most bullish variables work well.
 - Probabilities must sum to 100.
+- Do not output CAGR fields. CAGR is calculated by BakingMoney from current price and scenario target prices.
+
+Base-case discipline:
+
+- Do not assume multiple expansion in the Base case unless valuation is clearly undemanding or earnings/cash-flow growth strongly justifies it.
+- If the stock already trades at a premium valuation, the Base case may have modest upside even if the business performs well.
+- The Base case should usually be closer to the outcome supported by key variables, current guidance, current margins, current growth trajectory, and currently visible backlog/contracts.
 
 Fresh-information rule:
 Before building scenarios, review the latest company earnings release and guidance, and consider only recent news or analyst commentary that materially changes the company’s key variables, current expectations, or scenario probabilities. Prioritize primary sources and factual updates over sentiment or low-signal market commentary.
 
+When reviewing company earnings releases, management commentary, and shareholder letters, be cautious because companies often present results in an optimistic way. Prioritize hard financial data, segment performance, margins, cash flow, and guidance over promotional language. Give greater weight to forward guidance, outlook changes, and the quality of revenue/profit drivers than to management’s qualitative enthusiasm. If the release tone is positive but the guidance, margin profile, growth trajectory, or key operating metrics are only moderate or deteriorating, reflect that caution in the scenario assumptions, price ranges, and probabilities.
+
 The key variables are the primary foundation for the scenario analysis. Build the Bear, Base, and Bull scenarios mainly from the highest-importance and highest-confidence key variables, and ensure that the scenario assumptions, price ranges, and probabilities are directly driven by how those variables could evolve over the next 5 years.
+
+Core vs Potential Driver scenario treatment:
+- Key variables may include driver_category values of Core Driver or Potential Driver.
+- Core Drivers are tied to the existing material business, current revenue/margin/cash-flow engine, current demand, current cost structure, current competitive position, or already proven/material segments.
+- Potential Drivers are tied to emerging optionality, new initiatives, early-stage products, future markets, speculative technologies, new business lines, or not-yet-material drivers that could become material over five years but are not yet strongly proven.
+- Core Drivers should dominate the Base case, normal execution assumptions, and the central business trajectory.
+- Potential Drivers should mainly affect Bull/Bear optionality and scenario range.
+- Do not let low-confidence Potential Drivers materially lift or reduce the Base case.
+- A Potential Driver may influence the Base case only when its confidence is high and evidence suggests it is becoming material to the business.
+- High-importance Potential Drivers may justify a wider Bull or Bear range, but they should not automatically imply a high probability.
+- If Potential Drivers are bullish but low confidence, reflect them mainly in the Bull case, not in the Base case.
+- If Potential Drivers are bearish but low confidence, reflect them mainly as downside/tail risk, not as the central Base case.
+- If a Potential Driver becomes credible and material enough to dominate the Base case, treat that as evidence that it may no longer be merely optionality.
+- Do not ignore Potential Drivers, but distinguish clearly between currently proven business drivers and speculative optionality.
 
 Valuation discipline:
 - A strong business does not automatically imply high stock upside.
@@ -338,6 +562,25 @@ Valuation discipline:
 - Do not assume extreme 5-year upside unless clearly supported by multiple high-confidence, high-importance bullish variables and limited material bearish constraints.
 - High-importance bullish and bearish variables must materially affect price ranges and probabilities, not just the written assumptions.
 - If the stock is not obviously expensive relative to its risk, growth profile, and business quality, allow meaningful upside when justified by the variables.
+
+Valuation framework:
+- When possible, mentally anchor scenarios to plausible 5-year revenue, earnings, EBITDA, free-cash-flow, or book-value outcomes and a reasonable terminal valuation multiple.
+- Do not output price ranges that imply unrealistic revenue growth, margin expansion, or valuation multiples relative to the company’s maturity, industry, cyclicality, leverage, and risk.
+- If the current stock price already reflects optimistic growth or margin assumptions, reflect that in lower expected upside, lower Bull probability, or a narrower Bull range.
+- If the company is highly speculative, loss-making, capital-intensive, or dependent on external financing, require stronger evidence before assigning high Bull probability.
+
+Current-price anchoring:
+- Use the current price to judge how much optimism or pessimism is already priced in.
+- A high-quality company can have a Base case below or near the current price if valuation already discounts strong execution.
+- A beaten-down company can have a Base case materially above the current price if the key variables and current evidence support recovery.
+- Do not mechanically center scenarios around the current price; anchor them to plausible 5-year business value.
+
+Guidance interpretation:
+- Treat guidance as more important than backward-looking results when it materially changes the 5-year trajectory.
+- A beat with reaffirmed guidance is usually confirmation, not a thesis upgrade.
+- A beat with weak or reduced guidance should reduce scenario optimism.
+- A miss with raised guidance may still support the thesis if the forward drivers are improving.
+- Distinguish between temporary quarterly volatility and durable changes in growth, margins, cash flow, backlog, customer demand, or capital intensity.
 
 Scenario realism:
 - Use realistic price ranges that reflect both business performance and valuation constraints.
@@ -349,13 +592,29 @@ Scenario realism:
 - Use latest earnings release / shareholder letter / earnings call guidance and extract only facts that materially affect the 5-year thesis and current scenario framing.
 - Use latest earnings release to understand current company valuation.
 
+Assumptions field rules:
+
+- The assumptions field is a concise 5-year thesis summary for the scenario set, not an earnings recap.
+- It must primarily explain which key variables are most likely to determine the 5-year outcome and how they shape the Bear, Base, and Bull cases.
+- Use the latest earnings release or guidance only to the extent that it changes, confirms, or weakens those 5-year drivers.
+- Do not summarize quarterly results, year-over-year growth rates, or management commentary unless they materially change the 5-year thesis.
+- Do not turn the assumptions field into a mini earnings report.
+- Do not list multiple quarterly metrics unless one is essential to understanding a durable change in trajectory.
+- Prefer a causal 2-part structure:
+  1. the core 5-year drivers likely to determine value
+  2. the main constraints/risks that limit upside or increase downside
+- Keep assumptions concise, ideally 2 to 4 sentences.
+- Focus on durable drivers such as growth durability, margin structure, take-rate/pricing power, capital intensity, balance-sheet/leverage risk, competitive pressure, customer concentration, or valuation constraint when relevant.
+- If the latest earnings were merely in line with the existing thesis, do not let them dominate the assumptions text.
+- A beat with unchanged guidance is usually confirmation, not the main substance of the assumptions field.
+
 Interpretation rules:
 - Distinguish clearly between business quality and stock attractiveness.
 - A company can be excellent while the stock has limited upside.
 - If current price is known, use it as an anchor, but do not force the Base case close to current price when the variable set clearly justifies deviation.
 - Scenario probabilities must reflect the weighted balance of key variables using both importance and confidence.
 - Avoid generic default probability splits unless the evidence is truly balanced.
-- assumptions should be concise and reflect the business model and most important key variables.
+- assumptions should be concise and reflect the 5-year business thesis behind the scenarios, driven mainly by the most important Core Drivers, while acknowledging important Potential Drivers only when they materially shape Bull/Bear optionality or scenario range.
 - If the symbol is an ETF, reflect the performance drivers and risks of its top holdings.
 
 JSON only.
@@ -1202,45 +1461,103 @@ def _coerce_score(value):
     return number
 
 
-def calculate_rating(upside, bullish_confidence, bearish_confidence, rating_settings):
-    upside_value = _coerce_score(upside)
-    bullish_value = _coerce_score(bullish_confidence)
-    bearish_value = _coerce_score(bearish_confidence)
-    confidence_diff = bullish_value - bearish_value
-    max_confidence = max(bullish_value, bearish_value)
+def _score_or_none(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
 
-    if max_confidence < rating_settings[RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD]:
-        return "Hold", confidence_diff
+
+def _confidence_pair_or_fallback(primary_bullish, primary_bearish, fallback_bullish, fallback_bearish):
+    bullish = _score_or_none(primary_bullish)
+    bearish = _score_or_none(primary_bearish)
+    if bullish is not None and bearish is not None:
+        return bullish, bearish, bullish - bearish
+
+    fallback_bullish_value = _score_or_none(fallback_bullish)
+    fallback_bearish_value = _score_or_none(fallback_bearish)
+    if fallback_bullish_value is None:
+        fallback_bullish_value = 0.0
+    if fallback_bearish_value is None:
+        fallback_bearish_value = 0.0
+    return fallback_bullish_value, fallback_bearish_value, fallback_bullish_value - fallback_bearish_value
+
+
+def calculate_rating(upside, bullish_confidence, bearish_confidence, rating_settings, confidence_context=None):
+    confidence_context = confidence_context or {}
+    upside_value = _coerce_score(upside)
+
+    combined_bullish_value = _coerce_score(bullish_confidence)
+    combined_bearish_value = _coerce_score(bearish_confidence)
+    combined_confidence_diff = combined_bullish_value - combined_bearish_value
+
+    core_bullish_value, core_bearish_value, core_confidence_diff = _confidence_pair_or_fallback(
+        confidence_context.get("core_bullish_confidence"),
+        confidence_context.get("core_bearish_confidence"),
+        bullish_confidence,
+        bearish_confidence,
+    )
+    potential_bullish_value = _score_or_none(confidence_context.get("potential_bullish_confidence"))
+    potential_bearish_value = _score_or_none(confidence_context.get("potential_bearish_confidence"))
+    potential_confidence_diff = None
+    if potential_bullish_value is not None and potential_bearish_value is not None:
+        potential_confidence_diff = potential_bullish_value - potential_bearish_value
 
     if (
         upside_value >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_UPSIDE]
-        and confidence_diff >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_DIFF]
-        and bullish_value >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE]
+        and core_confidence_diff >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_DIFF]
+        and core_bullish_value >= rating_settings[RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE]
     ):
-        return "Strong Buy", confidence_diff
+        return "Strong Buy", combined_confidence_diff
 
     if (
         upside_value >= rating_settings[RATING_SETTING_BUY_MIN_UPSIDE]
-        and confidence_diff >= rating_settings[RATING_SETTING_BUY_MIN_DIFF]
-        and bullish_value >= rating_settings[RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE]
+        and core_confidence_diff >= rating_settings[RATING_SETTING_BUY_MIN_DIFF]
+        and core_bullish_value >= rating_settings[RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE]
     ):
-        return "Buy", confidence_diff
+        return "Buy", combined_confidence_diff
 
     if (
         upside_value <= rating_settings[RATING_SETTING_STRONG_SELL_MAX_UPSIDE]
-        and confidence_diff <= rating_settings[RATING_SETTING_STRONG_SELL_MAX_DIFF]
-        and bearish_value >= rating_settings[RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE]
+        and core_confidence_diff <= rating_settings[RATING_SETTING_STRONG_SELL_MAX_DIFF]
+        and core_bearish_value >= rating_settings[RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE]
     ):
-        return "Strong Sell", confidence_diff
+        return "Strong Sell", combined_confidence_diff
 
     if (
         upside_value <= rating_settings[RATING_SETTING_SELL_MAX_UPSIDE]
-        and confidence_diff <= rating_settings[RATING_SETTING_SELL_MAX_DIFF]
-        and bearish_value >= rating_settings[RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE]
+        and core_confidence_diff <= rating_settings[RATING_SETTING_SELL_MAX_DIFF]
+        and core_bearish_value >= rating_settings[RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE]
     ):
-        return "Sell", confidence_diff
+        return "Sell", combined_confidence_diff
 
-    return "Hold", confidence_diff
+    speculative_core_path = (
+        core_confidence_diff >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF]
+        and core_bullish_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE]
+    )
+    speculative_potential_path = (
+        potential_confidence_diff is not None
+        and potential_bullish_value is not None
+        and potential_confidence_diff >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF]
+        and potential_bullish_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE]
+    )
+    if (
+        upside_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE]
+        and core_confidence_diff >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR]
+        and (speculative_core_path or speculative_potential_path)
+    ):
+        return "Speculative Buy", combined_confidence_diff
+
+    # Phase 4: the low-conviction guardrail intentionally remains after the
+    # Speculative Buy check so it cannot short-circuit valid speculative cases.
+    max_confidence = max(core_bullish_value, core_bearish_value, combined_bullish_value, combined_bearish_value)
+    if max_confidence < rating_settings[RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD]:
+        return "Hold", combined_confidence_diff
+
+    return "Hold", combined_confidence_diff
 
 
 def get_rating_settings(conn):
@@ -1252,6 +1569,7 @@ def get_rating_settings(conn):
         RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD,
         RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE,
         RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE,
+        RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE,
         RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE,
         RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE,
     ):
@@ -1285,34 +1603,116 @@ def scenario_probabilities_from_scenarios(scenarios):
     return normalize_probabilities(mapping)
 
 
-def compute_backend_probabilities(key_variables, base_max, base_min):
-    bull_score = 0.0
-    bear_score = 0.0
+def _safe_probability_number(value, default=0.0):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _key_variable_type_for_probability(item):
+    return item.get("variable_type") or item.get("type")
+
+
+def calculate_effective_potential_driver_probability_weight(
+    key_variables,
+    max_weight=POTENTIAL_DRIVER_BACKEND_PROBABILITY_MAX_WEIGHT,
+    confidence_floor=POTENTIAL_DRIVER_BACKEND_PROBABILITY_CONFIDENCE_FLOOR,
+):
+    potential_confidences = []
+    potential_importances = []
     for item in key_variables or []:
-        try:
-            confidence = float(item.get("confidence", 0.0))
-            importance = float(item.get("importance", 0.0))
-        except (TypeError, ValueError):
+        if safe_driver_category(item.get("driver_category")) != "Potential Driver":
             continue
+        potential_confidences.append(_safe_probability_number(item.get("confidence")))
+        potential_importances.append(_safe_probability_number(item.get("importance")))
+
+    if not potential_confidences:
+        return {
+            "effective_potential_driver_probability_weight": 0.0,
+            "median_potential_confidence": None,
+            "median_potential_importance": None,
+        }
+
+    median_confidence = statistics.median(potential_confidences)
+    median_importance = statistics.median(potential_importances)
+    if median_confidence < confidence_floor:
+        effective_weight = 0.0
+    else:
+        effective_weight = float(max_weight) * (median_confidence / 10.0) * (median_importance / 10.0)
+    effective_weight = max(0.0, min(float(max_weight), effective_weight))
+    return {
+        "effective_potential_driver_probability_weight": effective_weight,
+        "median_potential_confidence": median_confidence,
+        "median_potential_importance": median_importance,
+    }
+
+
+def compute_backend_probability_details(key_variables, base_max, base_min):
+    weight_meta = calculate_effective_potential_driver_probability_weight(key_variables)
+    potential_weight = weight_meta["effective_potential_driver_probability_weight"]
+    core_bull_score = 0.0
+    core_bear_score = 0.0
+    potential_bull_raw_score = 0.0
+    potential_bear_raw_score = 0.0
+
+    for item in key_variables or []:
+        confidence = _safe_probability_number(item.get("confidence"))
+        importance = _safe_probability_number(item.get("importance"))
         score = confidence * importance
-        if item.get("variable_type") == "Bullish":
-            bull_score += score
-        elif item.get("variable_type") == "Bearish":
-            bear_score += score
+        variable_type = _key_variable_type_for_probability(item)
+        category = safe_driver_category(item.get("driver_category"))
+        if category == "Potential Driver":
+            if variable_type == "Bullish":
+                potential_bull_raw_score += score
+            elif variable_type == "Bearish":
+                potential_bear_raw_score += score
+        elif variable_type == "Bullish":
+            core_bull_score += score * CORE_DRIVER_BACKEND_PROBABILITY_WEIGHT
+        elif variable_type == "Bearish":
+            core_bear_score += score * CORE_DRIVER_BACKEND_PROBABILITY_WEIGHT
+
+    potential_bull_weighted_score = potential_bull_raw_score * potential_weight
+    potential_bear_weighted_score = potential_bear_raw_score * potential_weight
+    bull_score = core_bull_score + potential_bull_weighted_score
+    bear_score = core_bear_score + potential_bear_weighted_score
 
     total = bull_score + bear_score
     if total <= 0:
-        return {"Bear": 20.0, "Base": 60.0, "Bull": 20.0}
+        probabilities = {"Bear": 20.0, "Base": 60.0, "Bull": 20.0}
+    else:
+        bull_share = bull_score / total
+        bear_share = bear_score / total
+        imbalance = abs(bull_share - bear_share)
+        base = float(base_max) - imbalance * (float(base_max) - float(base_min))
+        base = max(0.0, min(100.0, base))
+        remaining = max(0.0, 100.0 - base)
+        bull = remaining * bull_share
+        bear = remaining * bear_share
+        probabilities = normalize_probabilities({"Bear": bear, "Base": base, "Bull": bull})
 
-    bull_share = bull_score / total
-    bear_share = bear_score / total
-    imbalance = abs(bull_share - bear_share)
-    base = float(base_max) - imbalance * (float(base_max) - float(base_min))
-    base = max(0.0, min(100.0, base))
-    remaining = max(0.0, 100.0 - base)
-    bull = remaining * bull_share
-    bear = remaining * bear_share
-    return normalize_probabilities({"Bear": bear, "Base": base, "Bull": bull})
+    return {
+        "probabilities": probabilities,
+        "meta": {
+            **weight_meta,
+            "core_driver_backend_probability_weight": CORE_DRIVER_BACKEND_PROBABILITY_WEIGHT,
+            "potential_driver_backend_probability_max_weight": POTENTIAL_DRIVER_BACKEND_PROBABILITY_MAX_WEIGHT,
+            "potential_driver_backend_probability_confidence_floor": POTENTIAL_DRIVER_BACKEND_PROBABILITY_CONFIDENCE_FLOOR,
+            "core_bull_score": core_bull_score,
+            "core_bear_score": core_bear_score,
+            "potential_bull_raw_score": potential_bull_raw_score,
+            "potential_bear_raw_score": potential_bear_raw_score,
+            "potential_bull_weighted_score": potential_bull_weighted_score,
+            "potential_bear_weighted_score": potential_bear_weighted_score,
+            "bull_score": bull_score,
+            "bear_score": bear_score,
+        },
+    }
+
+
+def compute_backend_probabilities(key_variables, base_max, base_min):
+    return compute_backend_probability_details(key_variables, base_max, base_min)["probabilities"]
 
 
 def blend_probabilities(ai_probs, backend_probs, ai_weight, backend_weight):
@@ -1344,6 +1744,193 @@ def get_scenario_probability_settings(conn):
         "backend_base_max_probability": get_float_setting(conn, SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MAX, DEFAULT_SCENARIO_PROBABILITY_SETTINGS[SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MAX], minimum=0.0, maximum=100.0),
         "backend_base_min_probability": get_float_setting(conn, SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN, DEFAULT_SCENARIO_PROBABILITY_SETTINGS[SCENARIO_PROBABILITY_SETTING_BACKEND_BASE_MIN], minimum=0.0, maximum=100.0),
     }
+
+
+def get_action_plan_numeric_setting(conn, key, default):
+    raw = _get_setting_value(conn, key)
+    if raw is None:
+        return float(default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(value):
+        return float(default)
+    return value
+
+
+def get_action_plan_settings(conn):
+    settings = {}
+    for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
+        if key in ACTION_PLAN_BOOL_SETTINGS:
+            settings[key] = get_bool_setting(conn, key, bool(default))
+        elif key in ACTION_PLAN_TEXT_SETTINGS:
+            raw = _get_setting_value(conn, key)
+            settings[key] = str(raw if raw is not None else default)
+        else:
+            settings[key] = get_action_plan_numeric_setting(conn, key, float(default))
+    return settings
+
+
+def validate_action_plan_settings(settings):
+    if not isinstance(settings, dict):
+        raise ValueError("action_plan_settings must be an object")
+    effective = {**ACTION_PLAN_DEFAULT_SETTINGS, **settings}
+    for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
+        if key in ACTION_PLAN_BOOL_SETTINGS or key in ACTION_PLAN_TEXT_SETTINGS:
+            if key in ACTION_PLAN_TEXT_SETTINGS:
+                raw_symbols = str(effective.get(key, "") or "")
+                normalized_symbols = sorted({normalize_symbol(part) for part in raw_symbols.split(",") if normalize_symbol(part)})
+                effective[key] = ",".join(normalized_symbols)
+            continue
+        try:
+            value = float(effective[key])
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be numeric")
+        if not math.isfinite(value):
+            raise ValueError(f"{key} must be finite")
+        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold"}:
+            raise ValueError(f"{key} cannot be negative")
+        effective[key] = value
+
+    for min_key, full_key in (
+        ("linear_min_expected_cagr", "linear_full_expected_cagr"),
+        ("linear_min_upside", "linear_full_upside"),
+        ("linear_min_core_net", "linear_full_core_net"),
+        ("linear_min_potential_net", "linear_full_potential_net"),
+    ):
+        if effective[full_key] <= effective[min_key]:
+            raise ValueError(f"{full_key} must be greater than {min_key}")
+    linear_weight_total = sum(effective[key] for key in (
+        "linear_expected_cagr_weight",
+        "linear_upside_weight",
+        "linear_core_confidence_weight",
+        "linear_potential_confidence_weight",
+        "linear_confidence_quality_weight",
+    ))
+    if linear_weight_total <= 0:
+        raise ValueError("Linear Allocation weights must total more than 0")
+    for key in (
+        "linear_allocated_target_total_pct",
+        "linear_max_single_stock_pct",
+        "linear_target_band_tolerance_pct",
+        "linear_negative_core_net_cap_pct",
+        "linear_low_core_net_cap_pct",
+        "linear_high_bearish_confidence_cap_pct",
+    ):
+        if effective[key] > 100.0:
+            raise ValueError(f"{key} must be between 0 and 100")
+    if effective["action_upside_full_score"] <= effective["action_upside_zero_score"]:
+        raise ValueError("action_upside_full_score must be greater than action_upside_zero_score")
+    if effective["action_core_diff_full_score"] <= effective["action_core_diff_zero_score"]:
+        raise ValueError("action_core_diff_full_score must be greater than action_core_diff_zero_score")
+    if effective["action_core_bearish_penalty_full"] <= effective["action_core_bearish_penalty_start"]:
+        raise ValueError("action_core_bearish_penalty_full must be greater than action_core_bearish_penalty_start")
+    if effective["action_potential_diff_full_score"] <= effective["action_potential_diff_minimum"]:
+        raise ValueError("action_potential_diff_full_score must be greater than action_potential_diff_minimum")
+    allocation_weight_total = sum(effective[key] for key in (
+        "action_allocation_upside_weight",
+        "action_allocation_core_weight",
+        "action_allocation_potential_weight",
+    ))
+    if allocation_weight_total <= 0:
+        raise ValueError("Allocation weights must total more than 0")
+    if effective["action_allocation_risk_penalty_strength"] > 1.0:
+        raise ValueError("action_allocation_risk_penalty_strength must be between 0 and 1")
+    for key in (
+        "action_starter_buy_base_required_upside",
+        "action_add_base_required_upside",
+        "action_strong_add_base_required_upside",
+        "action_hold_extra_add_required_upside",
+    ):
+        if effective[key] > 2.0:
+            raise ValueError(f"{key} must be between 0 and 2")
+    for key in ("action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold"):
+        if effective[key] < -1.0 or effective[key] > 2.0:
+            raise ValueError(f"{key} must be between -1 and 2")
+    for key in (
+        "action_underweight_discount_max",
+        "action_quality_discount_max",
+        "action_overweight_penalty_max",
+        "action_low_quality_penalty_max",
+        "action_strong_trim_gap_threshold",
+    ):
+        if effective[key] > 1.0:
+            raise ValueError(f"{key} must be between 0 and 1")
+    if effective["action_trigger_max_required_upside"] <= effective["action_trigger_min_required_upside"]:
+        raise ValueError("action_trigger_max_required_upside must be greater than action_trigger_min_required_upside")
+    if effective["action_target_band_lower_multiplier"] >= 1.0:
+        raise ValueError("action_target_band_lower_multiplier must be >= 0 and < 1")
+    if effective["action_target_band_upper_multiplier"] <= 1.0:
+        raise ValueError("action_target_band_upper_multiplier must be greater than 1")
+    for key in (
+        "action_band_lower_multiplier",
+        "action_band_upper_multiplier",
+        "action_target_band_lower_multiplier",
+        "action_target_band_upper_multiplier",
+        "action_speculative_band_lower_multiplier",
+        "action_speculative_band_upper_multiplier",
+        "action_strong_add_below_target_multiplier",
+        "action_strong_trim_above_target_multiplier",
+    ):
+        if effective[key] <= 0:
+            raise ValueError(f"{key} must be greater than 0")
+    if effective.get("action_use_dynamic_bucket_sizing", True):
+        if effective["action_min_cash_unallocated_target"] > 50.0:
+            raise ValueError("action_min_cash_unallocated_target must be between 0 and 50")
+        if effective["action_weighted_count_full_score"] <= effective["action_weighted_count_min_score"]:
+            raise ValueError("action_weighted_count_full_score must be greater than action_weighted_count_min_score")
+        if effective["action_weighted_count_min_score"] > 1.0 or effective["action_weighted_count_full_score"] > 1.0:
+            raise ValueError("weighted count score thresholds must be between 0 and 1")
+        if effective["action_weighted_count_max_contribution"] <= 0 or effective["action_weighted_count_max_contribution"] > 1.0:
+            raise ValueError("action_weighted_count_max_contribution must be > 0 and <= 1")
+        if effective["action_max_potential_score_contribution"] > 1.0:
+            raise ValueError("action_max_potential_score_contribution must be between 0 and 1")
+        bucket_sizing_weight_total = sum(effective[key] for key in (
+            "action_bucket_sizing_upside_weight",
+            "action_bucket_sizing_core_weight",
+            "action_bucket_sizing_potential_weight",
+        ))
+        if bucket_sizing_weight_total <= 0:
+            raise ValueError("Bucket sizing weights must total more than 0")
+        if effective["action_bucket_sizing_risk_penalty_strength"] > 1.0:
+            raise ValueError("action_bucket_sizing_risk_penalty_strength must be between 0 and 1")
+        for bucket_key in ("strong_buy", "buy", "speculative_buy", "hold"):
+            for suffix in ("weight_per_effective_stock", "max_effective_count"):
+                if effective[f"action_{bucket_key}_{suffix}"] < 0:
+                    raise ValueError(f"action_{bucket_key}_{suffix} must be >= 0")
+            if effective[f"action_{bucket_key}_max_bucket_target"] > 100.0:
+                raise ValueError(f"action_{bucket_key}_max_bucket_target must be between 0 and 100")
+            if effective[f"action_{bucket_key}_compression_weight"] <= 0:
+                raise ValueError(f"action_{bucket_key}_compression_weight must be > 0")
+    else:
+        bucket_total = sum(float(effective[key]) for key in ACTION_PLAN_BUCKET_KEYS.values()) + float(effective["action_bucket_cash_target"])
+        if bucket_total > 100.0 + 1e-9:
+            raise ValueError("Action Plan bucket targets cannot total more than 100%")
+    return effective
+
+
+def save_action_plan_settings(conn, settings, now=None):
+    now = now or utc_now_iso()
+    effective = validate_action_plan_settings(settings)
+    for key in ACTION_PLAN_DEFAULT_SETTINGS:
+        if key not in settings:
+            continue
+        value = effective[key]
+        if key in ACTION_PLAN_BOOL_SETTINGS:
+            stored = "1" if value else "0"
+        else:
+            stored = str(value)
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            (key, stored, now),
+        )
 
 
 def choose_final_probabilities(ai_probs, backend_probs, settings):
@@ -1408,6 +1995,7 @@ def get_general_configuration(conn):
         "scenario_outlier_filter_enabled": scenario["scenario_outlier_filter_enabled"],
         "rating_settings": get_rating_settings(conn),
         "scenario_probability_settings": get_scenario_probability_settings(conn),
+        "action_plan_settings": get_action_plan_settings(conn),
     }
 
 
@@ -1526,6 +2114,7 @@ def save_general_configuration(conn, settings):
                 RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD,
                 RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE,
                 RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE,
+                RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE,
                 RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE,
                 RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE,
             } and (value < 0 or value > 10):
@@ -1540,6 +2129,10 @@ def save_general_configuration(conn, settings):
                 """,
                 (key, str(value), now),
             )
+
+    action_plan_settings_payload = settings.get("action_plan_settings")
+    if action_plan_settings_payload is not None:
+        save_action_plan_settings(conn, action_plan_settings_payload, now=now)
 
     if scenario_payload:
         save_scenario_generation_config(conn, scenario_payload)
@@ -1691,8 +2284,39 @@ def render_recent_event_prompt(template, values):
     return render_prompt_template(template, substitution_context)
 
 
+def normalized_driver_category(value):
+    return normalize_driver_category(value)
+
+
+def safe_driver_category(value):
+    try:
+        return normalized_driver_category(value)
+    except AnalysisValidationError:
+        return "Core Driver"
+
+
+def normalize_key_variables_for_payload(key_variables):
+    normalized = []
+    for item in key_variables or []:
+        if not isinstance(item, dict):
+            continue
+        variable_text = item.get("variable_text") or item.get("variable") or ""
+        variable_type = item.get("variable_type") or item.get("type") or "Bullish"
+        driver_category = safe_driver_category(item.get("driver_category"))
+        normalized.append(
+            {
+                "variable_text": variable_text,
+                "variable_type": variable_type,
+                "driver_category": driver_category,
+                "confidence": item.get("confidence"),
+                "importance": item.get("importance"),
+            }
+        )
+    return normalized
+
+
 def format_key_variables_for_prompt(key_variables):
-    return json.dumps(key_variables, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(normalize_key_variables_for_payload(key_variables), separators=(",", ":"), ensure_ascii=False)
 
 
 def build_business_model_prompt_value(business_model="", business_summary=""):
@@ -1796,6 +2420,7 @@ def init_db():
               analysis_symbol_id INTEGER NOT NULL,
               variable_text TEXT NOT NULL,
               variable_type TEXT NOT NULL,
+              driver_category TEXT NOT NULL DEFAULT 'Core Driver',
               confidence REAL NOT NULL,
               importance REAL NOT NULL,
               created_at TEXT NOT NULL,
@@ -1864,6 +2489,7 @@ def init_db():
               analysis_version_id INTEGER NOT NULL,
               variable_text TEXT NOT NULL,
               variable_type TEXT NOT NULL,
+              driver_category TEXT NOT NULL DEFAULT 'Core Driver',
               confidence REAL NOT NULL,
               importance REAL NOT NULL,
               created_at TEXT NOT NULL,
@@ -1884,6 +2510,46 @@ def init_db():
               quality_score REAL,
               is_outlier INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_external_scenarios (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_version_id INTEGER NOT NULL,
+              title TEXT NOT NULL,
+              source_notes TEXT,
+              external_weight REAL NOT NULL,
+              scenarios_json TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_analysis_external_scenarios_version
+            ON analysis_external_scenarios(analysis_version_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_final_scenario_overlays (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              analysis_version_id INTEGER NOT NULL UNIQUE,
+              bakingmoney_weight REAL NOT NULL,
+              external_total_weight REAL NOT NULL,
+              final_scenarios_json TEXT NOT NULL,
+              expected_price REAL,
+              expected_cagr REAL,
+              upside REAL,
+              recalculated_at TEXT NOT NULL,
+              is_stale INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
               FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
             )
             """
@@ -2070,6 +2736,27 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS earnings_calendar_entries (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              symbol TEXT NOT NULL,
+              fiscal_year INTEGER NOT NULL,
+              fiscal_quarter TEXT NOT NULL CHECK (fiscal_quarter IN ('Q1', 'Q2', 'Q3', 'Q4')),
+              release_date TEXT,
+              release_timing TEXT CHECK (release_timing IS NULL OR release_timing IN ('Before Open', 'After Close')),
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(symbol, fiscal_year, fiscal_quarter)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_earnings_calendar_entries_symbol
+            ON earnings_calendar_entries(symbol)
+            """
+        )
+        conn.execute(
+            """
             INSERT INTO earnings_review_symbols (symbol, created_at, updated_at)
             SELECT DISTINCT er.symbol, ?, ?
             FROM earnings_reviews er
@@ -2100,6 +2787,24 @@ def init_db():
               unrealized_pnl REAL,
               daily_pnl REAL,
               currency TEXT,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio_summary_cache (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              account_id TEXT,
+              base_currency TEXT,
+              net_liquidation REAL,
+              total_cash_value REAL,
+              settled_cash REAL,
+              available_funds REAL,
+              buying_power REAL,
+              excess_liquidity REAL,
+              ledger_cash_usd REAL,
+              actual_cash REAL,
               updated_at TEXT NOT NULL
             )
             """
@@ -2155,6 +2860,10 @@ def init_db():
         ensure_column_exists(conn, "analysis_scenarios", "cagr_mid", "REAL")
         ensure_column_exists(conn, "analysis_version_scenarios", "price_mid", "REAL")
         ensure_column_exists(conn, "analysis_version_scenarios", "cagr_mid", "REAL")
+        ensure_column_exists(conn, "analysis_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
+        ensure_column_exists(conn, "analysis_version_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
+        ensure_column_exists(conn, "portfolio_summary_cache", "ledger_cash_usd", "REAL")
+        ensure_column_exists(conn, "portfolio_summary_cache", "actual_cash", "REAL")
 
         has_roots = conn.execute("SELECT 1 FROM analysis_roots LIMIT 1").fetchone()
         if not has_roots:
@@ -2251,7 +2960,7 @@ def init_db():
 
                 legacy_variables = conn.execute(
                     """
-                    SELECT variable_text, variable_type, confidence, importance, created_at
+                    SELECT variable_text, variable_type, COALESCE(driver_category, 'Core Driver') AS driver_category, confidence, importance, created_at
                     FROM analysis_key_variables
                     WHERE analysis_symbol_id = ?
                     ORDER BY id ASC
@@ -2262,19 +2971,21 @@ def init_db():
                     conn.execute(
                         """
                         INSERT INTO analysis_version_key_variables (
-                            analysis_version_id, variable_text, variable_type, confidence,
+                            analysis_version_id, variable_text, variable_type, driver_category, confidence,
                             importance, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             version_id,
                             variable["variable_text"],
                             variable["variable_type"],
+                            variable["driver_category"],
                             variable["confidence"],
                             variable["importance"],
                             variable["created_at"] or root_created_at,
                         ),
                     )
+        migrate_legacy_earnings_release_calendar(conn)
         conn.commit()
     finally:
         conn.close()
@@ -2627,9 +3338,9 @@ def validate_step2_key_variables(payload):
         "symbol": symbol,
         "assumptions": "temp",
         "scenarios": [
-            {"name": "Bear", "price_low": 1, "price_high": 2, "cagr_low": -1, "cagr_high": 0, "probability": 34},
-            {"name": "Base", "price_low": 2, "price_high": 3, "cagr_low": 0, "cagr_high": 1, "probability": 33},
-            {"name": "Bull", "price_low": 3, "price_high": 4, "cagr_low": 1, "cagr_high": 2, "probability": 33},
+            {"name": "Bear", "price_low": 1, "price_high": 2, "probability": 34},
+            {"name": "Base", "price_low": 2, "price_high": 3, "probability": 33},
+            {"name": "Bull", "price_low": 3, "price_high": 4, "probability": 33},
         ],
         "key_variables": key_variables,
     }
@@ -2653,6 +3364,7 @@ def validate_step3_scenarios(payload, symbol, key_variables):
                 {
                     "variable_text": item["variable_text"],
                     "variable_type": item["variable_type"],
+                    "driver_category": safe_driver_category(item.get("driver_category")),
                     "confidence": item["confidence"],
                     "importance": item["importance"],
                 }
@@ -2662,6 +3374,7 @@ def validate_step3_scenarios(payload, symbol, key_variables):
                 {
                     "variable_text": item["variable"],
                     "variable_type": item["type"],
+                    "driver_category": safe_driver_category(item.get("driver_category")),
                     "confidence": item["confidence"],
                     "importance": item["importance"],
                 }
@@ -2738,10 +3451,11 @@ def request_ai_analysis(symbol, current_price=None):
                         "properties": {
                             "variable": {"type": "string"},
                             "type": {"type": "string", "enum": ["Bullish", "Bearish"]},
+                            "driver_category": {"type": "string", "enum": ["Core Driver", "Potential Driver"]},
                             "confidence": {"type": "integer", "minimum": 0, "maximum": 10},
                             "importance": {"type": "integer", "minimum": 0, "maximum": 10},
                         },
-                        "required": ["variable", "type", "confidence", "importance"],
+                        "required": ["variable", "type", "driver_category", "confidence", "importance"],
                     },
                 },
             },
@@ -2830,8 +3544,6 @@ def request_ai_analysis(symbol, current_price=None):
                     "name": s["scenario_name"],
                     "price_low": s["price_low"],
                     "price_high": s["price_high"],
-                    "cagr_low": s["cagr_low"],
-                    "cagr_high": s["cagr_high"],
                     "probability": s["probability"],
                 }
                 for s in scenario_parsed["scenarios"]
@@ -2847,12 +3559,14 @@ def request_ai_analysis(symbol, current_price=None):
     finally:
         conn.close()
     ai_probs = scenario_probabilities_from_scenarios(parsed["scenarios"])
-    backend_probs = compute_backend_probabilities(
+    backend_probability_details = compute_backend_probability_details(
         step2["key_variables"],
         probability_settings["backend_base_max_probability"],
         probability_settings["backend_base_min_probability"],
     )
+    backend_probs = backend_probability_details["probabilities"]
     probability_meta = choose_final_probabilities(ai_probs, backend_probs, probability_settings)
+    probability_meta["backend_probability_meta"] = backend_probability_details["meta"]
     parsed["scenarios"] = apply_final_probabilities_to_scenarios(
         parsed["scenarios"],
         probability_meta["final_scenario_probabilities"],
@@ -2976,7 +3690,13 @@ def enrich_scenarios_with_midpoints(scenarios, current_price, years=5, default_c
     return populated
 
 
+def calculate_expected_cagr_from_price(expected_price, current_price, years=5):
+    return compute_scenario_cagr(expected_price, current_price, years=years)
+
+
 def calculate_expected_cagr(scenarios):
+    # Backward-compatible fallback for legacy callers only. New analysis and
+    # overlay flows derive expected CAGR from expected_price/current_price.
     weighted = 0.0
     total_prob = 0.0
     for scenario in scenarios or []:
@@ -3227,11 +3947,54 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
     return aggregated, runs
 
 
-def list_analysis_symbols(conn):
-    rating_settings = get_rating_settings(conn)
+def get_latest_earnings_release_dates_by_symbol(conn):
     rows = conn.execute(
         """
+        SELECT symbol, MAX(release_date) AS latest_release_date
+        FROM earnings_calendar_entries
+        WHERE release_date IS NOT NULL AND release_date != ''
+        GROUP BY symbol
+        """
+    ).fetchall()
+    return {
+        normalize_symbol(row["symbol"]): row["latest_release_date"]
+        for row in rows
+        if normalize_symbol(row["symbol"])
+    }
+
+
+def _diff_or_none(bullish, bearish):
+    if bullish is None or bearish is None:
+        return None
+    return bullish - bearish
+
+
+# Phase 2 separates confidence views by driver category for display/API payloads.
+# Rating basis remains on the existing combined confidence fields intentionally.
+def _confidence_sql(variable_type, driver_category=None):
+    category_filter = ""
+    if driver_category == "Core Driver":
+        category_filter = " AND COALESCE(NULLIF(kv.driver_category, ''), 'Core Driver') != 'Potential Driver'"
+    elif driver_category == "Potential Driver":
+        category_filter = " AND kv.driver_category = 'Potential Driver'"
+    return f"""
+               (
+                   SELECT CASE WHEN SUM(kv.importance) > 0
+                     THEN SUM(kv.confidence * kv.importance) / SUM(kv.importance)
+                     ELSE NULL END
+                   FROM analysis_version_key_variables kv
+                   WHERE kv.analysis_version_id = v.id AND kv.variable_type = '{variable_type}'{category_filter}
+               )
+    """
+
+
+def list_analysis_symbols(conn):
+    rating_settings = get_rating_settings(conn)
+    latest_release_dates = get_latest_earnings_release_dates_by_symbol(conn)
+    rows = conn.execute(
+        f"""
         SELECT r.symbol, v.company_name, v.current_price, v.expected_price, v.expected_cagr, v.upside, v.confidence_level AS overall_confidence,
+               v.id AS analysis_version_id,
                v.version_number AS analysis_version,
                COALESCE(
                    (
@@ -3241,20 +4004,12 @@ def list_analysis_symbols(conn):
                    ),
                    0
                ) AS scenario_pass_count,
-               (
-                   SELECT CASE WHEN SUM(kv.importance) > 0
-                     THEN SUM(kv.confidence * kv.importance) / SUM(kv.importance)
-                     ELSE NULL END
-                   FROM analysis_version_key_variables kv
-                   WHERE kv.analysis_version_id = v.id AND kv.variable_type = 'Bullish'
-               ) AS bullish_confidence,
-               (
-                   SELECT CASE WHEN SUM(kv.importance) > 0
-                     THEN SUM(kv.confidence * kv.importance) / SUM(kv.importance)
-                     ELSE NULL END
-                   FROM analysis_version_key_variables kv
-                   WHERE kv.analysis_version_id = v.id AND kv.variable_type = 'Bearish'
-               ) AS bearish_confidence,
+               {_confidence_sql('Bullish')} AS bullish_confidence,
+               {_confidence_sql('Bearish')} AS bearish_confidence,
+               {_confidence_sql('Bullish', 'Core Driver')} AS core_bullish_confidence,
+               {_confidence_sql('Bearish', 'Core Driver')} AS core_bearish_confidence,
+               {_confidence_sql('Bullish', 'Potential Driver')} AS potential_bullish_confidence,
+               {_confidence_sql('Bearish', 'Potential Driver')} AS potential_bearish_confidence,
                (
                    SELECT MAX(rc.checked_at)
                    FROM recent_event_checks rc
@@ -3277,14 +4032,27 @@ def list_analysis_symbols(conn):
         item = dict(row)
         if (item.get("scenario_pass_count") or 0) <= 0:
             item["scenario_pass_count"] = 1
+        item["core_confidence_diff"] = _diff_or_none(item.get("core_bullish_confidence"), item.get("core_bearish_confidence"))
+        item["potential_confidence_diff"] = _diff_or_none(item.get("potential_bullish_confidence"), item.get("potential_bearish_confidence"))
+        item.update(
+            get_effective_analysis_metrics(
+                conn,
+                item.get("analysis_version_id"),
+                item.get("expected_price"),
+                item.get("expected_cagr"),
+                item.get("upside"),
+            )
+        )
         rating, confidence_diff = calculate_rating(
             item.get("upside"),
             item.get("bullish_confidence"),
             item.get("bearish_confidence"),
             rating_settings,
+            confidence_context=item,
         )
         item["confidence_diff"] = confidence_diff
         item["rating"] = rating
+        item["latest_release_date"] = latest_release_dates.get(normalize_symbol(item.get("symbol")))
         scenario_updated = _parse_iso_datetime(item.get("updated_at"))
         event_checked = _parse_iso_datetime(item.get("last_recent_event_check_at"))
         activity_candidates = [dt for dt in (scenario_updated, event_checked) if dt is not None]
@@ -3318,97 +4086,329 @@ def _normalize_release_date(value):
     return normalized
 
 
-def list_earnings_release_calendar(conn):
-    analysis_items = list_analysis_symbols(conn)
-    excluded_symbols = {
-        row["symbol"]
-        for row in conn.execute("SELECT symbol FROM earnings_release_calendar_exclusions").fetchall()
-    }
-    schedule_rows = conn.execute(
+def migrate_legacy_earnings_release_calendar(conn):
+    """Backfill pre-redesign symbol-level calendar rows as 2026 Q1 entries.
+
+    Phase 2 intentionally treats every old current Earnings Calendar row as FY2026 Q1.
+    The old current calendar was derived from analyzed symbols, with optional symbol-level
+    release dates/timing in earnings_release_schedule and removals tracked in
+    earnings_release_calendar_exclusions.
+    """
+    now = utc_now_iso()
+    source_rows = conn.execute(
         """
-        SELECT symbol, release_date, release_timing
-        FROM earnings_release_schedule
+        SELECT
+          r.symbol,
+          r.created_at AS root_created_at,
+          r.updated_at AS root_updated_at,
+          s.release_date,
+          s.release_timing,
+          s.created_at AS schedule_created_at,
+          s.updated_at AS schedule_updated_at
+        FROM analysis_roots r
+        LEFT JOIN earnings_release_schedule s ON s.symbol = r.symbol
+        WHERE EXISTS (
+          SELECT 1
+          FROM analysis_versions v
+          WHERE v.analysis_root_id = r.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM earnings_release_calendar_exclusions e
+            WHERE e.symbol = r.symbol
+          )
+        ORDER BY r.symbol ASC
         """
     ).fetchall()
-    schedule_by_symbol = {row["symbol"]: dict(row) for row in schedule_rows}
-    portfolio_symbols = {
+
+    migrated = 0
+    skipped = 0
+    invalid = 0
+    for row in source_rows:
+        symbol = normalize_symbol(row["symbol"])
+        if not symbol:
+            invalid += 1
+            continue
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM earnings_calendar_entries
+            WHERE symbol = ? AND fiscal_year = 2026 AND fiscal_quarter = 'Q1'
+            """,
+            (symbol,),
+        ).fetchone()
+        if exists:
+            skipped += 1
+            continue
+        try:
+            release_date = _normalize_release_date(row["release_date"])
+            release_timing = _normalize_release_timing(row["release_timing"])
+        except ValueError:
+            invalid += 1
+            logger.warning("Skipping legacy earnings calendar migration row with invalid schedule data for %s", symbol)
+            continue
+        created_at = row["schedule_created_at"] or row["root_created_at"] or now
+        updated_at = row["schedule_updated_at"] or row["schedule_created_at"] or row["root_updated_at"] or created_at
+        conn.execute(
+            """
+            INSERT INTO earnings_calendar_entries (
+              symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
+            ) VALUES (?, 2026, 'Q1', ?, ?, ?, ?)
+            """,
+            (symbol, release_date, release_timing, created_at, updated_at),
+        )
+        migrated += 1
+
+    if source_rows:
+        logger.info(
+            "Legacy earnings calendar migration to 2026 Q1: migrated %s row(s), skipped %s existing row(s), ignored %s invalid row(s).",
+            migrated,
+            skipped,
+            invalid,
+        )
+    return {"migrated": migrated, "skipped": skipped, "invalid": invalid, "source_count": len(source_rows)}
+
+
+def _validate_fiscal_year(value):
+    try:
+        year = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("fiscal_year must be a valid integer") from exc
+    if year < 1900 or year > 2200:
+        raise ValueError("fiscal_year must be between 1900 and 2200")
+    return year
+
+
+def _get_analysis_enrichment_by_symbol(conn):
+    return {
+        normalize_symbol(item.get("symbol")): item
+        for item in list_analysis_symbols(conn)
+        if normalize_symbol(item.get("symbol"))
+    }
+
+
+def _get_portfolio_symbols(conn):
+    return {
         normalize_symbol(item.get("symbol"))
         for item in load_positions_cache(conn)
-        if abs(safe_number(item.get("position")) or 0.0) > 0
+        if normalize_symbol(item.get("symbol")) and abs(safe_number(item.get("position")) or 0.0) > 0
     }
-    output = []
-    for item in analysis_items:
-        symbol = item.get("symbol")
-        if symbol in excluded_symbols:
-            continue
-        schedule = schedule_by_symbol.get(symbol, {})
-        output.append({
-            "symbol": symbol,
-            "company_name": item.get("company_name"),
-            "in_portfolio": symbol in portfolio_symbols,
-            "upside": item.get("upside"),
-            "confidence_diff": item.get("confidence_diff"),
-            "bullish_confidence": item.get("bullish_confidence"),
-            "bearish_confidence": item.get("bearish_confidence"),
-            "rating": item.get("rating"),
-            "release_date": schedule.get("release_date"),
-            "release_timing": schedule.get("release_timing"),
-        })
-    return output
 
 
-def save_earnings_release_schedule(conn, symbol, release_date=None, release_timing=None):
+def _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols):
+    entry = dict(row)
+    symbol = normalize_symbol(entry.get("symbol")) or ""
+    analysis = analysis_by_symbol.get(symbol) or {}
+    in_portfolio = symbol in portfolio_symbols
+    return {
+        "id": entry.get("id"),
+        "symbol": symbol,
+        "company_name": analysis.get("company_name"),
+        "has_analysis": bool(analysis),
+        "in_portfolio": in_portfolio,
+        "inPortfolio": in_portfolio,
+        "upside": analysis.get("upside"),
+        "confidence_diff": analysis.get("confidence_diff"),
+        "bullish_confidence": analysis.get("bullish_confidence"),
+        "bearish_confidence": analysis.get("bearish_confidence"),
+        "core_bullish_confidence": analysis.get("core_bullish_confidence"),
+        "core_bearish_confidence": analysis.get("core_bearish_confidence"),
+        "core_confidence_diff": analysis.get("core_confidence_diff"),
+        "potential_bullish_confidence": analysis.get("potential_bullish_confidence"),
+        "potential_bearish_confidence": analysis.get("potential_bearish_confidence"),
+        "potential_confidence_diff": analysis.get("potential_confidence_diff"),
+        "rating": analysis.get("rating"),
+        "fiscal_year": entry.get("fiscal_year"),
+        "fiscal_quarter": entry.get("fiscal_quarter"),
+        "release_date": entry.get("release_date"),
+        "release_timing": entry.get("release_timing"),
+        "created_at": entry.get("created_at"),
+        "updated_at": entry.get("updated_at"),
+    }
+
+
+def list_earnings_release_calendar(conn):
+    rows = conn.execute(
+        """
+        SELECT id, symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
+        FROM earnings_calendar_entries
+        ORDER BY fiscal_year DESC,
+                 CASE fiscal_quarter WHEN 'Q4' THEN 4 WHEN 'Q3' THEN 3 WHEN 'Q2' THEN 2 ELSE 1 END DESC,
+                 symbol ASC,
+                 id ASC
+        """
+    ).fetchall()
+    analysis_by_symbol = _get_analysis_enrichment_by_symbol(conn)
+    portfolio_symbols = _get_portfolio_symbols(conn)
+    return [_serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols) for row in rows]
+
+
+def create_earnings_calendar_entry(conn, symbol, fiscal_year, fiscal_quarter, release_date=None, release_timing=None):
     normalized_symbol = normalize_symbol(symbol)
     if not normalized_symbol:
         raise ValueError("symbol is required")
-    exists = conn.execute("SELECT 1 FROM analysis_roots WHERE symbol = ?", (normalized_symbol,)).fetchone()
-    if not exists:
-        raise ValueError(f"Symbol {normalized_symbol} not found in Analysis")
+    year = _validate_fiscal_year(fiscal_year)
+    quarter = _validate_fiscal_quarter(fiscal_quarter)
     normalized_date = _normalize_release_date(release_date)
     normalized_timing = _normalize_release_timing(release_timing)
     now = utc_now_iso()
-    conn.execute(
-        """
-        INSERT INTO earnings_release_schedule (symbol, release_date, release_timing, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(symbol) DO UPDATE SET
-          release_date = excluded.release_date,
-          release_timing = excluded.release_timing,
-          updated_at = excluded.updated_at
-        """,
-        (normalized_symbol, normalized_date, normalized_timing, now, now),
-    )
-    conn.execute("DELETE FROM earnings_release_calendar_exclusions WHERE symbol = ?", (normalized_symbol,))
-    conn.commit()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO earnings_calendar_entries (
+              symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (normalized_symbol, year, quarter, normalized_date, normalized_timing, now, now),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        if "UNIQUE" in str(exc).upper():
+            raise ValueError(f"Calendar entry for {normalized_symbol} {year} {quarter} already exists") from exc
+        raise ValueError(str(exc)) from exc
+    return get_earnings_calendar_entry(conn, cursor.lastrowid)
+
+
+def get_earnings_calendar_entry(conn, entry_id):
+    try:
+        normalized_id = int(entry_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("calendar entry id must be a valid integer") from exc
     row = conn.execute(
         """
-        SELECT symbol, release_date, release_timing, created_at, updated_at
-        FROM earnings_release_schedule
-        WHERE symbol = ?
+        SELECT id, symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
+        FROM earnings_calendar_entries
+        WHERE id = ?
         """,
-        (normalized_symbol,),
+        (normalized_id,),
     ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        raise ValueError("Calendar entry not found")
+    analysis_by_symbol = _get_analysis_enrichment_by_symbol(conn)
+    portfolio_symbols = _get_portfolio_symbols(conn)
+    return _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols)
 
 
-def remove_earnings_release_calendar_symbol(conn, symbol):
-    normalized_symbol = normalize_symbol(symbol)
-    if not normalized_symbol:
-        raise ValueError("symbol is required")
-    exists = conn.execute("SELECT 1 FROM analysis_roots WHERE symbol = ?", (normalized_symbol,)).fetchone()
-    if not exists:
-        raise ValueError(f"Symbol {normalized_symbol} not found in Analysis")
+def update_earnings_calendar_entry(conn, entry_id, fiscal_year, fiscal_quarter, release_date=None, release_timing=None):
+    try:
+        normalized_id = int(entry_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("calendar entry id must be a valid integer") from exc
+    existing = conn.execute("SELECT symbol FROM earnings_calendar_entries WHERE id = ?", (normalized_id,)).fetchone()
+    if not existing:
+        raise ValueError("Calendar entry not found")
+    year = _validate_fiscal_year(fiscal_year)
+    quarter = _validate_fiscal_quarter(fiscal_quarter)
+    normalized_date = _normalize_release_date(release_date)
+    normalized_timing = _normalize_release_timing(release_timing)
     now = utc_now_iso()
+    try:
+        conn.execute(
+            """
+            UPDATE earnings_calendar_entries
+            SET fiscal_year = ?, fiscal_quarter = ?, release_date = ?, release_timing = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (year, quarter, normalized_date, normalized_timing, now, normalized_id),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        if "UNIQUE" in str(exc).upper():
+            symbol = existing["symbol"]
+            raise ValueError(f"Calendar entry for {symbol} {year} {quarter} already exists") from exc
+        raise ValueError(str(exc)) from exc
+    return get_earnings_calendar_entry(conn, normalized_id)
+
+
+def delete_earnings_calendar_entry(conn, entry_id):
+    try:
+        normalized_id = int(entry_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("calendar entry id must be a valid integer") from exc
+    row = conn.execute(
+        "SELECT id, symbol, fiscal_year, fiscal_quarter FROM earnings_calendar_entries WHERE id = ?",
+        (normalized_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError("Calendar entry not found")
+    conn.execute("DELETE FROM earnings_calendar_entries WHERE id = ?", (normalized_id,))
+    conn.commit()
+    return {"id": row["id"], "symbol": row["symbol"], "fiscal_year": row["fiscal_year"], "fiscal_quarter": row["fiscal_quarter"], "removed": True}
+
+
+# Backwards-compatible helper names now operate on standalone quarter-specific entries.
+def save_earnings_release_schedule(conn, symbol, release_date=None, release_timing=None, fiscal_year=None, fiscal_quarter=None, entry_id=None):
+    if entry_id is not None:
+        return update_earnings_calendar_entry(conn, entry_id, fiscal_year, fiscal_quarter, release_date, release_timing)
+    return create_earnings_calendar_entry(conn, symbol, fiscal_year, fiscal_quarter, release_date, release_timing)
+
+
+def remove_earnings_release_calendar_symbol(conn, entry_id):
+    return delete_earnings_calendar_entry(conn, entry_id)
+
+
+
+
+def recalculate_version_dynamic_price_metrics(conn, version_id, current_price):
+    scenario_rows = conn.execute(
+        """
+        SELECT id, scenario_name, price_low, price_high, probability
+        FROM analysis_version_scenarios
+        WHERE analysis_version_id = ?
+        ORDER BY CASE scenario_name WHEN 'Bear' THEN 1 WHEN 'Base' THEN 2 WHEN 'Bull' THEN 3 ELSE 99 END
+        """,
+        (version_id,),
+    ).fetchall()
+    scenarios = enrich_scenarios_with_midpoints([dict(row) for row in scenario_rows], current_price=current_price)
+    for scenario in scenarios:
+        conn.execute(
+            """
+            UPDATE analysis_version_scenarios
+            SET price_mid = ?, cagr_low = ?, cagr_mid = ?, cagr_high = ?
+            WHERE id = ?
+            """,
+            (
+                scenario.get("price_mid"),
+                scenario.get("cagr_low"),
+                scenario.get("cagr_mid"),
+                scenario.get("cagr_high"),
+                scenario.get("id"),
+            ),
+        )
+    version = conn.execute("SELECT expected_price FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+    expected_price = version["expected_price"] if version else calculate_expected_price(scenarios)
+    expected_cagr = calculate_expected_cagr_from_price(expected_price, current_price)
+    upside = calculate_upside(expected_price, current_price)
     conn.execute(
         """
-        INSERT INTO earnings_release_calendar_exclusions (symbol, created_at)
-        VALUES (?, ?)
-        ON CONFLICT(symbol) DO NOTHING
+        UPDATE analysis_versions
+        SET expected_cagr = ?, upside = ?
+        WHERE id = ?
         """,
-        (normalized_symbol, now),
+        (expected_cagr, upside, version_id),
     )
-    conn.commit()
-    return {"symbol": normalized_symbol, "removed": True}
+
+    overlay = conn.execute(
+        "SELECT final_scenarios_json, expected_price, is_stale FROM analysis_final_scenario_overlays WHERE analysis_version_id = ?",
+        (version_id,),
+    ).fetchone()
+    if overlay and not bool(overlay["is_stale"]):
+        try:
+            final_scenarios = json.loads(overlay["final_scenarios_json"] or "[]")
+        except json.JSONDecodeError:
+            final_scenarios = []
+        enriched_final = enrich_scenarios_with_midpoints(final_scenarios, current_price=current_price, default_cagr=None)
+        final_expected_price = overlay["expected_price"] if overlay["expected_price"] is not None else calculate_expected_price(enriched_final)
+        final_expected_cagr = calculate_expected_cagr_from_price(final_expected_price, current_price)
+        final_upside = calculate_upside(final_expected_price, current_price)
+        conn.execute(
+            """
+            UPDATE analysis_final_scenario_overlays
+            SET final_scenarios_json = ?, expected_cagr = ?, upside = ?, updated_at = ?
+            WHERE analysis_version_id = ?
+            """,
+            (json.dumps(enriched_final), final_expected_cagr, final_upside, utc_now_iso(), version_id),
+        )
 
 
 def refresh_latest_analysis_market_prices(conn):
@@ -3441,21 +4441,79 @@ def refresh_latest_analysis_market_prices(conn):
         if latest_price is None:
             skipped += 1
             continue
-        new_upside = calculate_upside(row["expected_price"], latest_price)
         conn.execute(
-            """
-            UPDATE analysis_versions
-            SET current_price = ?, upside = ?
-            WHERE id = ?
-            """,
-            (latest_price, new_upside, row["version_id"]),
+            "UPDATE analysis_versions SET current_price = ? WHERE id = ?",
+            (latest_price, row["version_id"]),
         )
+        recalculate_version_dynamic_price_metrics(conn, row["version_id"], latest_price)
         updated += 1
 
     if updated:
         conn.execute("UPDATE analysis_roots SET updated_at = ?", (now,))
     conn.commit()
     return {"updated": updated, "skipped": skipped}
+
+
+def _normalize_imported_key_variables_payload(payload):
+    if not isinstance(payload, dict):
+        raise AnalysisValidationError("Import payload must be a JSON object")
+    raw_key_variables = payload.get("key_variables")
+    if not isinstance(raw_key_variables, list):
+        raise AnalysisValidationError("key_variables must be an array")
+    if not raw_key_variables:
+        raise AnalysisValidationError("key_variables must contain at least 1 item")
+
+    normalized = []
+    for index, item in enumerate(raw_key_variables, start=1):
+        if not isinstance(item, dict):
+            raise AnalysisValidationError(f"Row {index}: key variable must be an object")
+
+        variable_text = (item.get("variable") or item.get("variable_text") or "").strip()
+        if not variable_text:
+            raise AnalysisValidationError(f"Row {index}: variable must be non-empty text")
+
+        variable_type = item.get("type") or item.get("variable_type")
+        if variable_type not in {"Bullish", "Bearish"}:
+            raise AnalysisValidationError(f"Row {index}: type must be Bullish or Bearish")
+
+        try:
+            driver_category = normalized_driver_category(item.get("driver_category"))
+        except AnalysisValidationError:
+            raise AnalysisValidationError(f"Row {index}: driver_category must be Core Driver or Potential Driver")
+
+        confidence = _strict_import_score(item.get("confidence"), f"Row {index}: confidence")
+        importance = _strict_import_score(item.get("importance"), f"Row {index}: importance")
+        normalized.append(
+            {
+                "variable_text": variable_text,
+                "variable_type": variable_type,
+                "driver_category": driver_category,
+                "confidence": confidence,
+                "importance": importance,
+            }
+        )
+
+    return normalized
+
+
+def _strict_import_score(value, label):
+    if isinstance(value, bool):
+        raise AnalysisValidationError(f"{label} must be an integer from 0 to 10")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise AnalysisValidationError(f"{label} must be an integer from 0 to 10")
+    if not math.isfinite(number) or not number.is_integer():
+        raise AnalysisValidationError(f"{label} must be an integer from 0 to 10")
+    integer = int(number)
+    if integer < 0 or integer > 10:
+        raise AnalysisValidationError(f"{label} must be an integer from 0 to 10")
+    return integer
+
+
+def import_key_variable_edits(conn, symbol, version_id, import_payload):
+    normalized = _normalize_imported_key_variables_payload(import_payload)
+    return save_key_variable_edits(conn, symbol, version_id, normalized)
 
 
 def _normalize_manual_key_variables(raw_key_variables):
@@ -3476,6 +4534,11 @@ def _normalize_manual_key_variables(raw_key_variables):
             raise AnalysisValidationError(f"key_variables[{index}].variable_type must be Bullish or Bearish")
 
         try:
+            driver_category = normalized_driver_category(item.get("driver_category"))
+        except AnalysisValidationError:
+            raise AnalysisValidationError(f"key_variables[{index}].driver_category must be Core Driver or Potential Driver")
+
+        try:
             confidence = int(round(float(item.get("confidence"))))
             importance = int(round(float(item.get("importance"))))
         except (TypeError, ValueError):
@@ -3490,6 +4553,7 @@ def _normalize_manual_key_variables(raw_key_variables):
             {
                 "variable_text": variable_text,
                 "variable_type": variable_type,
+                "driver_category": driver_category,
                 "confidence": confidence,
                 "importance": importance,
             }
@@ -3511,7 +4575,7 @@ def _version_payload(conn, version_row):
 
     key_variables = conn.execute(
         """
-        SELECT variable_text, variable_type, confidence, importance
+        SELECT variable_text, variable_type, COALESCE(driver_category, 'Core Driver') AS driver_category, confidence, importance
         FROM analysis_version_key_variables
         WHERE analysis_version_id = ?
         ORDER BY id ASC
@@ -3530,12 +4594,11 @@ def _version_payload(conn, version_row):
         (version_row["id"],),
     ).fetchall()
 
-    bullish_confidence = calculate_overall_confidence(
-        [item for item in [dict(v) for v in key_variables] if item["variable_type"] == "Bullish"]
-    )
-    bearish_confidence = calculate_overall_confidence(
-        [item for item in [dict(v) for v in key_variables] if item["variable_type"] == "Bearish"]
-    )
+    enriched_scenarios = enrich_scenarios_with_midpoints([dict(s) for s in scenarios], current_price=version_row["current_price"], default_cagr=None)
+
+    confidence_breakdown = calculate_confidence_breakdown([dict(v) for v in key_variables])
+    bullish_confidence = confidence_breakdown["bullish_confidence"]
+    bearish_confidence = confidence_breakdown["bearish_confidence"]
 
     raw_payload = {}
     try:
@@ -3559,8 +4622,21 @@ def _version_payload(conn, version_row):
             for row in raw_payload.get("step3_runs", [])
         ]
 
+    effective_metrics = get_effective_analysis_metrics(
+        conn,
+        version_row["id"],
+        version_row["expected_price"],
+        version_row["expected_cagr"],
+        version_row["upside"],
+    )
     rating_settings = get_rating_settings(conn)
-    rating, confidence_diff = calculate_rating(version_row["upside"], bullish_confidence, bearish_confidence, rating_settings)
+    rating, confidence_diff = calculate_rating(
+        effective_metrics["upside"],
+        bullish_confidence,
+        bearish_confidence,
+        rating_settings,
+        confidence_context=confidence_breakdown,
+    )
 
     probability_meta = raw_payload.get("probability_meta") if isinstance(raw_payload.get("probability_meta"), dict) else {}
 
@@ -3570,13 +4646,17 @@ def _version_payload(conn, version_row):
         "symbol": version_row["symbol"],
         "company_name": version_row["company_name"],
         "current_price": version_row["current_price"],
-        "expected_price": version_row["expected_price"],
-        "expected_cagr": version_row["expected_cagr"],
-        "upside": version_row["upside"],
+        **effective_metrics,
         "overall_confidence": version_row["confidence_level"],
         "bullish_confidence": bullish_confidence,
         "bearish_confidence": bearish_confidence,
         "confidence_diff": confidence_diff,
+        "core_bullish_confidence": confidence_breakdown["core_bullish_confidence"],
+        "core_bearish_confidence": confidence_breakdown["core_bearish_confidence"],
+        "core_confidence_diff": confidence_breakdown["core_confidence_diff"],
+        "potential_bullish_confidence": confidence_breakdown["potential_bullish_confidence"],
+        "potential_bearish_confidence": confidence_breakdown["potential_bearish_confidence"],
+        "potential_confidence_diff": confidence_breakdown["potential_confidence_diff"],
         "rating": rating,
         "assumptions": version_row["assumptions_text"],
         "business_model": version_row["business_model_text"],
@@ -3588,7 +4668,8 @@ def _version_payload(conn, version_row):
         "backend_scenario_probabilities": probability_meta.get("backend_scenario_probabilities"),
         "final_scenario_probabilities": probability_meta.get("final_scenario_probabilities"),
         "probability_source_mode_used": probability_meta.get("probability_source_mode_used"),
-        "scenarios": [dict(s) for s in scenarios],
+        "backend_probability_meta": probability_meta.get("backend_probability_meta"),
+        "scenarios": enriched_scenarios,
         "key_variables": [dict(v) for v in key_variables],
         "scenario_passes": [
             {
@@ -3604,6 +4685,409 @@ def _version_payload(conn, version_row):
             for row in scenario_passes
         ],
     }
+
+
+EXTERNAL_SCENARIO_NAMES = ("Bear", "Base", "Bull")
+
+def _analysis_version_exists(conn, version_id):
+    try:
+        normalized_id = int(version_id)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid analysis version id")
+    row = conn.execute("SELECT id FROM analysis_versions WHERE id = ?", (normalized_id,)).fetchone()
+    if not row:
+        raise ValueError("Analysis version not found")
+    return normalized_id
+
+
+def _normalize_external_weight(value):
+    try:
+        weight = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("External scenario weight must be numeric")
+    if not math.isfinite(weight):
+        raise ValueError("External scenario weight must be numeric")
+    if weight < 0:
+        raise ValueError("External scenario weight cannot be negative")
+    if weight > 100:
+        raise ValueError("External scenario weight cannot exceed 100%")
+    return weight / 100.0 if weight > 1.0 else weight
+
+
+def _safe_external_float(value, field_name):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be numeric")
+    if not math.isfinite(number):
+        raise ValueError(f"{field_name} must be numeric")
+    return number
+
+
+def _normalize_external_scenario_payload(raw_scenarios, current_price=None):
+    if isinstance(raw_scenarios, str):
+        try:
+            raw_scenarios = json.loads(raw_scenarios)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Scenario JSON is invalid: {exc.msg}")
+    if not isinstance(raw_scenarios, dict):
+        raise ValueError("Scenario JSON must be an object")
+    scenarios = raw_scenarios.get("scenarios")
+    if not isinstance(scenarios, list):
+        raise ValueError("Scenario JSON must include a scenarios array")
+    if len(scenarios) != 3:
+        raise ValueError("Scenario JSON must include exactly 3 scenarios")
+
+    by_name = {}
+    for index, item in enumerate(scenarios):
+        if not isinstance(item, dict):
+            raise ValueError(f"scenarios[{index}] must be an object")
+        name = item.get("name") or item.get("scenario_name")
+        if name not in EXTERNAL_SCENARIO_NAMES:
+            raise ValueError("Scenario names must be exactly Bear, Base, and Bull")
+        if name in by_name:
+            raise ValueError("Duplicate scenario names are not allowed")
+        price_low = _safe_external_float(item.get("price_low"), f"{name}.price_low")
+        price_high = _safe_external_float(item.get("price_high"), f"{name}.price_high")
+        probability = _safe_external_float(item.get("probability"), f"{name}.probability")
+        if price_low <= 0 or price_high <= 0:
+            raise ValueError(f"{name} price values must be greater than 0")
+        if price_low > price_high:
+            raise ValueError(f"{name} price_low cannot exceed price_high")
+        if probability < 0:
+            raise ValueError(f"{name} probability cannot be negative")
+        by_name[name] = {
+            "scenario_name": name,
+            "price_low": price_low,
+            "price_high": price_high,
+            "probability": probability,
+        }
+
+    missing = [name for name in EXTERNAL_SCENARIO_NAMES if name not in by_name]
+    if missing:
+        raise ValueError("Scenario JSON must include Bear, Base, and Bull")
+
+    probability_sum = sum(item["probability"] for item in by_name.values())
+    if abs(probability_sum - 100.0) <= 0.05:
+        divisor = 100.0
+    elif abs(probability_sum - 1.0) <= 0.0005:
+        divisor = 1.0
+    else:
+        raise ValueError("Scenario probabilities must sum to 100 or 1")
+
+    normalized = []
+    for name in EXTERNAL_SCENARIO_NAMES:
+        item = dict(by_name[name])
+        item["probability"] = item["probability"] / divisor
+        normalized.append(enrich_scenario_with_midpoints(item, current_price=current_price, default_cagr=None))
+    return _normalize_probabilities(normalized)
+
+
+def _populate_external_scenario_midpoints(item, current_price=None):
+    return enrich_scenario_with_midpoints(item, current_price=current_price, default_cagr=None)
+
+
+def _external_scenario_json_for_edit(scenarios):
+    payload = {
+        "scenarios": [
+            {
+                "name": item.get("scenario_name") or item.get("name"),
+                "price_low": item.get("price_low"),
+                "price_high": item.get("price_high"),
+                "probability": round(float(item.get("probability") or 0) * 100.0, 6),
+            }
+            for item in scenarios
+        ]
+    }
+    return json.dumps(payload, indent=2)
+
+
+def _serialize_external_scenario_row(row):
+    scenarios = json.loads(row["scenarios_json"] or "[]")
+    return {
+        "id": row["id"],
+        "analysis_version_id": row["analysis_version_id"],
+        "title": row["title"],
+        "source_notes": row["source_notes"],
+        "external_weight": row["external_weight"],
+        "external_weight_percent": row["external_weight"] * 100.0,
+        "scenarios": scenarios,
+        "scenario_json": _external_scenario_json_for_edit(scenarios),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_external_scenarios(conn, version_id):
+    version_id = _analysis_version_exists(conn, version_id)
+    rows = conn.execute(
+        """
+        SELECT id, analysis_version_id, title, source_notes, external_weight, scenarios_json, created_at, updated_at
+        FROM analysis_external_scenarios
+        WHERE analysis_version_id = ?
+        ORDER BY created_at ASC, id ASC
+        """,
+        (version_id,),
+    ).fetchall()
+    return [_serialize_external_scenario_row(row) for row in rows]
+
+
+def _mark_final_scenario_overlay_stale(conn, version_id):
+    conn.execute(
+        "UPDATE analysis_final_scenario_overlays SET is_stale = 1, updated_at = ? WHERE analysis_version_id = ?",
+        (utc_now_iso(), version_id),
+    )
+
+
+def _delete_final_overlay_if_no_external_scenarios(conn, version_id):
+    remaining = conn.execute(
+        "SELECT COUNT(*) AS count FROM analysis_external_scenarios WHERE analysis_version_id = ?",
+        (version_id,),
+    ).fetchone()["count"]
+    if remaining == 0:
+        conn.execute("DELETE FROM analysis_final_scenario_overlays WHERE analysis_version_id = ?", (version_id,))
+        return True
+    _mark_final_scenario_overlay_stale(conn, version_id)
+    return False
+
+
+def _normalize_external_scenario_record_payload(payload, current_price=None):
+    payload = payload or {}
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise ValueError("External scenario title is required")
+    weight_value = payload.get("external_weight", payload.get("weight"))
+    external_weight = _normalize_external_weight(weight_value)
+    source_notes = payload.get("source_notes", payload.get("notes"))
+    source_notes = str(source_notes).strip() if source_notes is not None else None
+    raw_scenarios = payload.get("scenario_json")
+    if raw_scenarios is None:
+        raw_scenarios = payload.get("scenarios_json")
+    if raw_scenarios is None:
+        raw_scenarios = {"scenarios": payload.get("scenarios")}
+    scenarios = _normalize_external_scenario_payload(raw_scenarios, current_price=current_price)
+    return title, source_notes, external_weight, scenarios
+
+
+def create_external_scenario(conn, version_id, payload):
+    version_id = _analysis_version_exists(conn, version_id)
+    version = conn.execute("SELECT current_price FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+    title, source_notes, external_weight, scenarios = _normalize_external_scenario_record_payload(payload, current_price=version["current_price"] if version else None)
+    now = utc_now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO analysis_external_scenarios (
+            analysis_version_id, title, source_notes, external_weight, scenarios_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (version_id, title, source_notes, external_weight, json.dumps(scenarios), now, now),
+    )
+    _mark_final_scenario_overlay_stale(conn, version_id)
+    conn.commit()
+    row = conn.execute("SELECT * FROM analysis_external_scenarios WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return _serialize_external_scenario_row(row)
+
+
+def update_external_scenario(conn, version_id, external_id, payload):
+    version_id = _analysis_version_exists(conn, version_id)
+    try:
+        external_id = int(external_id)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid external scenario id")
+    existing = conn.execute(
+        "SELECT id FROM analysis_external_scenarios WHERE id = ? AND analysis_version_id = ?",
+        (external_id, version_id),
+    ).fetchone()
+    if not existing:
+        raise ValueError("External scenario not found")
+    version = conn.execute("SELECT current_price FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+    title, source_notes, external_weight, scenarios = _normalize_external_scenario_record_payload(payload, current_price=version["current_price"] if version else None)
+    now = utc_now_iso()
+    conn.execute(
+        """
+        UPDATE analysis_external_scenarios
+        SET title = ?, source_notes = ?, external_weight = ?, scenarios_json = ?, updated_at = ?
+        WHERE id = ? AND analysis_version_id = ?
+        """,
+        (title, source_notes, external_weight, json.dumps(scenarios), now, external_id, version_id),
+    )
+    _mark_final_scenario_overlay_stale(conn, version_id)
+    conn.commit()
+    row = conn.execute("SELECT * FROM analysis_external_scenarios WHERE id = ?", (external_id,)).fetchone()
+    return _serialize_external_scenario_row(row)
+
+
+def delete_external_scenario(conn, version_id, external_id):
+    version_id = _analysis_version_exists(conn, version_id)
+    try:
+        external_id = int(external_id)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid external scenario id")
+    row = conn.execute(
+        "SELECT id, title FROM analysis_external_scenarios WHERE id = ? AND analysis_version_id = ?",
+        (external_id, version_id),
+    ).fetchone()
+    if not row:
+        raise ValueError("External scenario not found")
+    conn.execute("DELETE FROM analysis_external_scenarios WHERE id = ? AND analysis_version_id = ?", (external_id, version_id))
+    deleted_overlay = _delete_final_overlay_if_no_external_scenarios(conn, version_id)
+    conn.commit()
+    return {"id": external_id, "title": row["title"], "deleted_final_overlay": deleted_overlay}
+
+
+def get_effective_analysis_metrics(conn, version_id, expected_price, expected_cagr, upside):
+    original = {
+        "expected_price_original": expected_price,
+        "expected_cagr_original": expected_cagr,
+        "upside_original": upside,
+    }
+    row = conn.execute(
+        """
+        SELECT expected_price, expected_cagr, upside, is_stale
+        FROM analysis_final_scenario_overlays
+        WHERE analysis_version_id = ?
+        """,
+        (version_id,),
+    ).fetchone()
+    uses_overlay = bool(row and not row["is_stale"])
+    effective_price = row["expected_price"] if uses_overlay else expected_price
+    effective_cagr = row["expected_cagr"] if uses_overlay else expected_cagr
+    effective_upside = row["upside"] if uses_overlay else upside
+    return {
+        **original,
+        "expected_price_effective": effective_price,
+        "expected_cagr_effective": effective_cagr,
+        "upside_effective": effective_upside,
+        "expected_price": effective_price,
+        "expected_cagr": effective_cagr,
+        "upside": effective_upside,
+        "uses_final_scenario_overlay": uses_overlay,
+        "final_scenario_stale": bool(row and row["is_stale"]),
+    }
+
+
+def _serialize_final_overlay_row(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "analysis_version_id": row["analysis_version_id"],
+        "bakingmoney_weight": row["bakingmoney_weight"],
+        "bakingmoney_weight_percent": row["bakingmoney_weight"] * 100.0,
+        "external_total_weight": row["external_total_weight"],
+        "external_total_weight_percent": row["external_total_weight"] * 100.0,
+        "scenarios": json.loads(row["final_scenarios_json"] or "[]"),
+        "expected_price": row["expected_price"],
+        "expected_cagr": row["expected_cagr"],
+        "upside": row["upside"],
+        "recalculated_at": row["recalculated_at"],
+        "is_stale": bool(row["is_stale"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def get_final_scenario_overlay(conn, version_id):
+    version_id = _analysis_version_exists(conn, version_id)
+    row = conn.execute("SELECT * FROM analysis_final_scenario_overlays WHERE analysis_version_id = ?", (version_id,)).fetchone()
+    return _serialize_final_overlay_row(row)
+
+
+def _external_overlay_summary(conn, version_id):
+    external_scenarios = list_external_scenarios(conn, version_id)
+    external_total_weight = sum(float(item["external_weight"] or 0) for item in external_scenarios)
+    overlay = get_final_scenario_overlay(conn, version_id)
+    return {
+        "external_scenarios": external_scenarios,
+        "final_scenario_overlay": overlay,
+        "final_scenario_stale": bool(overlay and overlay.get("is_stale")),
+        "external_total_weight": external_total_weight,
+        "external_total_weight_percent": external_total_weight * 100.0,
+        "bakingmoney_weight": max(0.0, 1.0 - external_total_weight),
+        "bakingmoney_weight_percent": max(0.0, 1.0 - external_total_weight) * 100.0,
+    }
+
+
+def recalculate_final_scenario_overlay(conn, version_id):
+    version_id = _analysis_version_exists(conn, version_id)
+    version = conn.execute("SELECT id, current_price FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+    bakingmoney_rows = conn.execute(
+        """
+        SELECT scenario_name, price_low, price_mid, price_high, cagr_low, cagr_mid, cagr_high, probability
+        FROM analysis_version_scenarios
+        WHERE analysis_version_id = ?
+        ORDER BY CASE scenario_name WHEN 'Bear' THEN 1 WHEN 'Base' THEN 2 WHEN 'Bull' THEN 3 ELSE 99 END
+        """,
+        (version_id,),
+    ).fetchall()
+    if len(bakingmoney_rows) != 3:
+        raise ValueError("BakingMoney scenario must include Bear, Base, and Bull before recalculating")
+    bakingmoney = {row["scenario_name"]: dict(row) for row in bakingmoney_rows}
+    external_scenarios = list_external_scenarios(conn, version_id)
+    if not external_scenarios:
+        raise ValueError("Add at least one external scenario before recalculating")
+    total_external_weight = sum(float(item["external_weight"] or 0) for item in external_scenarios)
+    if total_external_weight > 1.0 + 1e-9:
+        raise ValueError("External scenario weights total more than 100%. Reduce weights before recalculating.")
+    bakingmoney_weight = max(0.0, 1.0 - total_external_weight)
+
+    final_scenarios = []
+    for name in EXTERNAL_SCENARIO_NAMES:
+        base = bakingmoney[name]
+        blended = {
+            "scenario_name": name,
+            "price_low": float(base["price_low"]) * bakingmoney_weight,
+            "price_high": float(base["price_high"]) * bakingmoney_weight,
+            "probability": float(base["probability"]) * bakingmoney_weight,
+        }
+        for external in external_scenarios:
+            scenario = next(item for item in external["scenarios"] if item["scenario_name"] == name)
+            weight = float(external["external_weight"] or 0)
+            blended["price_low"] += float(scenario["price_low"]) * weight
+            blended["price_high"] += float(scenario["price_high"]) * weight
+            blended["probability"] += float(scenario["probability"]) * weight
+        final_scenarios.append(blended)
+
+    final_scenarios = [
+        enrich_scenario_with_midpoints(item, current_price=version["current_price"], default_cagr=None)
+        for item in _normalize_probabilities(final_scenarios)
+    ]
+    expected_price = calculate_expected_price(final_scenarios)
+    expected_cagr = calculate_expected_cagr_from_price(expected_price, version["current_price"])
+    upside = calculate_upside(expected_price, version["current_price"])
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO analysis_final_scenario_overlays (
+            analysis_version_id, bakingmoney_weight, external_total_weight, final_scenarios_json,
+            expected_price, expected_cagr, upside, recalculated_at, is_stale, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        ON CONFLICT(analysis_version_id) DO UPDATE SET
+          bakingmoney_weight = excluded.bakingmoney_weight,
+          external_total_weight = excluded.external_total_weight,
+          final_scenarios_json = excluded.final_scenarios_json,
+          expected_price = excluded.expected_price,
+          expected_cagr = excluded.expected_cagr,
+          upside = excluded.upside,
+          recalculated_at = excluded.recalculated_at,
+          is_stale = 0,
+          updated_at = excluded.updated_at
+        """,
+        (
+            version_id,
+            bakingmoney_weight,
+            total_external_weight,
+            json.dumps(final_scenarios),
+            expected_price,
+            expected_cagr,
+            upside,
+            now,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return get_final_scenario_overlay(conn, version_id)
 
 
 def _get_saved_business_model_edit(conn, root_id):
@@ -3632,6 +5116,26 @@ def _get_saved_business_summary_edit(conn, root_id):
         "business_summary": draft["business_summary_text"],
         "updated_at": draft["updated_at"],
     }
+
+
+def get_earnings_calendar_release_history_for_symbol(conn, symbol):
+    normalized_symbol = normalize_symbol(symbol)
+    if not normalized_symbol:
+        return []
+    rows = conn.execute(
+        """
+        SELECT id, fiscal_year, fiscal_quarter, release_date, release_timing
+        FROM earnings_calendar_entries
+        WHERE symbol = ?
+        ORDER BY CASE WHEN release_date IS NULL OR release_date = '' THEN 1 ELSE 0 END ASC,
+                 release_date DESC,
+                 fiscal_year DESC,
+                 CASE fiscal_quarter WHEN 'Q4' THEN 4 WHEN 'Q3' THEN 3 WHEN 'Q2' THEN 2 ELSE 1 END DESC,
+                 id DESC
+        """,
+        (normalized_symbol,),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_analysis_detail(conn, symbol, version_id=None):
@@ -3667,7 +5171,7 @@ def get_analysis_detail(conn, symbol, version_id=None):
         (root["id"],),
     ).fetchone()
 
-    return {
+    detail = {
         "symbol": root["symbol"],
         "root_id": root["id"],
         "selected_version_id": selected["id"],
@@ -3676,11 +5180,14 @@ def get_analysis_detail(conn, symbol, version_id=None):
         "saved_key_variable_edits": {
             "based_on_version_id": draft["based_on_version_id"],
             "updated_at": draft["updated_at"],
-            "key_variables": json.loads(draft["key_variables_json"]),
+            "key_variables": normalize_key_variables_for_payload(json.loads(draft["key_variables_json"])),
         } if draft else None,
         "saved_business_model_edit": _get_saved_business_model_edit(conn, root["id"]),
         "saved_business_summary_edit": _get_saved_business_summary_edit(conn, root["id"]),
+        "release_history": get_earnings_calendar_release_history_for_symbol(conn, root["symbol"]),
     }
+    detail.update(_external_overlay_summary(conn, selected["id"]))
+    return detail
 
 
 def _insert_analysis_version(
@@ -3707,7 +5214,7 @@ def _insert_analysis_version(
 
     scenarios_with_cagr = enrich_scenarios_with_midpoints(scenarios, current_price=current_price)
     expected_price = calculate_expected_price(scenarios_with_cagr)
-    expected_cagr = calculate_expected_cagr(scenarios_with_cagr)
+    expected_cagr = calculate_expected_cagr_from_price(expected_price, current_price)
     upside = calculate_upside(expected_price, current_price)
     confidence = calculate_overall_confidence(key_variables)
 
@@ -3765,13 +5272,14 @@ def _insert_analysis_version(
         conn.execute(
             """
             INSERT INTO analysis_version_key_variables (
-                analysis_version_id, variable_text, variable_type, confidence, importance, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                analysis_version_id, variable_text, variable_type, driver_category, confidence, importance, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 version_id,
                 variable["variable_text"],
                 variable["variable_type"],
+                normalized_driver_category(variable.get("driver_category")),
                 variable["confidence"],
                 variable["importance"],
                 now,
@@ -3963,7 +5471,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
     if not base_version:
         raise ValueError("Base version not found")
 
-    key_variables = json.loads(draft["key_variables_json"])
+    key_variables = normalize_key_variables_for_payload(json.loads(draft["key_variables_json"]))
 
     templates, _sources = get_prompt_templates_for_keys(
         conn,
@@ -4007,8 +5515,6 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
                     "name": s["scenario_name"],
                     "price_low": s["price_low"],
                     "price_high": s["price_high"],
-                    "cagr_low": s["cagr_low"],
-                    "cagr_high": s["cagr_high"],
                     "probability": s["probability"],
                 }
                 for s in scenario_parsed["scenarios"]
@@ -4020,12 +5526,14 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
 
     probability_settings = get_scenario_probability_settings(conn)
     ai_probs = scenario_probabilities_from_scenarios(parsed["scenarios"])
-    backend_probs = compute_backend_probabilities(
+    backend_probability_details = compute_backend_probability_details(
         key_variables,
         probability_settings["backend_base_max_probability"],
         probability_settings["backend_base_min_probability"],
     )
+    backend_probs = backend_probability_details["probabilities"]
     probability_meta = choose_final_probabilities(ai_probs, backend_probs, probability_settings)
+    probability_meta["backend_probability_meta"] = backend_probability_details["meta"]
     parsed["scenarios"] = apply_final_probabilities_to_scenarios(
         parsed["scenarios"],
         probability_meta["final_scenario_probabilities"],
@@ -4073,7 +5581,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
         dict(row)
         for row in conn.execute(
             """
-            SELECT variable_text, variable_type, confidence, importance
+            SELECT variable_text, variable_type, COALESCE(driver_category, 'Core Driver') AS driver_category, confidence, importance
             FROM analysis_version_key_variables
             WHERE analysis_version_id = ?
             ORDER BY id ASC
@@ -4126,8 +5634,6 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
                     "name": s["scenario_name"],
                     "price_low": s["price_low"],
                     "price_high": s["price_high"],
-                    "cagr_low": s["cagr_low"],
-                    "cagr_high": s["cagr_high"],
                     "probability": s["probability"],
                 }
                 for s in scenario_parsed["scenarios"]
@@ -4139,12 +5645,14 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
 
     probability_settings = get_scenario_probability_settings(conn)
     ai_probs = scenario_probabilities_from_scenarios(parsed["scenarios"])
-    backend_probs = compute_backend_probabilities(
+    backend_probability_details = compute_backend_probability_details(
         key_variables,
         probability_settings["backend_base_max_probability"],
         probability_settings["backend_base_min_probability"],
     )
+    backend_probs = backend_probability_details["probabilities"]
     probability_meta = choose_final_probabilities(ai_probs, backend_probs, probability_settings)
+    probability_meta["backend_probability_meta"] = backend_probability_details["meta"]
     parsed["scenarios"] = apply_final_probabilities_to_scenarios(
         parsed["scenarios"],
         probability_meta["final_scenario_probabilities"],
@@ -4199,10 +5707,26 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
         row = dict(position)
         row["rating"] = analysis.get("rating") if analysis else None
         row["upside"] = analysis.get("upside") if analysis else None
+        row["expected_price"] = analysis.get("expected_price") if analysis else None
         row["expected_cagr"] = analysis.get("expected_cagr") if analysis else None
+        row["upside_original"] = analysis.get("upside_original") if analysis else None
+        row["expected_price_original"] = analysis.get("expected_price_original") if analysis else None
+        row["expected_cagr_original"] = analysis.get("expected_cagr_original") if analysis else None
+        row["upside_effective"] = analysis.get("upside_effective") if analysis else None
+        row["expected_price_effective"] = analysis.get("expected_price_effective") if analysis else None
+        row["expected_cagr_effective"] = analysis.get("expected_cagr_effective") if analysis else None
+        row["uses_final_scenario_overlay"] = analysis.get("uses_final_scenario_overlay") if analysis else False
+        row["final_scenario_stale"] = analysis.get("final_scenario_stale") if analysis else False
         row["bullish_confidence"] = analysis.get("bullish_confidence") if analysis else None
         row["bearish_confidence"] = analysis.get("bearish_confidence") if analysis else None
         row["confidence_diff"] = analysis.get("confidence_diff") if analysis else None
+        row["core_bullish_confidence"] = analysis.get("core_bullish_confidence") if analysis else None
+        row["core_bearish_confidence"] = analysis.get("core_bearish_confidence") if analysis else None
+        row["core_confidence_diff"] = analysis.get("core_confidence_diff") if analysis else None
+        row["potential_bullish_confidence"] = analysis.get("potential_bullish_confidence") if analysis else None
+        row["potential_bearish_confidence"] = analysis.get("potential_bearish_confidence") if analysis else None
+        row["potential_confidence_diff"] = analysis.get("potential_confidence_diff") if analysis else None
+        row["latest_release_date"] = analysis.get("latest_release_date") if analysis else None
         merged.append(row)
 
     with_rating = sum(1 for row in merged if row.get("rating"))
@@ -4298,6 +5822,1522 @@ def load_positions_cache(conn):
     ]
 
 
+def _account_summary_item_value(item):
+    raw_value = getattr(item, "value", None)
+    numeric = safe_number(raw_value)
+    if numeric is not None:
+        return numeric
+    if isinstance(raw_value, str):
+        cleaned = raw_value.replace(",", "").strip()
+        try:
+            value = float(cleaned)
+        except ValueError:
+            return None
+        return value if math.isfinite(value) else None
+    return None
+
+
+def _account_summary_currency(item):
+    currency = (getattr(item, "currency", None) or "").strip().upper()
+    return currency or None
+
+
+def _account_summary_number(summary_items, tag, currency=None):
+    wanted_currency = currency.upper() if currency else None
+    for item in summary_items or []:
+        if getattr(item, "tag", None) != tag:
+            continue
+        if wanted_currency and _account_summary_currency(item) != wanted_currency:
+            continue
+        value = _account_summary_item_value(item)
+        if value is not None:
+            return value
+    return None
+
+
+def _account_summary_number_preferred(summary_items, tag, preferred_currency="USD", fallback_currency=None):
+    for currency in (preferred_currency, fallback_currency):
+        if not currency:
+            continue
+        value = _account_summary_number(summary_items, tag, currency)
+        if value is not None:
+            return value
+    return _account_summary_number(summary_items, tag)
+
+
+def _choose_account_cash(summary_items, base_currency=None):
+    preferred = ("USD", base_currency)
+    cash_preferences = (
+        ("CashBalance", "ibkr_ledger_cash_balance"),
+        ("TotalCashBalance", "ibkr_ledger_total_cash_balance"),
+        ("SettledCash", "ibkr_settled_cash"),
+        ("TotalCashValue", "ibkr_total_cash"),
+    )
+    for tag, source in cash_preferences:
+        for currency in preferred:
+            if not currency:
+                continue
+            value = _account_summary_number(summary_items, tag, currency)
+            if value is not None:
+                return value, source, tag, currency.upper()
+    for tag, source in cash_preferences:
+        value = _account_summary_number(summary_items, tag)
+        if value is not None:
+            return value, source, tag, None
+    return None, "unknown", None, None
+
+
+def fetch_ib_portfolio_summary(ib):
+    items = ib.accountSummary() or []
+    tag_currency_pairs = sorted({
+        f"{getattr(item, 'tag', '')}:{_account_summary_currency(item) or 'NO_CURRENCY'}"
+        for item in items
+    })
+    logger.info("IBKR account summary returned %s rows; tags/currencies=%s", len(items), tag_currency_pairs[:80])
+    account_id = next((getattr(item, "account", None) for item in items if getattr(item, "account", None)), None)
+    base_currency = next((
+        _account_summary_currency(item)
+        for item in items
+        if _account_summary_currency(item) and getattr(item, "tag", None) in {"NetLiquidation", "TotalCashValue", "SettledCash"}
+    ), None)
+    net_liquidation = _account_summary_number_preferred(items, "NetLiquidation", "USD", base_currency)
+    total_cash_value = _account_summary_number_preferred(items, "TotalCashValue", "USD", base_currency)
+    settled_cash = _account_summary_number_preferred(items, "SettledCash", "USD", base_currency)
+    ledger_cash_usd = _account_summary_number(items, "CashBalance", "USD")
+    if ledger_cash_usd is None:
+        ledger_cash_usd = _account_summary_number(items, "TotalCashBalance", "USD")
+    actual_cash, actual_cash_source, actual_cash_tag, actual_cash_currency = _choose_account_cash(items, base_currency)
+    if actual_cash is None and items:
+        logger.warning("IBKR account summary returned rows but no cash tags were usable; tags/currencies=%s", tag_currency_pairs[:80])
+    return {
+        "account_id": account_id,
+        "base_currency": base_currency or "USD",
+        "net_liquidation": net_liquidation,
+        "total_cash_value": total_cash_value,
+        "settled_cash": settled_cash,
+        "available_funds": _account_summary_number_preferred(items, "AvailableFunds", "USD", base_currency),
+        "buying_power": _account_summary_number_preferred(items, "BuyingPower", "USD", base_currency),
+        "excess_liquidity": _account_summary_number_preferred(items, "ExcessLiquidity", "USD", base_currency),
+        "ledger_cash_usd": ledger_cash_usd,
+        "actual_cash": actual_cash,
+        "actual_cash_source": actual_cash_source,
+        "actual_cash_tag": actual_cash_tag,
+        "actual_cash_currency": actual_cash_currency,
+        "available_tags": tag_currency_pairs,
+    }
+
+
+def save_portfolio_summary_cache(conn, summary):
+    if not isinstance(summary, dict):
+        return
+    conn.execute(
+        """
+        INSERT INTO portfolio_summary_cache (
+          id, account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
+          available_funds, buying_power, excess_liquidity, ledger_cash_usd, actual_cash, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          account_id = excluded.account_id,
+          base_currency = excluded.base_currency,
+          net_liquidation = excluded.net_liquidation,
+          total_cash_value = excluded.total_cash_value,
+          settled_cash = excluded.settled_cash,
+          available_funds = excluded.available_funds,
+          buying_power = excluded.buying_power,
+          excess_liquidity = excluded.excess_liquidity,
+          ledger_cash_usd = excluded.ledger_cash_usd,
+          actual_cash = excluded.actual_cash,
+          updated_at = excluded.updated_at
+        """,
+        (
+            summary.get("account_id"),
+            summary.get("base_currency"),
+            summary.get("net_liquidation"),
+            summary.get("total_cash_value"),
+            summary.get("settled_cash"),
+            summary.get("available_funds"),
+            summary.get("buying_power"),
+            summary.get("excess_liquidity"),
+            summary.get("ledger_cash_usd"),
+            summary.get("actual_cash"),
+            utc_now_iso(),
+        ),
+    )
+    conn.commit()
+
+
+def load_portfolio_summary_cache(conn):
+    row = conn.execute(
+        """
+        SELECT account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
+               available_funds, buying_power, excess_liquidity, ledger_cash_usd, actual_cash, updated_at
+        FROM portfolio_summary_cache
+        WHERE id = 1
+        """
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _parse_cash_equivalent_symbols(settings):
+    raw = settings.get("action_cash_equivalent_symbols", "")
+    return sorted({normalize_symbol(part) for part in str(raw or "").split(",") if normalize_symbol(part)})
+
+
+def build_portfolio_cash_summary(conn, positions, settings=None):
+    if settings is None:
+        try:
+            settings = get_action_plan_settings(conn)
+        except AttributeError:
+            settings = dict(ACTION_PLAN_DEFAULT_SETTINGS)
+    try:
+        portfolio_summary = load_portfolio_summary_cache(conn) or {}
+    except AttributeError:
+        portfolio_summary = {}
+    positions = positions or []
+    positions_by_symbol = {normalize_symbol(row.get("symbol")): row for row in positions if normalize_symbol(row.get("symbol"))}
+    positions_market_value = sum(abs(safe_number(row.get("marketValue")) or 0.0) for row in positions)
+
+    actual_cash = safe_number(portfolio_summary.get("actual_cash"))
+    actual_cash_source = "ibkr_actual_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = safe_number(portfolio_summary.get("ledger_cash_usd"))
+        actual_cash_source = "ibkr_ledger_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = safe_number(portfolio_summary.get("settled_cash"))
+        actual_cash_source = "ibkr_settled_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = safe_number(portfolio_summary.get("total_cash_value"))
+        actual_cash_source = "ibkr_total_cash" if actual_cash is not None else "unknown"
+    if actual_cash is None:
+        actual_cash = 0.0
+
+    cash_equivalent_symbols = _parse_cash_equivalent_symbols(settings)
+    treat_cash_equivalents = bool(settings.get("action_treat_cash_equivalents_as_cash", True))
+    cash_equivalent_positions = []
+    cash_equivalent_value = 0.0
+    if treat_cash_equivalents:
+        for symbol in cash_equivalent_symbols:
+            position = positions_by_symbol.get(symbol)
+            if not position:
+                continue
+            market_value = abs(safe_number(position.get("marketValue")) or 0.0)
+            cash_equivalent_value += market_value
+            cash_equivalent_positions.append({
+                "symbol": symbol,
+                "market_value": market_value,
+                "position": position.get("position"),
+                "price": position.get("price"),
+            })
+
+    cash_like_available = actual_cash + cash_equivalent_value
+    net_liquidation = safe_number(portfolio_summary.get("net_liquidation"))
+    if net_liquidation is not None and net_liquidation > 0:
+        total_portfolio_value = net_liquidation
+        portfolio_value_source = "ibkr_net_liquidation"
+        portfolio_value_warning = None
+    elif positions_market_value > 0 and actual_cash_source != "unknown":
+        total_portfolio_value = positions_market_value + actual_cash
+        portfolio_value_source = "positions_plus_cash"
+        portfolio_value_warning = None
+    else:
+        total_portfolio_value = positions_market_value
+        portfolio_value_source = "positions_only"
+        portfolio_value_warning = "Portfolio value is based only on cached positions; cash is not included because IBKR account summary is unavailable."
+
+    return {
+        "total_portfolio_value": total_portfolio_value,
+        "portfolio_value_used": total_portfolio_value,
+        "portfolio_value_source": portfolio_value_source,
+        "portfolio_value_warning": portfolio_value_warning,
+        "actual_cash": actual_cash,
+        "actual_cash_source": actual_cash_source,
+        "cash_equivalent_symbols": cash_equivalent_symbols,
+        "cash_equivalent_value": cash_equivalent_value,
+        "cash_like_available": cash_like_available,
+        "cash_like_available_percent": (cash_like_available / total_portfolio_value * 100.0) if total_portfolio_value > 0 else None,
+        "cash_equivalent_positions": cash_equivalent_positions,
+    }
+
+
+def _clamp(value, low=0.0, high=1.0):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return low
+    if not math.isfinite(number):
+        return low
+    return max(low, min(high, number))
+
+
+def _score_range(value, low, high):
+    if high <= low:
+        return 0.0
+    return _clamp((float(value or 0.0) - low) / (high - low), 0.0, 1.0)
+
+
+def _trigger_price(expected_price, required_upside):
+    expected = safe_number(expected_price)
+    required = safe_number(required_upside)
+    if expected is None or required is None or expected <= 0:
+        return None
+    denominator = 1.0 + required / 100.0
+    return expected / denominator if denominator > 0 else None
+
+
+def _distance_to_trigger(current_price, trigger_price):
+    current = safe_number(current_price)
+    trigger = safe_number(trigger_price)
+    if current is None or trigger is None or trigger <= 0:
+        return None
+    return ((current / trigger) - 1.0) * 100.0
+
+
+def _format_action_amount_label(direction, amount):
+    numeric_amount = safe_number(amount)
+    if numeric_amount is None or numeric_amount <= 0:
+        return "—"
+    rounded = f"${numeric_amount:,.0f}"
+    if direction == "add":
+        return f"Add about {rounded}"
+    if direction == "trim":
+        return f"Trim about {rounded}"
+    if direction == "sell":
+        return f"Sell about {rounded}"
+    return "—"
+
+
+def _action_amount_fields(action, current_weight, target_mid, total_portfolio_value, market_value):
+    total = safe_number(total_portfolio_value)
+    current = safe_number(current_weight)
+    target = safe_number(target_mid)
+    market = safe_number(market_value)
+    amount_to_mid = None
+    if total is not None and total > 0 and current is not None and target is not None:
+        amount_to_mid = abs(target - current) / 100.0 * total
+
+    direction = "none"
+    amount = None
+    if action in {"Strong Add", "Add", "Starter Buy"}:
+        direction = "add"
+        if total is not None and total > 0 and current is not None and target is not None and target > current:
+            amount = (target - current) / 100.0 * total
+    elif action in {"Strong Trim", "Trim"}:
+        direction = "trim"
+        if total is not None and total > 0 and current is not None and target is not None and current > target:
+            amount = (current - target) / 100.0 * total
+    elif action == "Sell":
+        direction = "sell"
+        if market is not None and market > 0:
+            amount = market
+        elif total is not None and total > 0 and current is not None:
+            amount = current / 100.0 * total
+
+    return {
+        "action_amount": amount,
+        "action_amount_label": _format_action_amount_label(direction, amount),
+        "action_amount_direction": direction,
+        "action_amount_to_mid": amount_to_mid,
+    }
+
+
+
+def _funding_priority_score(row, total_portfolio_value):
+    base_priority = {
+        ("Strong Buy", "Strong Add"): 100,
+        ("Strong Buy", "Add"): 90,
+        ("Strong Buy", "Starter Buy"): 80,
+        ("Buy", "Strong Add"): 70,
+        ("Buy", "Add"): 60,
+        ("Buy", "Starter Buy"): 50,
+        ("Speculative Buy", "Strong Add"): 40,
+        ("Speculative Buy", "Add"): 35,
+        ("Hold", "Add"): 20,
+    }.get((row.get("rating"), row.get("action")), 0)
+    gap = safe_number(row.get("target_gap_amount")) or 0.0
+    total = safe_number(total_portfolio_value) or 0.0
+    normalized_gap_score = min(gap / total / 0.05, 1.0) if total > 0 else 0.0
+    return (
+        base_priority
+        + 20.0 * (safe_number(row.get("allocation_score")) or 0.0)
+        + 10.0 * (safe_number(row.get("bucket_sizing_score")) or 0.0)
+        + 10.0 * (safe_number(row.get("trigger_quality_score")) or 0.0)
+        + 10.0 * normalized_gap_score
+    )
+
+
+def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings):
+    total = safe_number(total_portfolio_value) or 0.0
+    cash_available = safe_number(cash_like_available) or 0.0
+    minimum_cash_reserve_amount = total * (safe_number(settings.get("action_min_cash_unallocated_target")) or 0.0) / 100.0
+    buy_actions = {"Strong Add", "Add", "Starter Buy"}
+    sell_trim_actions = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
+    executable_sell_trim_proceeds = 0.0
+
+    for row in rows:
+        direction = row.get("action_amount_direction")
+        theoretical_amount = max(0.0, safe_number(row.get("action_amount")) or 0.0)
+        row["target_gap_amount"] = theoretical_amount
+        row["executable_action_amount"] = 0.0
+        row["unfunded_action_amount"] = 0.0
+        row["funding_priority_score"] = 0.0
+        if row.get("action") in sell_trim_actions or direction in {"trim", "sell"}:
+            row["executable_action_amount"] = theoretical_amount
+            row["funding_status"] = "Generates proceeds" if theoretical_amount > 0 else "No funding needed"
+            executable_sell_trim_proceeds += theoretical_amount
+        elif row.get("action") in buy_actions and direction == "add" and theoretical_amount > 0:
+            row["funding_status"] = "Unfunded / Watch"
+        else:
+            row["funding_status"] = "No funding needed"
+
+    available_buy_budget = max(0.0, cash_available + executable_sell_trim_proceeds - minimum_cash_reserve_amount)
+    buy_candidates = [row for row in rows if row.get("action") in buy_actions and row.get("target_gap_amount", 0.0) > 0]
+    total_add_demand = sum(row["target_gap_amount"] for row in buy_candidates)
+    min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
+    remaining_budget = available_buy_budget
+    for row in buy_candidates:
+        row["funding_priority_score"] = _funding_priority_score(row, total)
+    sorted_buy_candidates = sorted(
+        buy_candidates,
+        key=lambda row: (
+            -(safe_number(row.get("funding_priority_score")) or 0.0),
+            ACTION_PLAN_ACTION_PRIORITY.get(row.get("action"), 99),
+            -(safe_number(row.get("allocation_score")) or 0.0),
+            -(safe_number(row.get("upside")) or 0.0),
+            row.get("symbol") or "",
+        ),
+    )
+    for index, row in enumerate(sorted_buy_candidates):
+        demand = row["target_gap_amount"]
+        amount = min(remaining_budget, demand)
+        is_last_candidate = index == len(sorted_buy_candidates) - 1
+        if amount < min_trade and not (is_last_candidate and amount > 0):
+            amount = 0.0
+        row["executable_action_amount"] = amount
+        row["unfunded_action_amount"] = max(0.0, demand - amount)
+        if amount >= demand - 1e-6 and demand > 0:
+            row["funding_status"] = "Fully funded"
+        elif amount > 0:
+            row["funding_status"] = "Partially funded"
+        else:
+            row["funding_status"] = "Unfunded / Watch"
+        remaining_budget = max(0.0, remaining_budget - amount)
+
+    funded_add_amount = sum(row.get("executable_action_amount", 0.0) for row in buy_candidates)
+    unfunded_add_demand = sum(row.get("unfunded_action_amount", 0.0) for row in buy_candidates)
+    for row in rows:
+        executable = safe_number(row.get("executable_action_amount")) or 0.0
+        row["action_amount"] = executable
+        row["action_amount_label"] = _format_action_amount_label(row.get("action_amount_direction"), executable)
+        row["available_buy_budget"] = available_buy_budget
+        row["total_add_demand"] = total_add_demand
+        row["funded_add_amount"] = funded_add_amount
+        row["unfunded_add_demand"] = unfunded_add_demand
+        row["executable_sell_trim_proceeds"] = executable_sell_trim_proceeds
+        row["minimum_cash_reserve_amount"] = minimum_cash_reserve_amount
+        if row.get("action_amount_direction") == "add":
+            if row["funding_status"] == "Fully funded":
+                row["action_amount_cash_note"] = f"Add about ${executable:,.0f} to reach the calculated target midpoint."
+            elif row["funding_status"] == "Partially funded":
+                row["action_amount_cash_note"] = f"Target gap is ${row['target_gap_amount']:,.0f}, but only ${executable:,.0f} is executable now based on available cash and higher-priority actions."
+            else:
+                row["action_amount_cash_note"] = f"Target gap is ${row['target_gap_amount']:,.0f}, but this add is currently unfunded based on available cash and higher-priority actions."
+        elif row.get("action_amount_direction") in {"trim", "sell"}:
+            row["action_amount_cash_note"] = f"Sell/trim about ${executable:,.0f}. This action generates proceeds that can fund buy actions." if executable > 0 else "No funding needed."
+        else:
+            row["action_amount_cash_note"] = "No funding needed."
+    return {
+        "available_buy_budget": available_buy_budget,
+        "total_add_demand": total_add_demand,
+        "funded_add_amount": funded_add_amount,
+        "unfunded_add_demand": unfunded_add_demand,
+        "executable_sell_trim_proceeds": executable_sell_trim_proceeds,
+        "minimum_cash_reserve_amount": minimum_cash_reserve_amount,
+    }
+
+def _trigger_price_from_required_upside(expected_price, required_upside_ratio):
+    expected = safe_number(expected_price)
+    required = safe_number(required_upside_ratio)
+    if expected is None or required is None or expected <= 0:
+        return None
+    denominator = 1.0 + required
+    return expected / denominator if denominator > 0 else None
+
+
+def _trigger_price_distance_label(current_price, trigger_price, trigger_type):
+    current = safe_number(current_price)
+    trigger = safe_number(trigger_price)
+    if current is None or trigger is None or trigger <= 0:
+        return "N/A"
+    pct = abs((current - trigger) / trigger * 100.0)
+    direction = "below" if current < trigger else "above"
+    label_type = (trigger_type or "trigger").replace("_", " ").title()
+    return f"Price is {pct:.2f}% {direction} {label_type} trigger"
+
+
+def _position_status(current_weight, target_low, target_mid, target_high):
+    if target_mid <= 0:
+        return "NO_TARGET"
+    if current_weight < target_low:
+        return "BELOW_TARGET"
+    if current_weight > target_high:
+        return "ABOVE_TARGET"
+    return "INSIDE_TARGET"
+
+
+def _trigger_quality_score(row):
+    return _clamp(
+        0.60 * (safe_number(row.get("allocation_score")) or 0.0)
+        + 0.30 * (safe_number(row.get("bucket_sizing_score")) or 0.0)
+        + 0.10 * (safe_number(row.get("weighted_count")) or 0.0),
+        0.0,
+        1.0,
+    )
+
+
+def calculate_dynamic_required_upside(action_type, base_required_upside, current_weight, target_low, target_mid, target_high, allocation_score, bucket_sizing_score, weighted_count, settings):
+    trigger_quality_score = _clamp(
+        0.60 * (safe_number(allocation_score) or 0.0)
+        + 0.30 * (safe_number(bucket_sizing_score) or 0.0)
+        + 0.10 * (safe_number(weighted_count) or 0.0),
+        0.0,
+        1.0,
+    )
+    current = safe_number(current_weight) or 0.0
+    target = safe_number(target_mid) or 0.0
+    underweight_strength = _clamp((target - current) / target, 0.0, 1.0) if target > 0 and current < target else 0.0
+    overweight_strength = _clamp((current - target) / target, 0.0, 1.0) if target > 0 and current > target else 0.0
+    dynamic_required = (
+        float(base_required_upside or 0.0)
+        - underweight_strength * settings["action_underweight_discount_max"]
+        - trigger_quality_score * settings["action_quality_discount_max"]
+        + overweight_strength * settings["action_overweight_penalty_max"]
+        + (1.0 - trigger_quality_score) * settings["action_low_quality_penalty_max"]
+    )
+    return _clamp(dynamic_required, settings["action_trigger_min_required_upside"], settings["action_trigger_max_required_upside"]), trigger_quality_score
+
+
+def _action_plan_trigger_context(row, settings):
+    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    target_low = safe_number(row.get("target_weight_low")) or 0.0
+    target_mid = safe_number(row.get("target_weight_mid")) or 0.0
+    target_high = safe_number(row.get("target_weight_high")) or 0.0
+    current_price = safe_number(row.get("current_price"))
+    expected_price = safe_number(row.get("expected_price"))
+    remaining_upside = (expected_price / current_price - 1.0) if current_price and expected_price else None
+    status = _position_status(current_weight, target_low, target_mid, target_high)
+    starter_required, quality = calculate_dynamic_required_upside(
+        "starter_buy",
+        settings["action_starter_buy_base_required_upside"],
+        current_weight,
+        target_low,
+        target_mid,
+        target_high,
+        row.get("allocation_score"),
+        row.get("bucket_sizing_score"),
+        row.get("weighted_count"),
+        settings,
+    )
+    add_required, _ = calculate_dynamic_required_upside(
+        "add",
+        settings["action_add_base_required_upside"],
+        current_weight,
+        target_low,
+        target_mid,
+        target_high,
+        row.get("allocation_score"),
+        row.get("bucket_sizing_score"),
+        row.get("weighted_count"),
+        settings,
+    )
+    strong_required, _ = calculate_dynamic_required_upside(
+        "strong_add",
+        settings["action_strong_add_base_required_upside"],
+        current_weight,
+        target_low,
+        target_mid,
+        target_high,
+        row.get("allocation_score"),
+        row.get("bucket_sizing_score"),
+        row.get("weighted_count"),
+        settings,
+    )
+    trim_trigger = _trigger_price_from_required_upside(expected_price, settings["action_trim_remaining_upside_threshold"])
+    sell_trigger = _trigger_price_from_required_upside(expected_price, settings["action_sell_remaining_upside_threshold"])
+    return {
+        "position_status": status,
+        "remaining_upside": remaining_upside,
+        "trigger_quality_score": quality,
+        "starter_buy_required_upside": starter_required,
+        "add_required_upside": add_required,
+        "strong_add_required_upside": strong_required,
+        "starter_buy_trigger_price": _trigger_price_from_required_upside(expected_price, starter_required),
+        "add_trigger_price": _trigger_price_from_required_upside(expected_price, add_required),
+        "strong_add_trigger_price": _trigger_price_from_required_upside(expected_price, strong_required),
+        "trim_trigger_price": trim_trigger,
+        "sell_trigger_price": sell_trigger,
+    }
+
+
+def _action_plan_trigger_breakdown(row):
+    trigger_type = row.get("relevant_trigger_type")
+    trigger_price = row.get("relevant_trigger_price")
+    return {
+        "position_status": row.get("position_status"),
+        "remaining_upside": row.get("remaining_upside"),
+        "trigger_quality_score": row.get("trigger_quality_score"),
+        "dynamic_required_upside": row.get("dynamic_required_upside"),
+        "starter_buy_required_upside": row.get("starter_buy_required_upside"),
+        "add_required_upside": row.get("add_required_upside"),
+        "strong_add_required_upside": row.get("strong_add_required_upside"),
+        "starter_buy_trigger_price": row.get("starter_buy_trigger_price"),
+        "add_trigger_price": row.get("add_trigger_price"),
+        "strong_add_trigger_price": row.get("strong_add_trigger_price"),
+        "trim_trigger_price": row.get("trim_trigger_price"),
+        "sell_trigger_price": row.get("sell_trigger_price"),
+        "relevant_trigger_price": trigger_price,
+        "relevant_trigger_type": trigger_type,
+        "distance_to_relevant_trigger_percent": _distance_to_trigger(row.get("current_price"), trigger_price),
+        "distance_to_relevant_trigger_label": _trigger_price_distance_label(row.get("current_price"), trigger_price, trigger_type),
+        "formula": "Buy triggers use allocation-aware required upside; trim/sell triggers use remaining-upside thresholds.",
+    }
+
+
+def _action_plan_decision_path(row, action):
+    path = []
+    if row.get("final_scenario_stale"):
+        path.append({"status": "warning", "text": "Final Scenario overlay is stale."})
+    path.append({"status": "pass", "text": f"Rating is {row.get('rating') or 'Hold'}."})
+    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    target_low = safe_number(row.get("target_weight_low")) or 0.0
+    target_high = safe_number(row.get("target_weight_high")) or 0.0
+    target_mid = safe_number(row.get("target_weight_mid")) or 0.0
+    if current_weight < target_low:
+        path.append({"status": "pass", "text": "Current position is below the target band."})
+    elif current_weight > target_high:
+        path.append({"status": "pass", "text": "Current position is above the target band."})
+    else:
+        path.append({"status": "pass", "text": "Current position is inside the target band."})
+    if action in {"Strong Add", "Add", "Starter Buy"}:
+        path.append({"status": "pass", "text": "Current price is at or below the relevant buy trigger."})
+    elif action in {"Trim", "Strong Trim", "Sell"}:
+        path.append({"status": "pass", "text": "Position reduction rule is active for this symbol."})
+    elif action == "Watch":
+        path.append({"status": "fail", "text": "Current price is above the relevant buy trigger."})
+    elif action == "Re-evaluate":
+        path.append({"status": "warning", "text": "Required price, upside, portfolio, or scenario freshness data is incomplete."})
+    else:
+        path.append({"status": "pass", "text": f"Current weight {current_weight:.2f}% is near target midpoint {target_mid:.2f}%."})
+    path.append({"status": "result", "text": f"Action = {action}."})
+    return path
+
+
+def _is_action_plan_eligible(analysis, owned, settings):
+    rating = analysis.get("rating") or "Hold"
+    if owned and settings["action_include_current_positions"]:
+        return True
+    if rating == "Strong Buy" and settings["action_include_strong_buy"]:
+        return True
+    if rating == "Buy" and settings["action_include_buy"]:
+        return True
+    if rating == "Speculative Buy" and settings["action_include_speculative_buy"]:
+        return True
+    if rating == "Hold" and owned and settings["action_include_hold_only_if_owned"]:
+        return True
+    if rating in {"Sell", "Strong Sell"} and owned and settings["action_include_sell_only_if_owned"]:
+        return True
+    return False
+
+
+def _rating_cap_for_action_plan(rating, settings):
+    caps = [settings["action_max_single_stock_weight"]]
+    if rating == "Strong Buy":
+        caps.append(settings["action_max_strong_buy_stock_weight"])
+    elif rating == "Buy":
+        caps.append(settings["action_max_buy_stock_weight"])
+    elif rating == "Speculative Buy":
+        caps.append(settings["action_max_speculative_buy_stock_weight"])
+    elif rating == "Hold":
+        caps.append(min(settings["action_max_buy_stock_weight"], settings["action_max_single_stock_weight"]))
+    elif rating in {"Sell", "Strong Sell"}:
+        caps.append(0.0)
+    return min(caps)
+
+
+def _target_band(target_mid, rating, settings):
+    target = safe_number(target_mid) or 0.0
+    if target <= 0:
+        return 0.0, 0.0
+    if rating == "Speculative Buy":
+        low_multiplier = settings["action_speculative_band_lower_multiplier"]
+        high_multiplier = settings["action_speculative_band_upper_multiplier"]
+    else:
+        low_multiplier = settings.get("action_target_band_lower_multiplier", settings["action_band_lower_multiplier"])
+        high_multiplier = settings.get("action_target_band_upper_multiplier", settings["action_band_upper_multiplier"])
+    low = target * low_multiplier
+    high = target * high_multiplier
+    min_width = settings["action_min_absolute_band_width"]
+    if high - low < min_width:
+        half = min_width / 2.0
+        low = min(low, target - half)
+        high = max(high, target + half)
+    low = max(0.0, min(low, target))
+    high = max(target, high)
+    return low, high
+
+
+def _choose_action_plan_decision(row, settings):
+    rating = row["rating"]
+    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    target_mid = safe_number(row.get("target_weight_mid")) or 0.0
+    target_low = safe_number(row.get("target_weight_low")) or 0.0
+    target_high = safe_number(row.get("target_weight_high")) or 0.0
+    current_price = safe_number(row.get("current_price"))
+    expected_price = safe_number(row.get("expected_price"))
+    upside = safe_number(row.get("upside"))
+    if row.get("final_scenario_stale"):
+        return "Re-evaluate", None, None, None, "Final Scenario overlay is stale; re-evaluate before taking action."
+    if current_price is None or expected_price is None or upside is None:
+        return "Re-evaluate", None, None, None, "Missing current price, expected price, or upside."
+
+    context = _action_plan_trigger_context(row, settings)
+    row.update(context)
+    position_status = context["position_status"]
+    strong_trigger = context["strong_add_trigger_price"]
+    add_trigger = context["add_trigger_price"]
+    starter_trigger = context["starter_buy_trigger_price"]
+    trim_trigger = context["trim_trigger_price"]
+    sell_trigger = context["sell_trigger_price"]
+    quality = context["trigger_quality_score"]
+
+    def choose(action, trigger, trigger_type, required, reason):
+        row["relevant_trigger_price"] = trigger
+        row["relevant_trigger_type"] = trigger_type
+        row["dynamic_required_upside"] = required
+        return action, trigger, "below" if trigger_type in {"strong_add", "add", "starter_buy"} else "above", _distance_to_trigger(current_price, trigger), reason
+
+    if rating == "Strong Sell":
+        return choose("Sell", sell_trigger, "sell", settings["action_sell_remaining_upside_threshold"], "Rating is Strong Sell; target allocation should be zero or near zero.")
+    if rating == "Sell" or target_mid <= 0:
+        return choose("Sell", sell_trigger, "sell", settings["action_sell_remaining_upside_threshold"], "Target allocation is zero or rating is Sell.")
+
+    if position_status == "BELOW_TARGET":
+        if strong_trigger is not None and current_price <= strong_trigger and quality >= 0.50:
+            return choose("Strong Add", strong_trigger, "strong_add", context["strong_add_required_upside"], "Position is below target band, trigger quality is high, and current price is below the allocation-aware Strong Add trigger.")
+        if add_trigger is not None and current_price <= add_trigger:
+            return choose("Add", add_trigger, "add", context["add_required_upside"], "Position is below target band and current price is below the allocation-aware Add trigger.")
+        if current_weight <= settings["action_starter_buy_max_initial_weight"] and starter_trigger is not None and current_price <= starter_trigger:
+            return choose("Starter Buy", starter_trigger, "starter_buy", context["starter_buy_required_upside"], "Position is below target band and current price is below the allocation-aware Starter Buy trigger.")
+        return choose("Watch", add_trigger, "add", context["add_required_upside"], "Position is below target band, but current price is above the allocation-aware Add trigger.")
+
+    if position_status == "INSIDE_TARGET":
+        room_to_mid = target_mid - current_weight
+        if room_to_mid > settings["action_min_trade_gap_percent"] and strong_trigger is not None and current_price <= strong_trigger and quality >= 0.80:
+            return choose("Add", strong_trigger, "strong_add", context["strong_add_required_upside"], "Position is inside target band but price is extremely attractive and there is room toward target mid.")
+        row["relevant_trigger_price"] = None
+        row["relevant_trigger_type"] = "hold"
+        row["dynamic_required_upside"] = None
+        return "Hold", None, None, None, "Position is inside target band."
+
+    if position_status == "ABOVE_TARGET":
+        overweight_ratio = ((current_weight - target_high) / target_mid) if target_mid > 0 else 0.0
+        hard_cap = _rating_cap_for_action_plan(rating, settings)
+        hard_cap_exceeded = current_weight > hard_cap + settings["action_min_trade_gap_percent"]
+        trim_reached = trim_trigger is not None and current_price >= trim_trigger
+        if trim_reached or hard_cap_exceeded:
+            action = "Strong Trim" if overweight_ratio >= settings["action_strong_trim_gap_threshold"] or hard_cap_exceeded else "Trim"
+            reason = "Position is above target band and current price has reached the Trim trigger."
+            if hard_cap_exceeded:
+                reason = "Position is above target band and exceeds the hard risk cap."
+            return choose(action, trim_trigger, "trim", settings["action_trim_remaining_upside_threshold"], reason)
+        row["relevant_trigger_price"] = trim_trigger
+        row["relevant_trigger_type"] = "trim"
+        row["dynamic_required_upside"] = settings["action_trim_remaining_upside_threshold"]
+        return "Hold / Overweight", trim_trigger, "above", _distance_to_trigger(current_price, trim_trigger), "Position is above target band, but current price is below the Trim trigger and remaining upside is still attractive."
+
+    row["relevant_trigger_price"] = None
+    row["relevant_trigger_type"] = "hold"
+    row["dynamic_required_upside"] = None
+    return "Hold", None, None, None, "No allocation-aware trigger condition is active."
+
+
+def _action_plan_cap_details(rating, core_diff, settings):
+    cap_options = [(settings["action_max_single_stock_weight"], f"Capped at {settings['action_max_single_stock_weight']:.2f}% max single stock")]
+    if rating == "Strong Buy":
+        cap_options.append((settings["action_max_strong_buy_stock_weight"], f"Capped at {settings['action_max_strong_buy_stock_weight']:.2f}% Strong Buy max"))
+    elif rating == "Buy":
+        cap_options.append((settings["action_max_buy_stock_weight"], f"Capped at {settings['action_max_buy_stock_weight']:.2f}% Buy max"))
+    elif rating == "Speculative Buy":
+        cap_options.append((settings["action_max_speculative_buy_stock_weight"], f"Capped at {settings['action_max_speculative_buy_stock_weight']:.2f}% Speculative Buy max"))
+    elif rating == "Hold":
+        hold_cap = min(settings["action_max_buy_stock_weight"], settings["action_max_single_stock_weight"])
+        cap_options.append((hold_cap, f"Capped at {hold_cap:.2f}% Hold max"))
+    elif rating in {"Sell", "Strong Sell"}:
+        cap_options.append((0.0, "Capped at 0.00% Sell/Strong Sell target"))
+    if core_diff < -0.5:
+        cap_options.append((settings["action_max_very_negative_core_weight"], f"Capped at {settings['action_max_very_negative_core_weight']:.2f}% very negative core cap"))
+    elif core_diff < 0:
+        cap_options.append((settings["action_max_negative_core_weight"], f"Capped at {settings['action_max_negative_core_weight']:.2f}% negative core cap"))
+    return min(cap_options, key=lambda item: item[0])
+
+
+def _dynamic_bucket_setting_prefix(bucket):
+    return {
+        "Strong Buy": "strong_buy",
+        "Buy": "buy",
+        "Speculative Buy": "speculative_buy",
+        "Hold": "hold",
+    }.get(bucket)
+
+
+
+def _action_plan_bucket_sizing_details(bucket, weighted_eligible_count, raw_target, settings, dynamic_mode=True):
+    raw_weighted_count = safe_number(weighted_eligible_count) or 0.0
+    raw_bucket_target = safe_number(raw_target) or 0.0
+    prefix = _dynamic_bucket_setting_prefix(bucket)
+    if dynamic_mode and prefix:
+        bucket_weight = settings[f"action_{prefix}_weight_per_effective_stock"]
+        max_effective_count = settings[f"action_{prefix}_max_effective_count"]
+        bucket_max_target = settings[f"action_{prefix}_max_bucket_target"]
+        weighted_count_used = min(raw_weighted_count, max_effective_count)
+        uncapped_bucket_target = weighted_count_used * bucket_weight
+        raw_bucket_target = min(uncapped_bucket_target, bucket_max_target)
+    else:
+        bucket_weight = None
+        max_effective_count = None
+        bucket_max_target = raw_bucket_target
+        weighted_count_used = raw_weighted_count
+        uncapped_bucket_target = raw_bucket_target
+    return {
+        "weighted_eligible_count": raw_weighted_count,
+        "max_effective_count": max_effective_count,
+        "weighted_count_used": weighted_count_used,
+        "effective_weighted_count_used": weighted_count_used,
+        "bucket_weight_per_effective_stock": bucket_weight,
+        "uncapped_bucket_target": uncapped_bucket_target,
+        "raw_bucket_target": raw_bucket_target,
+        "bucket_max_target": bucket_max_target,
+        "max_bucket_target": bucket_max_target,
+    }
+
+def _compress_action_plan_bucket_targets(raw_targets, settings):
+    effective = {bucket: max(0.0, float(value or 0.0)) for bucket, value in raw_targets.items()}
+    max_equity = max(0.0, 100.0 - settings["action_min_cash_unallocated_target"])
+    raw_total = sum(effective.values())
+    if raw_total <= max_equity + 1e-9:
+        return effective, {bucket: 0.0 for bucket in effective}, 0.0
+    remaining = raw_total - max_equity
+    compression = {bucket: 0.0 for bucket in effective}
+    while remaining > 1e-9:
+        weighted = []
+        for bucket, value in effective.items():
+            prefix = _dynamic_bucket_setting_prefix(bucket)
+            if value > 1e-9 and prefix:
+                weighted.append((bucket, value * settings[f"action_{prefix}_compression_weight"]))
+        weight_total = sum(weight for _, weight in weighted)
+        if weight_total <= 0:
+            break
+        reduced = 0.0
+        for bucket, weight in weighted:
+            share = remaining * weight / weight_total
+            reduction = min(effective[bucket], share)
+            effective[bucket] -= reduction
+            compression[bucket] += reduction
+            reduced += reduction
+        if reduced <= 1e-9:
+            break
+        remaining -= reduced
+    return effective, compression, raw_total - sum(effective.values())
+
+def _linear_score_range(value, minimum, full):
+    numeric = safe_number(value)
+    minimum = safe_number(minimum)
+    full = safe_number(full)
+    if numeric is None or minimum is None or full is None or full <= minimum:
+        return 0.0
+    return _clamp((numeric - minimum) / (full - minimum), 0.0, 1.0)
+
+
+def _linear_confidence_quality_score(core_bullish, core_bearish, potential_bullish, potential_bearish):
+    core_bullish = safe_number(core_bullish) or 0.0
+    core_bearish = safe_number(core_bearish) or 0.0
+    potential_bullish = safe_number(potential_bullish) or 0.0
+    potential_bearish = safe_number(potential_bearish) or 0.0
+    quality = (0.55 * (core_bullish / 10.0)) + (0.25 * (potential_bullish / 10.0)) + (0.20 * (1.0 - max(core_bearish, potential_bearish) / 10.0))
+    return _clamp(quality, 0.0, 1.0)
+
+
+def _linear_cap_details(row, settings):
+    cap = safe_number(settings.get("linear_max_single_stock_pct")) or 0.0
+    reason = "Linear max single-stock cap"
+    if not settings.get("linear_enable_risk_caps", True):
+        return cap, reason
+    core_net = safe_number(row.get("core_confidence_diff")) or 0.0
+    core_bearish = safe_number(row.get("core_bearish_confidence")) or 0.0
+    risk_caps = []
+    if core_net < 0:
+        risk_caps.append((safe_number(settings.get("linear_negative_core_net_cap_pct")) or cap, "Negative core net cap"))
+    if core_net < (safe_number(settings.get("linear_low_core_net_threshold")) or 0.0):
+        risk_caps.append((safe_number(settings.get("linear_low_core_net_cap_pct")) or cap, "Low core net cap"))
+    if core_bearish >= (safe_number(settings.get("linear_high_bearish_confidence_threshold")) or 0.0):
+        risk_caps.append((safe_number(settings.get("linear_high_bearish_confidence_cap_pct")) or cap, "High bearish confidence cap"))
+    for candidate_cap, candidate_reason in risk_caps:
+        if candidate_cap < cap:
+            cap = candidate_cap
+            reason = candidate_reason
+    return max(0.0, cap), reason
+
+
+def _apply_linear_caps_and_redistribute(rows, target_total):
+    positive_rows = [row for row in rows if (safe_number(row.get("linear_allocation_score")) or 0.0) > 0]
+    for row in rows:
+        row["linear_target_mid_before_caps"] = 0.0
+        row["linear_target_mid"] = 0.0
+        row["linear_cap_applied"] = 0.0
+        row["linear_cap_reason"] = "—"
+    total_score = sum(row["linear_allocation_score"] for row in positive_rows)
+    if target_total <= 0 or total_score <= 0:
+        return 0.0
+    remaining_target = target_total
+    uncapped = list(positive_rows)
+    capped_allocated = 0.0
+    for _ in range(len(positive_rows) + 1):
+        score_total = sum(row["linear_allocation_score"] for row in uncapped)
+        if score_total <= 0 or remaining_target <= 1e-9:
+            break
+        newly_capped = []
+        provisional = []
+        for row in uncapped:
+            target = remaining_target * row["linear_allocation_score"] / score_total
+            if row["linear_target_mid_before_caps"] == 0.0:
+                row["linear_target_mid_before_caps"] = target_total * row["linear_allocation_score"] / total_score
+            cap = safe_number(row.get("linear_effective_cap")) or 0.0
+            if target > cap + 1e-9:
+                row["linear_target_mid"] = cap
+                row["linear_cap_applied"] = max(0.0, row["linear_target_mid_before_caps"] - cap)
+                row["linear_cap_reason"] = row.get("linear_effective_cap_reason") or "Cap applied"
+                newly_capped.append(row)
+                capped_allocated += cap
+            else:
+                provisional.append((row, target))
+        if not newly_capped:
+            for row, target in provisional:
+                row["linear_target_mid"] = target
+                row["linear_cap_reason"] = "—"
+            break
+        remaining_target = max(0.0, target_total - capped_allocated)
+        uncapped = [row for row in uncapped if row not in newly_capped]
+    return sum(safe_number(row.get("linear_target_mid")) or 0.0 for row in rows)
+
+
+def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings):
+    total = safe_number(total_portfolio_value) or 0.0
+    cash_available = safe_number(cash_like_available) or 0.0
+    minimum_cash_reserve_amount = total * (safe_number(settings.get("action_min_cash_unallocated_target")) or 0.0) / 100.0
+    buy_actions = {"Strong Add", "Add", "Starter Buy"}
+    sell_trim_actions = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
+    executable_sell_trim_proceeds = 0.0
+    for row in rows:
+        theoretical_amount = max(0.0, safe_number(row.get("target_gap_amount")) or 0.0)
+        row["executable_action_amount"] = 0.0
+        row["unfunded_action_amount"] = 0.0
+        if row.get("action") in sell_trim_actions:
+            row["executable_action_amount"] = theoretical_amount
+            row["funding_status"] = "Generates proceeds" if theoretical_amount > 0 else "No funding needed"
+            executable_sell_trim_proceeds += theoretical_amount
+        elif row.get("action") in buy_actions and theoretical_amount > 0:
+            row["funding_status"] = "Unfunded / Watch"
+        else:
+            row["funding_status"] = "No funding needed"
+    available_buy_budget = max(0.0, cash_available + executable_sell_trim_proceeds - minimum_cash_reserve_amount)
+    buy_candidates = [row for row in rows if row.get("action") in buy_actions and row.get("target_gap_amount", 0.0) > 0]
+    for row in buy_candidates:
+        gap_score = min((row["target_gap_amount"] / total / 0.05), 1.0) if total > 0 else 0.0
+        row["linear_action_priority"] = (
+            (safe_number(row.get("linear_allocation_score")) or 0.0) * 0.50
+            + gap_score * 0.20
+            + (safe_number(row.get("linear_expected_cagr_score")) or 0.0) * 0.20
+            + (safe_number(row.get("linear_core_net_score")) or 0.0) * 0.10
+        )
+        row["funding_priority_score"] = row["linear_action_priority"]
+    remaining_budget = available_buy_budget
+    min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
+    sorted_candidates = sorted(buy_candidates, key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), -(safe_number(row.get("expected_cagr")) or 0.0), -(safe_number(row.get("upside")) or 0.0), row.get("symbol") or ""))
+    for index, row in enumerate(sorted_candidates):
+        demand = row["target_gap_amount"]
+        amount = min(remaining_budget, demand)
+        if amount < min_trade and not (index == len(sorted_candidates) - 1 and amount > 0):
+            amount = 0.0
+        row["executable_action_amount"] = amount
+        row["unfunded_action_amount"] = max(0.0, demand - amount)
+        row["funding_status"] = "Fully funded" if amount >= demand - 1e-6 and demand > 0 else ("Partially funded" if amount > 0 else "Unfunded / Watch")
+        remaining_budget = max(0.0, remaining_budget - amount)
+    total_add_demand = sum(row.get("target_gap_amount", 0.0) for row in buy_candidates)
+    funded_add_amount = sum(row.get("executable_action_amount", 0.0) for row in buy_candidates)
+    unfunded_add_demand = sum(row.get("unfunded_action_amount", 0.0) for row in buy_candidates)
+    for row in rows:
+        executable = safe_number(row.get("executable_action_amount")) or 0.0
+        row["action_amount"] = executable
+        row["action_amount_label"] = _format_action_amount_label(row.get("action_amount_direction"), executable)
+        row["available_buy_budget"] = available_buy_budget
+        row["total_add_demand"] = total_add_demand
+        row["funded_add_amount"] = funded_add_amount
+        row["unfunded_add_demand"] = unfunded_add_demand
+        row["executable_sell_trim_proceeds"] = executable_sell_trim_proceeds
+        row["minimum_cash_reserve_amount"] = minimum_cash_reserve_amount
+    return {"available_buy_budget": available_buy_budget, "total_add_demand": total_add_demand, "funded_add_amount": funded_add_amount, "unfunded_add_demand": unfunded_add_demand, "executable_sell_trim_proceeds": executable_sell_trim_proceeds, "minimum_cash_reserve_amount": minimum_cash_reserve_amount}
+
+
+def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings):
+    target_total = safe_number(settings.get("linear_allocated_target_total_pct")) or 0.0
+    weight_keys = ["linear_expected_cagr_weight", "linear_upside_weight", "linear_core_confidence_weight", "linear_potential_confidence_weight", "linear_confidence_quality_weight"]
+    weight_total = sum(safe_number(settings.get(key)) or 0.0 for key in weight_keys)
+    weights = {key: ((safe_number(settings.get(key)) or 0.0) / weight_total if weight_total > 0 else 0.0) for key in weight_keys}
+    rows = []
+    for item in candidates:
+        expected_cagr = safe_number(item.get("expected_cagr"))
+        upside = safe_number(item.get("upside"))
+        core_net = safe_number(item.get("core_confidence_diff")) or 0.0
+        potential_net = safe_number(item.get("potential_confidence_diff")) or 0.0
+        expected_cagr_score = _linear_score_range(expected_cagr, settings["linear_min_expected_cagr"], settings["linear_full_expected_cagr"])
+        upside_score = _linear_score_range(upside, settings["linear_min_upside"], settings["linear_full_upside"])
+        core_net_score = _linear_score_range(core_net, settings["linear_min_core_net"], settings["linear_full_core_net"])
+        potential_net_score = _linear_score_range(potential_net, settings["linear_min_potential_net"], settings["linear_full_potential_net"])
+        confidence_quality_score = _linear_confidence_quality_score(item.get("core_bullish_confidence"), item.get("core_bearish_confidence"), item.get("potential_bullish_confidence"), item.get("potential_bearish_confidence"))
+        score = (
+            weights["linear_expected_cagr_weight"] * expected_cagr_score
+            + weights["linear_upside_weight"] * upside_score
+            + weights["linear_core_confidence_weight"] * core_net_score
+            + weights["linear_potential_confidence_weight"] * potential_net_score
+            + weights["linear_confidence_quality_weight"] * confidence_quality_score
+        )
+        if settings.get("linear_zero_target_if_expected_cagr_negative", True) and expected_cagr is not None and expected_cagr < 0:
+            score = 0.0
+        if settings.get("linear_zero_target_if_upside_negative", True) and upside is not None and upside < 0:
+            score = 0.0
+        if score < (safe_number(settings.get("linear_min_score_threshold")) or 0.0):
+            score = 0.0
+        row = {
+            "mode": "linear",
+            "symbol": item.get("symbol"),
+            "company_name": item.get("company_name"),
+            "rating": item.get("rating") or item.get("bucket") or "Hold",
+            "current_price": item.get("current_price"),
+            "expected_price": item.get("expected_price"),
+            "expected_cagr": expected_cagr,
+            "upside": upside,
+            "core_confidence_diff": core_net,
+            "core_bullish_confidence": item.get("core_bullish_confidence"),
+            "core_bearish_confidence": item.get("core_bearish_confidence"),
+            "potential_confidence_diff": potential_net,
+            "potential_bullish_confidence": item.get("potential_bullish_confidence"),
+            "potential_bearish_confidence": item.get("potential_bearish_confidence"),
+            "current_position_weight": item.get("current_position_weight") or 0.0,
+            "current_position_market_value": item.get("current_position_market_value") or 0.0,
+            "total_portfolio_value": total_portfolio_value,
+            "linear_expected_cagr_score": expected_cagr_score,
+            "linear_upside_score": upside_score,
+            "linear_core_net_score": core_net_score,
+            "linear_potential_net_score": potential_net_score,
+            "linear_confidence_quality_score": confidence_quality_score,
+            "linear_allocation_score": _clamp(score, 0.0, 1.0),
+            "linear_weights_used": weights,
+        }
+        cap, cap_reason = _linear_cap_details(row, settings)
+        row["linear_effective_cap"] = cap
+        row["linear_effective_cap_reason"] = cap_reason
+        rows.append(row)
+    allocated_total = _apply_linear_caps_and_redistribute(rows, target_total)
+    tolerance = (safe_number(settings.get("linear_target_band_tolerance_pct")) or 0.0) / 100.0
+    for row in rows:
+        target_mid = safe_number(row.get("linear_target_mid")) or 0.0
+        target_low = target_mid * max(0.0, 1.0 - tolerance) if target_mid > 0 else 0.0
+        target_high = target_mid * (1.0 + tolerance) if target_mid > 0 else 0.0
+        row.update({
+            "target_weight_mid": target_mid,
+            "target_weight_low": target_low,
+            "target_weight_high": target_high,
+            "linear_target_weight_mid": target_mid,
+            "linear_target_weight_low": target_low,
+            "linear_target_weight_high": target_high,
+            "position_gap_to_mid": target_mid - (safe_number(row.get("current_position_weight")) or 0.0),
+            "cap_applied": row.get("linear_cap_applied"),
+            "cap_reason": row.get("linear_cap_reason"),
+        })
+        current_weight = safe_number(row.get("current_position_weight")) or 0.0
+        if target_mid <= 0 and current_weight > 0:
+            action = "Sell"
+        elif current_weight < target_low:
+            action = "Add"
+        elif current_weight > target_high:
+            action = "Trim"
+        else:
+            action = "Hold"
+        amount_fields = _action_amount_fields(action, current_weight, target_mid, total_portfolio_value, row.get("current_position_market_value"))
+        row.update({"action": action, "reason": "Linear Allocation compares current weight with the linear target band; rating is displayed for context only.", **amount_fields})
+    execution = _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
+    rows.sort(key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), row.get("symbol") or ""))
+    summary = {
+        "mode_label": "Linear Allocation",
+        "linear_allocated_target_total": allocated_total,
+        "linear_configured_target_total": target_total,
+        "current_equity_allocation": sum(safe_number(row.get("current_position_weight")) or 0.0 for row in rows),
+        "cash_like_available": cash_like_available,
+        "eligible_stock_count": len(rows),
+        "capped_stock_count": sum(1 for row in rows if (safe_number(row.get("linear_cap_applied")) or 0.0) > 1e-9),
+        **execution,
+        "execution_warning": "Linear add demand exceeds available funding. Action amounts have been cash-constrained and prioritized." if execution["total_add_demand"] > execution["available_buy_budget"] + 1e-6 else None,
+    }
+    return {"rows": rows, "summary": summary}
+
+def build_action_plan(conn):
+    settings = get_action_plan_settings(conn)
+    dynamic_mode = bool(settings.get("action_use_dynamic_bucket_sizing", True))
+    weighted_count_enabled = bool(settings.get("action_use_weighted_eligible_count", True))
+    analysis_items = list_analysis_symbols(conn)
+    positions = load_positions_cache(conn)
+    positions_by_symbol = {normalize_symbol(row.get("symbol")): row for row in positions if normalize_symbol(row.get("symbol"))}
+    portfolio_cash_summary = build_portfolio_cash_summary(conn, positions, settings)
+    total_portfolio_value = portfolio_cash_summary["portfolio_value_used"]
+    portfolio_value_source = portfolio_cash_summary["portfolio_value_source"]
+    portfolio_value_warning = portfolio_cash_summary["portfolio_value_warning"]
+    actual_cash = portfolio_cash_summary["actual_cash"]
+    actual_cash_source = portfolio_cash_summary["actual_cash_source"]
+    cash_equivalent_symbols = portfolio_cash_summary["cash_equivalent_symbols"]
+    cash_equivalent_value = portfolio_cash_summary["cash_equivalent_value"]
+    cash_equivalent_positions = portfolio_cash_summary["cash_equivalent_positions"]
+    cash_like_available = portfolio_cash_summary["cash_like_available"]
+    treat_cash_equivalents = bool(settings.get("action_treat_cash_equivalents_as_cash", True))
+
+    symbols = sorted({normalize_symbol(item.get("symbol")) for item in analysis_items if normalize_symbol(item.get("symbol"))} | set(positions_by_symbol.keys()))
+    if treat_cash_equivalents:
+        symbols = [symbol for symbol in symbols if symbol not in set(cash_equivalent_symbols)]
+    analysis_by_symbol = {normalize_symbol(item.get("symbol")): item for item in analysis_items if normalize_symbol(item.get("symbol"))}
+
+    candidates = []
+    for symbol in symbols:
+        analysis = analysis_by_symbol.get(symbol)
+        if not analysis:
+            continue
+        position = positions_by_symbol.get(symbol)
+        market_value = abs(safe_number(position.get("marketValue")) or 0.0) if position else 0.0
+        current_position_weight = (market_value / total_portfolio_value * 100.0) if total_portfolio_value > 0 else 0.0
+        owned = market_value > 0
+        if not _is_action_plan_eligible(analysis, owned, settings):
+            continue
+        rating = analysis.get("rating") or "Hold"
+        upside = safe_number(analysis.get("upside"))
+        core_diff = safe_number(analysis.get("core_confidence_diff")) or 0.0
+        core_bearish = safe_number(analysis.get("core_bearish_confidence")) or 0.0
+        potential_diff = safe_number(analysis.get("potential_confidence_diff"))
+        potential_bull = safe_number(analysis.get("potential_bullish_confidence"))
+        upside_score = _score_range(upside or 0.0, settings["action_upside_zero_score"], settings["action_upside_full_score"])
+        core_conviction_score = _score_range(core_diff, settings["action_core_diff_zero_score"], settings["action_core_diff_full_score"])
+        penalty_start = settings["action_core_bearish_penalty_start"]
+        penalty_full = settings["action_core_bearish_penalty_full"]
+        if core_bearish <= penalty_start:
+            core_risk_modifier = 1.0
+        elif core_bearish >= penalty_full:
+            core_risk_modifier = 0.5
+        else:
+            core_risk_modifier = 1.0 - ((core_bearish - penalty_start) / (penalty_full - penalty_start)) * 0.5
+        core_score = max(0.0, upside_score * core_conviction_score * core_risk_modifier)
+        potential_conviction = 0.0
+        potential_score_component = 0.0
+        legacy_potential_bonus_weight = 0.0
+        if (
+            upside is not None
+            and potential_diff is not None
+            and potential_bull is not None
+            and upside >= settings["action_potential_bonus_upside_minimum"]
+            and potential_bull >= settings["action_potential_bullish_confidence_minimum"]
+            and potential_diff >= settings["action_potential_diff_minimum"]
+        ):
+            potential_conviction = _score_range(potential_diff, settings["action_potential_diff_minimum"], settings["action_potential_diff_full_score"])
+            potential_score_component = potential_conviction * settings["action_max_potential_score_contribution"]
+            legacy_potential_bonus_weight = min(settings["action_max_potential_bonus_weight"], settings["action_max_potential_bonus_weight"] * upside_score * potential_conviction)
+        allocation_weight_total = sum(settings[key] for key in (
+            "action_allocation_upside_weight",
+            "action_allocation_core_weight",
+            "action_allocation_potential_weight",
+        ))
+        normalized_allocation_weights = {
+            "upside": settings["action_allocation_upside_weight"] / allocation_weight_total,
+            "core": settings["action_allocation_core_weight"] / allocation_weight_total,
+            "potential": settings["action_allocation_potential_weight"] / allocation_weight_total,
+        } if allocation_weight_total > 0 else {"upside": 0.6, "core": 0.3, "potential": 0.1}
+        allocation_risk_modifier = 1.0 - ((1.0 - core_risk_modifier) * settings["action_allocation_risk_penalty_strength"])
+        allocation_score = _clamp((
+            normalized_allocation_weights["upside"] * upside_score
+            + normalized_allocation_weights["core"] * core_conviction_score
+            + normalized_allocation_weights["potential"] * potential_conviction
+        ) * allocation_risk_modifier, 0.0, 1.0)
+        fixed_bucket_score = core_score
+        if fixed_bucket_score <= 0 and legacy_potential_bonus_weight > 0:
+            fixed_bucket_score = 0.05
+        bucket_sizing_weight_total = sum(settings[key] for key in (
+            "action_bucket_sizing_upside_weight",
+            "action_bucket_sizing_core_weight",
+            "action_bucket_sizing_potential_weight",
+        ))
+        normalized_bucket_sizing_weights = {
+            "upside": settings["action_bucket_sizing_upside_weight"] / bucket_sizing_weight_total,
+            "core": settings["action_bucket_sizing_core_weight"] / bucket_sizing_weight_total,
+            "potential": settings["action_bucket_sizing_potential_weight"] / bucket_sizing_weight_total,
+        } if bucket_sizing_weight_total > 0 else {"upside": 0.5, "core": 0.4, "potential": 0.1}
+        bucket_sizing_risk_modifier = 1.0 - ((1.0 - core_risk_modifier) * settings["action_bucket_sizing_risk_penalty_strength"])
+        bucket_sizing_score = _clamp((
+            normalized_bucket_sizing_weights["upside"] * upside_score
+            + normalized_bucket_sizing_weights["core"] * core_conviction_score
+            + normalized_bucket_sizing_weights["potential"] * potential_conviction
+        ) * bucket_sizing_risk_modifier, 0.0, 1.0)
+        weighted_count = 0.0
+        if weighted_count_enabled and rating not in {"Sell", "Strong Sell"}:
+            weighted_count = _clamp(
+                (bucket_sizing_score - settings["action_weighted_count_min_score"]) / (settings["action_weighted_count_full_score"] - settings["action_weighted_count_min_score"]),
+                0.0,
+                settings["action_weighted_count_max_contribution"],
+            )
+        elif rating not in {"Sell", "Strong Sell"} and bucket_sizing_score > 0:
+            weighted_count = 1.0
+        candidates.append({
+            **analysis,
+            "symbol": symbol,
+            "current_position_weight": current_position_weight,
+            "company_bucket_score": allocation_score if dynamic_mode else fixed_bucket_score,
+            "company_allocation_score": allocation_score,
+            "allocation_score": allocation_score,
+            "allocation_upside_weight_used": normalized_allocation_weights["upside"],
+            "allocation_core_weight_used": normalized_allocation_weights["core"],
+            "allocation_potential_weight_used": normalized_allocation_weights["potential"],
+            "allocation_risk_penalty_strength": settings["action_allocation_risk_penalty_strength"],
+            "allocation_risk_modifier": allocation_risk_modifier,
+            "bucket_sizing_score": bucket_sizing_score,
+            "bucket_sizing_risk_modifier": bucket_sizing_risk_modifier,
+            "weighted_count": weighted_count,
+            "upside_score": upside_score,
+            "core_conviction_score": core_conviction_score,
+            "core_risk_modifier": core_risk_modifier,
+            "core_score": core_score,
+            "potential_bonus_weight": 0.0 if dynamic_mode else legacy_potential_bonus_weight,
+            "potential_conviction_score": potential_conviction,
+            "potential_score_component": potential_score_component,
+            "current_position_market_value": market_value,
+            "bucket": rating,
+        })
+
+    equity_buckets = ["Strong Buy", "Buy", "Speculative Buy", "Hold"]
+    bucket_counts = {bucket: 0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    bucket_score_totals = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    bucket_weighted_counts = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    for item in candidates:
+        bucket = item["bucket"]
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+        bucket_score_totals[bucket] = bucket_score_totals.get(bucket, 0.0) + max(0.0, item["company_bucket_score"])
+        bucket_weighted_counts[bucket] = bucket_weighted_counts.get(bucket, 0.0) + max(0.0, item["weighted_count"])
+
+    bucket_sizing_details = {}
+    if dynamic_mode:
+        raw_bucket_targets = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+        for bucket in equity_buckets:
+            details = _action_plan_bucket_sizing_details(bucket, bucket_weighted_counts.get(bucket, 0.0), 0.0, settings, dynamic_mode=True)
+            bucket_sizing_details[bucket] = details
+            raw_bucket_targets[bucket] = details["raw_bucket_target"]
+        for bucket in ACTION_PLAN_BUCKET_KEYS:
+            bucket_sizing_details.setdefault(bucket, _action_plan_bucket_sizing_details(bucket, bucket_weighted_counts.get(bucket, 0.0), raw_bucket_targets.get(bucket, 0.0), settings, dynamic_mode=True))
+        effective_bucket_targets, bucket_compression, compression_applied = _compress_action_plan_bucket_targets(raw_bucket_targets, settings)
+        bucket_cash_target = 100.0 - sum(effective_bucket_targets.values())
+    else:
+        raw_bucket_targets = {bucket: settings[key] for bucket, key in ACTION_PLAN_BUCKET_KEYS.items()}
+        bucket_sizing_details = {
+            bucket: _action_plan_bucket_sizing_details(bucket, bucket_weighted_counts.get(bucket, 0.0), raw_target, settings, dynamic_mode=False)
+            for bucket, raw_target in raw_bucket_targets.items()
+        }
+        effective_bucket_targets = dict(raw_bucket_targets)
+        bucket_compression = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+        compression_applied = 0.0
+        bucket_cash_target = settings["action_bucket_cash_target"]
+
+    rows = []
+    bucket_allocated = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    bucket_allocated_before_caps = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    bucket_cap_applied = {bucket: 0.0 for bucket in ACTION_PLAN_BUCKET_KEYS}
+    for item in candidates:
+        rating = item["bucket"]
+        bucket_target = effective_bucket_targets.get(rating, 0.0)
+        bucket_raw_target = raw_bucket_targets.get(rating, 0.0)
+        sizing_detail = bucket_sizing_details.get(rating) or _action_plan_bucket_sizing_details(rating, bucket_weighted_counts.get(rating, 0.0), bucket_raw_target, settings, dynamic_mode)
+        bucket_weight_per_effective_stock = sizing_detail.get("bucket_weight_per_effective_stock")
+        max_effective_count = sizing_detail.get("max_effective_count")
+        max_bucket_target = sizing_detail.get("max_bucket_target")
+        bucket_max_target = sizing_detail.get("bucket_max_target")
+        weighted_eligible_count_in_bucket = sizing_detail.get("weighted_eligible_count", 0.0)
+        weighted_count_used = sizing_detail.get("weighted_count_used", weighted_eligible_count_in_bucket)
+        effective_weighted_count_used = sizing_detail.get("effective_weighted_count_used", weighted_count_used)
+        uncapped_bucket_target = sizing_detail.get("uncapped_bucket_target")
+        score_total = bucket_score_totals.get(rating, 0.0)
+        bucket_share = (item["company_bucket_score"] / score_total * 100.0) if score_total > 0 else 0.0
+        raw_target = bucket_target * item["company_bucket_score"] / score_total if score_total > 0 else 0.0
+        target_before_caps = raw_target + (0.0 if dynamic_mode else item["potential_bonus_weight"])
+        cap, cap_reason_text = _action_plan_cap_details(rating, safe_number(item.get("core_confidence_diff")) or 0.0, settings)
+        target_mid = min(target_before_caps, cap)
+        cap_applied = max(0.0, target_before_caps - target_mid)
+        cap_reason = cap_reason_text if cap_applied > 1e-9 else "—"
+        target_low, target_high = _target_band(target_mid, rating, settings)
+        row = {
+            "symbol": item["symbol"],
+            "company_name": item.get("company_name"),
+            "rating": rating,
+            "current_price": item.get("current_price"),
+            "expected_price": item.get("expected_price"),
+            "expected_cagr": item.get("expected_cagr"),
+            "upside": item.get("upside"),
+            "core_confidence_diff": item.get("core_confidence_diff"),
+            "core_bullish_confidence": item.get("core_bullish_confidence"),
+            "core_bearish_confidence": item.get("core_bearish_confidence"),
+            "potential_confidence_diff": item.get("potential_confidence_diff"),
+            "potential_bullish_confidence": item.get("potential_bullish_confidence"),
+            "potential_bearish_confidence": item.get("potential_bearish_confidence"),
+            "current_position_weight": item["current_position_weight"],
+            "current_position_market_value": item.get("current_position_market_value"),
+            "total_portfolio_value": total_portfolio_value,
+            "target_weight_mid": target_mid,
+            "target_weight_low": target_low,
+            "target_weight_high": target_high,
+            "target_mid_before_caps": target_before_caps,
+            "target_mid_after_caps": target_mid,
+            "cap_applied": cap_applied,
+            "cap_reason": cap_reason,
+            "position_gap_to_mid": target_mid - item["current_position_weight"],
+            "bucket": rating,
+            "bucket_target_percent": bucket_target,
+            "bucket_raw_target": bucket_raw_target,
+            "bucket_effective_target": bucket_target,
+            "upside_score": item["upside_score"],
+            "core_conviction_score": item["core_conviction_score"],
+            "core_risk_modifier": item["core_risk_modifier"],
+            "core_score": item["core_score"],
+            "potential_conviction_score": item["potential_conviction_score"],
+            "potential_score_component": item["potential_score_component"],
+            "potential_bonus_weight": item["potential_bonus_weight"],
+            "company_allocation_score": item["company_allocation_score"],
+            "allocation_score": item["allocation_score"],
+            "allocation_upside_weight_used": item["allocation_upside_weight_used"],
+            "allocation_core_weight_used": item["allocation_core_weight_used"],
+            "allocation_potential_weight_used": item["allocation_potential_weight_used"],
+            "allocation_risk_penalty_strength": item["allocation_risk_penalty_strength"],
+            "allocation_risk_modifier": item["allocation_risk_modifier"],
+            "company_bucket_score": item["company_bucket_score"],
+            "bucket_sizing_score": item["bucket_sizing_score"],
+            "bucket_sizing_risk_modifier": item["bucket_sizing_risk_modifier"],
+            "weighted_count": item["weighted_count"],
+            "weighted_eligible_count": item["weighted_count"],
+            "weighted_count_contribution": item["weighted_count"],
+            "score_breakdown": {
+                "upside_score": item["upside_score"],
+                "core_conviction_score": item["core_conviction_score"],
+                "core_risk_modifier": item["core_risk_modifier"],
+                "core_score": item["core_score"],
+                "potential_conviction_score": item["potential_conviction_score"],
+                "potential_score_component": item["potential_score_component"],
+                "potential_bonus_weight": item["potential_bonus_weight"],
+                "company_allocation_score": item["company_allocation_score"],
+                "allocation_score": item["allocation_score"],
+                "allocation_upside_weight_used": item["allocation_upside_weight_used"],
+                "allocation_core_weight_used": item["allocation_core_weight_used"],
+                "allocation_potential_weight_used": item["allocation_potential_weight_used"],
+                "allocation_risk_penalty_strength": item["allocation_risk_penalty_strength"],
+                "allocation_risk_modifier": item["allocation_risk_modifier"],
+                "company_bucket_score": item["company_bucket_score"],
+                "bucket_sizing_score": item["bucket_sizing_score"],
+                "bucket_sizing_risk_modifier": item["bucket_sizing_risk_modifier"],
+                "weighted_count": item["weighted_count"],
+            },
+            "target_weight_breakdown": {
+                "rating_bucket": rating,
+                "bucket_target_percent": bucket_target,
+                "bucket_raw_target": bucket_raw_target,
+                "bucket_effective_target": bucket_target,
+                "bucket_weight_per_effective_stock": bucket_weight_per_effective_stock,
+                "max_effective_count": max_effective_count,
+                "weighted_count_used": weighted_count_used,
+                "effective_weighted_count_used": effective_weighted_count_used,
+                "uncapped_bucket_target": uncapped_bucket_target,
+                "bucket_max_target": bucket_max_target,
+                "max_bucket_target": max_bucket_target,
+                "eligible_count_in_bucket": bucket_counts.get(rating, 0),
+                "weighted_eligible_count_in_bucket": weighted_eligible_count_in_bucket,
+                "company_allocation_score": item["company_allocation_score"],
+                "allocation_score": item["allocation_score"],
+                "allocation_upside_weight_used": item["allocation_upside_weight_used"],
+                "allocation_core_weight_used": item["allocation_core_weight_used"],
+                "allocation_potential_weight_used": item["allocation_potential_weight_used"],
+                "allocation_risk_penalty_strength": item["allocation_risk_penalty_strength"],
+                "allocation_risk_modifier": item["allocation_risk_modifier"],
+                "company_bucket_score": item["company_bucket_score"],
+                "bucket_sizing_score": item["bucket_sizing_score"],
+                "bucket_sizing_risk_modifier": item["bucket_sizing_risk_modifier"],
+                "weighted_count": item["weighted_count"],
+                "total_bucket_allocation_score": score_total,
+                "total_bucket_score": score_total,
+                "weighted_count_contribution": item["weighted_count"],
+                "bucket_share_percent": bucket_share,
+                "raw_target_weight": raw_target,
+                "target_before_caps": target_before_caps,
+                "target_mid_before_caps": target_before_caps,
+                "potential_bonus_weight": item["potential_bonus_weight"],
+                "cap_applied": cap_applied,
+                "cap_reason": cap_reason,
+                "target_weight_mid": target_mid,
+                "target_mid_after_caps": target_mid,
+                "target_weight_low": target_low,
+                "target_weight_high": target_high,
+            },
+            "uses_final_scenario_overlay": item.get("uses_final_scenario_overlay"),
+            "final_scenario_stale": item.get("final_scenario_stale"),
+        }
+        action, trigger_price, trigger_direction, distance, reason = _choose_action_plan_decision(row, settings)
+        amount_fields = _action_amount_fields(action, item["current_position_weight"], target_mid, total_portfolio_value, item.get("current_position_market_value"))
+        trigger_type_by_action = {
+            "Strong Add": "strong_add",
+            "Add": "add",
+            "Starter Buy": "starter_buy",
+            "Trim": "trim",
+            "Strong Trim": "trim",
+            "Sell": "sell",
+            "Watch": "starter_buy" if rating == "Speculative Buy" else "add",
+        }
+        row.update({
+            "action": action,
+            "trigger_price": trigger_price,
+            "trigger_direction": trigger_direction,
+            "distance_to_trigger_percent": distance,
+            "reason": reason if score_total > 0 or action in {"Sell", "Re-evaluate"} else "No positive attractiveness/conviction score.",
+            "action_priority": ACTION_PLAN_ACTION_PRIORITY.get(action, 99),
+            **amount_fields,
+            "cash_like_available": cash_like_available,
+            "action_amount_cash_covered": None,
+            "action_amount_cash_shortfall": None,
+            "action_amount_cash_note": None,
+            "trigger_breakdown": _action_plan_trigger_breakdown(row),
+        })
+        row["decision_path"] = _action_plan_decision_path(row, action)
+        bucket_allocated[rating] = bucket_allocated.get(rating, 0.0) + target_mid
+        bucket_allocated_before_caps[rating] = bucket_allocated_before_caps.get(rating, 0.0) + target_before_caps
+        bucket_cap_applied[rating] = bucket_cap_applied.get(rating, 0.0) + cap_applied
+        rows.append(row)
+
+    linear_payload = compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings)
+    execution_summary = _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
+    rows.sort(key=lambda row: (row["action_priority"], -abs(row.get("position_gap_to_mid") or 0.0), row["symbol"]))
+    bucket_summary = []
+    for bucket, key in ACTION_PLAN_BUCKET_KEYS.items():
+        raw_target = raw_bucket_targets.get(bucket, 0.0)
+        effective_target = effective_bucket_targets.get(bucket, 0.0)
+        allocated = bucket_allocated.get(bucket, 0.0)
+        allocated_before_caps = bucket_allocated_before_caps.get(bucket, 0.0)
+        post_cap_unallocated = bucket_cap_applied.get(bucket, 0.0)
+        eligible_count = bucket_counts.get(bucket, 0)
+        status = "Normal"
+        if raw_target <= 0 and effective_target <= 0:
+            status = "Zero target"
+        elif eligible_count <= 0:
+            status = "Empty"
+        elif bucket_compression.get(bucket, 0.0) > 1e-9:
+            status = "Compressed"
+        elif post_cap_unallocated > 1e-9:
+            status = "Capped"
+        elif effective_target - allocated > 1e-9:
+            status = "Underallocated"
+        sizing_detail = bucket_sizing_details.get(bucket) or _action_plan_bucket_sizing_details(bucket, bucket_weighted_counts.get(bucket, 0.0), raw_target, settings, dynamic_mode)
+        bucket_summary.append({
+            "bucket": bucket,
+            "bucket_target_percent": effective_target,
+            "eligible_count": eligible_count,
+            "weighted_eligible_count": sizing_detail.get("weighted_eligible_count", bucket_weighted_counts.get(bucket, 0.0)),
+            "max_effective_count": sizing_detail.get("max_effective_count"),
+            "weighted_count_used": sizing_detail.get("weighted_count_used"),
+            "effective_weighted_count_used": sizing_detail.get("effective_weighted_count_used"),
+            "bucket_weight_per_effective_stock": sizing_detail.get("bucket_weight_per_effective_stock"),
+            "uncapped_bucket_target": sizing_detail.get("uncapped_bucket_target"),
+            "raw_bucket_target": sizing_detail.get("raw_bucket_target", raw_target),
+            "bucket_max_target": sizing_detail.get("bucket_max_target"),
+            "max_bucket_target": sizing_detail.get("max_bucket_target"),
+            "raw_target": raw_target,
+            "effective_target": effective_target,
+            "compression_amount": bucket_compression.get(bucket, 0.0),
+            "allocated_before_caps": allocated_before_caps,
+            "allocated_after_caps": allocated,
+            "allocated_target_percent": allocated,
+            "post_cap_unallocated": post_cap_unallocated,
+            "unallocated_due_to_caps_percent": post_cap_unallocated,
+            "status": status,
+        })
+    raw_equity_target = sum(raw_bucket_targets.values())
+    effective_equity_target = sum(effective_bucket_targets.values())
+    allocated_total = sum(bucket_allocated.values())
+    post_cap_unallocated_total = sum(bucket_cap_applied.values())
+    total_effective_bucket_target = effective_equity_target + bucket_cash_target
+    rounding_adjustment = 100.0 - total_effective_bucket_target
+    return {
+        "action_plan": rows,
+        "linear_action_plan": linear_payload["rows"],
+        "settings": settings,
+        "summary": {
+            "total_portfolio_value": total_portfolio_value,
+            "portfolio_value_used": total_portfolio_value,
+            "portfolio_value_source": portfolio_value_source,
+            "portfolio_value_warning": portfolio_value_warning,
+            "actual_cash": actual_cash,
+            "actual_cash_source": actual_cash_source,
+            "cash_equivalent_symbols": cash_equivalent_symbols,
+            "cash_equivalent_value": cash_equivalent_value,
+            "cash_like_available": cash_like_available,
+            "cash_like_available_percent": (cash_like_available / total_portfolio_value * 100.0) if total_portfolio_value > 0 else None,
+            **execution_summary,
+            "execution_warning": "Add demand exceeds available funding. Action amounts have been cash-constrained and prioritized." if execution_summary["total_add_demand"] > execution_summary["available_buy_budget"] + 1e-6 else None,
+            "configured_cash_target_percent": bucket_cash_target,
+            "cash_like_vs_target_gap_percent": ((cash_like_available / total_portfolio_value * 100.0) - bucket_cash_target) if total_portfolio_value > 0 else None,
+            "raw_equity_target": raw_equity_target,
+            "effective_equity_target": effective_equity_target,
+            "cash_unallocated_target": bucket_cash_target,
+            "post_cap_unallocated": post_cap_unallocated_total,
+            "final_allocated_stock_target": allocated_total,
+            "total_effective_bucket_target": total_effective_bucket_target,
+            "rounding_adjustment": rounding_adjustment,
+            "compression_applied": compression_applied,
+            "unallocated_due_to_underfilled_buckets": max(0.0, effective_equity_target - allocated_total),
+            "dynamic_bucket_sizing_enabled": dynamic_mode,
+            "weighted_eligible_count_enabled": weighted_count_enabled,
+            "configured_bucket_total": total_effective_bucket_target,
+            "allocated_target_total": allocated_total,
+            "unallocated_target_capacity": max(0.0, 100.0 - allocated_total),
+            "unallocated_target_total": max(0.0, 100.0 - allocated_total),
+            "cash_equivalent_positions": cash_equivalent_positions,
+            "bucket_summary": bucket_summary,
+            "linear_summary": linear_payload["summary"],
+        },
+    }
+
+def get_action_plan_detail(conn, symbol):
+    normalized = normalize_symbol(symbol)
+    payload = build_action_plan(conn)
+    row = next((item for item in payload.get("action_plan", []) if normalize_symbol(item.get("symbol")) == normalized), None)
+    if not row:
+        return None
+    detail = get_analysis_detail(conn, normalized)
+    variables = []
+    if detail and detail.get("version"):
+        variables = detail["version"].get("key_variables") or []
+    row = dict(row)
+    row["action_relevant_key_variables"] = sorted(
+        variables,
+        key=lambda item: (safe_number(item.get("importance")) or 0.0, safe_number(item.get("confidence")) or 0.0),
+        reverse=True,
+    )[:10]
+    row["summary"] = payload.get("summary", {})
+    return row
+
+
 def overlay_cached_market_fields(live_rows, cached_rows):
     cached_by_symbol = {
         normalize_symbol(item.get("symbol")): item
@@ -4331,6 +7371,7 @@ def build_positions_payload(conn, positions, data_source, warning=None):
     payload = {
         "positions": merge_positions_with_latest_analysis(normalized_positions, analysis_items),
         "data_source": data_source,
+        "portfolio_summary": build_portfolio_cash_summary(conn, normalized_positions),
     }
     if warning:
         payload["warning"] = warning
@@ -4360,7 +7401,7 @@ def get_latest_analysis_context(conn, symbol):
 
     key_variables = conn.execute(
         """
-        SELECT variable_text, variable_type, confidence, importance
+        SELECT variable_text, variable_type, COALESCE(driver_category, 'Core Driver') AS driver_category, confidence, importance
         FROM analysis_version_key_variables
         WHERE analysis_version_id = ?
         ORDER BY id ASC
@@ -4377,6 +7418,7 @@ def get_latest_analysis_context(conn, symbol):
             {
                 "variable": item["variable_text"],
                 "type": item["variable_type"],
+                "driver_category": normalized_driver_category(item["driver_category"]),
                 "confidence": item["confidence"],
                 "importance": item["importance"],
             }
@@ -4635,6 +7677,7 @@ def _build_earnings_review_thesis_snapshot(conn, symbol):
             {
                 "variable": str(variable_text).strip(),
                 "type": str(variable_type).strip(),
+                "driver_category": safe_driver_category(item.get("driver_category")),
                 "confidence": safe_number(item.get("confidence")),
                 "importance": safe_number(item.get("importance")),
             }
@@ -5083,6 +8126,7 @@ def get_earnings_review_record_detail(conn, symbol, review_id):
                     or item.get("polarity")
                     or ""
                 ).strip(),
+                "driver_category": safe_driver_category(item.get("driver_category")),
                 "confidence": safe_number(item.get("confidence")),
                 "importance": safe_number(item.get("importance")),
             }
@@ -5996,7 +9040,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         path = parsed_url.path
 
         if path == "/api/positions":
-            return self.handle_positions_api()
+            query = parse_qs(parsed_url.query or "")
+            refresh = str(query.get("refresh", ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            return self.handle_positions_api(refresh=refresh)
         if path == "/api/analysis":
             return self.handle_analysis_get()
         if path == "/api/earnings-review":
@@ -6026,6 +9072,18 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 if not symbol or not parts[1].isdigit() or not parts[3].isdigit():
                     return self._send_json({"error": "Invalid earnings review document download path"}, status=400)
                 return self.handle_earnings_review_document_download(symbol, int(parts[1]), int(parts[3]))
+        if path.startswith("/api/analysis/versions/"):
+            parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
+            if len(parts) == 2 and parts[0].isdigit() and parts[1] == "external-scenarios":
+                return self.handle_external_scenarios_get(int(parts[0]))
+            return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
+        if path.startswith("/api/action-plan/"):
+            symbol = normalize_symbol(path[len("/api/action-plan/") :])
+            if not symbol:
+                return self._send_json({"error": "Invalid action plan symbol"}, status=400)
+            return self.handle_action_plan_detail_get(symbol)
+        if path == "/api/action-plan":
+            return self.handle_action_plan_get()
         if path.startswith("/api/analysis/"):
             symbol = normalize_symbol(path[len("/api/analysis/") :])
             if not symbol:
@@ -6068,6 +9126,18 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_rerun_scenarios_batch()
         if path == "/api/analysis/refresh-prices":
             return self.handle_analysis_refresh_prices()
+        if path.startswith("/api/analysis/versions/"):
+            parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
+            if len(parts) == 2 and parts[0].isdigit() and parts[1] == "external-scenarios":
+                return self.handle_external_scenario_create(int(parts[0]))
+            if len(parts) == 3 and parts[0].isdigit() and parts[1] == "final-scenario" and parts[2] == "recalculate":
+                return self.handle_final_scenario_recalculate(int(parts[0]))
+            return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
+        if path.startswith("/api/analysis/") and path.endswith("/key-variables/import"):
+            symbol = normalize_symbol(path[len("/api/analysis/") : -len("/key-variables/import")])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_analysis_key_variables_import(symbol)
         if path.startswith("/api/analysis/") and path.endswith("/key-variables"):
             symbol = normalize_symbol(path[len("/api/analysis/") : -len("/key-variables")])
             if not symbol:
@@ -6092,11 +9162,13 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_import_positions()
         if path == "/api/earnings-review/symbols":
             return self.handle_earnings_review_symbol_add()
+        if path == "/api/earnings-review/calendar":
+            return self.handle_earnings_review_calendar_create()
         if path.startswith("/api/earnings-review/calendar/"):
-            symbol = normalize_symbol(path[len("/api/earnings-review/calendar/"):])
-            if not symbol:
-                return self._send_json({"error": "Invalid symbol"}, status=400)
-            return self.handle_earnings_review_calendar_save(symbol)
+            entry_id = path[len("/api/earnings-review/calendar/"):].strip()
+            if not entry_id.isdigit():
+                return self._send_json({"error": "Invalid earnings calendar entry id"}, status=400)
+            return self.handle_earnings_review_calendar_save(int(entry_id))
         if path.startswith("/api/earnings-review/"):
             suffix = path[len("/api/earnings-review/") :]
             parts = [item for item in suffix.split("/") if item]
@@ -6137,19 +9209,34 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_configuration_prompts_put()
         if path == "/api/configuration/general":
             return self.handle_configuration_general_put()
+        if path.startswith("/api/analysis/versions/"):
+            parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
+            if len(parts) == 3 and parts[0].isdigit() and parts[1] == "external-scenarios" and parts[2].isdigit():
+                return self.handle_external_scenario_update(int(parts[0]), int(parts[2]))
+            return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
         if path.startswith("/api/alerts/") and path.endswith("/status"):
             alert_id = path[len("/api/alerts/") : -len("/status")]
             return self.handle_alerts_status_put(alert_id)
+        if path.startswith("/api/earnings-review/calendar/"):
+            entry_id = path[len("/api/earnings-review/calendar/"):].strip()
+            if not entry_id.isdigit():
+                return self._send_json({"error": "Invalid earnings calendar entry id"}, status=400)
+            return self.handle_earnings_review_calendar_save(int(entry_id))
 
         self.send_error(404, "Not Found")
 
     def do_DELETE(self):
         path = urlparse(self.path).path
+        if path.startswith("/api/analysis/versions/"):
+            parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
+            if len(parts) == 3 and parts[0].isdigit() and parts[1] == "external-scenarios" and parts[2].isdigit():
+                return self.handle_external_scenario_delete(int(parts[0]), int(parts[2]))
+            return self._send_json({"error": "Invalid analysis version external scenario path"}, status=400)
         if path.startswith("/api/earnings-review/calendar/"):
-            symbol = normalize_symbol(path[len("/api/earnings-review/calendar/"):])
-            if not symbol:
-                return self._send_json({"error": "Invalid symbol"}, status=400)
-            return self.handle_earnings_review_calendar_remove(symbol)
+            entry_id = path[len("/api/earnings-review/calendar/"):].strip()
+            if not entry_id.isdigit():
+                return self._send_json({"error": "Invalid earnings calendar entry id"}, status=400)
+            return self.handle_earnings_review_calendar_remove(int(entry_id))
         if path.startswith("/api/earnings-review/"):
             suffix = path[len("/api/earnings-review/") :]
             parts = [item for item in suffix.split("/") if item]
@@ -6278,11 +9365,38 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_positions_api(self):
+    def handle_positions_api(self, refresh=False):
+        if not refresh:
+            conn = get_db_connection()
+            try:
+                cached_positions = load_positions_cache(conn)
+                payload = build_positions_payload(
+                    conn,
+                    cached_positions,
+                    data_source="cached" if cached_positions else "empty",
+                    warning=None if cached_positions else "No saved positions available. Click Refresh to load positions from TWS.",
+                )
+                logger.info(
+                    "Positions API returning stored rows=%s sample_symbols=%s",
+                    len(payload["positions"]),
+                    [item.get("symbol") for item in payload["positions"][:5]],
+                )
+                self._send_json(payload)
+            finally:
+                conn.close()
+            return
+
         try:
             ensure_event_loop()
             ib = get_ib_connection()
             positions = ib.positions()
+            account_summary = None
+            account_summary_warning = None
+            try:
+                account_summary = fetch_ib_portfolio_summary(ib)
+            except Exception as exc:
+                logger.warning("Unable to fetch IBKR account summary during positions refresh: %s", exc)
+                account_summary_warning = "IBKR account summary/cash could not be updated."
             logger.info("Positions API using live IBKR path positions_count=%s", len(positions))
             contracts = [p.contract for p in positions if p.contract]
             tickers_by_conid = {}
@@ -6352,12 +9466,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 warning_message = None
                 if tws_data_enabled:
                     save_positions_cache(conn, effective_data)
+                    if account_summary:
+                        save_portfolio_summary_cache(conn, account_summary)
                 else:
                     cached_rows = load_positions_cache(conn)
                     effective_data = overlay_cached_market_fields(data, cached_rows)
                     if cached_rows:
                         save_positions_cache(conn, effective_data)
                     warning_message = "Data from TWS is disabled. Showing latest cached market values when available."
+                if account_summary_warning:
+                    warning_message = " ".join([part for part in [warning_message, account_summary_warning] if part])
                 payload = build_positions_payload(
                     conn,
                     effective_data,
@@ -6547,7 +9665,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def handle_analysis_get(self):
         conn = get_db_connection()
         try:
-            refresh_latest_analysis_market_prices(conn)
             self._send_json({"analysis": list_analysis_symbols(conn)})
         except Exception as exc:
             self._send_json(
@@ -6583,21 +9700,49 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_earnings_review_calendar_save(self, symbol):
+    def handle_earnings_review_calendar_create(self):
         payload = self._read_json_body() or {}
         conn = get_db_connection()
         try:
-            item = save_earnings_release_schedule(
+            item = create_earnings_calendar_entry(
                 conn=conn,
-                symbol=symbol,
+                symbol=payload.get("symbol"),
+                fiscal_year=payload.get("fiscal_year"),
+                fiscal_quarter=payload.get("fiscal_quarter"),
+                release_date=payload.get("release_date"),
+                release_timing=payload.get("release_timing"),
+            )
+            self._send_json({"ok": True, "item": item}, status=201)
+        except ValueError as exc:
+            status = 409 if "already exists" in str(exc).lower() else 400
+            self._send_json({"error": str(exc)}, status=status)
+        except Exception as exc:
+            logger.exception("Unable to create earnings calendar row")
+            self._send_json(
+                {"error": "Unable to create earnings calendar row.", "details": str(exc)},
+                status=500,
+            )
+        finally:
+            conn.close()
+
+    def handle_earnings_review_calendar_save(self, entry_id):
+        payload = self._read_json_body() or {}
+        conn = get_db_connection()
+        try:
+            item = update_earnings_calendar_entry(
+                conn=conn,
+                entry_id=entry_id,
+                fiscal_year=payload.get("fiscal_year"),
+                fiscal_quarter=payload.get("fiscal_quarter"),
                 release_date=payload.get("release_date"),
                 release_timing=payload.get("release_timing"),
             )
             self._send_json({"ok": True, "item": item})
         except ValueError as exc:
-            self._send_json({"error": str(exc)}, status=400)
+            status = 409 if "already exists" in str(exc).lower() else 400
+            self._send_json({"error": str(exc)}, status=status)
         except Exception as exc:
-            logger.exception("Unable to save earnings calendar row for symbol %s", symbol)
+            logger.exception("Unable to save earnings calendar row %s", entry_id)
             self._send_json(
                 {"error": "Unable to save earnings calendar row.", "details": str(exc)},
                 status=500,
@@ -6605,17 +9750,17 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_earnings_review_calendar_remove(self, symbol):
+    def handle_earnings_review_calendar_remove(self, entry_id):
         conn = get_db_connection()
         try:
-            result = remove_earnings_release_calendar_symbol(conn, symbol)
+            result = delete_earnings_calendar_entry(conn, entry_id)
             self._send_json({"ok": True, "item": result})
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=400)
         except Exception as exc:
-            logger.exception("Unable to remove earnings calendar symbol %s", symbol)
+            logger.exception("Unable to remove earnings calendar row %s", entry_id)
             self._send_json(
-                {"error": "Unable to remove earnings calendar symbol.", "details": str(exc)},
+                {"error": "Unable to remove earnings calendar row.", "details": str(exc)},
                 status=500,
             )
         finally:
@@ -6744,6 +9889,72 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
+    def handle_external_scenarios_get(self, version_id):
+        conn = get_db_connection()
+        try:
+            self._send_json(_external_overlay_summary(conn, version_id))
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            logger.exception("Unable to load external scenarios for version %s", version_id)
+            self._send_json({"error": "Unable to load external scenarios.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_external_scenario_create(self, version_id):
+        payload = self._read_json_body() or {}
+        conn = get_db_connection()
+        try:
+            item = create_external_scenario(conn, version_id, payload)
+            self._send_json({"ok": True, "item": item, **_external_overlay_summary(conn, version_id)}, status=201)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to create external scenario for version %s", version_id)
+            self._send_json({"error": "Unable to create external scenario.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_external_scenario_update(self, version_id, external_id):
+        payload = self._read_json_body() or {}
+        conn = get_db_connection()
+        try:
+            item = update_external_scenario(conn, version_id, external_id, payload)
+            self._send_json({"ok": True, "item": item, **_external_overlay_summary(conn, version_id)})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to update external scenario %s for version %s", external_id, version_id)
+            self._send_json({"error": "Unable to update external scenario.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_external_scenario_delete(self, version_id, external_id):
+        conn = get_db_connection()
+        try:
+            item = delete_external_scenario(conn, version_id, external_id)
+            self._send_json({"ok": True, "item": item, **_external_overlay_summary(conn, version_id)})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to delete external scenario %s for version %s", external_id, version_id)
+            self._send_json({"error": "Unable to delete external scenario.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_final_scenario_recalculate(self, version_id):
+        conn = get_db_connection()
+        try:
+            overlay = recalculate_final_scenario_overlay(conn, version_id)
+            self._send_json({"ok": True, "final_scenario_overlay": overlay, **_external_overlay_summary(conn, version_id)})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception("Unable to recalculate final scenario for version %s", version_id)
+            self._send_json({"error": "Unable to recalculate final scenario.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
     def handle_analysis_detail_get(self, symbol, version_id=None):
         conn = get_db_connection()
         try:
@@ -6835,6 +10046,26 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 {"error": "Unable to import analysis from positions.", "details": str(exc)},
                 status=500,
             )
+        finally:
+            conn.close()
+
+    def handle_analysis_key_variables_import(self, symbol):
+        payload = self._read_json_body() or {}
+        version_id = payload.get("version_id")
+        if version_id is None:
+            return self._send_json({"error": "version_id is required"}, status=400)
+
+        conn = get_db_connection()
+        try:
+            detail = import_key_variable_edits(conn, symbol, int(version_id), payload)
+            self._send_json({"ok": True, "analysis": detail})
+        except AnalysisValidationError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        except Exception as exc:
+            logger.exception("Unable to import key variable edits for symbol %s", symbol)
+            self._send_json({"error": "Unable to import key variables.", "details": str(exc)}, status=500)
         finally:
             conn.close()
 
@@ -7053,6 +10284,31 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             )
         finally:
             conn.close()
+
+    def handle_action_plan_get(self):
+        try:
+            conn = get_db_connection()
+            try:
+                self._send_json(build_action_plan(conn))
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.exception("Unable to build Action Plan")
+            self._send_json({"error": "Unable to build Action Plan.", "details": str(exc)}, status=500)
+
+    def handle_action_plan_detail_get(self, symbol):
+        try:
+            conn = get_db_connection()
+            try:
+                detail = get_action_plan_detail(conn, symbol)
+                if not detail:
+                    return self._send_json({"error": "Action Plan symbol not found"}, status=404)
+                self._send_json({"action_detail": detail})
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.exception("Unable to build Action Plan detail")
+            self._send_json({"error": "Unable to build Action Plan detail.", "details": str(exc)}, status=500)
 
     def handle_configuration_general_get(self):
         conn = get_db_connection()

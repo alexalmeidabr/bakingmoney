@@ -228,6 +228,13 @@ class PositionsAnalysisMergeTests(unittest.TestCase):
                 "symbol": "NVDA",
                 "rating": "Buy",
                 "upside": 25.5,
+                "expected_price": 125.5,
+                "expected_cagr": 4.5,
+                "upside_original": 20.0,
+                "expected_price_original": 120.0,
+                "expected_cagr_original": 3.5,
+                "uses_final_scenario_overlay": True,
+                "final_scenario_stale": False,
                 "bullish_confidence": 6.8,
                 "bearish_confidence": 4.1,
                 "confidence_diff": 2.7,
@@ -240,6 +247,10 @@ class PositionsAnalysisMergeTests(unittest.TestCase):
 
         self.assertEqual(nvda["rating"], "Buy")
         self.assertEqual(nvda["upside"], 25.5)
+        self.assertEqual(nvda["expected_price"], 125.5)
+        self.assertEqual(nvda["expected_cagr"], 4.5)
+        self.assertEqual(nvda["upside_original"], 20.0)
+        self.assertTrue(nvda["uses_final_scenario_overlay"])
         self.assertEqual(nvda["confidence_diff"], 2.7)
         self.assertEqual(msft["rating"], None)
         self.assertEqual(msft["upside"], None)
@@ -305,6 +316,8 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(payload["positions"][0]["upside"], 22.0)
         self.assertAlmostEqual(payload["positions"][0]["unrealizedPnLPercent"], 25.0)
         self.assertAlmostEqual(payload["positions"][0]["costBasis"], 800.0)
+        self.assertIn("portfolio_summary", payload)
+        self.assertEqual(payload["portfolio_summary"]["portfolio_value_source"], "positions_only")
 
     def test_build_positions_payload_with_empty_cache_returns_empty_positions(self):
         class DummyConn:
@@ -314,6 +327,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
             payload = web_server.build_positions_payload(DummyConn(), [], data_source="empty", warning="none")
 
         self.assertEqual(payload["positions"], [])
+        self.assertIn("portfolio_summary", payload)
 
     def test_compute_cost_basis_uses_abs_quantity_times_avg_cost(self):
         self.assertEqual(web_server.compute_cost_basis({"position": 10, "avgCost": 80}), 800)
@@ -576,6 +590,448 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(merged[0]["currency"], "USD")
 
 
+class RatingCorePotentialConfidenceTests(unittest.TestCase):
+    def _settings(self):
+        return dict(web_server.DEFAULT_RATING_SETTINGS)
+
+    def test_strong_buy_and_buy_use_core_confidence(self):
+        settings = self._settings()
+        rating, _ = web_server.calculate_rating(
+            65,
+            bullish_confidence=2.0,
+            bearish_confidence=2.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 7.5, "core_bearish_confidence": 5.7},
+        )
+        self.assertEqual(rating, "Strong Buy")
+
+        rating, _ = web_server.calculate_rating(
+            35,
+            bullish_confidence=8.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 6.0, "core_bearish_confidence": 5.2},
+        )
+        self.assertEqual(rating, "Buy")
+
+        rating, _ = web_server.calculate_rating(
+            35,
+            bullish_confidence=8.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 4.0, "core_bearish_confidence": 4.0},
+        )
+        self.assertEqual(rating, "Hold")
+
+    def test_sell_ratings_use_core_confidence(self):
+        settings = self._settings()
+        rating, _ = web_server.calculate_rating(
+            -5,
+            bullish_confidence=8.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 4.0, "core_bearish_confidence": 7.0},
+        )
+        self.assertEqual(rating, "Strong Sell")
+
+        rating, _ = web_server.calculate_rating(
+            5,
+            bullish_confidence=8.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 5.2, "core_bearish_confidence": 6.0},
+        )
+        self.assertEqual(rating, "Sell")
+
+    def test_speculative_buy_core_and_potential_paths_with_core_floor(self):
+        settings = self._settings()
+        rating, _ = web_server.calculate_rating(
+            90,
+            bullish_confidence=4.0,
+            bearish_confidence=4.0,
+            rating_settings=settings,
+            confidence_context={"core_bullish_confidence": 4.8, "core_bearish_confidence": 4.6},
+        )
+        self.assertEqual(rating, "Speculative Buy")
+
+        rating, _ = web_server.calculate_rating(
+            110,
+            bullish_confidence=4.0,
+            bearish_confidence=4.2,
+            rating_settings=settings,
+            confidence_context={
+                "core_bullish_confidence": 4.0,
+                "core_bearish_confidence": 4.2,
+                "potential_bullish_confidence": 5.5,
+                "potential_bearish_confidence": 4.3,
+            },
+        )
+        self.assertEqual(rating, "Speculative Buy")
+
+        rating, _ = web_server.calculate_rating(
+            110,
+            bullish_confidence=4.0,
+            bearish_confidence=5.2,
+            rating_settings=settings,
+            confidence_context={
+                "core_bullish_confidence": 4.0,
+                "core_bearish_confidence": 5.2,
+                "potential_bullish_confidence": 5.5,
+                "potential_bearish_confidence": 4.3,
+            },
+        )
+        self.assertEqual(rating, "Hold")
+
+    def test_speculative_buy_guardrail_and_combined_fallback(self):
+        settings = self._settings()
+        rating, _ = web_server.calculate_rating(
+            100,
+            bullish_confidence=1.0,
+            bearish_confidence=1.0,
+            rating_settings=settings,
+            confidence_context={
+                "core_bullish_confidence": 1.0,
+                "core_bearish_confidence": 1.0,
+                "potential_bullish_confidence": 4.6,
+                "potential_bearish_confidence": 4.4,
+            },
+        )
+        self.assertEqual(rating, "Speculative Buy")
+
+        rating, _ = web_server.calculate_rating(35, 6.0, 5.2, settings)
+        self.assertEqual(rating, "Buy")
+
+    def test_speculative_buy_core_floor_default_and_filter_ui(self):
+        self.assertEqual(
+            web_server.DEFAULT_RATING_SETTINGS[web_server.RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR],
+            -0.5,
+        )
+        html = open(os.path.join(os.path.dirname(__file__), "static", "index.html"), encoding="utf-8").read()
+        js = open(os.path.join(os.path.dirname(__file__), "static", "app.js"), encoding="utf-8").read()
+        self.assertIn("config-rating-speculative-buy-min-core-diff-floor", html)
+        self.assertIn('value="speculative_buy"', html)
+        self.assertIn("Speculative Buy", js)
+
+
+class ScenarioProbabilityDriverWeightTests(unittest.TestCase):
+    def test_effective_potential_driver_weight_formula_and_cap(self):
+        weight_meta = web_server.calculate_effective_potential_driver_probability_weight([
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 5, "importance": 8},
+        ])
+        self.assertAlmostEqual(weight_meta["effective_potential_driver_probability_weight"], 0.10)
+        self.assertEqual(weight_meta["median_potential_confidence"], 5)
+        self.assertEqual(weight_meta["median_potential_importance"], 8)
+
+        capped = web_server.calculate_effective_potential_driver_probability_weight([
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 10, "importance": 10},
+        ])
+        self.assertAlmostEqual(capped["effective_potential_driver_probability_weight"], 0.25)
+
+        low_confidence = web_server.calculate_effective_potential_driver_probability_weight([
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 2.9, "importance": 10},
+        ])
+        self.assertEqual(low_confidence["effective_potential_driver_probability_weight"], 0.0)
+
+    def test_backend_probabilities_with_only_core_match_legacy_shape(self):
+        variables = [
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+        ]
+        details = web_server.compute_backend_probability_details(variables, 60.0, 35.0)
+        self.assertEqual(details["meta"]["effective_potential_driver_probability_weight"], 0.0)
+        self.assertEqual(details["meta"]["core_bull_score"], 80.0)
+        self.assertEqual(details["meta"]["core_bear_score"], 40.0)
+        self.assertAlmostEqual(details["probabilities"]["Bull"], 32.22)
+        self.assertAlmostEqual(details["probabilities"]["Bear"], 16.11)
+        self.assertAlmostEqual(details["probabilities"]["Base"], 51.67)
+
+    def test_missing_category_defaults_to_core_for_backend_probabilities(self):
+        categorized = web_server.compute_backend_probabilities([
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+        ], 60.0, 35.0)
+        legacy = web_server.compute_backend_probabilities([
+            {"variable_type": "Bullish", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Invalid", "confidence": 4, "importance": 10},
+        ], 60.0, 35.0)
+        self.assertEqual(legacy, categorized)
+
+    def test_potential_drivers_apply_adaptive_backend_weight(self):
+        details = web_server.compute_backend_probability_details([
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 5, "importance": 8},
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 5, "importance": 8},
+        ], 60.0, 35.0)
+        self.assertAlmostEqual(details["meta"]["effective_potential_driver_probability_weight"], 0.10)
+        self.assertAlmostEqual(details["meta"]["potential_bull_raw_score"], 80.0)
+        self.assertAlmostEqual(details["meta"]["potential_bull_weighted_score"], 8.0)
+        self.assertAlmostEqual(details["meta"]["bull_score"], 88.0)
+        core_only = web_server.compute_backend_probabilities([
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+        ], 60.0, 35.0)
+        self.assertGreater(details["probabilities"]["Bull"], core_only["Bull"])
+
+    def test_hybrid_mode_blends_ai_with_weighted_backend_probabilities(self):
+        backend = web_server.compute_backend_probabilities([
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4, "importance": 10},
+        ], 60.0, 35.0)
+        result = web_server.choose_final_probabilities(
+            {"Bear": 30.0, "Base": 40.0, "Bull": 30.0},
+            backend,
+            {"probability_source_mode": "hybrid", "hybrid_ai_weight": 0.7, "hybrid_backend_weight": 0.3},
+        )
+        expected = web_server.blend_probabilities({"Bear": 30.0, "Base": 40.0, "Bull": 30.0}, backend, 0.7, 0.3)
+        self.assertEqual(result["final_scenario_probabilities"], expected)
+
+    def test_default_build_scenarios_prompt_contains_phase3_guidance(self):
+        prompt = web_server.DEFAULT_PROMPT_SCENARIOS
+        self.assertIn("Core vs Potential Driver scenario treatment:", prompt)
+        self.assertIn("Core Drivers should dominate the Base case, normal execution assumptions, and the central business trajectory.", prompt)
+        self.assertIn("Potential Drivers should mainly affect Bull/Bear optionality and scenario range.", prompt)
+        self.assertIn("assumptions should be concise and reflect the 5-year business thesis behind the scenarios", prompt)
+
+
+class KeyVariableDriverCategoryTests(unittest.TestCase):
+    def test_save_key_variable_edits_preserves_driver_category_and_defaults_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = "2026-05-01T00:00:00+00:00"
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("NVDA", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'NVDA', 'NVIDIA', 100, 130, 5, 30, 6, 'assume', 'model', 'summary', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+                    conn.commit()
+
+                    detail = web_server.save_key_variable_edits(
+                        conn,
+                        "NVDA",
+                        version_id,
+                        [
+                            {"variable_text": "AI accelerator demand", "variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 9},
+                            {"variable_text": "New robotics optionality", "variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 4, "importance": 8},
+                            {"variable_text": "Export controls", "variable_type": "Bearish", "confidence": 5, "importance": 7},
+                        ],
+                    )
+
+                    saved = detail["saved_key_variable_edits"]["key_variables"]
+                    self.assertEqual(saved[0]["driver_category"], "Core Driver")
+                    self.assertEqual(saved[1]["driver_category"], "Potential Driver")
+                    self.assertEqual(saved[2]["driver_category"], "Core Driver")
+                finally:
+                    conn.close()
+
+    def test_import_key_variable_edits_replaces_saved_variables_with_strict_json_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = "2026-05-01T00:00:00+00:00"
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("NVDA", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'NVDA', 'NVIDIA', 100, 130, 5, 30, 6, 'assume', 'model', 'summary', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+                    conn.commit()
+
+                    web_server.save_key_variable_edits(
+                        conn,
+                        "NVDA",
+                        version_id,
+                        [{"variable_text": "Old driver", "variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 5, "importance": 5}],
+                    )
+                    detail = web_server.import_key_variable_edits(
+                        conn,
+                        "NVDA",
+                        version_id,
+                        {
+                            "symbol": "NVDA",
+                            "key_variables": [
+                                {"variable": "Imported core demand", "type": "Bullish", "driver_category": "Core Driver", "confidence": 8, "importance": 9},
+                                {"variable": "Imported optional risk", "type": "Bearish", "driver_category": "Potential Driver", "confidence": 4, "importance": 7},
+                            ],
+                        },
+                    )
+                    saved = detail["saved_key_variable_edits"]["key_variables"]
+                    self.assertEqual([item["variable_text"] for item in saved], ["Imported core demand", "Imported optional risk"])
+                    self.assertEqual(saved[1]["driver_category"], "Potential Driver")
+                    self.assertEqual(saved[1]["variable_type"], "Bearish")
+                finally:
+                    conn.close()
+
+    def test_import_key_variable_edits_allows_more_than_twenty_variables(self):
+        payload = {
+            "key_variables": [
+                {
+                    "variable": f"Imported driver {index}",
+                    "type": "Bullish" if index % 2 == 0 else "Bearish",
+                    "driver_category": "Core Driver" if index % 3 else "Potential Driver",
+                    "confidence": index % 11,
+                    "importance": (index + 1) % 11,
+                }
+                for index in range(25)
+            ]
+        }
+
+        normalized = web_server._normalize_imported_key_variables_payload(payload)
+
+        self.assertEqual(len(normalized), 25)
+        self.assertEqual(normalized[0]["variable_text"], "Imported driver 0")
+        self.assertEqual(normalized[0]["driver_category"], "Potential Driver")
+        self.assertEqual(normalized[-1]["variable_text"], "Imported driver 24")
+
+    def test_import_key_variable_edits_rejects_invalid_rows(self):
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "key_variables must be an array"):
+            web_server.import_key_variable_edits(None, "NVDA", 1, {"key_variables": "bad"})
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "key_variables must contain at least 1 item"):
+            web_server._normalize_imported_key_variables_payload({"key_variables": []})
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "Row 1: type must be Bullish or Bearish"):
+            web_server._normalize_imported_key_variables_payload({"key_variables": [{"variable": "Driver", "type": "bullish", "driver_category": "Core Driver", "confidence": 5, "importance": 5}]})
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "Row 1: driver_category must be Core Driver or Potential Driver"):
+            web_server._normalize_imported_key_variables_payload({"key_variables": [{"variable": "Driver", "type": "Bullish", "driver_category": "core driver", "confidence": 5, "importance": 5}]})
+        with self.assertRaisesRegex(web_server.AnalysisValidationError, "Row 1: confidence must be an integer from 0 to 10"):
+            web_server._normalize_imported_key_variables_payload({"key_variables": [{"variable": "Driver", "type": "Bullish", "driver_category": "Core Driver", "confidence": 5.5, "importance": 5}]})
+
+    def test_save_key_variable_edits_rejects_invalid_driver_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    with self.assertRaises(web_server.AnalysisValidationError):
+                        web_server.save_key_variable_edits(
+                            conn,
+                            "NVDA",
+                            1,
+                            [{"variable_text": "Driver", "variable_type": "Bullish", "driver_category": "Speculative", "confidence": 5, "importance": 5}],
+                        )
+                finally:
+                    conn.close()
+
+    def test_analysis_payloads_include_core_and_potential_confidence_breakdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = "2026-05-01T00:00:00+00:00"
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("NVDA", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'NVDA', 'NVIDIA', 100, 130, 5, 30, 6, 'assume', 'model', 'summary', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+                    conn.executemany(
+                        """
+                        INSERT INTO analysis_version_key_variables (
+                            analysis_version_id, variable_text, variable_type, driver_category, confidence, importance, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (version_id, "Core demand", "Bullish", "Core Driver", 8.0, 3.0, now),
+                            (version_id, "Core competition", "Bearish", "Core Driver", 6.0, 2.0, now),
+                            (version_id, "Emerging platform", "Bullish", "Potential Driver", 4.0, 4.0, now),
+                            (version_id, "Emerging risk", "Bearish", "Potential Driver", 3.0, 1.0, now),
+                        ],
+                    )
+                    conn.commit()
+
+                    analysis_row = web_server.list_analysis_symbols(conn)[0]
+                    self.assertEqual(analysis_row["core_bullish_confidence"], 8.0)
+                    self.assertEqual(analysis_row["core_bearish_confidence"], 6.0)
+                    self.assertEqual(analysis_row["core_confidence_diff"], 2.0)
+                    self.assertEqual(analysis_row["potential_bullish_confidence"], 4.0)
+                    self.assertEqual(analysis_row["potential_bearish_confidence"], 3.0)
+                    self.assertEqual(analysis_row["potential_confidence_diff"], 1.0)
+                    self.assertIn("confidence_diff", analysis_row)
+
+                    detail = web_server.get_analysis_detail(conn, "NVDA")
+                    version = detail["version"]
+                    self.assertEqual(version["core_confidence_diff"], 2.0)
+                    self.assertEqual(version["potential_confidence_diff"], 1.0)
+
+                    merged = web_server.merge_positions_with_latest_analysis(
+                        [{"symbol": "NVDA", "position": 1}],
+                        [analysis_row],
+                    )[0]
+                    self.assertEqual(merged["core_confidence_diff"], 2.0)
+                    self.assertEqual(merged["potential_confidence_diff"], 1.0)
+                finally:
+                    conn.close()
+
+    def test_old_key_variables_without_driver_category_are_treated_as_core_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = "2026-05-01T00:00:00+00:00"
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("MSFT", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'MSFT'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'MSFT', 'Microsoft', 100, 120, 4, 20, 6, 'assume', 'model', 'summary', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_version_key_variables (
+                            analysis_version_id, variable_text, variable_type, confidence, importance, created_at
+                        ) VALUES (?, 'Legacy demand', 'Bullish', 7.0, 2.0, ?)
+                        """,
+                        (version_id, now),
+                    )
+                    conn.commit()
+
+                    analysis_row = web_server.list_analysis_symbols(conn)[0]
+                    self.assertEqual(analysis_row["core_bullish_confidence"], 7.0)
+                    self.assertIsNone(analysis_row["potential_bullish_confidence"])
+                    self.assertIsNone(analysis_row["potential_confidence_diff"])
+                finally:
+                    conn.close()
+
+
 class RecentEventAlertEnhancementTests(unittest.TestCase):
     def _seed_analysis(self, conn, symbol='NVDA', created_at='2026-03-01T00:00:00+00:00'):
         now = created_at
@@ -810,6 +1266,7 @@ class AlertsUiStructureTests(unittest.TestCase):
     def test_alerts_filter_logic_is_frontend_driven(self):
         from pathlib import Path
         js = Path('static/app.js').read_text(encoding='utf-8')
+        css = Path('static/styles.css').read_text(encoding='utf-8')
         self.assertIn("let alertsStatusFilter = 'New';", js)
         self.assertIn('function getFilteredAlerts()', js)
         self.assertIn("alertsStatusFilterEl.addEventListener('change'", js)
@@ -847,11 +1304,193 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="alert-detail-open-analysis-btn"', html)
         self.assertIn('id="alert-detail-edit-vars-btn"', html)
         self.assertIn('id="alert-detail-rerun-btn"', html)
-        self.assertIn('data-sort-key="confidence_diff" class="sortable">Confidence</th>', html)
+        self.assertIn('id="analysis-import-variables-btn"', html)
+        self.assertIn('id="analysis-copy-key-vars-btn"', html)
+        self.assertIn('id="analysis-copy-review-prompt-btn"', html)
+        self.assertIn('Copy Key Variables JSON', html)
+        self.assertIn('Copy Review Prompt', html)
+        self.assertNotIn('Download Key Variables JSON', html)
+        self.assertIn('id="analysis-key-variable-import-modal"', html)
+        self.assertIn('id="analysis-key-variable-import-template-btn"', html)
+        self.assertIn('id="analysis-key-variable-import-save-btn"', html)
+        self.assertIn('data-sort-key="core_confidence_diff" class="sortable">Confidence</th>', html)
+        self.assertIn('data-sort-key="potential_confidence_diff" class="sortable">Potential Confidence</th>', html)
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        css = Path('static/styles.css').read_text(encoding='utf-8')
+        self.assertIn('<td>${formatPotentialConfidenceDisplay(item)}</td>', js)
+        self.assertIn('const potentialConfidenceValue = formatPotentialConfidenceDisplay(position);', js)
+        self.assertIn('function parseKeyVariableImportPayload()', js)
+        self.assertIn('function buildKeyVariablesCopyPayload()', js)
+        self.assertIn('function buildReviewPromptText()', js)
+        self.assertIn('function copyTextToClipboard(text)', js)
+        self.assertIn('navigator.clipboard?.writeText', js)
+        self.assertIn('document.execCommand', js)
+        self.assertIn('Copied key variables JSON to clipboard.', js)
+        self.assertIn('Copied review prompt to clipboard.', js)
+        self.assertIn('Review this company for BakingMoney.', js)
+        self.assertIn('Company data:', js)
+        self.assertIn('analysisCopyKeyVarsBtn.addEventListener', js)
+        self.assertIn('analysisCopyReviewPromptBtn.addEventListener', js)
+        self.assertNotIn('download-key-variables', js)
+        self.assertIn('/key-variables/import', js)
+        self.assertIn('This will replace the current key variables for this analysis version. Continue?', js)
         self.assertIn('data-sort-key="last_activity_at" class="sortable">Last Scenario/Event</th>', html)
         self.assertIn('data-sort-key="costBasis" class="sortable">Cost Value</th>', html)
         self.assertIn('id="tws-data-toggle"', html)
         self.assertIn('Data from TWS', html)
+        self.assertIn('data-view="action-plan"', html)
+        self.assertIn('id="action-plan-table"', html)
+        self.assertIn('id="action-plan-tab-actions"', html)
+        self.assertIn('id="action-plan-tab-buckets"', html)
+        self.assertIn('id="action-plan-buckets-panel"', html)
+        self.assertIn('id="action-plan-buckets-content"', html)
+        self.assertIn('Action Amount', html)
+        self.assertIn('Cash-like Available', js)
+        self.assertIn('Unallocated Target Capacity', js)
+        self.assertIn('id="positions-portfolio-summary"', html)
+        self.assertIn('id="config-action-cash-equivalent-symbols"', html)
+        self.assertIn('id="config-action-treat-cash-equivalents-as-cash"', html)
+        self.assertIn('Allocation Score Weights', html)
+        self.assertIn('id="config-action-allocation-upside-weight"', html)
+        self.assertIn('id="config-action-allocation-core-weight"', html)
+        self.assertIn('id="config-action-allocation-potential-weight"', html)
+        self.assertIn('id="config-action-allocation-risk-penalty-strength"', html)
+        self.assertIn('id="config-action-min-executable-trade-amount"', html)
+        self.assertIn('id="config-help-modal"', html)
+        self.assertIn('role="dialog"', html)
+        self.assertIn('aria-modal="true"', html)
+        self.assertIn('id="config-help-close-btn"', html)
+        self.assertIn('id="action-plan-detail-view"', html)
+        self.assertIn('id="action-plan-open-analysis-btn"', html)
+        self.assertIn('#action-plan-summary .status', css)
+        self.assertIn('#action-plan-actions-panel .table-wrap', css)
+        self.assertIn('overflow-x: auto;', css)
+        self.assertIn('min-width: 1900px;', css)
+        self.assertIn('table-layout: fixed;', css)
+        self.assertIn('#action-plan-table .target-gap-column', css)
+        self.assertIn('#action-plan-table .funding-column', css)
+        self.assertIn('min-width: 160px;', css)
+        self.assertIn('min-width: 280px;', css)
+        self.assertIn('max-width: 420px;', css)
+        self.assertIn('class="current-price-column"', html)
+        self.assertIn('class="target-band-column"', html)
+        self.assertIn('class="distance-column sortable" data-sort-key="distance_to_trigger_percent"', html)
+        self.assertIn('class="upside-column sortable" data-sort-key="upside"', html)
+        self.assertIn('class="core-confidence-column sortable" data-sort-key="core_confidence_diff"', html)
+        self.assertIn('class="potential-confidence-column sortable" data-sort-key="potential_confidence_diff"', html)
+        self.assertIn('class="current-weight-column sortable" data-sort-key="current_position_weight"', html)
+        self.assertIn('class="gap-column sortable" data-sort-key="position_gap_to_mid"', html)
+        self.assertIn('current-price-cell', js)
+        self.assertIn('distance-cell', js)
+        self.assertIn('target-band-cell', js)
+        self.assertIn('target-band-range', js)
+        self.assertIn('#action-plan-table .current-price-column', css)
+        self.assertIn('#action-plan-table .distance-column', css)
+        self.assertIn('#action-plan-table .target-band-column', css)
+        self.assertIn('#action-plan-table .target-band-range', css)
+        self.assertIn('min-width: 150px;', css)
+        self.assertIn('Open Full Analysis', html)
+        self.assertIn('id="action-plan-rating-filter"', html)
+        self.assertIn('id="action-plan-action-filter"', html)
+        self.assertIn('Action Filter', html)
+        self.assertIn('Starter Buy', html)
+        self.assertIn('data-action-plan-setting="action_bucket_buy_target"', html)
+        self.assertIn('async function loadActionPlan()', js)
+        self.assertIn('/api/action-plan', js)
+        self.assertIn('function getFilteredActionPlanItems()', js)
+        self.assertIn('function getActionPlanNumericSortValue(item, key)', js)
+        self.assertIn('function sortActionPlanItems(items)', js)
+        self.assertIn('const actionPlanSortHeaders = document.querySelectorAll', js)
+        self.assertIn('let actionPlanSort = { key: null, direction: ', js)
+        self.assertIn('updateActionPlanSortHeaderState(); renderActionPlan();', js)
+        self.assertIn('sortActionPlanItems(getFilteredActionPlanItems()).forEach', js)
+        self.assertIn('if (leftValue == null) return 1;', js)
+        self.assertIn('Weighted Count Used', js)
+        self.assertIn('Total Weighted Eligible Count', js)
+        self.assertIn('weighted_eligible_count_in_bucket', js)
+        self.assertIn('Bucket Weight / Effective Stock', js)
+        self.assertIn('Uncapped Bucket Target', js)
+        self.assertIn('effective_weighted_count_used', js)
+        self.assertIn('Max Effective Count', js)
+        self.assertIn('action-plan-bucket-diagnostic', css)
+        self.assertIn('function renderActionPlanBuckets()', js)
+        self.assertIn('function renderActionPlanBucketPanel(bucket)', js)
+        self.assertIn('function renderActionPlanBucketCompanyTable(rows, bucket)', js)
+        self.assertIn('function setActionPlanTab(tab)', js)
+        self.assertIn('function setActionPlanActionMode(mode)', js)
+        self.assertIn('function renderLinearAllocationRows()', js)
+        self.assertIn("actionPlanTabBucketsBtn.addEventListener('click'", js)
+        self.assertIn('Cash / Unallocated', js)
+        self.assertIn('Bucket Reconciliation', js)
+        self.assertIn('Allocation Score', js)
+        self.assertIn('Allocation Risk Modifier', js)
+        self.assertIn('Allocation Upside Weight Used', js)
+        self.assertIn('Allocation Core Weight Used', js)
+        self.assertIn('Allocation Potential Weight Used', js)
+        self.assertIn('Allocation Risk Penalty Strength', js)
+        self.assertIn('const CONFIG_HELP = {};', js)
+        self.assertIn('function initializeConfigHelpIcons()', js)
+        self.assertIn('function openConfigHelpModal(key, label, triggerEl)', js)
+        self.assertIn('function closeConfigHelpModal()', js)
+        self.assertIn('Show help for ${label}', js)
+        self.assertIn('Weighted Count = clamp((Bucket Sizing Score - Min Score) / (Full Score - Min Score), 0, Max Contribution)', js)
+        self.assertIn('Uncapped Bucket Target = Weighted Count Used × Weight / Effective Stock', js)
+        self.assertIn('.config-help-button', css)
+        self.assertIn('.config-help-modal-content', css)
+        self.assertIn('.config-help-related', css)
+        self.assertIn("{ label: 'Symbol', sortable: false }", js)
+        self.assertIn("{ label: 'Action', sortable: false }", js)
+        self.assertIn('class="sortable action-plan-bucket-sortable"', js)
+        self.assertIn("{ label: 'Current Weight', key: 'current_weight', sortable: true }", js)
+        self.assertIn("{ label: 'Target Mid', key: 'target_mid', sortable: true }", js)
+        self.assertIn("{ label: 'Target Band', key: 'target_band', sortable: true }", js)
+        self.assertIn("{ label: 'Gap to Mid', key: 'gap_to_mid', sortable: true }", js)
+        self.assertIn("{ label: 'Target Gap', key: 'target_gap_amount', sortable: true }", js)
+        self.assertIn("{ label: 'Market Value', key: 'market_value', sortable: true }", js)
+        self.assertIn("{ label: 'Core Confidence', key: 'core_confidence_diff', sortable: true }", js)
+        self.assertIn("{ label: 'Potential Confidence', key: 'potential_confidence_diff', sortable: true }", js)
+        self.assertIn("{ label: 'Allocation Score', key: 'allocation_score', sortable: true }", js)
+        self.assertIn("{ label: 'Bucket Sizing Score', key: 'bucket_sizing_score', sortable: true }", js)
+        self.assertIn("{ label: 'Target Mid Before Caps', key: 'target_mid_before_caps', sortable: true }", js)
+        self.assertIn('function sortActionPlanBucketRows(bucket, rows)', js)
+        self.assertIn('function getActionPlanBucketSortValue(item, key)', js)
+        self.assertIn("actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-sortable')", js)
+        self.assertNotIn('<th>Company Name</th><th>Action</th>', js)
+        self.assertNotIn('<th>Bucket Sizing Score</th><th>Weighted Count</th><th>Target Mid Before Caps</th>', js)
+        self.assertIn('Available Buy Budget', js)
+        self.assertIn('Total Add Demand', js)
+        self.assertIn('Funded Add Amount', js)
+        self.assertIn('Funding Status', js)
+        self.assertIn('executable_action_amount', js)
+        self.assertIn('target_gap_amount', js)
+        self.assertIn('Bucket Sizing Score', js)
+        self.assertIn('Target Mid Before Caps', js)
+        self.assertNotIn('<th>Target Mid Before Caps</th><th>Target Mid After Caps</th><th>Cap Reason</th>', js)
+        self.assertIn('function openActionPlanDetail(symbol)', js)
+        self.assertIn('/api/action-plan/${encodeURIComponent(symbol)}', js)
+        self.assertIn('function renderActionPlanDetail(item)', js)
+        self.assertIn('function formatTriggerDistanceLabel(item)', js)
+        self.assertIn('function isHoldInsideTargetWithoutActiveTrigger(item)', js)
+        self.assertIn('function formatRelevantTriggerPrice(item)', js)
+        self.assertIn('function formatDynamicRequiredUpside(item)', js)
+        self.assertIn("['Trigger Price', formatRelevantTriggerPrice(item)]", js)
+        self.assertIn("['Distance to Trigger', formatTriggerDistanceLabel(item)]", js)
+        self.assertIn("['Relevant Trigger', formatRelevantTriggerPrice(item)]", js)
+        self.assertIn("['Dynamic Required Upside', formatDynamicRequiredUpside(item)]", js)
+        self.assertIn('No active trigger', js)
+        self.assertIn('Position inside target band', js)
+        self.assertIn('Not applicable', js)
+        self.assertIn('action_amount_label', js)
+        self.assertIn('setSelectedActionPlanRatings(getAllRatingFilterKeys())', js)
+        self.assertIn('setSelectedActionPlanActions(getAllActionPlanActionFilterKeys())', js)
+        self.assertIn('selectedActions.has(ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL[item.action', js)
+        self.assertIn('openActionPlanDetail(btn.dataset.symbol)', js)
+        self.assertIn("openAnalysisDetailForSymbol(selectedActionPlanDetail.symbol, { origin: 'action_plan' })", js)
+        self.assertIn("analysisDetailOrigin === 'action_plan'", js)
+        self.assertIn('← Back to Action Plan', js)
+        self.assertIn("setView('action-plan', { skipLoad: true })", js)
+        self.assertIn('.action-plan-bucket-table', css)
+        self.assertIn('.action-plan-tabs', css)
 
     def test_tws_data_toggle_is_wired_in_frontend(self):
         from pathlib import Path
@@ -859,6 +1498,12 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("const twsDataToggleEl = document.getElementById('tws-data-toggle');", js)
         self.assertIn('async function updateTwsDataToggle(enabled)', js)
         self.assertIn("twsDataToggleEl.addEventListener('change'", js)
+        self.assertIn('function shouldRetryTwsPositionsRefresh(payload)', js)
+        self.assertIn('function shouldRetryTwsAnalysisPriceRefresh(payload)', js)
+        self.assertIn("Connecting to TWS… retrying refresh once.", js)
+        self.assertIn("Connecting to TWS… retrying price refresh once.", js)
+        self.assertIn('refreshBtn.disabled = true;', js)
+        self.assertIn('analysisRefreshPricesBtn.disabled = true;', js)
         self.assertIn("alertDetailOpenAnalysisBtn.addEventListener('click'", js)
 
     def test_alerts_affected_variables_column_has_wrap_style(self):
@@ -878,7 +1523,8 @@ class AlertsUiStructureTests(unittest.TestCase):
             'data-sort-key="symbol" class="sortable">Symbol</th>',
             'data-sort-key="rating" class="sortable">Rating</th>',
             'data-sort-key="upside" class="sortable">Upside</th>',
-            'data-sort-key="confidence_diff" class="sortable">Confidence</th>',
+            'data-sort-key="core_confidence_diff" class="sortable">Confidence</th>',
+            'data-sort-key="potential_confidence_diff" class="sortable">Potential Confidence</th>',
             'data-sort-key="marketValue" class="sortable">Market Value</th>',
             'data-sort-key="costBasis" class="sortable">Cost Value</th>',
             'data-sort-key="unrealizedPnL" class="sortable">Unrealized P&amp;L</th>',
@@ -904,8 +1550,65 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="earnings-review-add-btn"', html)
         self.assertIn('id="earnings-review-tab-workflow"', html)
         self.assertIn('id="earnings-review-tab-calendar"', html)
+        self.assertIn('id="earnings-review-tab-workflow" class="earnings-review-tab"', html)
+        self.assertIn('id="earnings-review-tab-calendar" class="earnings-review-tab active"', html)
+        self.assertIn('id="earnings-review-workflow-panel" class="hidden"', html)
+        self.assertIn('id="earnings-review-calendar-panel" class="analysis-screen"', html)
         self.assertIn('id="earnings-calendar-table"', html)
         self.assertIn('id="earnings-calendar-status"', html)
+        self.assertIn('id="earnings-calendar-fiscal-year-filter"', html)
+        self.assertIn('id="earnings-calendar-fiscal-quarter-filter"', html)
+        self.assertIn('Fiscal Year Filter', html)
+        self.assertIn('Fiscal Quarter Filter', html)
+        self.assertIn('value="Q1" /> <span class="rating-filter-option-label">Q1</span>', html)
+        self.assertIn('value="Q4" /> <span class="rating-filter-option-label">Q4</span>', html)
+        self.assertIn('value="past" /> <span class="rating-filter-option-label">Past</span>', html)
+        self.assertIn('value="yesterday" /> <span class="rating-filter-option-label">Yesterday</span>', html)
+        self.assertIn('value="today" /> <span class="rating-filter-option-label">Today</span>', html)
+        self.assertIn('value="tomorrow" /> <span class="rating-filter-option-label">Tomorrow</span>', html)
+        self.assertIn('value="future" /> <span class="rating-filter-option-label">Future</span>', html)
+        self.assertLess(html.index('value="past"'), html.index('value="yesterday"'))
+        self.assertLess(html.index('value="yesterday"'), html.index('value="today"'))
+        self.assertLess(html.index('value="today"'), html.index('value="tomorrow"'))
+        self.assertLess(html.index('value="tomorrow"'), html.index('value="future"'))
+        css = Path('static/styles.css').read_text(encoding='utf-8')
+        self.assertIn('#earnings-calendar-date-filter .rating-filter-panel', css)
+        self.assertIn('width: min(280px, calc(100vw - 48px));', css)
+        self.assertIn('min-width: min(260px, calc(100vw - 48px));', css)
+        self.assertIn('padding: 12px;', css)
+        self.assertIn('#earnings-calendar-date-filter .rating-filter-option,', css)
+        self.assertIn('.earnings-calendar-multiselect .rating-filter-option {', css)
+        self.assertIn('display: flex;', css)
+        self.assertIn('justify-content: flex-start;', css)
+        self.assertIn('gap: 10px;', css)
+        self.assertIn('#earnings-calendar-date-filter .rating-filter-option-label', css)
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn("{ key: 'yesterday', label: 'Yesterday' }", js)
+        self.assertIn("{ key: 'tomorrow', label: 'Tomorrow' }", js)
+        self.assertIn("let earningsReviewActiveTab = 'calendar';", js)
+        self.assertIn("setEarningsReviewTab('calendar');\n    loadEarningsReview();", js)
+        self.assertIn("setEarningsReviewTab('calendar');\nsetPositionsRatingFilterOpen(false);", js)
+        self.assertIn('function releaseDateMatchesEarningsCalendarDateFilters(releaseDateValue, today, selectedDateFilters)', js)
+        self.assertIn('function getAvailableEarningsCalendarFiscalYears()', js)
+        self.assertIn('function getCurrentCalendarYear()', js)
+        self.assertIn('function getCurrentCalendarQuarter()', js)
+        self.assertIn('let earningsCalendarAddFormDefaultsApplied = false;', js)
+        self.assertIn('function resetEarningsCalendarAddFormDefaults()', js)
+        self.assertIn('function applyEarningsCalendarEntryDefaults({ force = false } = {})', js)
+        self.assertIn('Math.floor(month / 3) + 1', js)
+        self.assertIn('resetEarningsCalendarAddFormDefaults();', js)
+        self.assertIn('earningsCalendarAddFormDefaultsApplied = true;', js)
+        self.assertIn('applyEarningsCalendarEntryDefaults({ force: true });', js)
+        self.assertIn('applyEarningsCalendarEntryDefaults();', js)
+        self.assertIn('getSelectedEarningsCalendarFiscalYears()', js)
+        self.assertIn('getSelectedEarningsCalendarFiscalQuarters()', js)
+        self.assertIn('hasSpecificYearFilter', js)
+        self.assertIn('hasSpecificQuarterFilter', js)
+        self.assertIn('syncEarningsCalendarFiscalYearFilterOptions();', js)
+        self.assertIn("if (selectedDateFilters.has('past') && releaseTime < todayTime) return true;", js)
+        self.assertIn("if (selectedDateFilters.has('yesterday') && releaseTime === yesterday.getTime()) return true;", js)
+        self.assertIn("if (selectedDateFilters.has('tomorrow') && releaseTime === tomorrow.getTime()) return true;", js)
+        self.assertIn("if (selectedDateFilters.has('future') && releaseTime > todayTime) return true;", js)
         self.assertIn('<th>Portfolio</th>', html)
         self.assertIn('<th>Latest Quarter</th>', html)
         self.assertIn('id="earnings-review-document-type"', html)
@@ -918,6 +1621,26 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('<th>Delete</th>', html)
         self.assertLess(html.index('<h4>Earnings Documents</h4>'), html.index('<h4>Key Variables Snapshot</h4>'))
         self.assertIn('id="prompt-earnings-watchpoint-analysis"', html)
+
+    def test_external_scenario_create_prefills_notes_with_local_date_without_overwriting_edits(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn('function formatLocalDateForExternalScenarioNotes(dateValue = new Date())', js)
+        self.assertIn(
+            "analysisExternalScenarioNotesEl.value = item ? (item.source_notes || '') : formatLocalDateForExternalScenarioNotes();",
+            js,
+        )
+        self.assertIn("{ name: 'Bear', price_low: 80, price_high: 100, probability: 25 }", js)
+        self.assertNotIn("{ name: 'Bear', price_low: 80, price_high: 100, cagr_low", js)
+
+    def test_external_scenario_bakingmoney_tab_is_not_forced_back_to_final(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        html = Path('static/index.html').read_text(encoding='utf-8')
+        self.assertIn('data-scenario-tab="bakingmoney"', html)
+        self.assertIn("button.addEventListener('click', () => setScenarioOverlayTab(button.dataset.scenarioTab));", js)
+        self.assertIn("analysisBakingMoneyScenarioPanelEl.classList.toggle('hidden', hasExternal && activeScenarioOverlayTab !== 'bakingmoney');", js)
+        self.assertNotIn("activeScenarioOverlayTab === 'bakingmoney') activeScenarioOverlayTab = 'final'", js)
 
     def test_earnings_review_navigation_uses_view_state_and_hash(self):
         from pathlib import Path
@@ -1132,7 +1855,7 @@ class EarningsReviewTests(unittest.TestCase):
                 finally:
                     conn.close()
 
-    def test_earnings_release_calendar_rows_cover_all_analysis_symbols_and_persist_schedule(self):
+    def test_earnings_release_calendar_uses_standalone_entries_with_analysis_enrichment(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")
             with mock.patch.object(web_server, "DB_PATH", db_path):
@@ -1140,7 +1863,6 @@ class EarningsReviewTests(unittest.TestCase):
                 conn = web_server.get_db_connection()
                 try:
                     self._seed_analysis(conn, symbol="MSFT")
-                    self._seed_analysis(conn, symbol="NVDA")
                     conn.execute(
                         """
                         INSERT INTO positions_cache (
@@ -1151,45 +1873,202 @@ class EarningsReviewTests(unittest.TestCase):
                         ("MSFT", 5, 110, 100, 1.0, 550, 50, 5, "USD", web_server.utc_now_iso()),
                     )
                     conn.commit()
-                    before = web_server.list_earnings_release_calendar(conn)
-                    self.assertEqual({item["symbol"] for item in before}, {"MSFT", "NVDA"})
-                    msft_before = next(item for item in before if item["symbol"] == "MSFT")
-                    self.assertTrue(msft_before["in_portfolio"])
-                    self.assertIsNone(msft_before["release_date"])
-                    saved = web_server.save_earnings_release_schedule(
+                    self.assertEqual(web_server.list_earnings_release_calendar(conn), [])
+
+                    first = web_server.create_earnings_calendar_entry(
                         conn,
                         "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q1",
                         release_date="2026-05-07",
                         release_timing="After Close",
                     )
-                    self.assertEqual(saved["symbol"], "MSFT")
+                    second = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q2",
+                        release_date="2026-08-06",
+                        release_timing="Before Open",
+                    )
+
+                    self.assertNotEqual(first["id"], second["id"])
                     after = web_server.list_earnings_release_calendar(conn)
-                    msft_after = next(item for item in after if item["symbol"] == "MSFT")
-                    self.assertEqual(msft_after["release_date"], "2026-05-07")
-                    self.assertEqual(msft_after["release_timing"], "After Close")
+                    self.assertEqual(len(after), 2)
+                    self.assertEqual({(item["symbol"], item["fiscal_year"], item["fiscal_quarter"]) for item in after}, {("MSFT", 2026, "Q1"), ("MSFT", 2026, "Q2")})
+                    q1 = next(item for item in after if item["fiscal_quarter"] == "Q1")
+                    self.assertTrue(q1["has_analysis"])
+                    self.assertTrue(q1["in_portfolio"])
+                    self.assertTrue(q1["inPortfolio"])
+                    self.assertEqual(q1["release_date"], "2026-05-07")
+                    self.assertEqual(q1["release_timing"], "After Close")
+                    self.assertIsNotNone(q1["rating"])
                 finally:
                     conn.close()
 
-    def test_earnings_release_calendar_symbol_can_be_removed_without_deleting_analysis(self):
+    def test_init_db_backfills_legacy_calendar_rows_as_2026_q1_idempotently(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")
             with mock.patch.object(web_server, "DB_PATH", db_path):
                 web_server.init_db()
                 conn = web_server.get_db_connection()
                 try:
+                    self._seed_analysis(conn, symbol="MSFT")
+                    self._seed_analysis(conn, symbol="NVDA")
                     self._seed_analysis(conn, symbol="SHOP")
-                    self._seed_analysis(conn, symbol="ADBE")
-                    before = web_server.list_earnings_release_calendar(conn)
-                    self.assertEqual({item["symbol"] for item in before}, {"SHOP", "ADBE"})
-                    result = web_server.remove_earnings_release_calendar_symbol(conn, "SHOP")
+                    now = web_server.utc_now_iso()
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_release_schedule (symbol, release_date, release_timing, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("MSFT", "2026-05-07", "After Close", "2026-01-01T00:00:00+00:00", "2026-01-02T00:00:00+00:00"),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO earnings_release_calendar_exclusions (symbol, created_at)
+                        VALUES (?, ?)
+                        """,
+                        ("SHOP", now),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    rows = web_server.list_earnings_release_calendar(conn)
+                    self.assertEqual({item["symbol"] for item in rows}, {"MSFT", "NVDA"})
+                    self.assertTrue(all(item["fiscal_year"] == 2026 for item in rows))
+                    self.assertTrue(all(item["fiscal_quarter"] == "Q1" for item in rows))
+                    msft = next(item for item in rows if item["symbol"] == "MSFT")
+                    nvda = next(item for item in rows if item["symbol"] == "NVDA")
+                    self.assertEqual(msft["release_date"], "2026-05-07")
+                    self.assertEqual(msft["release_timing"], "After Close")
+                    self.assertIsNone(nvda["release_date"])
+                    self.assertIsNone(nvda["release_timing"])
+
+                    web_server.init_db()
+                    duplicate_count = conn.execute(
+                        """
+                        SELECT COUNT(*) AS c
+                        FROM earnings_calendar_entries
+                        WHERE fiscal_year = 2026 AND fiscal_quarter = 'Q1'
+                        """
+                    ).fetchone()["c"]
+                    self.assertEqual(duplicate_count, 2)
+                finally:
+                    conn.close()
+
+    def test_analysis_and_positions_payload_include_latest_release_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="MSFT")
+                    web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q1",
+                        release_date="2026-04-20",
+                    )
+                    web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q2",
+                        release_date="2026-07-25",
+                    )
+
+                    analysis_row = next(item for item in web_server.list_analysis_symbols(conn) if item["symbol"] == "MSFT")
+                    self.assertEqual(analysis_row["latest_release_date"], "2026-07-25")
+
+                    payload = web_server.build_positions_payload(
+                        conn,
+                        [{"symbol": "MSFT", "position": 5, "avgCost": 100}],
+                        data_source="test",
+                    )
+                    self.assertEqual(payload["positions"][0]["latest_release_date"], "2026-07-25")
+                finally:
+                    conn.close()
+
+    def test_analysis_detail_includes_sorted_earnings_release_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self._seed_analysis(conn, symbol="MSFT")
+                    older = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q1",
+                        release_date="2026-04-20",
+                        release_timing="After Close",
+                    )
+                    latest = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q2",
+                        release_date="2026-07-25",
+                        release_timing="Before Open",
+                    )
+                    no_date = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "MSFT",
+                        fiscal_year=2026,
+                        fiscal_quarter="Q3",
+                    )
+
+                    detail = web_server.get_analysis_detail(conn, "MSFT")
+                    history = detail["release_history"]
+                    self.assertEqual([entry["id"] for entry in history], [latest["id"], older["id"], no_date["id"]])
+                    self.assertEqual(history[0]["release_date"], "2026-07-25")
+                    self.assertEqual(history[0]["fiscal_quarter"], "Q2")
+                    self.assertEqual(history[0]["release_timing"], "Before Open")
+                finally:
+                    conn.close()
+
+    def test_earnings_release_calendar_entry_can_exist_without_analysis_and_be_updated_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    created = web_server.create_earnings_calendar_entry(
+                        conn,
+                        "ABCD",
+                        fiscal_year=2027,
+                        fiscal_quarter="Q3",
+                    )
+                    item = web_server.list_earnings_release_calendar(conn)[0]
+                    self.assertEqual(item["symbol"], "ABCD")
+                    self.assertIsNone(item["company_name"])
+                    self.assertFalse(item["has_analysis"])
+                    self.assertFalse(item["in_portfolio"])
+
+                    updated = web_server.update_earnings_calendar_entry(
+                        conn,
+                        created["id"],
+                        fiscal_year=2027,
+                        fiscal_quarter="Q4",
+                        release_date="2027-11-01",
+                        release_timing="Before Open",
+                    )
+                    self.assertEqual(updated["fiscal_quarter"], "Q4")
+                    self.assertEqual(updated["release_date"], "2027-11-01")
+
+                    result = web_server.delete_earnings_calendar_entry(conn, created["id"])
                     self.assertTrue(result["removed"])
-                    after = web_server.list_earnings_release_calendar(conn)
-                    self.assertEqual({item["symbol"] for item in after}, {"ADBE"})
-                    analysis_row = conn.execute(
-                        "SELECT symbol FROM analysis_roots WHERE symbol = ?",
-                        ("SHOP",),
-                    ).fetchone()
-                    self.assertIsNotNone(analysis_row)
+                    self.assertEqual(web_server.list_earnings_release_calendar(conn), [])
                 finally:
                     conn.close()
 
@@ -1598,3 +2477,715 @@ class EarningsReviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class ActionPlanFeatureTests(unittest.TestCase):
+    def test_build_action_plan_uses_effective_analysis_and_cached_positions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    analysis = [
+                        {
+                            "symbol": "BUY",
+                            "company_name": "Buy Co",
+                            "rating": "Buy",
+                            "current_price": 50.0,
+                            "expected_price": 100.0,
+                            "expected_cagr": 14.9,
+                            "upside": 100.0,
+                            "core_confidence_diff": 1.5,
+                            "core_bullish_confidence": 7.0,
+                            "core_bearish_confidence": 3.0,
+                            "potential_confidence_diff": 0.5,
+                            "potential_bullish_confidence": 5.0,
+                            "potential_bearish_confidence": 4.5,
+                            "uses_final_scenario_overlay": True,
+                            "final_scenario_stale": False,
+                        },
+                        {
+                            "symbol": "SELL",
+                            "company_name": "Sell Co",
+                            "rating": "Sell",
+                            "current_price": 20.0,
+                            "expected_price": 18.0,
+                            "expected_cagr": -2.0,
+                            "upside": -10.0,
+                            "core_confidence_diff": -1.0,
+                            "core_bullish_confidence": 3.0,
+                            "core_bearish_confidence": 6.0,
+                            "potential_confidence_diff": None,
+                            "potential_bullish_confidence": None,
+                            "potential_bearish_confidence": None,
+                            "final_scenario_stale": False,
+                        },
+                    ]
+                    positions = [{"symbol": "SELL", "position": 10, "marketValue": 1000.0}]
+                    with mock.patch.object(web_server, "list_analysis_symbols", return_value=analysis), \
+                         mock.patch.object(web_server, "load_positions_cache", return_value=positions):
+                        payload = web_server.build_action_plan(conn)
+                    rows = {row["symbol"]: row for row in payload["action_plan"]}
+                    self.assertEqual(rows["BUY"]["action"], "Strong Add")
+                    self.assertEqual(rows["BUY"]["current_position_weight"], 0.0)
+                    self.assertGreater(rows["BUY"]["target_weight_mid"], 0)
+                    self.assertLess(rows["BUY"]["target_weight_low"], rows["BUY"]["target_weight_mid"])
+                    self.assertGreater(rows["BUY"]["target_weight_high"], rows["BUY"]["target_weight_mid"])
+                    self.assertAlmostEqual(rows["BUY"]["target_weight_low"], rows["BUY"]["target_weight_mid"] * 0.8)
+                    self.assertAlmostEqual(rows["BUY"]["target_weight_high"], rows["BUY"]["target_weight_mid"] * 1.2)
+                    self.assertEqual(rows["BUY"]["action_amount_direction"], "add")
+                    self.assertIn("target_gap_amount", rows["BUY"])
+                    self.assertIn("executable_action_amount", rows["BUY"])
+                    self.assertIn("funding_status", rows["BUY"])
+                    self.assertLessEqual(rows["BUY"]["executable_action_amount"], rows["BUY"]["target_gap_amount"])
+                    self.assertIn("target_weight_breakdown", rows["BUY"])
+                    self.assertIn("weighted_eligible_count_in_bucket", rows["BUY"]["target_weight_breakdown"])
+                    self.assertIn("company_allocation_score", rows["BUY"])
+                    self.assertIn("weighted_count", rows["BUY"])
+                    self.assertIn("bucket_sizing_score", rows["BUY"])
+                    self.assertIn("bucket_sizing_risk_modifier", rows["BUY"])
+                    self.assertNotEqual(rows["BUY"]["weighted_count"], rows["BUY"]["company_allocation_score"])
+                    self.assertNotEqual(rows["BUY"]["bucket_sizing_score"], rows["BUY"]["company_allocation_score"])
+                    self.assertAlmostEqual(rows["BUY"]["allocation_upside_weight_used"], 0.6)
+                    self.assertAlmostEqual(rows["BUY"]["allocation_core_weight_used"], 0.3)
+                    self.assertAlmostEqual(rows["BUY"]["allocation_potential_weight_used"], 0.1)
+                    self.assertAlmostEqual(rows["BUY"]["allocation_risk_penalty_strength"], 0.6)
+                    self.assertAlmostEqual(rows["BUY"]["allocation_risk_modifier"], 1.0)
+                    expected_allocation_score = (
+                        rows["BUY"]["upside_score"] * 0.6
+                        + rows["BUY"]["core_conviction_score"] * 0.3
+                        + rows["BUY"]["potential_conviction_score"] * 0.1
+                    ) * rows["BUY"]["allocation_risk_modifier"]
+                    self.assertAlmostEqual(rows["BUY"]["company_allocation_score"], expected_allocation_score)
+                    self.assertAlmostEqual(
+                        rows["BUY"]["target_weight_breakdown"]["weighted_eligible_count_in_bucket"],
+                        buy_weighted_count := rows["BUY"]["weighted_count"],
+                    )
+                    self.assertGreater(buy_weighted_count, 0)
+                    self.assertEqual(rows["BUY"]["potential_bonus_weight"], 0.0)
+                    self.assertGreater(rows["BUY"]["potential_score_component"], 0)
+                    self.assertIn("allocation_risk_modifier", rows["BUY"]["score_breakdown"])
+                    self.assertIn("allocation_upside_weight_used", rows["BUY"]["score_breakdown"])
+                    self.assertIn("bucket_sizing_score", rows["BUY"]["score_breakdown"])
+                    self.assertIn("allocation_risk_modifier", rows["BUY"]["target_weight_breakdown"])
+                    self.assertIn("bucket_sizing_score", rows["BUY"]["target_weight_breakdown"])
+                    buy_target_breakdown = rows["BUY"]["target_weight_breakdown"]
+                    self.assertEqual(
+                        buy_target_breakdown["bucket_weight_per_effective_stock"],
+                        web_server.ACTION_PLAN_DEFAULT_SETTINGS["action_buy_weight_per_effective_stock"],
+                    )
+                    self.assertEqual(
+                        buy_target_breakdown["max_effective_count"],
+                        web_server.ACTION_PLAN_DEFAULT_SETTINGS["action_buy_max_effective_count"],
+                    )
+                    self.assertEqual(
+                        buy_target_breakdown["max_bucket_target"],
+                        web_server.ACTION_PLAN_DEFAULT_SETTINGS["action_buy_max_bucket_target"],
+                    )
+                    self.assertAlmostEqual(
+                        buy_target_breakdown["effective_weighted_count_used"],
+                        min(
+                            buy_target_breakdown["weighted_eligible_count_in_bucket"],
+                            buy_target_breakdown["max_effective_count"],
+                        ),
+                    )
+                    self.assertIn("trigger_breakdown", rows["BUY"])
+                    buy_triggers = rows["BUY"]["trigger_breakdown"]
+                    self.assertEqual(rows["BUY"].get("position_status"), "BELOW_TARGET")
+                    self.assertEqual(buy_triggers["relevant_trigger_type"], "strong_add")
+                    self.assertIn("allocation-aware Strong Add trigger", rows["BUY"]["reason"])
+                    self.assertNotEqual(buy_triggers["strong_add_trigger_price"], buy_triggers["add_trigger_price"])
+                    self.assertNotEqual(buy_triggers["add_trigger_price"], buy_triggers["starter_buy_trigger_price"])
+                    self.assertIn("Price is", buy_triggers["distance_to_relevant_trigger_label"])
+                    self.assertIn("decision_path", rows["BUY"])
+                    self.assertEqual(rows["SELL"]["action"], "Sell")
+                    self.assertEqual(rows["SELL"]["current_position_weight"], 100.0)
+                    self.assertEqual(rows["SELL"]["action_amount_direction"], "sell")
+                    self.assertEqual(rows["SELL"]["executable_action_amount"], 1000.0)
+                    self.assertEqual(rows["SELL"]["action_amount"], 1000.0)
+                    self.assertEqual(rows["SELL"]["funding_status"], "Generates proceeds")
+                    self.assertIn("Sell about", rows["SELL"]["action_amount_label"])
+                    self.assertIn("linear_action_plan", payload)
+                    linear_rows = {row["symbol"]: row for row in payload["linear_action_plan"]}
+                    self.assertIn("BUY", linear_rows)
+                    self.assertIn("linear_allocation_score", linear_rows["BUY"])
+                    self.assertIn("linear_target_weight_mid", linear_rows["BUY"])
+                    self.assertEqual(linear_rows["BUY"].get("mode"), "linear")
+                    linear_summary = payload["summary"].get("linear_summary")
+                    self.assertIsInstance(linear_summary, dict)
+                    self.assertIn("linear_allocated_target_total", linear_summary)
+                    self.assertLessEqual(
+                        sum(row["executable_action_amount"] for row in payload["linear_action_plan"] if row.get("action_amount_direction") == "add"),
+                        linear_summary["available_buy_budget"] + 1e-6,
+                    )
+                    self.assertEqual(payload["summary"]["total_portfolio_value"], 1000.0)
+                    buy_bucket = next(item for item in payload["summary"]["bucket_summary"] if item["bucket"] == "Buy")
+                    self.assertIn("weighted_eligible_count", buy_bucket)
+                    self.assertIn("weighted_count_used", buy_bucket)
+                    self.assertIn("max_effective_count", buy_bucket)
+                    self.assertIn("bucket_weight_per_effective_stock", buy_bucket)
+                    self.assertIn("uncapped_bucket_target", buy_bucket)
+                    self.assertIn("bucket_max_target", buy_bucket)
+                    self.assertGreater(buy_bucket["weighted_eligible_count"], 0)
+                    self.assertAlmostEqual(
+                        buy_bucket["weighted_count_used"],
+                        min(buy_bucket["weighted_eligible_count"], buy_bucket["max_effective_count"]),
+                    )
+                    self.assertAlmostEqual(
+                        buy_bucket["uncapped_bucket_target"],
+                        buy_bucket["weighted_count_used"] * buy_bucket["bucket_weight_per_effective_stock"],
+                    )
+                    self.assertIn("raw_target", buy_bucket)
+                    self.assertIn("effective_target", buy_bucket)
+                    self.assertIn("allocated_before_caps", buy_bucket)
+                    self.assertIn("allocated_after_caps", buy_bucket)
+                    self.assertIn("post_cap_unallocated", buy_bucket)
+                    self.assertIn("status", buy_bucket)
+                    self.assertIn("available_buy_budget", payload["summary"])
+                    self.assertIn("total_add_demand", payload["summary"])
+                    self.assertIn("funded_add_amount", payload["summary"])
+                    self.assertIn("unfunded_add_demand", payload["summary"])
+                    self.assertIn("executable_sell_trim_proceeds", payload["summary"])
+                    self.assertIn("minimum_cash_reserve_amount", payload["summary"])
+                    funded_add_total = sum(row["executable_action_amount"] for row in rows.values() if row["action_amount_direction"] == "add")
+                    self.assertLessEqual(funded_add_total, payload["summary"]["available_buy_budget"] + 1e-6)
+                    self.assertIn("raw_equity_target", payload["summary"])
+                    self.assertIn("effective_equity_target", payload["summary"])
+                    self.assertIn("cash_unallocated_target", payload["summary"])
+                    self.assertIn("final_allocated_stock_target", payload["summary"])
+                    self.assertIn("total_effective_bucket_target", payload["summary"])
+                    self.assertAlmostEqual(payload["summary"]["total_effective_bucket_target"], 100.0)
+                    self.assertTrue(payload["summary"]["dynamic_bucket_sizing_enabled"])
+                finally:
+                    conn.close()
+
+    def test_ibkr_account_summary_prefers_usd_ledger_cash(self):
+        summary_items = [
+            types.SimpleNamespace(tag="NetLiquidation", value="122917.74", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="SettledCash", value="1043.88", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="TotalCashValue", value="900.00", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="CashBalance", value="1043.88", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="TotalCashBalance", value="1043.88", currency="USD", account="DU123"),
+            types.SimpleNamespace(tag="AvailableFunds", value="5000", currency="USD", account="DU123"),
+        ]
+        ib = types.SimpleNamespace(accountSummary=lambda: summary_items)
+
+        summary = web_server.fetch_ib_portfolio_summary(ib)
+
+        self.assertEqual(summary["account_id"], "DU123")
+        self.assertEqual(summary["net_liquidation"], 122917.74)
+        self.assertEqual(summary["ledger_cash_usd"], 1043.88)
+        self.assertEqual(summary["actual_cash"], 1043.88)
+        self.assertEqual(summary["actual_cash_source"], "ibkr_ledger_cash_balance")
+        self.assertIn("CashBalance:USD", summary["available_tags"])
+
+    def test_action_plan_uses_cached_cash_and_excludes_cash_equivalents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.save_portfolio_summary_cache(conn, {
+                        "account_id": "DU123",
+                        "base_currency": "USD",
+                        "net_liquidation": 2000.0,
+                        "settled_cash": 100.0,
+                    })
+                    analysis = [
+                        {
+                            "symbol": "BUY",
+                            "company_name": "Buy Co",
+                            "rating": "Buy",
+                            "current_price": 50.0,
+                            "expected_price": 100.0,
+                            "expected_cagr": 14.9,
+                            "upside": 100.0,
+                            "core_confidence_diff": 1.5,
+                            "core_bullish_confidence": 7.0,
+                            "core_bearish_confidence": 3.0,
+                            "potential_confidence_diff": 0.5,
+                            "potential_bullish_confidence": 6.0,
+                            "potential_bearish_confidence": 5.5,
+                            "final_scenario_stale": False,
+                        },
+                        {
+                            "symbol": "SGOV",
+                            "company_name": "Cash ETF",
+                            "rating": "Buy",
+                            "current_price": 100.0,
+                            "expected_price": 101.0,
+                            "expected_cagr": 1.0,
+                            "upside": 1.0,
+                            "core_confidence_diff": 0.0,
+                            "core_bullish_confidence": 5.0,
+                            "core_bearish_confidence": 5.0,
+                            "final_scenario_stale": False,
+                        },
+                    ]
+                    positions = [
+                        {"symbol": "BUY", "position": 10, "marketValue": 500.0, "price": 50.0},
+                        {"symbol": "SGOV", "position": 10, "marketValue": 1000.0, "price": 100.0},
+                    ]
+                    with mock.patch.object(web_server, "list_analysis_symbols", return_value=analysis), \
+                         mock.patch.object(web_server, "load_positions_cache", return_value=positions):
+                        payload = web_server.build_action_plan(conn)
+                    symbols = {row["symbol"] for row in payload["action_plan"]}
+                    self.assertIn("BUY", symbols)
+                    self.assertNotIn("SGOV", symbols)
+                    summary = payload["summary"]
+                    self.assertEqual(summary["portfolio_value_used"], 2000.0)
+                    self.assertEqual(summary["portfolio_value_source"], "ibkr_net_liquidation")
+                    self.assertEqual(summary["actual_cash"], 100.0)
+                    self.assertEqual(summary["cash_equivalent_value"], 1000.0)
+                    self.assertEqual(summary["cash_like_available"], 1100.0)
+                    self.assertEqual(summary["cash_equivalent_symbols"], ["SGOV"])
+                    row = next(item for item in payload["action_plan"] if item["symbol"] == "BUY")
+                    self.assertAlmostEqual(row["current_position_weight"], 25.0)
+                    self.assertIn(row["action_amount_cash_covered"], {True, False, None})
+                finally:
+                    conn.close()
+
+    def test_action_plan_settings_persist_bucket_values_outside_generic_float_clamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    action_settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+                    action_settings.update({
+                        "action_bucket_strong_buy_target": 40.0,
+                        "action_bucket_buy_target": 20.0,
+                        "action_bucket_speculative_buy_target": 10.0,
+                        "action_bucket_hold_target": 5.0,
+                        "action_bucket_cash_target": 25.0,
+                        "action_bucket_sell_target": 0.0,
+                        "action_bucket_strong_sell_target": 0.0,
+                    })
+                    web_server.save_general_configuration(conn, {"action_plan_settings": action_settings})
+                    loaded = web_server.get_general_configuration(conn)["action_plan_settings"]
+                    self.assertEqual(loaded["action_bucket_strong_buy_target"], 40.0)
+                    self.assertEqual(loaded["action_bucket_sell_target"], 0.0)
+                    self.assertEqual(loaded["action_bucket_strong_sell_target"], 0.0)
+                finally:
+                    conn.close()
+
+
+    def test_cash_constrained_execution_caps_adds_to_available_budget(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        rows = [
+            {
+                "symbol": "AAA",
+                "rating": "Strong Buy",
+                "action": "Strong Add",
+                "action_amount": 1500.0,
+                "action_amount_direction": "add",
+                "allocation_score": 0.9,
+                "bucket_sizing_score": 0.8,
+                "trigger_quality_score": 0.9,
+                "upside": 90.0,
+            },
+            {
+                "symbol": "BBB",
+                "rating": "Buy",
+                "action": "Add",
+                "action_amount": 800.0,
+                "action_amount_direction": "add",
+                "allocation_score": 0.6,
+                "bucket_sizing_score": 0.6,
+                "trigger_quality_score": 0.6,
+                "upside": 50.0,
+            },
+            {
+                "symbol": "CCC",
+                "rating": "Hold",
+                "action": "Hold / Overweight",
+                "action_amount": 500.0,
+                "action_amount_direction": "none",
+                "allocation_score": 0.5,
+                "bucket_sizing_score": 0.5,
+                "trigger_quality_score": 0.5,
+                "upside": 30.0,
+            },
+        ]
+        summary = web_server._apply_cash_constrained_execution_layer(rows, 10000.0, 2000.0, settings)
+        executable_add_total = sum(row["executable_action_amount"] for row in rows if row["action_amount_direction"] == "add")
+        self.assertEqual(summary["available_buy_budget"], 1000.0)
+        self.assertEqual(summary["total_add_demand"], 2300.0)
+        self.assertLessEqual(executable_add_total, summary["available_buy_budget"] + 1e-6)
+        self.assertEqual(rows[0]["executable_action_amount"], 1000.0)
+        self.assertEqual(rows[0]["funding_status"], "Partially funded")
+        self.assertEqual(rows[1]["executable_action_amount"], 0.0)
+        self.assertEqual(rows[1]["funding_status"], "Unfunded / Watch")
+        self.assertEqual(rows[2]["funding_status"], "No funding needed")
+
+    def test_action_plan_settings_reject_bucket_total_above_100_in_fixed_mode(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_use_dynamic_bucket_sizing"] = False
+        settings["action_bucket_buy_target"] = 90.0
+        with self.assertRaisesRegex(ValueError, "bucket targets"):
+            web_server.validate_action_plan_settings(settings)
+
+    def test_dynamic_action_plan_settings_allow_legacy_bucket_targets_above_100(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_bucket_buy_target"] = 90.0
+        effective = web_server.validate_action_plan_settings(settings)
+        self.assertTrue(effective["action_use_dynamic_bucket_sizing"])
+
+
+    def test_dynamic_action_plan_settings_reject_zero_allocation_weights(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_allocation_upside_weight"] = 0.0
+        settings["action_allocation_core_weight"] = 0.0
+        settings["action_allocation_potential_weight"] = 0.0
+        with self.assertRaisesRegex(ValueError, "Allocation weights"):
+            web_server.validate_action_plan_settings(settings)
+
+    def test_dynamic_action_plan_settings_reject_allocation_risk_strength_above_one(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_allocation_risk_penalty_strength"] = 1.5
+        with self.assertRaisesRegex(ValueError, "action_allocation_risk_penalty_strength"):
+            web_server.validate_action_plan_settings(settings)
+
+    def test_dynamic_action_plan_settings_reject_zero_bucket_sizing_weights(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_bucket_sizing_upside_weight"] = 0.0
+        settings["action_bucket_sizing_core_weight"] = 0.0
+        settings["action_bucket_sizing_potential_weight"] = 0.0
+        with self.assertRaisesRegex(ValueError, "Bucket sizing weights"):
+            web_server.validate_action_plan_settings(settings)
+
+
+    def test_action_plan_bucket_sizing_details_show_effective_count_used(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_buy_weight_per_effective_stock"] = 5.0
+        settings["action_buy_max_effective_count"] = 12.0
+        settings["action_buy_max_bucket_target"] = 45.0
+
+        capped = web_server._action_plan_bucket_sizing_details("Buy", 15.0, 0.0, settings, dynamic_mode=True)
+        self.assertEqual(capped["weighted_eligible_count"], 15.0)
+        self.assertEqual(capped["max_effective_count"], 12.0)
+        self.assertEqual(capped["weighted_count_used"], 12.0)
+        self.assertEqual(capped["uncapped_bucket_target"], 60.0)
+        self.assertEqual(capped["raw_bucket_target"], 45.0)
+        self.assertEqual(capped["bucket_max_target"], 45.0)
+
+        uncapped = web_server._action_plan_bucket_sizing_details("Buy", 6.13, 0.0, settings, dynamic_mode=True)
+        self.assertEqual(uncapped["weighted_count_used"], 6.13)
+        self.assertAlmostEqual(uncapped["uncapped_bucket_target"], 30.65)
+        self.assertAlmostEqual(uncapped["raw_bucket_target"], 30.65)
+
+    def test_action_plan_target_band_wraps_target_mid_with_tolerance(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        low, high = web_server._target_band(7.84, "Strong Buy", settings)
+        self.assertAlmostEqual(low, 6.272)
+        self.assertAlmostEqual(high, 9.408)
+        zero_low, zero_high = web_server._target_band(0.0, "Buy", settings)
+        self.assertEqual((zero_low, zero_high), (0.0, 0.0))
+
+
+    def test_action_plan_inside_target_hold_has_no_active_trigger(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        row = {
+            "rating": "Strong Buy",
+            "current_position_weight": 6.70,
+            "target_weight_low": 6.27,
+            "target_weight_mid": 7.84,
+            "target_weight_high": 9.41,
+            "current_price": 366.40,
+            "expected_price": 604.93,
+            "upside": 65.10,
+            "allocation_score": 0.74,
+            "bucket_sizing_score": 0.78,
+            "weighted_count": 1.0,
+            "core_conviction_score": 0.8,
+        }
+        action, trigger_price, _, distance, reason = web_server._choose_action_plan_decision(row, settings)
+        self.assertEqual(action, "Hold")
+        self.assertEqual(row["position_status"], "INSIDE_TARGET")
+        self.assertIsNone(trigger_price)
+        self.assertIsNone(distance)
+        self.assertEqual(row["relevant_trigger_type"], "hold")
+        self.assertIsNone(row["relevant_trigger_price"])
+        self.assertIsNone(row["dynamic_required_upside"])
+        self.assertIn("inside target band", reason)
+
+    def test_action_plan_overweight_high_upside_holds_until_trim_trigger(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        row = {
+            "rating": "Strong Buy",
+            "current_position_weight": 7.0,
+            "target_weight_low": 4.0,
+            "target_weight_mid": 5.0,
+            "target_weight_high": 6.0,
+            "current_price": 300.0,
+            "expected_price": 600.0,
+            "upside": 100.0,
+            "allocation_score": 0.8,
+            "bucket_sizing_score": 0.8,
+            "weighted_count": 1.0,
+            "core_conviction_score": 0.8,
+        }
+        action, trigger_price, _, _, reason = web_server._choose_action_plan_decision(row, settings)
+        self.assertEqual(action, "Hold / Overweight")
+        self.assertEqual(row["position_status"], "ABOVE_TARGET")
+        self.assertEqual(row["relevant_trigger_type"], "trim")
+        self.assertGreater(trigger_price, row["current_price"])
+        self.assertIn("remaining upside is still attractive", reason)
+
+class ExternalScenarioOverlayTests(unittest.TestCase):
+    def _seed_version_with_scenarios(self, conn, symbol="EXT"):
+        now = web_server.utc_now_iso()
+        conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", (symbol, now, now))
+        root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO analysis_versions (
+                analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                business_summary_text, raw_ai_response, source_trigger, created_at
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (root_id, symbol, f"{symbol} Inc.", 100.0, 140.0, 7.0, 40.0, 6.0, "assume", "model", "summary", "{}", "test", now),
+        )
+        version_id = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ?", (root_id,)).fetchone()["id"]
+        scenarios = [
+            ("Bear", 80.0, 90.0, -4.0, -2.0, 0.20),
+            ("Base", 120.0, 140.0, 4.0, 7.0, 0.50),
+            ("Bull", 180.0, 220.0, 12.0, 17.0, 0.30),
+        ]
+        for name, low, high, cagr_low, cagr_high, probability in scenarios:
+            conn.execute(
+                """
+                INSERT INTO analysis_version_scenarios (
+                    analysis_version_id, scenario_name, price_low, price_mid, price_high,
+                    cagr_low, cagr_mid, cagr_high, probability, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (version_id, name, low, (low + high) / 2, high, cagr_low, (cagr_low + cagr_high) / 2, cagr_high, probability, now),
+            )
+        conn.commit()
+        return root_id, version_id
+
+    def _external_payload(self, weight=30, title="External"):
+        return {
+            "title": title,
+            "external_weight": weight,
+            "source_notes": "analyst model",
+            "scenario_json": json.dumps({
+                "scenarios": [
+                    {"name": "Bear", "price_low": 70, "price_high": 85, "cagr_low": -7, "cagr_high": -3, "probability": 30},
+                    {"name": "Base", "price_low": 130, "price_high": 150, "cagr_low": 5, "cagr_high": 8, "probability": 45},
+                    {"name": "Bull", "price_low": 240, "price_high": 280, "cagr_low": 19, "cagr_high": 23, "probability": 25},
+                ]
+            }),
+        }
+
+    def test_external_scenario_crud_validation_and_stale_overlay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn)
+                    payload_without_cagr = self._external_payload(weight=30)
+                    scenario_payload = json.loads(payload_without_cagr["scenario_json"])
+                    for scenario in scenario_payload["scenarios"]:
+                        scenario.pop("cagr_low", None)
+                        scenario.pop("cagr_high", None)
+                    payload_without_cagr["scenario_json"] = json.dumps(scenario_payload)
+                    item = web_server.create_external_scenario(conn, version_id, payload_without_cagr)
+                    self.assertEqual(item["title"], "External")
+                    self.assertAlmostEqual(item["external_weight"], 0.30)
+                    self.assertEqual([s["scenario_name"] for s in item["scenarios"]], ["Bear", "Base", "Bull"])
+
+                    updated = web_server.update_external_scenario(conn, version_id, item["id"], self._external_payload(weight=0.4, title="Updated"))
+                    self.assertEqual(updated["title"], "Updated")
+                    self.assertAlmostEqual(updated["external_weight"], 0.40)
+
+                    overlay = web_server.recalculate_final_scenario_overlay(conn, version_id)
+                    self.assertFalse(overlay["is_stale"])
+                    web_server.update_external_scenario(conn, version_id, item["id"], self._external_payload(weight=50, title="Updated again"))
+                    stale = web_server.get_final_scenario_overlay(conn, version_id)
+                    self.assertTrue(stale["is_stale"])
+
+                    deleted = web_server.delete_external_scenario(conn, version_id, item["id"])
+                    self.assertTrue(deleted["deleted_final_overlay"])
+                    self.assertEqual(web_server.list_external_scenarios(conn, version_id), [])
+                    self.assertIsNone(web_server.get_final_scenario_overlay(conn, version_id))
+                finally:
+                    conn.close()
+
+    def test_external_scenario_recalculation_blends_and_blocks_overweight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn)
+                    web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    overlay = web_server.recalculate_final_scenario_overlay(conn, version_id)
+                    self.assertAlmostEqual(overlay["bakingmoney_weight"], 0.70)
+                    self.assertAlmostEqual(overlay["external_total_weight"], 0.30)
+                    bear = overlay["scenarios"][0]
+                    self.assertEqual(bear["scenario_name"], "Bear")
+                    self.assertAlmostEqual(bear["price_low"], 77.0)
+                    self.assertAlmostEqual(bear["price_high"], 88.5)
+                    self.assertAlmostEqual(bear["cagr_low"], web_server.compute_scenario_cagr(bear["price_low"], 100.0))
+                    self.assertAlmostEqual(bear["cagr_high"], web_server.compute_scenario_cagr(bear["price_high"], 100.0))
+                    self.assertAlmostEqual(bear["cagr_mid"], web_server.compute_scenario_cagr(bear["price_mid"], 100.0))
+                    self.assertAlmostEqual(sum(s["probability"] for s in overlay["scenarios"]), 1.0)
+                    self.assertIsNotNone(overlay["expected_price"])
+                    self.assertAlmostEqual(overlay["expected_cagr"], web_server.calculate_expected_cagr_from_price(overlay["expected_price"], 100.0))
+                    edit_payload = json.loads(web_server.list_external_scenarios(conn, version_id)[0]["scenario_json"])
+                    self.assertNotIn("cagr_low", edit_payload["scenarios"][0])
+                    self.assertNotIn("cagr_high", edit_payload["scenarios"][0])
+
+                    first = web_server.list_external_scenarios(conn, version_id)[0]
+                    web_server.update_external_scenario(conn, version_id, first["id"], self._external_payload(weight=80, title="High weight"))
+                    web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30, title="Second"))
+                    with self.assertRaisesRegex(ValueError, "more than 100%"):
+                        web_server.recalculate_final_scenario_overlay(conn, version_id)
+                finally:
+                    conn.close()
+
+    def test_price_refresh_recalculates_dynamic_cagr_without_changing_scenario_prices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn)
+                    web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    overlay_before = web_server.recalculate_final_scenario_overlay(conn, version_id)
+                    original_bear = conn.execute(
+                        "SELECT price_low, price_high FROM analysis_version_scenarios WHERE analysis_version_id = ? AND scenario_name = 'Bear'",
+                        (version_id,),
+                    ).fetchone()
+
+                    with mock.patch.object(web_server, "fetch_ib_prices", return_value=({"EXT": 200.0}, [])):
+                        result = web_server.refresh_latest_analysis_market_prices(conn)
+
+                    self.assertEqual(result["updated"], 1)
+                    version_row = conn.execute("SELECT current_price, expected_price, expected_cagr, upside FROM analysis_versions WHERE id = ?", (version_id,)).fetchone()
+                    self.assertEqual(version_row["current_price"], 200.0)
+                    self.assertAlmostEqual(version_row["expected_cagr"], web_server.calculate_expected_cagr_from_price(version_row["expected_price"], 200.0))
+                    self.assertAlmostEqual(version_row["upside"], web_server.calculate_upside(version_row["expected_price"], 200.0))
+                    refreshed_bear = conn.execute(
+                        "SELECT price_low, price_high, cagr_low FROM analysis_version_scenarios WHERE analysis_version_id = ? AND scenario_name = 'Bear'",
+                        (version_id,),
+                    ).fetchone()
+                    self.assertEqual(refreshed_bear["price_low"], original_bear["price_low"])
+                    self.assertEqual(refreshed_bear["price_high"], original_bear["price_high"])
+                    self.assertAlmostEqual(refreshed_bear["cagr_low"], web_server.compute_scenario_cagr(original_bear["price_low"], 200.0))
+                    overlay_after = web_server.get_final_scenario_overlay(conn, version_id)
+                    self.assertAlmostEqual(overlay_after["expected_price"], overlay_before["expected_price"])
+                    self.assertAlmostEqual(overlay_after["expected_cagr"], web_server.calculate_expected_cagr_from_price(overlay_after["expected_price"], 200.0))
+                finally:
+                    conn.close()
+
+    def test_non_stale_final_overlay_provides_effective_metrics_for_detail_list_and_positions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn, symbol="EFF")
+                    web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    overlay = web_server.recalculate_final_scenario_overlay(conn, version_id)
+
+                    detail_version = web_server.get_analysis_detail(conn, "EFF")["version"]
+                    self.assertTrue(detail_version["uses_final_scenario_overlay"])
+                    self.assertFalse(detail_version["final_scenario_stale"])
+                    self.assertEqual(detail_version["expected_price_original"], 140.0)
+                    self.assertEqual(detail_version["expected_cagr_original"], 7.0)
+                    self.assertEqual(detail_version["upside_original"], 40.0)
+                    self.assertAlmostEqual(detail_version["expected_price"], overlay["expected_price"])
+                    self.assertAlmostEqual(detail_version["expected_cagr"], overlay["expected_cagr"])
+                    self.assertAlmostEqual(detail_version["upside"], overlay["upside"])
+
+                    analysis_row = web_server.list_analysis_symbols(conn)[0]
+                    self.assertTrue(analysis_row["uses_final_scenario_overlay"])
+                    self.assertAlmostEqual(analysis_row["expected_price"], overlay["expected_price"])
+                    self.assertAlmostEqual(analysis_row["expected_cagr"], overlay["expected_cagr"])
+                    self.assertAlmostEqual(analysis_row["upside"], overlay["upside"])
+
+                    merged = web_server.merge_positions_with_latest_analysis([{"symbol": "EFF", "position": 1}], [analysis_row])[0]
+                    self.assertTrue(merged["uses_final_scenario_overlay"])
+                    self.assertAlmostEqual(merged["expected_price"], overlay["expected_price"])
+                    self.assertAlmostEqual(merged["expected_cagr"], overlay["expected_cagr"])
+                    self.assertAlmostEqual(merged["upside"], overlay["upside"])
+
+                    original_scenario_rows = conn.execute(
+                        "SELECT scenario_name, price_low, price_high FROM analysis_version_scenarios WHERE analysis_version_id = ? ORDER BY scenario_name",
+                        (version_id,),
+                    ).fetchall()
+                    self.assertEqual(len(original_scenario_rows), 3)
+                    self.assertEqual({row["scenario_name"]: row["price_high"] for row in original_scenario_rows}["Bull"], 220.0)
+                finally:
+                    conn.close()
+
+    def test_stale_final_overlay_is_ignored_for_effective_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    _, version_id = self._seed_version_with_scenarios(conn, symbol="STALE")
+                    item = web_server.create_external_scenario(conn, version_id, self._external_payload(weight=30))
+                    web_server.recalculate_final_scenario_overlay(conn, version_id)
+                    web_server.update_external_scenario(conn, version_id, item["id"], self._external_payload(weight=40, title="Changed"))
+
+                    detail_version = web_server.get_analysis_detail(conn, "STALE")["version"]
+                    self.assertFalse(detail_version["uses_final_scenario_overlay"])
+                    self.assertTrue(detail_version["final_scenario_stale"])
+                    self.assertEqual(detail_version["expected_price"], 140.0)
+                    self.assertEqual(detail_version["expected_cagr"], 7.0)
+                    self.assertEqual(detail_version["upside"], 40.0)
+
+                    analysis_row = web_server.list_analysis_symbols(conn)[0]
+                    self.assertFalse(analysis_row["uses_final_scenario_overlay"])
+                    self.assertTrue(analysis_row["final_scenario_stale"])
+                    self.assertEqual(analysis_row["expected_price"], 140.0)
+                finally:
+                    conn.close()
+
+    def test_external_scenarios_are_version_scoped_and_invalid_json_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    root_id, version_one = self._seed_version_with_scenarios(conn, symbol="VERS")
+                    now = web_server.utc_now_iso()
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, assumptions_text, business_model_text,
+                            business_summary_text, raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 2, 'VERS', 'VERS Inc.', 100, 130, 5, 30, 6, 'assume2', 'model2', 'summary2', '{}', 'rerun', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    version_two = conn.execute("SELECT id FROM analysis_versions WHERE analysis_root_id = ? AND version_number = 2", (root_id,)).fetchone()["id"]
+                    conn.commit()
+                    web_server.create_external_scenario(conn, version_one, self._external_payload(weight=25))
+                    self.assertEqual(len(web_server.list_external_scenarios(conn, version_one)), 1)
+                    self.assertEqual(len(web_server.list_external_scenarios(conn, version_two)), 0)
+
+                    invalid = self._external_payload()
+                    invalid["scenario_json"] = json.dumps({"scenarios": [{"name": "Bear"}]})
+                    with self.assertRaisesRegex(ValueError, "exactly 3"):
+                        web_server.create_external_scenario(conn, version_one, invalid)
+                finally:
+                    conn.close()

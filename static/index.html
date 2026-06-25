@@ -13,6 +13,7 @@
         <nav>
           <button class="menu-item active" data-view="analysis">Analysis</button>
           <button class="menu-item" data-view="positions">My Positions</button>
+          <button class="menu-item" data-view="action-plan">Action Plan</button>
           <button class="menu-item" data-view="earnings-review">Earnings Review</button>
           <button class="menu-item" data-view="alerts">Alerts</button>
           <button class="menu-item" data-view="prompt">Prompt</button>
@@ -56,6 +57,7 @@
                     </div>
                     <label class="rating-filter-option"><input type="checkbox" value="strong_buy" /> <span class="rating-filter-option-label">Strong Buy</span></label>
                     <label class="rating-filter-option"><input type="checkbox" value="buy" /> <span class="rating-filter-option-label">Buy</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="speculative_buy" /> <span class="rating-filter-option-label">Speculative Buy</span></label>
                     <label class="rating-filter-option"><input type="checkbox" value="hold" /> <span class="rating-filter-option-label">Hold</span></label>
                     <label class="rating-filter-option"><input type="checkbox" value="sell" /> <span class="rating-filter-option-label">Sell</span></label>
                     <label class="rating-filter-option"><input type="checkbox" value="strong_sell" /> <span class="rating-filter-option-label">Strong Sell</span></label>
@@ -83,7 +85,9 @@
                     <th data-sort-key="expected_cagr" class="sortable">Expected CAGR</th>
                     <th data-sort-key="upside" class="sortable">Upside</th>
                     <th>Portfolio</th>
-                    <th data-sort-key="confidence_diff" class="sortable">Confidence</th>
+                    <th data-sort-key="core_confidence_diff" class="sortable">Confidence</th>
+                    <th data-sort-key="potential_confidence_diff" class="sortable">Potential Confidence</th>
+                    <th data-sort-key="latest_release_date" class="sortable">Latest Release</th>
                     <th data-sort-key="last_activity_at" class="sortable">Last Scenario/Event</th>
                     <th>Actions</th>
                   </tr>
@@ -116,9 +120,19 @@
               <section class="detail-card">
                 <div class="view-header">
                   <h3>Scenarios <button id="analysis-scenario-info-btn" title="Scenario generation info">i</button></h3>
-                  <button id="analysis-rerun-btn" disabled>Re-run Scenarios</button>
+                  <div class="table-actions">
+                    <button id="analysis-add-external-scenario-btn" type="button">Add External Scenario</button>
+                    <button id="analysis-rerun-btn" disabled>Re-run Scenarios</button>
+                  </div>
                 </div>
-                <div class="table-wrap">
+                <div id="analysis-scenario-overlay-tabs" class="scenario-overlay-tabs hidden" role="tablist" aria-label="Scenario overlay tabs">
+                  <button type="button" class="scenario-overlay-tab active" data-scenario-tab="final" role="tab" aria-selected="true">Final Scenario</button>
+                  <button type="button" class="scenario-overlay-tab" data-scenario-tab="bakingmoney" role="tab" aria-selected="false">BakingMoney Scenario</button>
+                  <button type="button" class="scenario-overlay-tab" data-scenario-tab="external" role="tab" aria-selected="false">External Scenarios</button>
+                </div>
+                <div id="analysis-final-scenario-panel" class="scenario-overlay-panel hidden"></div>
+                <div id="analysis-external-scenarios-panel" class="scenario-overlay-panel hidden"></div>
+                <div class="table-wrap" id="analysis-bakingmoney-scenario-panel">
                   <table id="analysis-scenarios-table">
                     <thead>
                       <tr>
@@ -141,18 +155,27 @@
                 <div class="view-header">
                   <h3>Key Variables</h3>
                   <div class="table-actions">
+                    <button id="analysis-copy-key-vars-btn" type="button">Copy Key Variables JSON</button>
+                    <button id="analysis-copy-review-prompt-btn" type="button">Copy Review Prompt</button>
                     <button id="analysis-edit-variables-btn">Edit Key Variables</button>
+                    <button id="analysis-import-variables-btn" type="button">Import Key Variables JSON</button>
                     <button id="analysis-add-variable-btn" class="hidden">Add Key Variable</button>
                     <button id="analysis-save-variables-btn" class="hidden">Save Key Variables</button>
                     <button id="analysis-cancel-variables-btn" class="hidden">Cancel</button>
                   </div>
                 </div>
+                <div id="analysis-variable-tabs" class="key-variable-tabs" role="tablist" aria-label="Key variable driver category tabs">
+                  <button type="button" class="key-variable-tab analysis-variable-tab active" data-driver-category="Core Driver" role="tab" aria-selected="true">Core Drivers</button>
+                  <button type="button" class="key-variable-tab analysis-variable-tab" data-driver-category="Potential Driver" role="tab" aria-selected="false">Potential Drivers</button>
+                </div>
+                <p id="analysis-variables-empty" class="status hidden"></p>
                 <div class="table-wrap">
                   <table id="analysis-variables-table">
                     <thead>
                       <tr>
                         <th>Variable</th>
                         <th>Type</th>
+                        <th>Category</th>
                         <th>Confidence</th>
                         <th>Importance</th>
                         <th>Actions</th>
@@ -162,6 +185,53 @@
                   </table>
                 </div>
               </section>
+            </div>
+
+
+            <div id="analysis-key-variable-import-modal" class="modal hidden">
+              <div class="modal-content key-variable-import-modal-content">
+                <div class="view-header">
+                  <h3>Import Key Variables JSON</h3>
+                  <button id="analysis-key-variable-import-close-btn" type="button">Close</button>
+                </div>
+                <div class="key-variable-import-form">
+                  <p class="status">Importing replaces the current saved key variables for this analysis version. Use the fixed JSON format with <code>symbol</code> and <code>key_variables</code>.</p>
+                  <div class="view-header external-scenario-json-header">
+                    <label for="analysis-key-variable-import-json"><strong>Key Variables JSON</strong></label>
+                    <button id="analysis-key-variable-import-template-btn" type="button">Insert Template</button>
+                  </div>
+                  <textarea id="analysis-key-variable-import-json" class="key-variable-import-json" rows="16"></textarea>
+                  <p id="analysis-key-variable-import-status" class="status"></p>
+                  <div class="table-actions">
+                    <button id="analysis-key-variable-import-save-btn" type="button">Import Key Variables</button>
+                    <button id="analysis-key-variable-import-cancel-btn" type="button">Cancel</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div id="analysis-external-scenario-modal" class="modal hidden">
+              <div class="modal-content external-scenario-modal-content">
+                <div class="view-header">
+                  <h3 id="analysis-external-scenario-modal-title">Add External Scenario</h3>
+                  <button id="analysis-external-scenario-cancel-btn" type="button">Close</button>
+                </div>
+                <div class="external-scenario-form">
+                  <label>Title <input id="analysis-external-scenario-title" type="text" placeholder="e.g. ChatGPT scenario" /></label>
+                  <label>Weight (%) <input id="analysis-external-scenario-weight" type="number" min="0" max="100" step="0.1" value="30" /></label>
+                  <label>Source notes <textarea id="analysis-external-scenario-notes" rows="3" placeholder="Optional notes about the source or assumptions"></textarea></label>
+                  <div class="view-header external-scenario-json-header">
+                    <label for="analysis-external-scenario-json"><strong>Scenario JSON</strong></label>
+                    <button id="analysis-external-scenario-template-btn" type="button">Insert Template</button>
+                  </div>
+                  <textarea id="analysis-external-scenario-json" class="external-scenario-json" rows="16"></textarea>
+                  <p id="analysis-external-scenario-status" class="status"></p>
+                  <div class="table-actions">
+                    <button id="analysis-external-scenario-save-btn" type="button">Save External Scenario</button>
+                    <button id="analysis-external-scenario-cancel-form-btn" type="button">Cancel</button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div id="analysis-scenario-info-modal" class="detail-card hidden">
@@ -176,10 +246,10 @@
 
         <section id="earnings-review" class="view">
           <div class="earnings-review-tabs">
-            <button id="earnings-review-tab-workflow" class="earnings-review-tab active" type="button">Earnings Reviews</button>
-            <button id="earnings-review-tab-calendar" class="earnings-review-tab" type="button">Earnings Calendar</button>
+            <button id="earnings-review-tab-workflow" class="earnings-review-tab" type="button">Earnings Reviews</button>
+            <button id="earnings-review-tab-calendar" class="earnings-review-tab active" type="button">Earnings Calendar</button>
           </div>
-          <div id="earnings-review-workflow-panel">
+          <div id="earnings-review-workflow-panel" class="hidden">
           <div id="earnings-review-list-view" class="analysis-screen">
             <div class="view-header">
               <h2>Earnings Review</h2>
@@ -315,6 +385,7 @@
                       <tr>
                         <th>Variable</th>
                         <th>Type</th>
+                        <th>Category</th>
                         <th>Confidence</th>
                         <th>Importance</th>
                       </tr>
@@ -334,7 +405,7 @@
           </div>
           </div>
 
-          <div id="earnings-review-calendar-panel" class="analysis-screen hidden">
+          <div id="earnings-review-calendar-panel" class="analysis-screen">
             <div class="view-header">
               <h2>Earnings Calendar</h2>
               <div class="table-actions">
@@ -344,15 +415,82 @@
                   <option value="in_portfolio">In Portfolio</option>
                   <option value="not_in_portfolio">Not in Portfolio</option>
                 </select>
-                <label for="earnings-calendar-date-filter" class="inline-control-label">Release Date Filter</label>
-                <select id="earnings-calendar-date-filter">
-                  <option value="all">All</option>
-                  <option value="future">Future</option>
-                  <option value="past">Past</option>
-                </select>
+                <label for="earnings-calendar-date-filter-toggle" class="inline-control-label">Release Date Filter</label>
+                <div id="earnings-calendar-date-filter" class="rating-filter earnings-calendar-multiselect" data-open="false">
+                  <button id="earnings-calendar-date-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="earnings-calendar-date-filter-label" class="rating-filter-label-text">All</span>
+                    <span class="rating-filter-caret" aria-hidden="true">▼</span>
+                  </button>
+                  <div id="earnings-calendar-date-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Release date filter options">
+                    <div class="rating-filter-actions">
+                      <button id="earnings-calendar-date-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                      <button id="earnings-calendar-date-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                    </div>
+                    <label class="rating-filter-option"><input type="checkbox" value="past" /> <span class="rating-filter-option-label">Past</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="yesterday" /> <span class="rating-filter-option-label">Yesterday</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="today" /> <span class="rating-filter-option-label">Today</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="tomorrow" /> <span class="rating-filter-option-label">Tomorrow</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="future" /> <span class="rating-filter-option-label">Future</span></label>
+                  </div>
+                </div>
+                <label for="earnings-calendar-fiscal-year-filter-toggle" class="inline-control-label">Fiscal Year Filter</label>
+                <div id="earnings-calendar-fiscal-year-filter" class="rating-filter earnings-calendar-multiselect" data-open="false">
+                  <button id="earnings-calendar-fiscal-year-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="earnings-calendar-fiscal-year-filter-label" class="rating-filter-label-text">All</span>
+                    <span class="rating-filter-caret" aria-hidden="true">▼</span>
+                  </button>
+                  <div id="earnings-calendar-fiscal-year-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Fiscal year filter options">
+                    <div class="rating-filter-actions">
+                      <button id="earnings-calendar-fiscal-year-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                      <button id="earnings-calendar-fiscal-year-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                    </div>
+                    <div id="earnings-calendar-fiscal-year-filter-options"></div>
+                  </div>
+                </div>
+                <label for="earnings-calendar-fiscal-quarter-filter-toggle" class="inline-control-label">Fiscal Quarter Filter</label>
+                <div id="earnings-calendar-fiscal-quarter-filter" class="rating-filter earnings-calendar-multiselect" data-open="false">
+                  <button id="earnings-calendar-fiscal-quarter-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="earnings-calendar-fiscal-quarter-filter-label" class="rating-filter-label-text">All</span>
+                    <span class="rating-filter-caret" aria-hidden="true">▼</span>
+                  </button>
+                  <div id="earnings-calendar-fiscal-quarter-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Fiscal quarter filter options">
+                    <div class="rating-filter-actions">
+                      <button id="earnings-calendar-fiscal-quarter-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                      <button id="earnings-calendar-fiscal-quarter-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                    </div>
+                    <label class="rating-filter-option"><input type="checkbox" value="Q1" /> <span class="rating-filter-option-label">Q1</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="Q2" /> <span class="rating-filter-option-label">Q2</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="Q3" /> <span class="rating-filter-option-label">Q3</span></label>
+                    <label class="rating-filter-option"><input type="checkbox" value="Q4" /> <span class="rating-filter-option-label">Q4</span></label>
+                  </div>
+                </div>
               </div>
             </div>
-            <p id="earnings-calendar-status" class="status">Loading analyzed companies…</p>
+            <section class="detail-card earnings-calendar-add-card">
+              <h4>Add Calendar Entry</h4>
+              <div class="earnings-calendar-add-form">
+                <label>Symbol <input id="earnings-calendar-add-symbol" type="text" placeholder="MSFT" autocomplete="off" /></label>
+                <label>Fiscal Year <input id="earnings-calendar-add-fiscal-year" type="number" min="1900" max="2200" step="1" placeholder="2026" /></label>
+                <label>Fiscal Quarter
+                  <select id="earnings-calendar-add-fiscal-quarter">
+                    <option value="Q1">Q1</option>
+                    <option value="Q2">Q2</option>
+                    <option value="Q3">Q3</option>
+                    <option value="Q4">Q4</option>
+                  </select>
+                </label>
+                <label>Release Date <input id="earnings-calendar-add-release-date" type="text" placeholder="DD.MM.YYYY" inputmode="numeric" /></label>
+                <label>Release Timing
+                  <select id="earnings-calendar-add-release-timing">
+                    <option value="">Not set</option>
+                    <option value="Before Open">Before Open</option>
+                    <option value="After Close">After Close</option>
+                  </select>
+                </label>
+                <button id="earnings-calendar-add-btn" type="button">Add Entry</button>
+              </div>
+            </section>
+            <p id="earnings-calendar-status" class="status">Loading calendar entries…</p>
             <section class="detail-card earnings-review-list-card">
               <div class="table-wrap">
                 <table id="earnings-calendar-table">
@@ -360,7 +498,9 @@
                     <tr>
                       <th>Symbol</th>
                       <th>Company Name</th>
-                      <th id="earnings-calendar-release-date-header" class="sortable" data-sort-direction="">Earnings Release Date</th>
+                      <th>Fiscal Year</th>
+                      <th>Fiscal Quarter</th>
+                      <th id="earnings-calendar-release-date-header" class="sortable" data-sort-direction="">Release Date</th>
                       <th>Release Timing</th>
                       <th>Portfolio</th>
                       <th>Upside</th>
@@ -486,6 +626,10 @@
               <label>Buy min upside <input id="config-rating-buy-min-upside" type="number" step="0.1" value="25.0" /></label>
               <label>Buy min diff <input id="config-rating-buy-min-diff" type="number" step="0.1" value="0.5" /></label>
               <label>Buy min bullish confidence <input id="config-rating-buy-min-bullish-confidence" type="number" min="0" max="10" step="0.1" value="5.5" /></label>
+              <label>Speculative Buy min upside <input id="config-rating-speculative-buy-min-upside" type="number" step="0.1" value="75.0" /></label>
+              <label>Speculative Buy min diff <input id="config-rating-speculative-buy-min-diff" type="number" step="0.1" value="0.1" /></label>
+              <label>Speculative Buy min bullish confidence <input id="config-rating-speculative-buy-min-bullish-confidence" type="number" min="0" max="10" step="0.1" value="4.5" /></label>
+              <label>Speculative Buy min core diff floor <input id="config-rating-speculative-buy-min-core-diff-floor" type="number" step="0.1" value="-0.5" /></label>
               <label>Strong Sell max upside <input id="config-rating-strong-sell-max-upside" type="number" step="0.1" value="0.0" /></label>
               <label>Strong Sell max diff <input id="config-rating-strong-sell-max-diff" type="number" step="0.1" value="-1.5" /></label>
               <label>Strong Sell min bearish confidence <input id="config-rating-strong-sell-min-bearish-confidence" type="number" min="0" max="10" step="0.1" value="7.0" /></label>
@@ -493,12 +637,308 @@
               <label>Sell max diff <input id="config-rating-sell-max-diff" type="number" step="0.1" value="-0.5" /></label>
               <label>Sell min bearish confidence <input id="config-rating-sell-min-bearish-confidence" type="number" min="0" max="10" step="0.1" value="5.5" /></label>
             </div>
+
+          <section class="detail-card" id="config-action-plan-panel">
+            <h3>Action Plan Settings</h3>
+            <p id="config-action-plan-total" class="status">Bucket total: 100%</p>
+            <div class="table-actions config-actions settings-grid">
+              <label><input id="config-action-use-dynamic-bucket-sizing" data-action-plan-setting="action_use_dynamic_bucket_sizing" type="checkbox" /> Use dynamic bucket sizing</label>
+              <label><input id="config-action-use-weighted-eligible-count" data-action-plan-setting="action_use_weighted_eligible_count" type="checkbox" /> Use weighted eligible count</label>
+              <label>Minimum cash/unallocated % <input id="config-action-min-cash-unallocated-target" data-action-plan-setting="action_min_cash_unallocated_target" type="number" min="0" max="50" step="0.1" value="10" /></label>
+              <label><input id="config-action-redistribute-post-cap-excess" data-action-plan-setting="action_redistribute_post_cap_excess" type="checkbox" /> Redistribute post-cap excess</label>
+              <label>Weighted Count Min Score <input id="config-action-weighted-count-min-score" data-action-plan-setting="action_weighted_count_min_score" type="number" min="0" max="1" step="0.01" value="0.15" /><small>Minimum Bucket Sizing Score needed before a company expands the bucket.</small></label>
+              <label>Weighted Count Full Score <input id="config-action-weighted-count-full-score" data-action-plan-setting="action_weighted_count_full_score" type="number" min="0" max="1" step="0.01" value="0.75" /><small>Bucket Sizing Score where the company counts as one full effective stock.</small></label>
+              <label>Weighted Count Max Contribution <input id="config-action-weighted-count-max-contribution" data-action-plan-setting="action_weighted_count_max_contribution" type="number" min="0" max="1" step="0.01" value="1" /><small>Maximum bucket-expansion contribution per company.</small></label>
+              <label>Max potential score contribution <input id="config-action-max-potential-score-contribution" data-action-plan-setting="action_max_potential_score_contribution" type="number" min="0" max="1" step="0.01" value="0.2" /></label>
+            </div>
+            <h4>Allocation Score Weights</h4>
+            <p class="form-help">Allocation Score determines how each bucket is distributed across companies. It is separate from Bucket Sizing Score, which determines how much each company expands the bucket.</p>
+            <div class="table-actions config-actions settings-grid">
+              <label>Allocation upside weight <input id="config-action-allocation-upside-weight" data-action-plan-setting="action_allocation_upside_weight" type="number" min="0" step="0.01" value="0.6" /></label>
+              <label>Allocation core weight <input id="config-action-allocation-core-weight" data-action-plan-setting="action_allocation_core_weight" type="number" min="0" step="0.01" value="0.3" /></label>
+              <label>Allocation potential weight <input id="config-action-allocation-potential-weight" data-action-plan-setting="action_allocation_potential_weight" type="number" min="0" step="0.01" value="0.1" /></label>
+              <label>Allocation risk penalty strength <input id="config-action-allocation-risk-penalty-strength" data-action-plan-setting="action_allocation_risk_penalty_strength" type="number" min="0" max="1" step="0.01" value="0.6" /></label>
+            </div>
+            <h4>Bucket Sizing Score Weights</h4>
+            <p class="form-help">Bucket Sizing Score determines bucket expansion and weighted count; it is not used to split bucket allocation across companies.</p>
+            <div class="table-actions config-actions settings-grid">
+              <label>Bucket sizing upside weight <input id="config-action-bucket-sizing-upside-weight" data-action-plan-setting="action_bucket_sizing_upside_weight" type="number" min="0" step="0.01" value="0.5" /></label>
+              <label>Bucket sizing core weight <input id="config-action-bucket-sizing-core-weight" data-action-plan-setting="action_bucket_sizing_core_weight" type="number" min="0" step="0.01" value="0.4" /></label>
+              <label>Bucket sizing potential weight <input id="config-action-bucket-sizing-potential-weight" data-action-plan-setting="action_bucket_sizing_potential_weight" type="number" min="0" step="0.01" value="0.1" /></label>
+              <label>Bucket sizing risk penalty strength <input id="config-action-bucket-sizing-risk-penalty-strength" data-action-plan-setting="action_bucket_sizing_risk_penalty_strength" type="number" min="0" max="1" step="0.01" value="0.5" /></label>
+              <label>Strong Buy weight/effective stock <input id="config-action-strong-buy-weight-per-effective-stock" data-action-plan-setting="action_strong_buy_weight_per_effective_stock" type="number" step="0.1" value="5" /></label>
+              <label>Strong Buy max effective count <input id="config-action-strong-buy-max-effective-count" data-action-plan-setting="action_strong_buy_max_effective_count" type="number" step="0.1" value="6" /></label>
+              <label>Strong Buy max bucket % <input id="config-action-strong-buy-max-bucket-target" data-action-plan-setting="action_strong_buy_max_bucket_target" type="number" step="0.1" value="45" /></label>
+              <label>Strong Buy compression weight <input id="config-action-strong-buy-compression-weight" data-action-plan-setting="action_strong_buy_compression_weight" type="number" step="0.1" value="0.25" /></label>
+              <label>Buy weight/effective stock <input id="config-action-buy-weight-per-effective-stock" data-action-plan-setting="action_buy_weight_per_effective_stock" type="number" step="0.1" value="2.5" /></label>
+              <label>Buy max effective count <input id="config-action-buy-max-effective-count" data-action-plan-setting="action_buy_max_effective_count" type="number" step="0.1" value="14" /></label>
+              <label>Buy max bucket % <input id="config-action-buy-max-bucket-target" data-action-plan-setting="action_buy_max_bucket_target" type="number" step="0.1" value="35" /></label>
+              <label>Buy compression weight <input id="config-action-buy-compression-weight" data-action-plan-setting="action_buy_compression_weight" type="number" step="0.1" value="0.75" /></label>
+              <label>Speculative Buy weight/effective stock <input id="config-action-speculative-buy-weight-per-effective-stock" data-action-plan-setting="action_speculative_buy_weight_per_effective_stock" type="number" step="0.1" value="1.5" /></label>
+              <label>Speculative Buy max effective count <input id="config-action-speculative-buy-max-effective-count" data-action-plan-setting="action_speculative_buy_max_effective_count" type="number" step="0.1" value="5" /></label>
+              <label>Speculative Buy max bucket % <input id="config-action-speculative-buy-max-bucket-target" data-action-plan-setting="action_speculative_buy_max_bucket_target" type="number" step="0.1" value="7.5" /></label>
+              <label>Speculative Buy compression weight <input id="config-action-speculative-buy-compression-weight" data-action-plan-setting="action_speculative_buy_compression_weight" type="number" step="0.1" value="1.25" /></label>
+              <label>Hold weight/effective stock <input id="config-action-hold-weight-per-effective-stock" data-action-plan-setting="action_hold_weight_per_effective_stock" type="number" step="0.1" value="0.8" /></label>
+              <label>Hold max effective count <input id="config-action-hold-max-effective-count" data-action-plan-setting="action_hold_max_effective_count" type="number" step="0.1" value="15" /></label>
+              <label>Hold max bucket % <input id="config-action-hold-max-bucket-target" data-action-plan-setting="action_hold_max_bucket_target" type="number" step="0.1" value="12" /></label>
+              <label>Hold compression weight <input id="config-action-hold-compression-weight" data-action-plan-setting="action_hold_compression_weight" type="number" step="0.1" value="2" /></label>
+            </div>
+            <div class="table-actions config-actions settings-grid">
+              <label data-fixed-bucket-setting="true">Strong Buy bucket % <input id="config-action-bucket-strong-buy-target" data-action-plan-setting="action_bucket_strong_buy_target" type="number" step="0.1" value="0" /></label>
+              <label data-fixed-bucket-setting="true">Buy bucket % <input id="config-action-bucket-buy-target" data-action-plan-setting="action_bucket_buy_target" type="number" step="0.1" value="0" /></label>
+              <label data-fixed-bucket-setting="true">Speculative Buy bucket % <input id="config-action-bucket-speculative-buy-target" data-action-plan-setting="action_bucket_speculative_buy_target" type="number" step="0.1" value="0" /></label>
+              <label data-fixed-bucket-setting="true">Hold bucket % <input id="config-action-bucket-hold-target" data-action-plan-setting="action_bucket_hold_target" type="number" step="0.1" value="0" /></label>
+              <label data-fixed-bucket-setting="true">Cash/unallocated % <input id="config-action-bucket-cash-target" data-action-plan-setting="action_bucket_cash_target" type="number" step="0.1" value="0" /></label>
+              <label data-fixed-bucket-setting="true">Sell bucket % <input id="config-action-bucket-sell-target" data-action-plan-setting="action_bucket_sell_target" type="number" step="0.1" value="0" /></label>
+              <label data-fixed-bucket-setting="true">Strong Sell bucket % <input id="config-action-bucket-strong-sell-target" data-action-plan-setting="action_bucket_strong_sell_target" type="number" step="0.1" value="0" /></label>
+              <label>Upside zero score % <input id="config-action-upside-zero-score" data-action-plan-setting="action_upside_zero_score" type="number" step="0.1" value="0" /></label>
+              <label>Upside full score % <input id="config-action-upside-full-score" data-action-plan-setting="action_upside_full_score" type="number" step="0.1" value="0" /></label>
+              <label>Core diff zero score <input id="config-action-core-diff-zero-score" data-action-plan-setting="action_core_diff_zero_score" type="number" step="0.1" value="0" /></label>
+              <label>Core diff full score <input id="config-action-core-diff-full-score" data-action-plan-setting="action_core_diff_full_score" type="number" step="0.1" value="0" /></label>
+              <label>Core bearish penalty start <input id="config-action-core-bearish-penalty-start" data-action-plan-setting="action_core_bearish_penalty_start" type="number" step="0.1" value="0" /></label>
+              <label>Core bearish penalty full <input id="config-action-core-bearish-penalty-full" data-action-plan-setting="action_core_bearish_penalty_full" type="number" step="0.1" value="0" /></label>
+              <label>Potential diff minimum <input id="config-action-potential-diff-minimum" data-action-plan-setting="action_potential_diff_minimum" type="number" step="0.1" value="0" /></label>
+              <label>Potential diff full score <input id="config-action-potential-diff-full-score" data-action-plan-setting="action_potential_diff_full_score" type="number" step="0.1" value="0" /></label>
+              <label>Potential bullish confidence minimum <input id="config-action-potential-bullish-confidence-minimum" data-action-plan-setting="action_potential_bullish_confidence_minimum" type="number" step="0.1" value="0" /></label>
+              <label>Potential bonus upside minimum % <input id="config-action-potential-bonus-upside-minimum" data-action-plan-setting="action_potential_bonus_upside_minimum" type="number" step="0.1" value="0" /></label>
+              <label>Max potential bonus weight % <input id="config-action-max-potential-bonus-weight" data-action-plan-setting="action_max_potential_bonus_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max single-stock weight % <input id="config-action-max-single-stock-weight" data-action-plan-setting="action_max_single_stock_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max Strong Buy stock weight % <input id="config-action-max-strong-buy-stock-weight" data-action-plan-setting="action_max_strong_buy_stock_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max Buy stock weight % <input id="config-action-max-buy-stock-weight" data-action-plan-setting="action_max_buy_stock_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max Speculative Buy stock weight % <input id="config-action-max-speculative-buy-stock-weight" data-action-plan-setting="action_max_speculative_buy_stock_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max weight if core diff below 0 % <input id="config-action-max-negative-core-weight" data-action-plan-setting="action_max_negative_core_weight" type="number" step="0.1" value="0" /></label>
+              <label>Max weight if core diff below -0.5 % <input id="config-action-max-very-negative-core-weight" data-action-plan-setting="action_max_very_negative_core_weight" type="number" step="0.1" value="0" /></label>
+              <label>Min target weight to show % <input id="config-action-min-target-weight-to-show" data-action-plan-setting="action_min_target_weight_to_show" type="number" step="0.1" value="0" /></label>
+              <label>Normal lower band multiplier <input id="config-action-band-lower-multiplier" data-action-plan-setting="action_band_lower_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Normal upper band multiplier <input id="config-action-band-upper-multiplier" data-action-plan-setting="action_band_upper_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Target band lower multiplier <input id="config-action-target-band-lower-multiplier" data-action-plan-setting="action_target_band_lower_multiplier" type="number" min="0" max="0.99" step="0.01" value="0.8" /></label>
+              <label>Target band upper multiplier <input id="config-action-target-band-upper-multiplier" data-action-plan-setting="action_target_band_upper_multiplier" type="number" min="1.01" step="0.01" value="1.2" /></label>
+              <label>Speculative lower band multiplier <input id="config-action-speculative-band-lower-multiplier" data-action-plan-setting="action_speculative_band_lower_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Speculative upper band multiplier <input id="config-action-speculative-band-upper-multiplier" data-action-plan-setting="action_speculative_band_upper_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Minimum absolute band width % <input id="config-action-min-absolute-band-width" data-action-plan-setting="action_min_absolute_band_width" type="number" step="0.1" value="0" /></label>
+              <label>Strong Add below target multiplier <input id="config-action-strong-add-below-target-multiplier" data-action-plan-setting="action_strong_add_below_target_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Strong Trim above target multiplier <input id="config-action-strong-trim-above-target-multiplier" data-action-plan-setting="action_strong_trim_above_target_multiplier" type="number" step="0.1" value="0" /></label>
+              <label>Minimum trade gap % <input id="config-action-min-trade-gap-percent" data-action-plan-setting="action_min_trade_gap_percent" type="number" step="0.1" value="0" /></label>
+              <label>Minimum executable trade amount <input id="config-action-min-executable-trade-amount" data-action-plan-setting="action_min_executable_trade_amount" type="number" min="0" step="10" value="100" /></label>
+              <label>Starter Buy max initial weight % <input id="config-action-starter-buy-max-initial-weight" data-action-plan-setting="action_starter_buy_max_initial_weight" type="number" step="0.1" value="0" /></label>
+              <label>Add required upside % <input id="config-action-add-required-upside" data-action-plan-setting="action_add_required_upside" type="number" step="0.1" value="0" /></label>
+              <label>Strong Add required upside % <input id="config-action-strong-add-required-upside" data-action-plan-setting="action_strong_add_required_upside" type="number" step="0.1" value="0" /></label>
+              <label>Starter Buy required upside % <input id="config-action-starter-buy-required-upside" data-action-plan-setting="action_starter_buy_required_upside" type="number" step="0.1" value="0" /></label>
+              <label>Trim remaining upside % <input id="config-action-trim-remaining-upside" data-action-plan-setting="action_trim_remaining_upside" type="number" step="0.1" value="0" /></label>
+              <label>Sell remaining upside % <input id="config-action-sell-remaining-upside" data-action-plan-setting="action_sell_remaining_upside" type="number" step="0.1" value="0" /></label>
+              <label>Starter Buy base required upside <input id="config-action-starter-buy-base-required-upside" data-action-plan-setting="action_starter_buy_base_required_upside" type="number" min="0" max="2" step="0.01" value="0.25" /></label>
+              <label>Add base required upside <input id="config-action-add-base-required-upside" data-action-plan-setting="action_add_base_required_upside" type="number" min="0" max="2" step="0.01" value="0.30" /></label>
+              <label>Strong Add base required upside <input id="config-action-strong-add-base-required-upside" data-action-plan-setting="action_strong_add_base_required_upside" type="number" min="0" max="2" step="0.01" value="0.40" /></label>
+              <label>Hold extra add required upside <input id="config-action-hold-extra-add-required-upside" data-action-plan-setting="action_hold_extra_add_required_upside" type="number" min="0" max="2" step="0.01" value="0.50" /></label>
+              <label>Trim remaining upside threshold <input id="config-action-trim-remaining-upside-threshold" data-action-plan-setting="action_trim_remaining_upside_threshold" type="number" min="-1" max="2" step="0.01" value="0.10" /></label>
+              <label>Sell remaining upside threshold <input id="config-action-sell-remaining-upside-threshold" data-action-plan-setting="action_sell_remaining_upside_threshold" type="number" min="-1" max="2" step="0.01" value="0" /></label>
+              <label>Underweight discount max <input id="config-action-underweight-discount-max" data-action-plan-setting="action_underweight_discount_max" type="number" min="0" max="1" step="0.01" value="0.10" /></label>
+              <label>Quality discount max <input id="config-action-quality-discount-max" data-action-plan-setting="action_quality_discount_max" type="number" min="0" max="1" step="0.01" value="0.10" /></label>
+              <label>Overweight penalty max <input id="config-action-overweight-penalty-max" data-action-plan-setting="action_overweight_penalty_max" type="number" min="0" max="1" step="0.01" value="0.15" /></label>
+              <label>Low-quality penalty max <input id="config-action-low-quality-penalty-max" data-action-plan-setting="action_low_quality_penalty_max" type="number" min="0" max="1" step="0.01" value="0.15" /></label>
+              <label>Trigger min required upside <input id="config-action-trigger-min-required-upside" data-action-plan-setting="action_trigger_min_required_upside" type="number" min="0" max="2" step="0.01" value="0.10" /></label>
+              <label>Trigger max required upside <input id="config-action-trigger-max-required-upside" data-action-plan-setting="action_trigger_max_required_upside" type="number" min="0" max="2" step="0.01" value="0.80" /></label>
+              <label>Strong trim gap threshold <input id="config-action-strong-trim-gap-threshold" data-action-plan-setting="action_strong_trim_gap_threshold" type="number" min="0" max="1" step="0.01" value="0.25" /></label>
+            </div>
+
+            <h4>Linear Allocation Settings</h4>
+            <p class="form-help">Linear Allocation is a separate portfolio-wide model. It does not use bucket weights, bucket caps, weighted count, or bucket compression.</p>
+            <div class="table-actions config-actions settings-grid">
+              <label>Linear allocated target total % <input data-action-plan-setting="linear_allocated_target_total_pct" type="number" min="0" max="100" step="0.1" value="100" /></label>
+              <label>Linear min expected CAGR % <input data-action-plan-setting="linear_min_expected_cagr" type="number" step="0.1" value="0" /></label>
+              <label>Linear full expected CAGR % <input data-action-plan-setting="linear_full_expected_cagr" type="number" step="0.1" value="15" /></label>
+              <label>Linear min upside % <input data-action-plan-setting="linear_min_upside" type="number" step="0.1" value="0" /></label>
+              <label>Linear full upside % <input data-action-plan-setting="linear_full_upside" type="number" step="0.1" value="80" /></label>
+              <label>Linear min core net <input data-action-plan-setting="linear_min_core_net" type="number" step="0.1" value="-1" /></label>
+              <label>Linear full core net <input data-action-plan-setting="linear_full_core_net" type="number" step="0.1" value="2" /></label>
+              <label>Linear min potential net <input data-action-plan-setting="linear_min_potential_net" type="number" step="0.1" value="-1" /></label>
+              <label>Linear full potential net <input data-action-plan-setting="linear_full_potential_net" type="number" step="0.1" value="1.5" /></label>
+              <label>Linear expected CAGR weight <input data-action-plan-setting="linear_expected_cagr_weight" type="number" min="0" step="1" value="40" /></label>
+              <label>Linear upside weight <input data-action-plan-setting="linear_upside_weight" type="number" min="0" step="1" value="20" /></label>
+              <label>Linear core confidence weight <input data-action-plan-setting="linear_core_confidence_weight" type="number" min="0" step="1" value="25" /></label>
+              <label>Linear potential confidence weight <input data-action-plan-setting="linear_potential_confidence_weight" type="number" min="0" step="1" value="10" /></label>
+              <label>Linear confidence quality weight <input data-action-plan-setting="linear_confidence_quality_weight" type="number" min="0" step="1" value="5" /></label>
+              <label>Linear min score threshold <input data-action-plan-setting="linear_min_score_threshold" type="number" min="0" max="1" step="0.01" value="0.10" /></label>
+              <label><input data-action-plan-setting="linear_zero_target_if_expected_cagr_negative" type="checkbox" /> Zero target if expected CAGR negative</label>
+              <label><input data-action-plan-setting="linear_zero_target_if_upside_negative" type="checkbox" /> Zero target if upside negative</label>
+              <label>Linear max single-stock % <input data-action-plan-setting="linear_max_single_stock_pct" type="number" min="0" max="100" step="0.1" value="10" /></label>
+              <label>Linear target band tolerance % <input data-action-plan-setting="linear_target_band_tolerance_pct" type="number" min="0" max="100" step="0.1" value="15" /></label>
+              <label><input data-action-plan-setting="linear_enable_risk_caps" type="checkbox" /> Enable linear risk caps</label>
+              <label>Linear negative core net cap % <input data-action-plan-setting="linear_negative_core_net_cap_pct" type="number" min="0" max="100" step="0.1" value="2" /></label>
+              <label>Linear low core net threshold <input data-action-plan-setting="linear_low_core_net_threshold" type="number" step="0.1" value="0.5" /></label>
+              <label>Linear low core net cap % <input data-action-plan-setting="linear_low_core_net_cap_pct" type="number" min="0" max="100" step="0.1" value="4" /></label>
+              <label>Linear high bearish confidence threshold <input data-action-plan-setting="linear_high_bearish_confidence_threshold" type="number" min="0" max="10" step="0.1" value="8" /></label>
+              <label>Linear high bearish confidence cap % <input data-action-plan-setting="linear_high_bearish_confidence_cap_pct" type="number" min="0" max="100" step="0.1" value="5" /></label>
+            </div>
+            <h4>Shared Portfolio / Cash Settings</h4>
+            <p class="form-help">These settings affect funding and portfolio cash treatment for both Bucket Allocation and Linear Allocation.</p>
+            <div class="table-actions config-actions settings-grid">
+              <label><input id="config-action-include-current-positions" data-action-plan-setting="action_include_current_positions" type="checkbox" /> Include current positions</label>
+              <label><input id="config-action-include-strong-buy" data-action-plan-setting="action_include_strong_buy" type="checkbox" /> Include Strong Buy</label>
+              <label><input id="config-action-include-buy" data-action-plan-setting="action_include_buy" type="checkbox" /> Include Buy</label>
+              <label><input id="config-action-include-speculative-buy" data-action-plan-setting="action_include_speculative_buy" type="checkbox" /> Include Speculative Buy</label>
+              <label><input id="config-action-include-hold-only-if-owned" data-action-plan-setting="action_include_hold_only_if_owned" type="checkbox" /> Include Hold only if owned</label>
+              <label><input id="config-action-include-sell-only-if-owned" data-action-plan-setting="action_include_sell_only_if_owned" type="checkbox" /> Include Sell only if owned</label>
+              <label><input id="config-action-redistribute-capped-excess" data-action-plan-setting="action_redistribute_capped_excess" type="checkbox" /> Redistribute capped excess</label>
+              <label><input id="config-action-allow-bucket-underallocation" data-action-plan-setting="action_allow_bucket_underallocation" type="checkbox" /> Allow bucket underallocation</label>
+              <label><input id="config-action-show-unallocated-bucket-amount" data-action-plan-setting="action_show_unallocated_bucket_amount" type="checkbox" /> Show unallocated bucket amount</label>
+              <label><input id="config-action-treat-cash-equivalents-as-cash" data-action-plan-setting="action_treat_cash_equivalents_as_cash" type="checkbox" /> Treat cash-equivalent symbols as cash</label>
+              <label>Cash-equivalent symbols <input id="config-action-cash-equivalent-symbols" data-action-plan-setting="action_cash_equivalent_symbols" type="text" value="SGOV" placeholder="SGOV,USFR,BIL" /></label>
+            </div>
+          </section>
             <div class="table-actions config-actions">
               <button id="config-save-btn">Save Settings</button>
               <button id="config-cancel-btn">Cancel</button>
               <button id="config-restore-defaults-btn">Restore Defaults</button>
             </div>
           </section>
+        </section>
+
+        <div id="config-help-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="config-help-title">
+          <div class="modal-content config-help-modal-content">
+            <div class="modal-header">
+              <h3 id="config-help-title">Configuration Help</h3>
+              <button id="config-help-close-btn" class="modal-close-btn" type="button" aria-label="Close configuration help">×</button>
+            </div>
+            <div id="config-help-content" class="config-help-content"></div>
+          </div>
+        </div>
+
+        <section id="action-plan" class="view hidden">
+          <div class="view-header">
+            <h2>Action Plan</h2>
+            <div class="table-actions">
+              <button id="action-plan-refresh-btn">Refresh Action Plan</button>
+            </div>
+          </div>
+          <div id="action-plan-list-view">
+          <div class="action-plan-tabs">
+            <button id="action-plan-tab-actions" class="action-plan-tab active" type="button">Actions</button>
+            <button id="action-plan-tab-buckets" class="action-plan-tab" type="button">Buckets</button>
+            <button id="action-plan-tab-linear" class="action-plan-tab" type="button">Linear Allocation</button>
+          </div>
+          <p id="action-plan-status" class="status">Loading Action Plan…</p>
+          <div id="action-plan-summary" class="summary-grid"></div>
+          <div id="action-plan-actions-panel">
+          <div class="action-plan-mode-switch" aria-label="Action Plan mode">
+            <span class="mode-switch-label">Actions mode:</span>
+            <button id="action-plan-mode-bucket" class="action-plan-mode-btn active" type="button">Bucket Allocation</button>
+            <button id="action-plan-mode-linear" class="action-plan-mode-btn" type="button">Linear Allocation</button>
+          </div>
+          <div class="filter-row action-plan-filter-row">
+            <label for="action-plan-rating-filter-toggle" class="inline-control-label">Rating Filter</label>
+            <div id="action-plan-rating-filter" class="rating-filter" data-open="false">
+              <button id="action-plan-rating-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                <span id="action-plan-rating-filter-label" class="rating-filter-label-text">All</span>
+                <span class="rating-filter-caret" aria-hidden="true">▼</span>
+              </button>
+              <div id="action-plan-rating-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Action Plan rating filter options">
+                <div class="rating-filter-actions">
+                  <button id="action-plan-rating-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                  <button id="action-plan-rating-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                </div>
+                <label class="rating-filter-option"><input type="checkbox" value="strong_buy" /> <span class="rating-filter-option-label">Strong Buy</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="buy" /> <span class="rating-filter-option-label">Buy</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="speculative_buy" /> <span class="rating-filter-option-label">Speculative Buy</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="hold" /> <span class="rating-filter-option-label">Hold</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="sell" /> <span class="rating-filter-option-label">Sell</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="strong_sell" /> <span class="rating-filter-option-label">Strong Sell</span></label>
+              </div>
+            </div>
+            <label for="action-plan-action-filter-toggle" class="inline-control-label">Action Filter</label>
+            <div id="action-plan-action-filter" class="rating-filter" data-open="false">
+              <button id="action-plan-action-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                <span id="action-plan-action-filter-label" class="rating-filter-label-text">All</span>
+                <span class="rating-filter-caret" aria-hidden="true">▼</span>
+              </button>
+              <div id="action-plan-action-filter-panel" class="rating-filter-panel hidden" role="menu" aria-label="Action Plan action filter options">
+                <div class="rating-filter-actions">
+                  <button id="action-plan-action-filter-select-all" type="button" class="rating-filter-action">Select All</button>
+                  <button id="action-plan-action-filter-clear" type="button" class="rating-filter-action">Clear</button>
+                </div>
+                <label class="rating-filter-option"><input type="checkbox" value="strong_add" /> <span class="rating-filter-option-label">Strong Add</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="add" /> <span class="rating-filter-option-label">Add</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="starter_buy" /> <span class="rating-filter-option-label">Starter Buy</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="trim" /> <span class="rating-filter-option-label">Trim</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="strong_trim" /> <span class="rating-filter-option-label">Strong Trim</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="sell" /> <span class="rating-filter-option-label">Sell</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="watch" /> <span class="rating-filter-option-label">Watch</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="hold" /> <span class="rating-filter-option-label">Hold</span></label>
+                <label class="rating-filter-option"><input type="checkbox" value="re_evaluate" /> <span class="rating-filter-option-label">Re-evaluate</span></label>
+              </div>
+            </div>
+          </div>
+          <div id="action-plan-bucket-actions-table-wrap" class="table-wrap">
+            <table id="action-plan-table">
+              <thead>
+                <tr>
+                  <th class="symbol-column">Symbol</th>
+                  <th class="action-column">Action</th>
+                  <th class="target-gap-column">Target Gap</th>
+                  <th class="action-amount-column">Action Amount</th>
+                  <th class="funding-column">Funding</th>
+                  <th class="trigger-price-column">Trigger Price</th>
+                  <th class="current-price-column">Current Price</th>
+                  <th class="distance-column sortable" data-sort-key="distance_to_trigger_percent">Distance</th>
+                  <th class="rating-column">Rating</th>
+                  <th class="upside-column sortable" data-sort-key="upside">Upside</th>
+                  <th class="core-confidence-column sortable" data-sort-key="core_confidence_diff">Core Confidence</th>
+                  <th class="potential-confidence-column sortable" data-sort-key="potential_confidence_diff">Potential Confidence</th>
+                  <th class="current-weight-column sortable" data-sort-key="current_position_weight">Current Weight</th>
+                  <th class="target-band-column">Target Band</th>
+                  <th class="gap-column sortable" data-sort-key="position_gap_to_mid">Gap to Mid</th>
+                  <th class="reason-column">Reason</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="action-plan-linear-actions-panel" class="hidden">
+            <p class="status">Linear Allocation uses a continuous portfolio-wide score; rating is shown for context and does not size buckets.</p>
+            <div class="table-wrap action-plan-linear-table-wrap">
+              <table id="action-plan-linear-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Company Name</th>
+                    <th>Current Rating</th>
+                    <th>Current Market Value</th>
+                    <th>Current Weight</th>
+                    <th>Linear Target Mid</th>
+                    <th>Linear Target Band</th>
+                    <th>Gap to Linear Mid</th>
+                    <th>Target Gap Amount</th>
+                    <th>Linear Allocation Score</th>
+                    <th>Expected CAGR</th>
+                    <th>Upside</th>
+                    <th>Core Net</th>
+                    <th>Potential Net</th>
+                    <th>Bullish Core</th>
+                    <th>Bearish Core</th>
+                    <th>Cap Applied</th>
+                    <th>Cap Reason</th>
+                    <th>Funding Status</th>
+                    <th>Executable Action Amount</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          </div>
+          <div id="action-plan-buckets-panel" class="hidden">
+            <div id="action-plan-buckets-content"></div>
+          </div>
+          </div>
+          <div id="action-plan-detail-view" class="hidden">
+            <div class="detail-header">
+              <button id="action-plan-detail-back-btn">← Back to Action Plan</button>
+              <button id="action-plan-open-analysis-btn">Open Full Analysis</button>
+            </div>
+            <h3 id="action-plan-detail-title">Action Detail</h3>
+            <p id="action-plan-detail-status" class="status"></p>
+            <div id="action-plan-detail-content"></div>
+          </div>
         </section>
 
         <section id="backup" class="view">
@@ -595,6 +1035,7 @@
                     <tr>
                       <th>Variable</th>
                       <th>Type</th>
+                      <th>Category</th>
                       <th>Confidence</th>
                       <th>Importance</th>
                       <th>Action</th>
@@ -624,6 +1065,7 @@
                   </div>
                   <label class="rating-filter-option"><input type="checkbox" value="strong_buy" /> <span class="rating-filter-option-label">Strong Buy</span></label>
                   <label class="rating-filter-option"><input type="checkbox" value="buy" /> <span class="rating-filter-option-label">Buy</span></label>
+                  <label class="rating-filter-option"><input type="checkbox" value="speculative_buy" /> <span class="rating-filter-option-label">Speculative Buy</span></label>
                   <label class="rating-filter-option"><input type="checkbox" value="hold" /> <span class="rating-filter-option-label">Hold</span></label>
                   <label class="rating-filter-option"><input type="checkbox" value="sell" /> <span class="rating-filter-option-label">Sell</span></label>
                   <label class="rating-filter-option"><input type="checkbox" value="strong_sell" /> <span class="rating-filter-option-label">Strong Sell</span></label>
@@ -633,6 +1075,8 @@
             </div>
           </div>
 
+          <div id="positions-portfolio-summary" class="summary-grid positions-summary" aria-label="Positions portfolio summary"></div>
+          <p id="positions-portfolio-summary-warning" class="status hidden"></p>
           <p id="status" class="status">Loading positions…</p>
 
           <div class="table-wrap">
@@ -643,13 +1087,15 @@
                   <th data-sort-key="rating" class="sortable">Rating</th>
                   <th data-sort-key="upside" class="sortable">Upside</th>
                   <th data-sort-key="expected_cagr" class="sortable">Expected CAGR</th>
-                  <th data-sort-key="confidence_diff" class="sortable">Confidence</th>
+                  <th data-sort-key="core_confidence_diff" class="sortable">Confidence</th>
+                  <th data-sort-key="potential_confidence_diff" class="sortable">Potential Confidence</th>
                   <th data-sort-key="marketValue" class="sortable">Market Value</th>
                   <th data-sort-key="costBasis" class="sortable">Cost Value</th>
                   <th data-sort-key="unrealizedPnL" class="sortable">Unrealized P&amp;L</th>
                   <th data-sort-key="unrealizedPnLPercent" class="sortable">Unrealized P&amp;L %</th>
                   <th data-sort-key="price" class="sortable">Price</th>
                   <th data-sort-key="avgCost" class="sortable">Avg Cost</th>
+                  <th data-sort-key="latest_release_date" class="sortable">Latest Release</th>
                   <th data-sort-key="dailyPnL" class="sortable">Daily P&amp;L</th>
                   <th data-sort-key="changePercent" class="sortable">Change %</th>
                 </tr>

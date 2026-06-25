@@ -1346,6 +1346,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Linear Score', html)
         self.assertIn('class="linear-score-column sortable" data-sort-key="linear_allocation_score"', html)
         self.assertIn('class="sortable" data-sort-key="linear_allocation_score">Linear Score</th>', html)
+        linear_actions_markup = html.split('id="action-plan-linear-actions-table"', 1)[1].split('id="action-plan-linear-detail-panel"', 1)[0]
+        self.assertNotIn('reason-column', linear_actions_markup)
+        self.assertIn('class="reason-column">Reason</th>', html)
         self.assertIn('id="action-plan-tab-actions"', html)
         self.assertIn('id="action-plan-tab-buckets"', html)
         self.assertIn('id="action-plan-buckets-panel"', html)

@@ -49,6 +49,7 @@ const actionPlanTabBucketsBtn = document.getElementById('action-plan-tab-buckets
 const actionPlanTabLinearBtn = document.getElementById('action-plan-tab-linear');
 const actionPlanSortHeaders = document.querySelectorAll('#action-plan-table th.sortable');
 const actionPlanLinearSortHeaders = document.querySelectorAll('#action-plan-linear-actions-table th.sortable');
+const actionPlanLinearDetailSortHeaders = document.querySelectorAll('#action-plan-linear-detail-table th.sortable');
 const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
 const actionPlanListViewEl = document.getElementById('action-plan-list-view');
 const actionPlanDetailViewEl = document.getElementById('action-plan-detail-view');
@@ -285,7 +286,8 @@ let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
 let selectedActionPlanDetail = null;
 let actionPlanSort = { key: null, direction: 'asc' };
-let actionPlanLinearSort = { key: null, direction: 'asc' };
+let actionPlanLinearSort = { key: 'linear_allocation_score', direction: 'desc' };
+let actionPlanLinearDetailSort = { key: 'linear_allocation_score', direction: 'desc' };
 let actionPlanBucketSorts = {};
 let actionPlanActiveTab = 'actions';
 let actionPlanActionMode = 'bucket';
@@ -1342,7 +1344,7 @@ const sortAnalysis = (items) => [...items].sort((a, b) => {
 
 function updateSortHeaderState() { positionSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === positionSort.key ? positionSort.direction : ''; }); }
 function updateAnalysisSortHeaderState() { analysisSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === analysisSort.key ? analysisSort.direction : ''; }); }
-function updateActionPlanSortHeaderState() { actionPlanSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanSort.key ? actionPlanSort.direction : ''; }); actionPlanLinearSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanLinearSort.key ? actionPlanLinearSort.direction : ''; }); }
+function updateActionPlanSortHeaderState() { actionPlanSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanSort.key ? actionPlanSort.direction : ''; }); actionPlanLinearSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanLinearSort.key ? actionPlanLinearSort.direction : ''; }); actionPlanLinearDetailSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanLinearDetailSort.key ? actionPlanLinearDetailSort.direction : ''; }); }
 
 function renderPositionsPortfolioSummary(summary = latestPositionsPortfolioSummary) {
   if (!positionsPortfolioSummaryEl) return;
@@ -1738,7 +1740,7 @@ function getActionPlanNumericSortValue(item, key) {
   return Number.isFinite(value) ? value : null;
 }
 
-function sortActionPlanItemsWithState(items, sortState) {
+function sortActionPlanItemsWithState(items, sortState, secondarySort = null) {
   if (!sortState.key) return items;
   const directionMultiplier = sortState.direction === 'desc' ? -1 : 1;
   return items.map((item, index) => ({ item, index })).sort((left, right) => {
@@ -1748,7 +1750,19 @@ function sortActionPlanItemsWithState(items, sortState) {
     if (leftValue == null) return 1;
     if (rightValue == null) return -1;
     const delta = leftValue - rightValue;
-    return delta === 0 ? left.index - right.index : delta * directionMultiplier;
+    if (delta !== 0) return delta * directionMultiplier;
+    if (secondarySort?.key) {
+      const leftSecondary = getActionPlanNumericSortValue(left.item, secondarySort.key);
+      const rightSecondary = getActionPlanNumericSortValue(right.item, secondarySort.key);
+      if (leftSecondary != null || rightSecondary != null) {
+        if (leftSecondary == null) return 1;
+        if (rightSecondary == null) return -1;
+        const secondaryDirection = secondarySort.direction === 'asc' ? 1 : -1;
+        const secondaryDelta = leftSecondary - rightSecondary;
+        if (secondaryDelta !== 0) return secondaryDelta * secondaryDirection;
+      }
+    }
+    return left.index - right.index;
   }).map((entry) => entry.item);
 }
 
@@ -1757,7 +1771,11 @@ function sortActionPlanItems(items) {
 }
 
 function sortLinearActionPlanItems(items) {
-  return sortActionPlanItemsWithState(items, actionPlanLinearSort);
+  return sortActionPlanItemsWithState(items, actionPlanLinearSort, { key: 'target_gap_amount', direction: 'desc' });
+}
+
+function sortLinearActionPlanDetailItems(items) {
+  return sortActionPlanItemsWithState(items, actionPlanLinearDetailSort, { key: 'target_gap_amount', direction: 'desc' });
 }
 
 function setActionPlanActionMode(mode) {
@@ -2038,7 +2056,7 @@ function renderLinearAllocationRows() {
 
   if (actionPlanLinearDetailTableBody) {
     actionPlanLinearDetailTableBody.innerHTML = '';
-    rows.forEach((item) => {
+    sortLinearActionPlanDetailItems(rows).forEach((item) => {
       const row = document.createElement('tr');
       const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
       row.innerHTML = `<td><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td>
@@ -5020,7 +5038,12 @@ actionPlanSortHeaders.forEach((header) => header.addEventListener('click', () =>
 }));
 actionPlanLinearSortHeaders.forEach((header) => header.addEventListener('click', () => {
   const { sortKey } = header.dataset; if (!sortKey) return;
-  if (actionPlanLinearSort.key === sortKey) actionPlanLinearSort.direction = actionPlanLinearSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanLinearSort = { key: sortKey, direction: 'asc' };
+  if (actionPlanLinearSort.key === sortKey) actionPlanLinearSort.direction = actionPlanLinearSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanLinearSort = { key: sortKey, direction: sortKey === 'linear_allocation_score' ? 'desc' : 'asc' };
+  updateActionPlanSortHeaderState(); renderActionPlan();
+}));
+actionPlanLinearDetailSortHeaders.forEach((header) => header.addEventListener('click', () => {
+  const { sortKey } = header.dataset; if (!sortKey) return;
+  if (actionPlanLinearDetailSort.key === sortKey) actionPlanLinearDetailSort.direction = actionPlanLinearDetailSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanLinearDetailSort = { key: sortKey, direction: sortKey === 'linear_allocation_score' ? 'desc' : 'asc' };
   updateActionPlanSortHeaderState(); renderActionPlan();
 }));
 actionPlanTabActionsBtn.addEventListener('click', () => setActionPlanTab('actions'));

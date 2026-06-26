@@ -1430,6 +1430,11 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("'linear_min_core_net', 'linear_min_potential_net'", js)
         self.assertIn("linear_full_core_net must be greater than linear_min_core_net", js)
         self.assertIn("linear_full_potential_net must be greater than linear_min_potential_net", js)
+        self.assertIn('data-action-plan-setting="core_confidence_penalty_threshold"', html)
+        self.assertIn('data-action-plan-setting="upside_penalty"', html)
+        self.assertIn('data-action-plan-setting="potential_confidence_penalty"', html)
+        self.assertIn('data-action-plan-setting="hold_rating_penalty_enabled"', html)
+        self.assertIn("'core_confidence_penalty', 'upside_penalty', 'potential_confidence_penalty', 'hold_rating_penalty'", js)
         self.assertIn('function renderLinearAllocationRows()', js)
         self.assertIn('actionPlanLinearActionsTableBody', js)
         self.assertIn('actionPlanLinearDetailTableBody', js)
@@ -2877,6 +2882,49 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings["action_bucket_sizing_core_weight"] = 0.0
         settings["action_bucket_sizing_potential_weight"] = 0.0
         with self.assertRaisesRegex(ValueError, "Bucket sizing weights"):
+            web_server.validate_action_plan_settings(settings)
+
+
+    def test_linear_action_plan_applies_stock_level_penalties(self):
+        candidate = {
+            "symbol": "LOW",
+            "rating": "Hold",
+            "expected_cagr": 10.0,
+            "upside": 30.0,
+            "core_confidence_diff": 0.2,
+            "potential_confidence_diff": -0.2,
+            "core_bullish_confidence": 5.0,
+            "core_bearish_confidence": 4.0,
+            "potential_bullish_confidence": 3.0,
+            "potential_bearish_confidence": 4.0,
+            "current_position_weight": 0.0,
+            "current_position_market_value": 0.0,
+            "current_price": 100.0,
+            "expected_price": 130.0,
+        }
+        base_settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        base_settings["linear_min_score_threshold"] = 0.0
+        for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty"):
+            base_settings[key] = 0.0
+        base_settings["hold_rating_penalty_enabled"] = False
+        base_score = web_server.compute_linear_action_plan([candidate], 100000.0, 0.0, base_settings)["rows"][0]["linear_allocation_score"]
+
+        penalized_settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        penalized_settings["linear_min_score_threshold"] = 0.0
+        row = web_server.compute_linear_action_plan([candidate], 100000.0, 0.0, penalized_settings)["rows"][0]
+
+        expected_factor = 0.85 * 0.80 * 0.95 * 0.90
+        self.assertAlmostEqual(row["linear_penalty_factor"], expected_factor)
+        self.assertAlmostEqual(row["linear_allocation_score"], base_score * expected_factor)
+        self.assertEqual(
+            [penalty["key"] for penalty in row["linear_penalties_applied"]],
+            ["core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty"],
+        )
+
+    def test_linear_action_plan_settings_reject_invalid_stock_level_penalties(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["upside_penalty"] = 1.5
+        with self.assertRaisesRegex(ValueError, "upside_penalty must be between 0 and 1"):
             web_server.validate_action_plan_settings(settings)
 
 

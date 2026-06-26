@@ -313,6 +313,14 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "linear_low_core_net_cap_pct": 4.0,
     "linear_high_bearish_confidence_threshold": 8.0,
     "linear_high_bearish_confidence_cap_pct": 5.0,
+    "core_confidence_penalty_threshold": 0.5,
+    "core_confidence_penalty": 0.15,
+    "upside_penalty_threshold": 40.0,
+    "upside_penalty": 0.20,
+    "potential_confidence_penalty_threshold": 0.0,
+    "potential_confidence_penalty": 0.05,
+    "hold_rating_penalty_enabled": True,
+    "hold_rating_penalty": 0.10,
 }
 ACTION_PLAN_BOOL_SETTINGS = {
     "action_include_current_positions",
@@ -332,6 +340,7 @@ ACTION_PLAN_BOOL_SETTINGS = {
     "linear_zero_target_if_expected_cagr_negative",
     "linear_zero_target_if_upside_negative",
     "linear_enable_risk_caps",
+    "hold_rating_penalty_enabled",
 }
 ACTION_PLAN_TEXT_SETTINGS = {
     "action_cash_equivalent_symbols",
@@ -1789,7 +1798,7 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{key} must be numeric")
         if not math.isfinite(value):
             raise ValueError(f"{key} must be finite")
-        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold"}:
+        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold", "core_confidence_penalty_threshold", "potential_confidence_penalty_threshold"}:
             raise ValueError(f"{key} cannot be negative")
         effective[key] = value
 
@@ -1801,6 +1810,10 @@ def validate_action_plan_settings(settings):
     ):
         if effective[full_key] <= effective[min_key]:
             raise ValueError(f"{full_key} must be greater than {min_key}")
+    for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty"):
+        if effective[key] < 0 or effective[key] > 1:
+            raise ValueError(f"{key} must be between 0 and 1")
+
     linear_weight_total = sum(effective[key] for key in (
         "linear_expected_cagr_weight",
         "linear_upside_weight",
@@ -6787,6 +6800,35 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     return {"available_buy_budget": available_buy_budget, "total_add_demand": total_add_demand, "funded_add_amount": funded_add_amount, "unfunded_add_demand": unfunded_add_demand, "executable_sell_trim_proceeds": executable_sell_trim_proceeds, "minimum_cash_reserve_amount": minimum_cash_reserve_amount}
 
 
+
+def _linear_stock_penalty_factor(item, core_net, potential_net, upside, rating, settings):
+    factor = 1.0
+    penalties = []
+
+    def apply_penalty(setting_key, label):
+        nonlocal factor
+        penalty = _clamp(safe_number(settings.get(setting_key)) or 0.0, 0.0, 1.0)
+        if penalty > 0:
+            factor *= (1.0 - penalty)
+            penalties.append({"key": setting_key, "label": label, "penalty": penalty})
+
+    core_threshold = safe_number(settings.get("core_confidence_penalty_threshold"))
+    if core_threshold is not None and core_net < core_threshold:
+        apply_penalty("core_confidence_penalty", "Core confidence below threshold")
+
+    upside_threshold = safe_number(settings.get("upside_penalty_threshold"))
+    if upside_threshold is not None and upside is not None and upside < upside_threshold:
+        apply_penalty("upside_penalty", "Upside below threshold")
+
+    potential_threshold = safe_number(settings.get("potential_confidence_penalty_threshold"))
+    if potential_threshold is not None and potential_net < potential_threshold:
+        apply_penalty("potential_confidence_penalty", "Potential confidence below threshold")
+
+    if settings.get("hold_rating_penalty_enabled", True) and str(rating or "").strip().lower() == "hold":
+        apply_penalty("hold_rating_penalty", "Hold rating")
+
+    return _clamp(factor, 0.0, 1.0), penalties
+
 def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings):
     target_total = safe_number(settings.get("linear_allocated_target_total_pct")) or 0.0
     weight_keys = ["linear_expected_cagr_weight", "linear_upside_weight", "linear_core_confidence_weight", "linear_potential_confidence_weight", "linear_confidence_quality_weight"]
@@ -6810,6 +6852,9 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             + weights["linear_potential_confidence_weight"] * potential_net_score
             + weights["linear_confidence_quality_weight"] * confidence_quality_score
         )
+        rating = item.get("rating") or item.get("bucket") or "Hold"
+        penalty_factor, penalties_applied = _linear_stock_penalty_factor(item, core_net, potential_net, upside, rating, settings)
+        score *= penalty_factor
         if settings.get("linear_zero_target_if_expected_cagr_negative", True) and expected_cagr is not None and expected_cagr < 0:
             score = 0.0
         if settings.get("linear_zero_target_if_upside_negative", True) and upside is not None and upside < 0:
@@ -6820,7 +6865,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "mode": "linear",
             "symbol": item.get("symbol"),
             "company_name": item.get("company_name"),
-            "rating": item.get("rating") or item.get("bucket") or "Hold",
+            "rating": rating,
             "current_price": item.get("current_price"),
             "expected_price": item.get("expected_price"),
             "expected_cagr": expected_cagr,
@@ -6839,6 +6884,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "linear_core_net_score": core_net_score,
             "linear_potential_net_score": potential_net_score,
             "linear_confidence_quality_score": confidence_quality_score,
+            "linear_penalty_factor": penalty_factor,
+            "linear_penalties_applied": penalties_applied,
             "linear_allocation_score": _clamp(score, 0.0, 1.0),
             "linear_weights_used": weights,
         }

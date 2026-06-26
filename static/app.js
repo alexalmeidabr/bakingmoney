@@ -480,6 +480,14 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   linear_low_core_net_cap_pct: 4.0,
   linear_high_bearish_confidence_threshold: 8.0,
   linear_high_bearish_confidence_cap_pct: 5.0,
+  core_confidence_penalty_threshold: 0.5,
+  core_confidence_penalty: 0.15,
+  upside_penalty_threshold: 40.0,
+  upside_penalty: 0.20,
+  potential_confidence_penalty_threshold: 0.0,
+  potential_confidence_penalty: 0.05,
+  hold_rating_penalty_enabled: true,
+  hold_rating_penalty: 0.10,
 };
 
 const CONFIG_HELP = {};
@@ -4850,7 +4858,7 @@ function validateActionPlanSettings(settings) {
     if (typeof value === 'boolean') continue;
     if (key === 'action_cash_equivalent_symbols') continue;
     if (!Number.isFinite(value)) return `${key} must be numeric.`;
-    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score', 'action_trim_remaining_upside_threshold', 'action_sell_remaining_upside_threshold', 'linear_min_core_net', 'linear_min_potential_net'].includes(key)) return `${key} cannot be negative.`;
+    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score', 'action_trim_remaining_upside_threshold', 'action_sell_remaining_upside_threshold', 'linear_min_core_net', 'linear_min_potential_net', 'core_confidence_penalty_threshold', 'potential_confidence_penalty_threshold'].includes(key)) return `${key} cannot be negative.`;
   }
   const bucketTotal = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
     .reduce((sum, key) => sum + settings[key], 0);
@@ -4876,6 +4884,9 @@ function validateActionPlanSettings(settings) {
   if (settings.action_potential_diff_full_score <= settings.action_potential_diff_minimum) return 'Action Plan potential diff full score must be greater than minimum.';
   for (const key of ['action_starter_buy_base_required_upside', 'action_add_base_required_upside', 'action_strong_add_base_required_upside', 'action_hold_extra_add_required_upside']) {
     if (settings[key] < 0 || settings[key] > 2) return `${key} must be between 0 and 2.`;
+  }
+  for (const key of ['core_confidence_penalty', 'upside_penalty', 'potential_confidence_penalty', 'hold_rating_penalty']) {
+    if (settings[key] < 0 || settings[key] > 1) return `${key} must be between 0 and 1.`;
   }
   if (settings.linear_full_core_net <= settings.linear_min_core_net) return 'linear_full_core_net must be greater than linear_min_core_net.';
   if (settings.linear_full_potential_net <= settings.linear_min_potential_net) return 'linear_full_potential_net must be greater than linear_min_potential_net.';

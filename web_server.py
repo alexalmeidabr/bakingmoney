@@ -303,10 +303,13 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "linear_potential_confidence_weight": 10.0,
     "linear_confidence_quality_weight": 5.0,
     "linear_min_score_threshold": 0.10,
+    "linear_score_allocation_power": 1.5,
     "linear_zero_target_if_expected_cagr_negative": True,
     "linear_zero_target_if_upside_negative": True,
     "linear_max_single_stock_pct": 10.0,
     "linear_target_band_tolerance_pct": 15.0,
+    "linear_add_band_tolerance_pct": 15.0,
+    "linear_trim_band_tolerance_pct": 30.0,
     "linear_enable_risk_caps": True,
     "linear_negative_core_net_cap_pct": 2.0,
     "linear_low_core_net_threshold": 0.5,
@@ -1782,6 +1785,12 @@ def get_action_plan_settings(conn):
             settings[key] = str(raw if raw is not None else default)
         else:
             settings[key] = get_action_plan_numeric_setting(conn, key, float(default))
+    legacy_tolerance = safe_number(_get_setting_value(conn, "linear_target_band_tolerance_pct"))
+    if legacy_tolerance is not None:
+        if _get_setting_value(conn, "linear_add_band_tolerance_pct") is None:
+            settings["linear_add_band_tolerance_pct"] = legacy_tolerance
+        if _get_setting_value(conn, "linear_trim_band_tolerance_pct") is None:
+            settings["linear_trim_band_tolerance_pct"] = max(legacy_tolerance, ACTION_PLAN_DEFAULT_SETTINGS["linear_trim_band_tolerance_pct"])
     return settings
 
 
@@ -1789,6 +1798,14 @@ def validate_action_plan_settings(settings):
     if not isinstance(settings, dict):
         raise ValueError("action_plan_settings must be an object")
     effective = {**ACTION_PLAN_DEFAULT_SETTINGS, **settings}
+    if "linear_add_band_tolerance_pct" not in settings:
+        legacy_tolerance = safe_number(settings.get("linear_target_band_tolerance_pct"))
+        if legacy_tolerance is not None:
+            effective["linear_add_band_tolerance_pct"] = legacy_tolerance
+    if "linear_trim_band_tolerance_pct" not in settings:
+        legacy_tolerance = safe_number(settings.get("linear_target_band_tolerance_pct"))
+        if legacy_tolerance is not None:
+            effective["linear_trim_band_tolerance_pct"] = max(legacy_tolerance, ACTION_PLAN_DEFAULT_SETTINGS["linear_trim_band_tolerance_pct"])
     if "linear_rating_bonus_enabled" in settings and not isinstance(settings.get("linear_rating_bonus_enabled"), bool):
         raise ValueError("linear_rating_bonus_enabled must be boolean")
     for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
@@ -1804,7 +1821,7 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{key} must be numeric")
         if not math.isfinite(value):
             raise ValueError(f"{key} must be finite")
-        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold", "core_confidence_penalty_threshold", "potential_confidence_penalty_threshold", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus"}:
+        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold", "core_confidence_penalty_threshold", "potential_confidence_penalty_threshold", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus", "linear_score_allocation_power", "linear_add_band_tolerance_pct", "linear_trim_band_tolerance_pct"}:
             raise ValueError(f"{key} cannot be negative")
         effective[key] = value
 
@@ -1833,12 +1850,16 @@ def validate_action_plan_settings(settings):
         "linear_allocated_target_total_pct",
         "linear_max_single_stock_pct",
         "linear_target_band_tolerance_pct",
+        "linear_add_band_tolerance_pct",
+        "linear_trim_band_tolerance_pct",
         "linear_negative_core_net_cap_pct",
         "linear_low_core_net_cap_pct",
         "linear_high_bearish_confidence_cap_pct",
     ):
-        if effective[key] > 100.0:
+        if effective[key] < 0.0 or effective[key] > 100.0:
             raise ValueError(f"{key} must be between 0 and 100")
+    if effective["linear_score_allocation_power"] < 0.5 or effective["linear_score_allocation_power"] > 5.0:
+        raise ValueError("linear_score_allocation_power must be between 0.5 and 5.0")
     if effective["action_upside_full_score"] <= effective["action_upside_zero_score"]:
         raise ValueError("action_upside_full_score must be greater than action_upside_zero_score")
     if effective["action_core_diff_full_score"] <= effective["action_core_diff_zero_score"]:
@@ -6706,29 +6727,38 @@ def _linear_cap_details(row, settings):
     return max(0.0, cap), reason
 
 
-def _apply_linear_caps_and_redistribute(rows, target_total):
-    positive_rows = [row for row in rows if (safe_number(row.get("linear_allocation_score")) or 0.0) > 0]
+def _apply_linear_caps_and_redistribute(rows, target_total, settings):
+    allocation_power = safe_number(settings.get("linear_score_allocation_power")) or 1.0
+    allocation_power = _clamp(allocation_power, 0.5, 5.0)
+    min_score_threshold = safe_number(settings.get("linear_min_score_threshold")) or 0.0
+    positive_rows = []
     for row in rows:
         row["linear_target_mid_before_caps"] = 0.0
         row["linear_target_mid"] = 0.0
         row["linear_cap_applied"] = 0.0
         row["linear_cap_reason"] = "—"
-    total_score = sum(row["linear_allocation_score"] for row in positive_rows)
-    if target_total <= 0 or total_score <= 0:
+        allocation_score_input = max(0.0, (safe_number(row.get("linear_allocation_score")) or 0.0) - min_score_threshold)
+        row["linear_allocation_score_input"] = allocation_score_input
+        row["linear_allocation_weight"] = allocation_score_input ** allocation_power if allocation_score_input > 0 else 0.0
+        row["linear_score_allocation_power"] = allocation_power
+        if row["linear_allocation_weight"] > 0:
+            positive_rows.append(row)
+    total_weight = sum(row["linear_allocation_weight"] for row in positive_rows)
+    if target_total <= 0 or total_weight <= 0:
         return 0.0
     remaining_target = target_total
     uncapped = list(positive_rows)
     capped_allocated = 0.0
     for _ in range(len(positive_rows) + 1):
-        score_total = sum(row["linear_allocation_score"] for row in uncapped)
-        if score_total <= 0 or remaining_target <= 1e-9:
+        weight_total = sum(row["linear_allocation_weight"] for row in uncapped)
+        if weight_total <= 0 or remaining_target <= 1e-9:
             break
         newly_capped = []
         provisional = []
         for row in uncapped:
-            target = remaining_target * row["linear_allocation_score"] / score_total
+            target = remaining_target * row["linear_allocation_weight"] / weight_total
             if row["linear_target_mid_before_caps"] == 0.0:
-                row["linear_target_mid_before_caps"] = target_total * row["linear_allocation_score"] / total_score
+                row["linear_target_mid_before_caps"] = target_total * row["linear_allocation_weight"] / total_weight
             cap = safe_number(row.get("linear_effective_cap")) or 0.0
             if target > cap + 1e-9:
                 row["linear_target_mid"] = cap
@@ -6990,12 +7020,13 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         row["linear_effective_cap"] = cap
         row["linear_effective_cap_reason"] = cap_reason
         rows.append(row)
-    allocated_total = _apply_linear_caps_and_redistribute(rows, target_total)
-    tolerance = (safe_number(settings.get("linear_target_band_tolerance_pct")) or 0.0) / 100.0
+    allocated_total = _apply_linear_caps_and_redistribute(rows, target_total, settings)
+    add_tolerance = (safe_number(settings.get("linear_add_band_tolerance_pct")) or 0.0) / 100.0
+    trim_tolerance = (safe_number(settings.get("linear_trim_band_tolerance_pct")) or 0.0) / 100.0
     for row in rows:
         target_mid = safe_number(row.get("linear_target_mid")) or 0.0
-        target_low = target_mid * max(0.0, 1.0 - tolerance) if target_mid > 0 else 0.0
-        target_high = target_mid * (1.0 + tolerance) if target_mid > 0 else 0.0
+        target_low = target_mid * max(0.0, 1.0 - add_tolerance) if target_mid > 0 else 0.0
+        target_high = target_mid * (1.0 + trim_tolerance) if target_mid > 0 else 0.0
         row.update({
             "target_weight_mid": target_mid,
             "target_weight_low": target_low,

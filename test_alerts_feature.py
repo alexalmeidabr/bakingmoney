@@ -1434,6 +1434,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-action-plan-setting="upside_penalty"', html)
         self.assertIn('data-action-plan-setting="potential_confidence_penalty"', html)
         self.assertIn('data-action-plan-setting="hold_rating_penalty_enabled"', html)
+        self.assertIn('data-action-plan-setting="linear_score_allocation_power"', html)
+        self.assertIn('data-action-plan-setting="linear_add_band_tolerance_pct"', html)
+        self.assertIn('data-action-plan-setting="linear_trim_band_tolerance_pct"', html)
+        self.assertNotIn('data-action-plan-setting="linear_target_band_tolerance_pct" type="number"', html)
         self.assertIn('data-action-plan-setting="linear_rating_bonus_enabled"', html)
         self.assertIn('data-action-plan-setting="linear_strong_buy_rating_bonus"', html)
         self.assertIn('data-action-plan-setting="linear_buy_rating_bonus"', html)
@@ -1480,10 +1484,12 @@ class AlertsUiStructureTests(unittest.TestCase):
             'linear_potential_confidence_weight',
             'linear_confidence_quality_weight',
             'linear_min_score_threshold',
+            'linear_score_allocation_power',
             'linear_zero_target_if_expected_cagr_negative',
             'linear_zero_target_if_upside_negative',
             'linear_max_single_stock_pct',
-            'linear_target_band_tolerance_pct',
+            'linear_add_band_tolerance_pct',
+            'linear_trim_band_tolerance_pct',
             'linear_enable_risk_caps',
             'linear_negative_core_net_cap_pct',
             'linear_low_core_net_threshold',
@@ -1521,6 +1527,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Final Linear Score = Penalty-adjusted Linear Score × Rating Bonus Factor', js)
         self.assertIn('A value of 0.05 means a Strong Buy stock keeps 105%', js)
         self.assertIn('A value of 0.02 means a Buy-rated stock keeps 102%', js)
+        self.assertIn('Allocation Weight = max(0, Linear Score - Min Score Threshold) ^ Allocation Power', js)
+        self.assertIn('Target Low = Linear Target Mid × (1 - Add Band Tolerance %)', js)
+        self.assertIn('Target High = Linear Target Mid × (1 + Trim Band Tolerance %)', js)
         self.assertIn('.config-help-button', css)
         self.assertIn('.config-help-modal-content', css)
         self.assertIn('.config-help-related', css)
@@ -2982,6 +2991,89 @@ class ActionPlanFeatureTests(unittest.TestCase):
         )
 
 
+
+    def test_linear_score_allocation_power_concentrates_target_weights(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_allocated_target_total_pct": 100.0,
+            "linear_min_score_threshold": 0.0,
+            "linear_score_allocation_power": 1.0,
+            "linear_expected_cagr_weight": 1.0,
+            "linear_upside_weight": 0.0,
+            "linear_core_confidence_weight": 0.0,
+            "linear_potential_confidence_weight": 0.0,
+            "linear_confidence_quality_weight": 0.0,
+            "linear_min_expected_cagr": 0.0,
+            "linear_full_expected_cagr": 100.0,
+            "linear_max_single_stock_pct": 100.0,
+            "linear_enable_risk_caps": False,
+            "linear_rating_bonus_enabled": False,
+            "linear_zero_target_if_expected_cagr_negative": False,
+            "linear_zero_target_if_upside_negative": False,
+            "hold_rating_penalty_enabled": False,
+        })
+        for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty"):
+            settings[key] = 0.0
+        candidates = [
+            {"symbol": "HIGH", "rating": "Hold", "expected_cagr": 70.0, "upside": 10.0, "core_confidence_diff": 0.0, "potential_confidence_diff": 0.0, "current_position_weight": 0.0, "current_position_market_value": 0.0},
+            {"symbol": "LOW", "rating": "Hold", "expected_cagr": 35.0, "upside": 10.0, "core_confidence_diff": 0.0, "potential_confidence_diff": 0.0, "current_position_weight": 0.0, "current_position_market_value": 0.0},
+        ]
+        proportional = {row["symbol"]: row for row in web_server.compute_linear_action_plan(candidates, 100000.0, 0.0, settings)["rows"]}
+        proportional_ratio = proportional["HIGH"]["linear_target_weight_mid"] / proportional["LOW"]["linear_target_weight_mid"]
+        self.assertAlmostEqual(proportional_ratio, 2.0)
+        self.assertAlmostEqual(sum(row["linear_target_weight_mid"] for row in proportional.values()), 100.0)
+        self.assertAlmostEqual(proportional["HIGH"]["linear_allocation_score"], 0.70)
+
+        settings["linear_score_allocation_power"] = 2.0
+        powered = {row["symbol"]: row for row in web_server.compute_linear_action_plan(candidates, 100000.0, 0.0, settings)["rows"]}
+        powered_ratio = powered["HIGH"]["linear_target_weight_mid"] / powered["LOW"]["linear_target_weight_mid"]
+        self.assertAlmostEqual(powered_ratio, 4.0)
+        self.assertGreater(powered["HIGH"]["linear_target_weight_mid"], proportional["HIGH"]["linear_target_weight_mid"])
+        self.assertAlmostEqual(powered["HIGH"]["linear_allocation_score"], proportional["HIGH"]["linear_allocation_score"])
+        self.assertAlmostEqual(sum(row["linear_target_weight_mid"] for row in powered.values()), 100.0)
+
+    def test_linear_split_band_tolerances_drive_add_and_trim_actions(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_allocated_target_total_pct": 10.0,
+            "linear_min_score_threshold": 0.0,
+            "linear_score_allocation_power": 1.0,
+            "linear_max_single_stock_pct": 100.0,
+            "linear_add_band_tolerance_pct": 15.0,
+            "linear_trim_band_tolerance_pct": 30.0,
+            "linear_enable_risk_caps": False,
+            "linear_rating_bonus_enabled": False,
+        })
+        base_candidate = {
+            "symbol": "BAND",
+            "rating": "Strong Buy",
+            "expected_cagr": 20.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "potential_confidence_diff": 1.5,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 1.0,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "current_price": 100.0,
+            "expected_price": 150.0,
+        }
+        above_old_band = dict(base_candidate, current_position_weight=12.0, current_position_market_value=12000.0)
+        row = web_server.compute_linear_action_plan([above_old_band], 100000.0, 0.0, settings)["rows"][0]
+        self.assertAlmostEqual(row["linear_target_weight_mid"], 10.0)
+        self.assertAlmostEqual(row["linear_target_weight_low"], 8.5)
+        self.assertAlmostEqual(row["linear_target_weight_high"], 13.0)
+        self.assertEqual(row["action"], "Hold")
+
+        below_add_band = dict(base_candidate, current_position_weight=8.0, current_position_market_value=8000.0)
+        add_row = web_server.compute_linear_action_plan([below_add_band], 100000.0, 0.0, settings)["rows"][0]
+        self.assertEqual(add_row["action"], "Add")
+
+        above_trim_band = dict(base_candidate, current_position_weight=13.5, current_position_market_value=13500.0)
+        trim_row = web_server.compute_linear_action_plan([above_trim_band], 100000.0, 0.0, settings)["rows"][0]
+        self.assertEqual(trim_row["action"], "Trim")
+        self.assertAlmostEqual(trim_row["target_gap_amount"], 500.0)
+
     def test_linear_action_plan_applies_small_multiplicative_rating_bonus(self):
         candidate = {
             "symbol": "BONUS",
@@ -3098,6 +3190,21 @@ class ActionPlanFeatureTests(unittest.TestCase):
             web_server.validate_action_plan_settings(settings)
 
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_score_allocation_power"] = 5.1
+        with self.assertRaisesRegex(ValueError, "linear_score_allocation_power must be between 0.5 and 5.0"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_add_band_tolerance_pct"] = 101.0
+        with self.assertRaisesRegex(ValueError, "linear_add_band_tolerance_pct must be between 0 and 100"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_trim_band_tolerance_pct"] = -0.1
+        with self.assertRaisesRegex(ValueError, "linear_trim_band_tolerance_pct must be between 0 and 100"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["linear_strong_buy_rating_bonus"] = 1.5
         with self.assertRaisesRegex(ValueError, "linear_strong_buy_rating_bonus must be between 0 and 1"):
             web_server.validate_action_plan_settings(settings)
@@ -3112,6 +3219,16 @@ class ActionPlanFeatureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "linear_rating_bonus_enabled must be boolean"):
             web_server.validate_action_plan_settings(settings)
 
+
+
+    def test_linear_split_band_tolerances_fall_back_to_legacy_saved_tolerance(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.pop("linear_add_band_tolerance_pct")
+        settings.pop("linear_trim_band_tolerance_pct")
+        settings["linear_target_band_tolerance_pct"] = 20.0
+        effective = web_server.validate_action_plan_settings(settings)
+        self.assertEqual(effective["linear_add_band_tolerance_pct"], 20.0)
+        self.assertEqual(effective["linear_trim_band_tolerance_pct"], 30.0)
 
     def test_linear_action_plan_settings_allow_negative_net_confidence_minimums(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

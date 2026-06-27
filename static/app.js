@@ -470,10 +470,13 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   linear_potential_confidence_weight: 10.0,
   linear_confidence_quality_weight: 5.0,
   linear_min_score_threshold: 0.10,
+  linear_score_allocation_power: 1.5,
   linear_zero_target_if_expected_cagr_negative: true,
   linear_zero_target_if_upside_negative: true,
   linear_max_single_stock_pct: 10.0,
   linear_target_band_tolerance_pct: 15.0,
+  linear_add_band_tolerance_pct: 15.0,
+  linear_trim_band_tolerance_pct: 30.0,
   linear_enable_risk_caps: true,
   linear_negative_core_net_cap_pct: 2.0,
   linear_low_core_net_threshold: 0.5,
@@ -867,6 +870,16 @@ function registerActionPlanConfigHelp() {
     related: ['Linear Score', 'Linear min/full score inputs'],
   }));
 
+  addConfigHelp('linear_score_allocation_power', {
+    title: 'Linear score allocation power',
+    meaning: 'Controls how strongly Linear Allocation concentrates target weights into higher-scoring stocks.',
+    usedIn: 'Used after Linear Score is calculated, when translating scores into target allocation weights. It does not change the Linear Score itself; it changes how much target weight each score receives.',
+    formula: 'Allocation Weight = max(0, Linear Score - Min Score Threshold) ^ Allocation Power',
+    example: 'With power 1.0, a score of 0.70 receives about twice the allocation weight of 0.35. With power 2.0, 0.70 receives about four times the allocation weight of 0.35.',
+    tuning: 'Use 1.0 for a flatter, more diversified model. Use 1.5 as a balanced default. Use 2.0 or higher for stronger concentration in top-scoring names.',
+    related: ['Linear Score', 'Linear min score threshold', 'Linear max single-stock %'],
+  });
+
   addConfigHelp('linear_min_score_threshold', {
     title: 'Linear min score threshold',
     meaning: 'Minimum Linear Score required for a stock to receive a non-zero target allocation.',
@@ -905,14 +918,32 @@ function registerActionPlanConfigHelp() {
     related: ['Linear risk caps', 'Linear allocated target total %'],
   });
 
+  addConfigHelp('linear_add_band_tolerance_pct', {
+    title: 'Linear add band tolerance %',
+    meaning: 'Tolerance below Linear Target Mid before an underweight position becomes an Add candidate.',
+    usedIn: 'Used to calculate the lower side of the Linear Target Band.',
+    formula: 'Target Low = Linear Target Mid × (1 - Add Band Tolerance %)',
+    example: 'If Target Mid is 4% and add tolerance is 15%, the lower band is 3.4%. Below that, the position can become an Add candidate.',
+    tuning: 'Lower values create add signals sooner. Higher values require a larger underweight gap before adding. A reasonable default is 15%.',
+    related: ['Linear Target Mid', 'Linear trim band tolerance %', 'Gap to Mid'],
+  });
+
+  addConfigHelp('linear_trim_band_tolerance_pct', {
+    title: 'Linear trim band tolerance %',
+    meaning: 'Tolerance above Linear Target Mid before an overweight position becomes a Trim candidate.',
+    usedIn: 'Used to calculate the upper side of the Linear Target Band.',
+    formula: 'Target High = Linear Target Mid × (1 + Trim Band Tolerance %)',
+    example: 'If Target Mid is 4% and trim tolerance is 30%, the upper band is 5.2%. Above that, the position can become a Trim candidate.',
+    tuning: 'Use a higher trim tolerance than add tolerance if you want to avoid trimming strong long-term winners too aggressively. A reasonable default is 30%.',
+    related: ['Linear Target Mid', 'Linear add band tolerance %', 'Trim actions'],
+  });
+
   addConfigHelp('linear_target_band_tolerance_pct', {
-    title: 'Linear target band tolerance %',
-    meaning: 'Tolerance range around Linear Target Mid used to define the low/high target band.',
-    usedIn: 'Creates the Linear Target Low and Linear Target High band and helps decide Add, Hold, Trim, or overweight actions.',
-    formula: 'Low = Target Mid × (1 - Tolerance); High = Target Mid × (1 + Tolerance)',
-    example: 'If Linear Target Mid is 4% and tolerance is 15%, the target band is roughly 3.4% to 4.6%.',
-    tuning: 'Higher values reduce trading frequency. Lower values make the model more sensitive to small allocation differences. A reasonable default is 15%.',
-    related: ['Linear Target Mid', 'Action Plan Actions'],
+    title: 'Linear target band tolerance % (legacy)',
+    meaning: 'Legacy single target-band tolerance kept for saved-setting compatibility.',
+    usedIn: 'Used only as a fallback when the newer linear add and trim band tolerance settings are missing from saved settings.',
+    tuning: 'Prefer using Linear add band tolerance % and Linear trim band tolerance % for new configurations.',
+    related: ['Linear add band tolerance %', 'Linear trim band tolerance %'],
   });
 
   addConfigHelp('linear_enable_risk_caps', {
@@ -5123,7 +5154,7 @@ function validateActionPlanSettings(settings) {
     if (typeof value === 'boolean') continue;
     if (key === 'action_cash_equivalent_symbols') continue;
     if (!Number.isFinite(value)) return `${key} must be numeric.`;
-    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score', 'action_trim_remaining_upside_threshold', 'action_sell_remaining_upside_threshold', 'linear_min_core_net', 'linear_min_potential_net', 'core_confidence_penalty_threshold', 'potential_confidence_penalty_threshold'].includes(key)) return `${key} cannot be negative.`;
+    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score', 'action_trim_remaining_upside_threshold', 'action_sell_remaining_upside_threshold', 'linear_min_core_net', 'linear_min_potential_net', 'core_confidence_penalty_threshold', 'potential_confidence_penalty_threshold', 'linear_strong_buy_rating_bonus', 'linear_buy_rating_bonus', 'linear_score_allocation_power', 'linear_add_band_tolerance_pct', 'linear_trim_band_tolerance_pct'].includes(key)) return `${key} cannot be negative.`;
   }
   const bucketTotal = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
     .reduce((sum, key) => sum + settings[key], 0);
@@ -5155,6 +5186,10 @@ function validateActionPlanSettings(settings) {
   }
   if (settings.linear_full_core_net <= settings.linear_min_core_net) return 'linear_full_core_net must be greater than linear_min_core_net.';
   if (settings.linear_full_potential_net <= settings.linear_min_potential_net) return 'linear_full_potential_net must be greater than linear_min_potential_net.';
+  if (settings.linear_score_allocation_power < 0.5 || settings.linear_score_allocation_power > 5) return 'linear_score_allocation_power must be between 0.5 and 5.0.';
+  for (const key of ['linear_target_band_tolerance_pct', 'linear_add_band_tolerance_pct', 'linear_trim_band_tolerance_pct']) {
+    if (settings[key] < 0 || settings[key] > 100) return `${key} must be between 0 and 100.`;
+  }
   if (settings.action_trigger_max_required_upside <= settings.action_trigger_min_required_upside) return 'Trigger max required upside must be greater than trigger min required upside.';
   return null;
 }

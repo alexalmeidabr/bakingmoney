@@ -704,6 +704,157 @@ function registerActionPlanConfigHelp() {
     tuning: 'Higher required upside makes buys more selective. Lower required upside makes actions execute sooner.',
     related: ['Trigger quality score', 'Target band', 'Current weight'],
   }));
+
+  addConfigHelp('linear_allocated_target_total_pct', {
+    title: 'Linear allocated target total %',
+    meaning: 'Total percentage of the portfolio the Linear Allocation model is allowed to allocate to stocks.',
+    usedIn: 'The linear model normalizes all positive Linear Scores so final stock target weights sum to this percentage, subject to caps and eligibility rules.',
+    example: 'If set to 95%, Linear Allocation can allocate up to 95% to stocks and leave roughly 5% unallocated or cash-like.',
+    tuning: 'Use 100% to fully allocate across stocks. Use a lower value such as 90% or 95% when you want explicit cash or unallocated capacity.',
+    related: ['Linear Score', 'Linear max single-stock %', 'Minimum cash/unallocated %'],
+  });
+
+  [
+    ['linear_min_expected_cagr', 'Linear min expected CAGR %', 'Expected CAGR level that receives zero score contribution from the expected-CAGR component.', 'Used to normalize expected CAGR into the Linear Score.', 'With min = 0 and full = 15, a stock with 0% expected CAGR gets no expected-CAGR contribution while 15% or higher gets full contribution.', 'Usually keep at 0%. A stock below this level receives no expected-CAGR score.'],
+    ['linear_full_expected_cagr', 'Linear full expected CAGR %', 'Expected CAGR level that receives full score contribution from the expected-CAGR component.', 'Used to normalize expected CAGR into the Linear Score.', 'With min = 0 and full = 15, a stock with 7.5% expected CAGR receives about half of this component.', 'A reasonable default is 15%. Lower values make moderate-CAGR stocks score better; higher values make the model more selective.'],
+    ['linear_min_upside', 'Linear min upside %', 'Upside level that receives zero score contribution from the upside component.', 'Used to normalize scenario upside into the Linear Score.', 'With min = 0, a stock at or below 0% upside receives no upside contribution.', 'Usually keep at 0%. Stocks with negative upside should normally receive no upside score.'],
+    ['linear_full_upside', 'Linear full upside %', 'Upside level that receives full score contribution from the upside component.', 'Used to normalize scenario upside into the Linear Score.', 'With full upside = 80, stocks with 80%, 100%, or 150% upside all receive the maximum upside contribution.', 'A reasonable default is 80%. This prevents very high-upside but lower-confidence stocks from being over-rewarded by upside alone.'],
+    ['linear_min_core_net', 'Linear min core net', 'Core Net confidence level that receives zero score contribution from the core confidence component. Negative values are valid.', 'Used to normalize Core Net confidence into the Linear Score.', 'With min = -1 and full = 2, core net -1 receives zero core score while core net 2 receives full core score.', 'A reasonable default is -1 because weak or negative core confidence should receive little or no core score.'],
+    ['linear_full_core_net', 'Linear full core net', 'Core Net confidence level that receives full score contribution from the core confidence component.', 'Used to normalize Core Net confidence into the Linear Score.', 'With min = -1 and full = 2, core net 0.5 receives about half of this component.', 'A reasonable default is 2. Lower values give full core-confidence credit sooner; higher values make the model more selective.'],
+    ['linear_min_potential_net', 'Linear min potential net', 'Potential Net confidence level that receives zero score contribution from the potential confidence component. Negative values are valid.', 'Used to normalize Potential Net confidence into the Linear Score.', 'With min = -1 and full = 1.5, potential net -1 receives zero potential score while 1.5 receives full score.', 'A reasonable default is -1 because negative optionality should reduce the score.'],
+    ['linear_full_potential_net', 'Linear full potential net', 'Potential Net confidence level that receives full score contribution from the potential confidence component.', 'Used to normalize Potential Net confidence into the Linear Score.', 'With min = -1 and full = 1.5, potential net 0.25 receives about half of this component.', 'A reasonable default is 1.5. Potential confidence should matter, but usually should not dominate allocation sizing.'],
+  ].forEach(([key, title, meaning, usedIn, example, tuning]) => addConfigHelp(key, {
+    title,
+    meaning,
+    usedIn,
+    formula: 'Component Score = clamp((Value - Min) / (Full - Min), 0, 1)',
+    example,
+    tuning,
+    related: ['Linear Score', 'Linear component weights'],
+  }));
+
+  [
+    ['linear_expected_cagr_weight', 'Linear expected CAGR weight', 'How much the expected-CAGR component contributes to the Linear Score.', 'Higher values make the model more return-driven. Lower values make confidence and quality more important. A disciplined default is around 30.'],
+    ['linear_upside_weight', 'Linear upside weight', 'How much raw upside contributes to the Linear Score.', 'Keep this relatively low because expected CAGR already captures expected return. A high upside weight can over-rank high-upside stocks with weaker confidence. A disciplined default is around 5.'],
+    ['linear_core_confidence_weight', 'Linear core confidence weight', 'How much Core Net confidence contributes to the Linear Score.', 'This should usually be the largest or one of the largest weights because Core Drivers should dominate the Base case and position sizing. A disciplined default is around 45 to 50.'],
+    ['linear_potential_confidence_weight', 'Linear potential confidence weight', 'How much Potential Net confidence contributes to the Linear Score.', 'Potential Drivers should matter but not dominate. They mainly represent optionality and Bear/Bull asymmetry. A reasonable default is around 10.'],
+    ['linear_confidence_quality_weight', 'Linear confidence quality weight', 'How much additional confidence-quality adjustment contributes to the Linear Score.', 'Use this to improve risk adjustment. A reasonable default is 5 to 10.'],
+  ].forEach(([key, title, meaning, tuning]) => addConfigHelp(key, {
+    title,
+    meaning,
+    usedIn: key === 'linear_confidence_quality_weight'
+      ? 'Used in the Linear Score to reward strong bullish confidence and penalize high bearish confidence.'
+      : 'Used as one weighted part of the Linear Score calculation. Linear weights are normalized internally by their total.',
+    formula: 'Linear Score = weighted blend of expected CAGR, upside, Core Net, Potential Net, and confidence quality components.',
+    example: key === 'linear_confidence_quality_weight'
+      ? 'A stock with high bullish core confidence and low bearish core confidence receives a better confidence-quality contribution.'
+      : 'Increasing this weight gives the factor more influence relative to the other Linear Score components.',
+    tuning,
+    related: ['Linear Score', 'Linear min/full score inputs'],
+  }));
+
+  addConfigHelp('linear_min_score_threshold', {
+    title: 'Linear min score threshold',
+    meaning: 'Minimum Linear Score required for a stock to receive a non-zero target allocation.',
+    usedIn: 'After calculating Linear Score, stocks below this threshold receive a zero target before final target normalization.',
+    formula: 'If Linear Score < Threshold, Linear Target Mid = 0 before redistribution.',
+    example: 'At 0.10, a stock scoring 0.08 receives no target allocation even if it is otherwise eligible.',
+    tuning: 'Raise this to make the model more selective. Lower it to allow more stocks to receive small target weights. A reasonable default is 0.10.',
+    related: ['Linear Score', 'Linear allocated target total %'],
+  });
+
+  addConfigHelp('linear_zero_target_if_expected_cagr_negative', {
+    title: 'Zero target if expected CAGR negative',
+    meaning: 'When enabled, stocks with negative expected CAGR receive a zero target allocation regardless of other scores.',
+    usedIn: 'Applied as a Linear Allocation eligibility rule before final target normalization.',
+    example: 'A stock with strong confidence but -2% expected CAGR is assigned a zero target when this is enabled.',
+    tuning: 'Usually keep enabled. A stock with negative expected CAGR should generally not receive fresh allocation.',
+    related: ['Linear min expected CAGR %', 'Linear Score'],
+  });
+
+  addConfigHelp('linear_zero_target_if_upside_negative', {
+    title: 'Zero target if upside negative',
+    meaning: 'When enabled, stocks with negative upside receive a zero target allocation regardless of other scores.',
+    usedIn: 'Applied as a Linear Allocation eligibility rule before final target normalization.',
+    example: 'If scenario expected value is below the current price, the row receives a zero target when this is enabled.',
+    tuning: 'Usually keep enabled. It prevents the model from allocating to stocks where scenario expected value is below the current price.',
+    related: ['Linear min upside %', 'Linear Score'],
+  });
+
+  addConfigHelp('linear_max_single_stock_pct', {
+    title: 'Linear max single-stock %',
+    meaning: 'Maximum target allocation allowed for any single stock in the Linear Allocation model.',
+    usedIn: 'Applied as a cap after preliminary linear target weights are calculated.',
+    formula: 'Linear Target Mid After Caps = min(preliminary target, applicable linear caps)',
+    example: 'If an uncapped stock target is 12% and this cap is 10%, the final linear target mid is capped at 10% before redistribution.',
+    tuning: 'Use this as the main concentration control. Around 8% to 10% is reasonable for a concentrated portfolio; lower values create more diversification.',
+    related: ['Linear risk caps', 'Linear allocated target total %'],
+  });
+
+  addConfigHelp('linear_target_band_tolerance_pct', {
+    title: 'Linear target band tolerance %',
+    meaning: 'Tolerance range around Linear Target Mid used to define the low/high target band.',
+    usedIn: 'Creates the Linear Target Low and Linear Target High band and helps decide Add, Hold, Trim, or overweight actions.',
+    formula: 'Low = Target Mid × (1 - Tolerance); High = Target Mid × (1 + Tolerance)',
+    example: 'If Linear Target Mid is 4% and tolerance is 15%, the target band is roughly 3.4% to 4.6%.',
+    tuning: 'Higher values reduce trading frequency. Lower values make the model more sensitive to small allocation differences. A reasonable default is 15%.',
+    related: ['Linear Target Mid', 'Action Plan Actions'],
+  });
+
+  addConfigHelp('linear_enable_risk_caps', {
+    title: 'Enable linear risk caps',
+    meaning: 'Turns Linear Allocation-specific risk caps on or off.',
+    usedIn: 'When enabled, additional caps can reduce target weights for stocks with negative or weak confidence characteristics.',
+    example: 'A high-upside stock with negative Core Net can be capped at the negative-core cap instead of receiving the full score-based target.',
+    tuning: 'Usually keep enabled. It helps prevent high-upside but weak-confidence stocks from receiving too much allocation.',
+    related: ['Linear negative core net cap %', 'Linear low core net cap %', 'Linear high bearish confidence cap %'],
+  });
+
+  addConfigHelp('linear_negative_core_net_cap_pct', {
+    title: 'Linear negative core net cap %',
+    meaning: 'Maximum target allocation allowed for stocks with negative Core Net confidence.',
+    usedIn: 'Applied when Core Net confidence is below 0 and linear risk caps are enabled.',
+    example: 'If this cap is 2%, a stock with Core Net below 0 cannot receive a Linear Target Mid above 2% from this model.',
+    tuning: 'Use this to heavily limit companies where core business drivers are net negative. A reasonable default is around 2%.',
+    related: ['Enable linear risk caps', 'Linear min core net'],
+  });
+
+  addConfigHelp('linear_low_core_net_threshold', {
+    title: 'Linear low core net threshold',
+    meaning: 'Core Net confidence level below which a stock is considered low-confidence for linear risk-cap purposes.',
+    usedIn: 'If Core Net is below this threshold, but not necessarily negative, the low-core cap may apply when risk caps are enabled.',
+    example: 'With a threshold of 0.5, a stock with Core Net 0.2 is treated as low-core-confidence for cap logic.',
+    tuning: 'A reasonable default is 0.5. Raise it to make the model more conservative; lower it to let more companies avoid the low-core cap.',
+    related: ['Linear low core net cap %', 'Enable linear risk caps'],
+  });
+
+  addConfigHelp('linear_low_core_net_cap_pct', {
+    title: 'Linear low core net cap %',
+    meaning: 'Maximum target allocation allowed for stocks with Core Net confidence below the low-core threshold.',
+    usedIn: 'Applied when Core Net is below linear_low_core_net_threshold and linear risk caps are enabled.',
+    example: 'If the threshold is 0.5 and this cap is 4%, a stock with Core Net 0.2 is capped at 4%.',
+    tuning: 'Use this to limit companies with weak but not necessarily negative core confidence. A reasonable default is around 4%.',
+    related: ['Linear low core net threshold', 'Enable linear risk caps'],
+  });
+
+  addConfigHelp('linear_high_bearish_confidence_threshold', {
+    title: 'Linear high bearish confidence threshold',
+    meaning: 'Bearish Core confidence level above which a stock is considered to have high bearish pressure.',
+    usedIn: 'Linear risk-cap logic can use this threshold to limit allocation to stocks with unusually strong bearish core variables.',
+    example: 'With a threshold of 8, a stock with Core Bearish Confidence 8.5 can be limited by the high-bearish cap.',
+    tuning: 'A reasonable default is 8. Lower values make the cap more conservative; higher values make it apply only to the highest-risk names.',
+    related: ['Linear high bearish confidence cap %', 'Enable linear risk caps'],
+  });
+
+  addConfigHelp('linear_high_bearish_confidence_cap_pct', {
+    title: 'Linear high bearish confidence cap %',
+    meaning: 'Maximum target allocation allowed for stocks with bearish Core confidence above the high-bearish threshold.',
+    usedIn: 'Applied when linear risk caps are enabled and Core Bearish Confidence is above the configured threshold.',
+    example: 'If this cap is 5%, a high-upside stock with very high bearish core confidence cannot receive more than a 5% linear target.',
+    tuning: 'Use this to prevent overallocating to stocks with strong upside but unusually strong downside variables. A reasonable default is around 5%.',
+    related: ['Linear high bearish confidence threshold', 'Enable linear risk caps'],
+  });
+
 }
 
 registerActionPlanConfigHelp();

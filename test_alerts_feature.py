@@ -1461,6 +1461,39 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Show help for ${label}', js)
         self.assertIn('Weighted Count = clamp((Bucket Sizing Score - Min Score) / (Full Score - Min Score), 0, Max Contribution)', js)
         self.assertIn('Uncapped Bucket Target = Weighted Count Used × Weight / Effective Stock', js)
+        linear_help_keys = [
+            'linear_allocated_target_total_pct',
+            'linear_min_expected_cagr',
+            'linear_full_expected_cagr',
+            'linear_min_upside',
+            'linear_full_upside',
+            'linear_min_core_net',
+            'linear_full_core_net',
+            'linear_min_potential_net',
+            'linear_full_potential_net',
+            'linear_expected_cagr_weight',
+            'linear_upside_weight',
+            'linear_core_confidence_weight',
+            'linear_potential_confidence_weight',
+            'linear_confidence_quality_weight',
+            'linear_min_score_threshold',
+            'linear_zero_target_if_expected_cagr_negative',
+            'linear_zero_target_if_upside_negative',
+            'linear_max_single_stock_pct',
+            'linear_target_band_tolerance_pct',
+            'linear_enable_risk_caps',
+            'linear_negative_core_net_cap_pct',
+            'linear_low_core_net_threshold',
+            'linear_low_core_net_cap_pct',
+            'linear_high_bearish_confidence_threshold',
+            'linear_high_bearish_confidence_cap_pct',
+        ]
+        for key in linear_help_keys:
+            self.assertIn(f"'{key}'", js)
+        self.assertIn('Total percentage of the portfolio the Linear Allocation model is allowed to allocate to stocks.', js)
+        self.assertIn('Negative values are valid.', js)
+        self.assertIn('Core Net confidence level that receives zero score contribution', js)
+        self.assertIn('Potential Net confidence level that receives zero score contribution', js)
         self.assertIn('.config-help-button', css)
         self.assertIn('.config-help-modal-content', css)
         self.assertIn('.config-help-related', css)

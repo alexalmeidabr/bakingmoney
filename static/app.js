@@ -488,6 +488,9 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   potential_confidence_penalty: 0.05,
   hold_rating_penalty_enabled: true,
   hold_rating_penalty: 0.10,
+  linear_rating_bonus_enabled: true,
+  linear_strong_buy_rating_bonus: 0.05,
+  linear_buy_rating_bonus: 0.02,
 };
 
 const CONFIG_HELP = {};
@@ -784,6 +787,36 @@ function registerActionPlanConfigHelp() {
     example: 'If the penalty is 0.10, a Hold-rated stock keeps 90% of its pre-penalty Linear Score.',
     tuning: 'Use a small value if you want rating to remain only a secondary context signal. A reasonable range is 0.05 to 0.15. Set to 0 or disable the checkbox if rating should have no effect on Linear Allocation.',
     related: ['Enable Hold rating penalty', 'Linear min score threshold', 'Rating Settings'],
+  });
+
+  addConfigHelp('linear_rating_bonus_enabled', {
+    title: 'Enable linear rating bonus',
+    meaning: 'Turns on a small multiplicative Linear Score bonus for stocks rated Strong Buy or Buy.',
+    usedIn: 'Used only in Linear Allocation scoring after the base score and penalty factors are calculated. It does not affect Bucket Allocation and does not create rating buckets.',
+    formula: 'If enabled, Final Linear Score = Penalty-adjusted Linear Score × Rating Bonus Factor.',
+    example: 'If a Strong Buy stock has a penalty-adjusted score of 0.80 and the Strong Buy bonus is 0.05, the final score becomes 0.84.',
+    tuning: 'Keep enabled if you want the Linear Allocation model to modestly reward ratings that already summarize strong upside and confidence. Disable it if you want Linear Allocation to be fully independent from rating.',
+    related: ['Strong Buy rating bonus', 'Buy rating bonus', 'Hold rating penalty'],
+  });
+
+  addConfigHelp('linear_strong_buy_rating_bonus', {
+    title: 'Strong Buy rating bonus',
+    meaning: 'Multiplicative score bonus applied to Strong Buy stocks in Linear Allocation when rating bonus is enabled.',
+    usedIn: 'Used after the base Linear Score and penalty factors are calculated.',
+    formula: 'If Rating = Strong Buy, score *= (1 + linear_strong_buy_rating_bonus)',
+    example: 'A value of 0.05 means a Strong Buy stock keeps 105% of its penalty-adjusted Linear Score. A score of 0.80 becomes 0.84.',
+    tuning: 'Keep this small. A reasonable default is 0.05. Higher values can make Linear Allocation behave too much like bucket allocation and recreate allocation cliffs.',
+    related: ['Enable linear rating bonus', 'Buy rating bonus', 'Linear Score'],
+  });
+
+  addConfigHelp('linear_buy_rating_bonus', {
+    title: 'Buy rating bonus',
+    meaning: 'Small multiplicative score bonus applied to Buy-rated stocks in Linear Allocation when rating bonus is enabled.',
+    usedIn: 'Used after the base Linear Score and penalty factors are calculated.',
+    formula: 'If Rating = Buy, score *= (1 + linear_buy_rating_bonus)',
+    example: 'A value of 0.02 means a Buy-rated stock keeps 102% of its penalty-adjusted Linear Score. A score of 0.70 becomes 0.714.',
+    tuning: 'This should be smaller than the Strong Buy bonus. A reasonable default is 0.02. Keep it small so Linear Allocation remains mainly driven by expected CAGR, upside, core confidence, potential confidence, and risk penalties.',
+    related: ['Enable linear rating bonus', 'Strong Buy rating bonus', 'Linear Score'],
   });
 
   addConfigHelp('linear_allocated_target_total_pct', {
@@ -5117,7 +5150,7 @@ function validateActionPlanSettings(settings) {
   for (const key of ['action_starter_buy_base_required_upside', 'action_add_base_required_upside', 'action_strong_add_base_required_upside', 'action_hold_extra_add_required_upside']) {
     if (settings[key] < 0 || settings[key] > 2) return `${key} must be between 0 and 2.`;
   }
-  for (const key of ['core_confidence_penalty', 'upside_penalty', 'potential_confidence_penalty', 'hold_rating_penalty']) {
+  for (const key of ['core_confidence_penalty', 'upside_penalty', 'potential_confidence_penalty', 'hold_rating_penalty', 'linear_strong_buy_rating_bonus', 'linear_buy_rating_bonus']) {
     if (settings[key] < 0 || settings[key] > 1) return `${key} must be between 0 and 1.`;
   }
   if (settings.linear_full_core_net <= settings.linear_min_core_net) return 'linear_full_core_net must be greater than linear_min_core_net.';

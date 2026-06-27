@@ -1434,7 +1434,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-action-plan-setting="upside_penalty"', html)
         self.assertIn('data-action-plan-setting="potential_confidence_penalty"', html)
         self.assertIn('data-action-plan-setting="hold_rating_penalty_enabled"', html)
-        self.assertIn("'core_confidence_penalty', 'upside_penalty', 'potential_confidence_penalty', 'hold_rating_penalty'", js)
+        self.assertIn('data-action-plan-setting="linear_rating_bonus_enabled"', html)
+        self.assertIn('data-action-plan-setting="linear_strong_buy_rating_bonus"', html)
+        self.assertIn('data-action-plan-setting="linear_buy_rating_bonus"', html)
+        self.assertIn("'core_confidence_penalty', 'upside_penalty', 'potential_confidence_penalty', 'hold_rating_penalty', 'linear_strong_buy_rating_bonus', 'linear_buy_rating_bonus'", js)
         self.assertIn('function renderLinearAllocationRows()', js)
         self.assertIn('actionPlanLinearActionsTableBody', js)
         self.assertIn('actionPlanLinearDetailTableBody', js)
@@ -1503,6 +1506,9 @@ class AlertsUiStructureTests(unittest.TestCase):
             'potential_confidence_penalty',
             'hold_rating_penalty_enabled',
             'hold_rating_penalty',
+            'linear_rating_bonus_enabled',
+            'linear_strong_buy_rating_bonus',
+            'linear_buy_rating_bonus',
         ]
         for key in penalty_help_keys:
             self.assertIn(f"addConfigHelp('{key}'", js)
@@ -1512,6 +1518,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('keeps 80% of its pre-penalty Linear Score', js)
         self.assertIn('Multiple triggered penalties compound multiplicatively', js)
         self.assertIn('0.85 × 0.80 = 0.68', js)
+        self.assertIn('Final Linear Score = Penalty-adjusted Linear Score × Rating Bonus Factor', js)
+        self.assertIn('A value of 0.05 means a Strong Buy stock keeps 105%', js)
+        self.assertIn('A value of 0.02 means a Buy-rated stock keeps 102%', js)
         self.assertIn('.config-help-button', css)
         self.assertIn('.config-help-modal-content', css)
         self.assertIn('.config-help-related', css)
@@ -2973,6 +2982,56 @@ class ActionPlanFeatureTests(unittest.TestCase):
         )
 
 
+    def test_linear_action_plan_applies_small_multiplicative_rating_bonus(self):
+        candidate = {
+            "symbol": "BONUS",
+            "rating": "Strong Buy",
+            "expected_cagr": 7.5,
+            "upside": 40.0,
+            "core_confidence_diff": 0.5,
+            "potential_confidence_diff": 0.25,
+            "core_bullish_confidence": 5.0,
+            "core_bearish_confidence": 3.0,
+            "potential_bullish_confidence": 4.0,
+            "potential_bearish_confidence": 3.0,
+            "current_position_weight": 0.0,
+            "current_position_market_value": 0.0,
+            "current_price": 100.0,
+            "expected_price": 140.0,
+        }
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_min_score_threshold"] = 0.0
+        settings["linear_strong_buy_rating_bonus"] = 0.05
+        settings["linear_buy_rating_bonus"] = 0.02
+        for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty"):
+            settings[key] = 0.0
+        settings["hold_rating_penalty_enabled"] = False
+
+        disabled_settings = dict(settings)
+        disabled_settings["linear_rating_bonus_enabled"] = False
+        base_score = web_server.compute_linear_action_plan([candidate], 100000.0, 0.0, disabled_settings)["rows"][0]["linear_allocation_score"]
+
+        strong_buy = web_server.compute_linear_action_plan([candidate], 100000.0, 0.0, settings)["rows"][0]
+        self.assertAlmostEqual(strong_buy["linear_rating_bonus_factor"], 1.05)
+        self.assertEqual(strong_buy["linear_rating_bonus_reason"], "Strong Buy rating bonus")
+        self.assertAlmostEqual(strong_buy["linear_allocation_score"], base_score * 1.05)
+
+        buy_candidate = dict(candidate, rating="Buy")
+        buy_base = web_server.compute_linear_action_plan([buy_candidate], 100000.0, 0.0, disabled_settings)["rows"][0]["linear_allocation_score"]
+        buy = web_server.compute_linear_action_plan([buy_candidate], 100000.0, 0.0, settings)["rows"][0]
+        self.assertAlmostEqual(buy["linear_rating_bonus_factor"], 1.02)
+        self.assertAlmostEqual(buy["linear_allocation_score"], buy_base * 1.02)
+
+        hold_candidate = dict(candidate, rating="Hold")
+        hold_base = web_server.compute_linear_action_plan([hold_candidate], 100000.0, 0.0, disabled_settings)["rows"][0]["linear_allocation_score"]
+        hold = web_server.compute_linear_action_plan([hold_candidate], 100000.0, 0.0, settings)["rows"][0]
+        self.assertAlmostEqual(hold["linear_rating_bonus_factor"], 1.0)
+        self.assertAlmostEqual(hold["linear_allocation_score"], hold_base)
+
+        disabled_row = web_server.compute_linear_action_plan([candidate], 100000.0, 0.0, disabled_settings)["rows"][0]
+        self.assertAlmostEqual(disabled_row["linear_rating_bonus_factor"], 1.0)
+        self.assertAlmostEqual(disabled_row["linear_allocation_score"], base_score)
+
     def test_linear_action_plan_populates_action_columns_and_summary(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["linear_min_score_threshold"] = 0.0
@@ -3036,6 +3095,21 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["upside_penalty"] = 1.5
         with self.assertRaisesRegex(ValueError, "upside_penalty must be between 0 and 1"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_strong_buy_rating_bonus"] = 1.5
+        with self.assertRaisesRegex(ValueError, "linear_strong_buy_rating_bonus must be between 0 and 1"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_buy_rating_bonus"] = -0.01
+        with self.assertRaisesRegex(ValueError, "linear_buy_rating_bonus must be between 0 and 1"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_rating_bonus_enabled"] = "yes"
+        with self.assertRaisesRegex(ValueError, "linear_rating_bonus_enabled must be boolean"):
             web_server.validate_action_plan_settings(settings)
 
 

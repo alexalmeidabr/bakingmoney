@@ -321,6 +321,9 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "potential_confidence_penalty": 0.05,
     "hold_rating_penalty_enabled": True,
     "hold_rating_penalty": 0.10,
+    "linear_rating_bonus_enabled": True,
+    "linear_strong_buy_rating_bonus": 0.05,
+    "linear_buy_rating_bonus": 0.02,
 }
 ACTION_PLAN_BOOL_SETTINGS = {
     "action_include_current_positions",
@@ -341,6 +344,7 @@ ACTION_PLAN_BOOL_SETTINGS = {
     "linear_zero_target_if_upside_negative",
     "linear_enable_risk_caps",
     "hold_rating_penalty_enabled",
+    "linear_rating_bonus_enabled",
 }
 ACTION_PLAN_TEXT_SETTINGS = {
     "action_cash_equivalent_symbols",
@@ -1785,6 +1789,8 @@ def validate_action_plan_settings(settings):
     if not isinstance(settings, dict):
         raise ValueError("action_plan_settings must be an object")
     effective = {**ACTION_PLAN_DEFAULT_SETTINGS, **settings}
+    if "linear_rating_bonus_enabled" in settings and not isinstance(settings.get("linear_rating_bonus_enabled"), bool):
+        raise ValueError("linear_rating_bonus_enabled must be boolean")
     for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
         if key in ACTION_PLAN_BOOL_SETTINGS or key in ACTION_PLAN_TEXT_SETTINGS:
             if key in ACTION_PLAN_TEXT_SETTINGS:
@@ -1798,7 +1804,7 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{key} must be numeric")
         if not math.isfinite(value):
             raise ValueError(f"{key} must be finite")
-        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold", "core_confidence_penalty_threshold", "potential_confidence_penalty_threshold"}:
+        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold", "core_confidence_penalty_threshold", "potential_confidence_penalty_threshold", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus"}:
             raise ValueError(f"{key} cannot be negative")
         effective[key] = value
 
@@ -1810,7 +1816,7 @@ def validate_action_plan_settings(settings):
     ):
         if effective[full_key] <= effective[min_key]:
             raise ValueError(f"{full_key} must be greater than {min_key}")
-    for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty"):
+    for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus"):
         if effective[key] < 0 or effective[key] > 1:
             raise ValueError(f"{key} must be between 0 and 1")
 
@@ -6903,6 +6909,19 @@ def _linear_stock_penalty_factor(item, core_net, potential_net, upside, rating, 
 
     return _clamp(factor, 0.0, 1.0), penalties
 
+
+def _linear_rating_bonus_factor(rating, settings):
+    if not settings.get("linear_rating_bonus_enabled", True):
+        return 1.0, "Rating bonus disabled"
+    normalized_rating = str(rating or "").strip().lower()
+    if normalized_rating == "strong buy":
+        bonus = _clamp(safe_number(settings.get("linear_strong_buy_rating_bonus")) or 0.0, 0.0, 1.0)
+        return 1.0 + bonus, "Strong Buy rating bonus" if bonus > 0 else "No rating bonus"
+    if normalized_rating == "buy":
+        bonus = _clamp(safe_number(settings.get("linear_buy_rating_bonus")) or 0.0, 0.0, 1.0)
+        return 1.0 + bonus, "Buy rating bonus" if bonus > 0 else "No rating bonus"
+    return 1.0, "No rating bonus"
+
 def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings):
     target_total = safe_number(settings.get("linear_allocated_target_total_pct")) or 0.0
     weight_keys = ["linear_expected_cagr_weight", "linear_upside_weight", "linear_core_confidence_weight", "linear_potential_confidence_weight", "linear_confidence_quality_weight"]
@@ -6929,6 +6948,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         rating = item.get("rating") or item.get("bucket") or "Hold"
         penalty_factor, penalties_applied = _linear_stock_penalty_factor(item, core_net, potential_net, upside, rating, settings)
         score *= penalty_factor
+        rating_bonus_factor, rating_bonus_reason = _linear_rating_bonus_factor(rating, settings)
+        score *= rating_bonus_factor
         if settings.get("linear_zero_target_if_expected_cagr_negative", True) and expected_cagr is not None and expected_cagr < 0:
             score = 0.0
         if settings.get("linear_zero_target_if_upside_negative", True) and upside is not None and upside < 0:
@@ -6960,6 +6981,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "linear_confidence_quality_score": confidence_quality_score,
             "linear_penalty_factor": penalty_factor,
             "linear_penalties_applied": penalties_applied,
+            "linear_rating_bonus_factor": rating_bonus_factor,
+            "linear_rating_bonus_reason": rating_bonus_reason,
             "linear_allocation_score": _clamp(score, 0.0, 1.0),
             "linear_weights_used": weights,
         }

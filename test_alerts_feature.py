@@ -2921,6 +2921,66 @@ class ActionPlanFeatureTests(unittest.TestCase):
             ["core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty"],
         )
 
+
+    def test_linear_action_plan_populates_action_columns_and_summary(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_min_score_threshold"] = 0.0
+        settings["action_min_cash_unallocated_target"] = 0.0
+        settings["action_min_executable_trade_amount"] = 0.0
+        candidates = [
+            {
+                "symbol": "ADD",
+                "rating": "Buy",
+                "expected_cagr": 20.0,
+                "upside": 50.0,
+                "core_confidence_diff": 2.0,
+                "potential_confidence_diff": 1.5,
+                "core_bullish_confidence": 8.0,
+                "core_bearish_confidence": 1.0,
+                "potential_bullish_confidence": 7.0,
+                "potential_bearish_confidence": 1.0,
+                "current_position_weight": 0.0,
+                "current_position_market_value": 0.0,
+                "current_price": 100.0,
+                "expected_price": 150.0,
+            },
+            {
+                "symbol": "TRIM",
+                "rating": "Hold",
+                "expected_cagr": 8.0,
+                "upside": 20.0,
+                "core_confidence_diff": 0.5,
+                "potential_confidence_diff": 0.5,
+                "core_bullish_confidence": 5.0,
+                "core_bearish_confidence": 2.0,
+                "potential_bullish_confidence": 5.0,
+                "potential_bearish_confidence": 2.0,
+                "current_position_weight": 50.0,
+                "current_position_market_value": 50000.0,
+                "current_price": 100.0,
+                "expected_price": 120.0,
+            },
+        ]
+        payload = web_server.compute_linear_action_plan(candidates, 100000.0, 1000.0, settings)
+        rows = {row["symbol"]: row for row in payload["rows"]}
+        add = rows["ADD"]
+        self.assertEqual(add["action"], "Add")
+        self.assertGreater(add["target_gap_amount"], 0.0)
+        self.assertGreater(add["total_add_demand"], 0.0)
+        self.assertEqual(payload["summary"]["total_add_demand"], add["total_add_demand"])
+        self.assertIn(add["funding_status"], {"Fully funded", "Partially funded"})
+        self.assertGreater(add["executable_action_amount"], 0.0)
+        self.assertLessEqual(add["executable_action_amount"], add["target_gap_amount"] + 1e-6)
+        self.assertIn("Add about", add["action_amount_label"])
+        self.assertIsNotNone(add["trigger_price"])
+        self.assertIsNotNone(add["distance_to_trigger_percent"])
+        trim = rows["TRIM"]
+        self.assertEqual(trim["action"], "Trim")
+        self.assertGreater(trim["target_gap_amount"], 0.0)
+        self.assertEqual(trim["funding_status"], "Generates proceeds")
+        self.assertIn("Trim about", trim["action_amount_label"])
+        self.assertIsNotNone(trim["trigger_price"])
+
     def test_linear_action_plan_settings_reject_invalid_stock_level_penalties(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["upside_penalty"] = 1.5

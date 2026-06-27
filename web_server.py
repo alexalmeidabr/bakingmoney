@@ -6801,6 +6801,80 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
 
 
 
+def _linear_action_amount_fields(action, target_mid, target_high, total_portfolio_value, market_value):
+    total = safe_number(total_portfolio_value)
+    market = safe_number(market_value) or 0.0
+    mid = safe_number(target_mid)
+    high = safe_number(target_high)
+    direction = "none"
+    target_gap_amount = 0.0
+    action_amount_to_mid = None
+    if total is not None and total > 0 and mid is not None:
+        target_mid_value = total * mid / 100.0
+        action_amount_to_mid = abs(target_mid_value - market)
+        if action in {"Strong Add", "Add", "Starter Buy"}:
+            direction = "add"
+            target_gap_amount = max(0.0, target_mid_value - market)
+        elif action in {"Strong Trim", "Trim"}:
+            direction = "trim"
+            target_high_value = total * (high if high is not None else mid) / 100.0
+            target_gap_amount = max(0.0, market - target_high_value)
+        elif action == "Sell":
+            direction = "sell"
+            target_high_value = total * (high if high is not None else 0.0) / 100.0
+            target_gap_amount = max(0.0, market - target_high_value)
+    elif action == "Sell" and market > 0:
+        direction = "sell"
+        target_gap_amount = market
+        action_amount_to_mid = market
+    return {
+        "target_gap_amount": target_gap_amount,
+        "action_amount": target_gap_amount,
+        "action_amount_label": _format_action_amount_label(direction, target_gap_amount),
+        "action_amount_direction": direction,
+        "action_amount_to_mid": action_amount_to_mid,
+    }
+
+
+def _linear_action_trigger_fields(row, settings):
+    context_row = dict(row)
+    context_row["allocation_score"] = row.get("linear_allocation_score")
+    context_row["bucket_sizing_score"] = row.get("linear_upside_score")
+    context_row["weighted_count"] = row.get("linear_confidence_quality_score")
+    context = _action_plan_trigger_context(context_row, settings)
+    action = row.get("action")
+    trigger_price = None
+    trigger_type = "hold"
+    dynamic_required = None
+    if action == "Strong Add":
+        trigger_price = context.get("strong_add_trigger_price")
+        trigger_type = "strong_add"
+        dynamic_required = context.get("strong_add_required_upside")
+    elif action in {"Add", "Starter Buy"}:
+        trigger_price = context.get("add_trigger_price")
+        trigger_type = "add"
+        dynamic_required = context.get("add_required_upside")
+    elif action in {"Trim", "Strong Trim"}:
+        trigger_price = context.get("trim_trigger_price")
+        trigger_type = "trim"
+        dynamic_required = settings.get("action_trim_remaining_upside_threshold")
+    elif action == "Sell":
+        trigger_price = context.get("sell_trigger_price")
+        trigger_type = "sell"
+        dynamic_required = settings.get("action_sell_remaining_upside_threshold")
+    distance = _distance_to_trigger(row.get("current_price"), trigger_price)
+    return {
+        **context,
+        "relevant_trigger_price": trigger_price,
+        "relevant_trigger_type": trigger_type,
+        "trigger_price": trigger_price,
+        "dynamic_required_upside": dynamic_required,
+        "distance_to_trigger_percent": distance,
+        "distance_to_relevant_trigger_percent": distance,
+        "distance_to_relevant_trigger_label": _trigger_price_distance_label(row.get("current_price"), trigger_price, trigger_type),
+    }
+
+
 def _linear_stock_penalty_factor(item, core_net, potential_net, upside, rating, settings):
     factor = 1.0
     penalties = []
@@ -6919,8 +6993,9 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             action = "Trim"
         else:
             action = "Hold"
-        amount_fields = _action_amount_fields(action, current_weight, target_mid, total_portfolio_value, row.get("current_position_market_value"))
+        amount_fields = _linear_action_amount_fields(action, target_mid, target_high, total_portfolio_value, row.get("current_position_market_value"))
         row.update({"action": action, "reason": "Linear Allocation compares current weight with the linear target band; rating is displayed for context only.", **amount_fields})
+        row.update(_linear_action_trigger_fields(row, settings))
     execution = _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
     rows.sort(key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), row.get("symbol") or ""))
     summary = {

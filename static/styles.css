@@ -1238,6 +1238,8 @@ th.sortable[data-sort-direction='desc']::after {
 .action-plan-actions-table .action-cell { width: 120px; min-width: 120px; }
 .action-plan-actions-table .target-gap-column,
 .action-plan-actions-table .target-gap-cell { width: 120px; min-width: 120px; text-align: right; }
+.action-plan-actions-table .market-value-column,
+.action-plan-actions-table .market-value-cell { width: 120px; min-width: 120px; text-align: right; white-space: nowrap; }
 .action-plan-actions-table .action-amount-column,
 .action-plan-actions-table .action-amount-cell { width: 140px; min-width: 140px; text-align: right; }
 .action-plan-actions-table .funding-column,

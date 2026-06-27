@@ -1494,6 +1494,24 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Negative values are valid.', js)
         self.assertIn('Core Net confidence level that receives zero score contribution', js)
         self.assertIn('Potential Net confidence level that receives zero score contribution', js)
+        penalty_help_keys = [
+            'core_confidence_penalty_threshold',
+            'core_confidence_penalty',
+            'upside_penalty_threshold',
+            'upside_penalty',
+            'potential_confidence_penalty_threshold',
+            'potential_confidence_penalty',
+            'hold_rating_penalty_enabled',
+            'hold_rating_penalty',
+        ]
+        for key in penalty_help_keys:
+            self.assertIn(f"addConfigHelp('{key}'", js)
+        self.assertIn('Multiplicative penalty applied to the Linear Score', js)
+        self.assertIn('score factor *= (1 - core_confidence_penalty)', js)
+        self.assertIn('keeps 85% of its pre-penalty Linear Score', js)
+        self.assertIn('keeps 80% of its pre-penalty Linear Score', js)
+        self.assertIn('Multiple triggered penalties compound multiplicatively', js)
+        self.assertIn('0.85 × 0.80 = 0.68', js)
         self.assertIn('.config-help-button', css)
         self.assertIn('.config-help-modal-content', css)
         self.assertIn('.config-help-related', css)

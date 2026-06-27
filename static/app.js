@@ -705,6 +705,87 @@ function registerActionPlanConfigHelp() {
     related: ['Trigger quality score', 'Target band', 'Current weight'],
   }));
 
+
+  addConfigHelp('core_confidence_penalty_threshold', {
+    title: 'Core confidence penalty threshold',
+    meaning: 'Core Net confidence level below which the Linear Allocation model applies the core confidence penalty.',
+    usedIn: 'Used in Linear Allocation scoring after the base Linear Score components are calculated. If Core Net confidence is below this threshold, the core confidence penalty factor is applied.',
+    formula: 'If Core Net < threshold, score factor *= (1 - core_confidence_penalty)',
+    example: 'If the threshold is 0.5 and a stock has Core Net 0.2, the core confidence penalty is triggered.',
+    tuning: 'Raise this threshold to penalize more stocks with only moderate core confidence. Lower it to penalize only clearly weak or negative core-confidence stocks. A reasonable default is 0.5.',
+    related: ['Core confidence penalty', 'Linear core confidence weight', 'Linear low core net cap %'],
+  });
+
+  addConfigHelp('core_confidence_penalty', {
+    title: 'Core confidence penalty',
+    meaning: 'Multiplicative penalty applied to the Linear Score when Core Net confidence is below the configured threshold.',
+    usedIn: 'Used in the Linear Allocation penalty factor. This reduces the final score for stocks where core business drivers are not strong enough. Multiple triggered penalties compound multiplicatively.',
+    formula: 'Penalty factor *= (1 - core_confidence_penalty)',
+    example: 'If the penalty is 0.15, a stock that triggers this rule keeps 85% of its pre-penalty Linear Score. If it also triggers a 0.20 upside penalty, the combined factor is 0.85 × 0.80 = 0.68.',
+    tuning: 'Increase this to make Linear Allocation more conservative toward weak-core-confidence names. Decrease it if the penalty is too harsh. Typical range: 0.10 to 0.25.',
+    related: ['Core confidence penalty threshold', 'Linear core confidence weight', 'Linear risk caps'],
+  });
+
+  addConfigHelp('upside_penalty_threshold', {
+    title: 'Upside penalty threshold %',
+    meaning: 'Upside level below which the Linear Allocation model applies the upside penalty.',
+    usedIn: 'Used after the base Linear Score is calculated. If scenario upside is below this threshold, the upside penalty factor is applied.',
+    formula: 'If Upside < threshold, score factor *= (1 - upside_penalty)',
+    example: 'If the threshold is 40% and a stock has 25% upside, the upside penalty is triggered.',
+    tuning: 'Raise this threshold if you want Linear Allocation to penalize lower-upside stocks more aggressively. Lower it if you want high-confidence but moderate-upside stocks to remain competitive. A reasonable range is 25% to 50%.',
+    related: ['Upside penalty', 'Linear upside weight', 'Linear expected CAGR weight'],
+  });
+
+  addConfigHelp('upside_penalty', {
+    title: 'Upside penalty',
+    meaning: 'Multiplicative penalty applied to the Linear Score when upside is below the configured upside threshold.',
+    usedIn: 'Used in Linear Allocation scoring to reduce allocation to stocks where expected upside is not attractive enough, even if confidence is decent.',
+    formula: 'Penalty factor *= (1 - upside_penalty)',
+    example: 'If the penalty is 0.20, a stock that triggers this rule keeps 80% of its pre-penalty Linear Score.',
+    tuning: 'Increase this if the model is allocating too much to lower-upside stocks. Decrease it if the model is unfairly punishing high-quality compounders with moderate upside. Typical range: 0.10 to 0.25.',
+    related: ['Upside penalty threshold %', 'Linear full upside %', 'Linear expected CAGR weight'],
+  });
+
+  addConfigHelp('potential_confidence_penalty_threshold', {
+    title: 'Potential confidence penalty threshold',
+    meaning: 'Potential Net confidence level below which the Linear Allocation model applies the potential confidence penalty.',
+    usedIn: 'Used after the base Linear Score is calculated. If Potential Net confidence is below this threshold, the potential confidence penalty factor is applied.',
+    formula: 'If Potential Net < threshold, score factor *= (1 - potential_confidence_penalty)',
+    example: 'If the threshold is 0 and a stock has Potential Net -0.3, the potential confidence penalty is triggered.',
+    tuning: 'Use 0 if negative optionality should be penalized. Raise it if you want the model to require positive optionality. Lower it if Potential Drivers should matter less in allocation sizing.',
+    related: ['Potential confidence penalty', 'Linear potential confidence weight', 'Linear min potential net'],
+  });
+
+  addConfigHelp('potential_confidence_penalty', {
+    title: 'Potential confidence penalty',
+    meaning: 'Multiplicative penalty applied to the Linear Score when Potential Net confidence is below the configured threshold.',
+    usedIn: 'Used in Linear Allocation scoring to reduce allocation to stocks with weak or negative optionality.',
+    formula: 'Penalty factor *= (1 - potential_confidence_penalty)',
+    example: 'If the penalty is 0.05, a stock that triggers this rule keeps 95% of its pre-penalty Linear Score.',
+    tuning: 'Keep this smaller than the core confidence penalty because Potential Drivers should usually matter less than Core Drivers. Typical range: 0.03 to 0.10.',
+    related: ['Potential confidence penalty threshold', 'Linear potential confidence weight'],
+  });
+
+  addConfigHelp('hold_rating_penalty_enabled', {
+    title: 'Enable Hold rating penalty',
+    meaning: 'Turns on an extra Linear Score penalty for stocks currently rated Hold.',
+    usedIn: 'Used in Linear Allocation scoring after the base score is calculated. Rating is not used to size buckets in Linear Allocation, but this option allows Hold-rated stocks to receive a modest score penalty.',
+    formula: 'If enabled and Rating = Hold, score factor *= (1 - hold_rating_penalty)',
+    example: 'If this is enabled and the Hold rating penalty is 0.10, a Hold-rated stock keeps 90% of its pre-penalty Linear Score.',
+    tuning: 'Keep enabled if Hold-rated stocks should generally receive less allocation than Buy or Strong Buy stocks with similar metrics. Disable it if Linear Allocation should be fully independent from rating and rely only on upside, CAGR, and confidence metrics.',
+    related: ['Hold rating penalty', 'Linear Score', 'Rating Settings'],
+  });
+
+  addConfigHelp('hold_rating_penalty', {
+    title: 'Hold rating penalty',
+    meaning: 'Multiplicative penalty applied to the Linear Score for stocks rated Hold when Hold rating penalty is enabled.',
+    usedIn: 'Used in Linear Allocation scoring as a modest rating-context adjustment. It does not create buckets and does not use bucket allocation logic.',
+    formula: 'Penalty factor *= (1 - hold_rating_penalty)',
+    example: 'If the penalty is 0.10, a Hold-rated stock keeps 90% of its pre-penalty Linear Score.',
+    tuning: 'Use a small value if you want rating to remain only a secondary context signal. A reasonable range is 0.05 to 0.15. Set to 0 or disable the checkbox if rating should have no effect on Linear Allocation.',
+    related: ['Enable Hold rating penalty', 'Linear min score threshold', 'Rating Settings'],
+  });
+
   addConfigHelp('linear_allocated_target_total_pct', {
     title: 'Linear allocated target total %',
     meaning: 'Total percentage of the portfolio the Linear Allocation model is allowed to allocate to stocks.',

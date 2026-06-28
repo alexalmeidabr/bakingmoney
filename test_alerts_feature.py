@@ -3730,6 +3730,9 @@ class MomentumFeatureTests(unittest.TestCase):
                     self.assertAlmostEqual(row["momentum_score"], 3.61)
                     self.assertEqual(row["extension_label"], "Normal")
                     self.assertIn("momentum_updated_at", row)
+                    detail = web_server.get_analysis_detail(conn, "NVDA")
+                    self.assertEqual(detail["momentum"]["momentum_label"], "Positive")
+                    self.assertAlmostEqual(detail["version"]["extension_risk"], 1.42)
                 finally:
                     conn.close()
 
@@ -3739,9 +3742,12 @@ class MomentumFeatureTests(unittest.TestCase):
         with open(os.path.join(os.path.dirname(__file__), "static", "app.js"), encoding="utf-8") as handle:
             js = handle.read()
         self.assertIn('id="analysis-update-momentum-btn"', html)
+        self.assertIn('id="analysis-detail-momentum"', html)
         self.assertIn('data-sort-key="momentum_score"', html)
         self.assertIn('data-sort-key="extension_risk"', html)
         self.assertIn('data-sort-key="momentum_updated_at"', html)
         self.assertIn("/api/analysis/momentum/update", js)
-        self.assertIn("formatMomentumDisplay(item.momentum_score, item.momentum_label)", js)
-        self.assertIn("formatMomentumDisplay(item.extension_risk, item.extension_label)", js)
+        self.assertIn("formatMomentumListLabel(item.momentum_score, item.momentum_label, item.momentum_status)", js)
+        self.assertIn("formatMomentumListLabel(item.extension_risk, item.extension_label, item.momentum_status)", js)
+        self.assertIn("Momentum: ${formatMomentumDisplay(item.momentum_score, item.momentum_label)}", js)
+        self.assertIn("Extension Risk: ${formatMomentumDisplay(item.extension_risk, item.extension_label)}", js)

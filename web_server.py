@@ -5325,6 +5325,20 @@ def get_earnings_calendar_release_history_for_symbol(conn, symbol):
     return [dict(row) for row in rows]
 
 
+
+def get_momentum_snapshot_for_symbol(conn, symbol):
+    row = conn.execute(
+        """
+        SELECT symbol, benchmark_symbol, duration, momentum_score, momentum_label, extension_risk,
+               extension_label, momentum_status, warning, bars, first_date, last_date, latest_close,
+               trend_score, relative_strength_score, volume_score, price_structure_score, updated_at AS momentum_updated_at
+        FROM analysis_momentum_snapshots
+        WHERE symbol = ?
+        """,
+        (normalize_symbol(symbol),),
+    ).fetchone()
+    return dict(row) if row else None
+
 def get_analysis_detail(conn, symbol, version_id=None):
     root = conn.execute("SELECT id, symbol FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()
     if not root:
@@ -5358,12 +5372,23 @@ def get_analysis_detail(conn, symbol, version_id=None):
         (root["id"],),
     ).fetchone()
 
+    momentum_snapshot = get_momentum_snapshot_for_symbol(conn, root["symbol"])
+    version_payload = _version_payload(conn, selected)
+    version_payload.update({
+        "momentum_score": momentum_snapshot.get("momentum_score") if momentum_snapshot else None,
+        "momentum_label": momentum_snapshot.get("momentum_label") if momentum_snapshot else None,
+        "extension_risk": momentum_snapshot.get("extension_risk") if momentum_snapshot else None,
+        "extension_label": momentum_snapshot.get("extension_label") if momentum_snapshot else None,
+        "momentum_status": momentum_snapshot.get("momentum_status") if momentum_snapshot else None,
+        "momentum_updated_at": momentum_snapshot.get("momentum_updated_at") if momentum_snapshot else None,
+    })
     detail = {
         "symbol": root["symbol"],
         "root_id": root["id"],
         "selected_version_id": selected["id"],
         "versions": [dict(v) for v in versions],
-        "version": _version_payload(conn, selected),
+        "version": version_payload,
+        "momentum": momentum_snapshot,
         "saved_key_variable_edits": {
             "based_on_version_id": draft["based_on_version_id"],
             "updated_at": draft["updated_at"],

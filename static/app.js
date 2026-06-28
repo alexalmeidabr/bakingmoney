@@ -78,6 +78,7 @@ const analysisListView = document.getElementById('analysis-list-view');
 const analysisDetailView = document.getElementById('analysis-detail-view');
 const analysisBackBtn = document.getElementById('analysis-back-btn');
 const analysisDetailTitle = document.getElementById('analysis-detail-title');
+const analysisDetailMomentumEl = document.getElementById('analysis-detail-momentum');
 const analysisDetailStatus = document.getElementById('analysis-detail-status');
 const analysisSummary = document.getElementById('analysis-summary');
 const analysisScenariosBody = document.querySelector('#analysis-scenarios-table tbody');
@@ -1772,6 +1773,11 @@ function formatMomentumDisplay(score, label) {
   return `${score.toFixed(1)} / 5${label ? ` — ${label}` : ''}`;
 }
 
+function formatMomentumListLabel(score, label, status) {
+  if (status === 'Error' || typeof score !== 'number' || !label) return '—';
+  return label;
+}
+
 function getVisibleAnalysisSymbols() {
   return getFilteredAnalysisItems().map((item) => item.symbol).filter(Boolean);
 }
@@ -1780,7 +1786,7 @@ function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
   sortAnalysis(getFilteredAnalysisItems()).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatMomentumDisplay(item.momentum_score, item.momentum_label)}</td><td>${formatMomentumDisplay(item.extension_risk, item.extension_label)}</td><td>${formatDateTime(item.momentum_updated_at)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatCoreConfidenceDisplay(item)}</td><td>${formatPotentialConfidenceDisplay(item)}</td><td>${formatDate(item.latest_release_date)}</td><td>${formatDateTime(item.last_activity_at || item.updated_at)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatMomentumListLabel(item.momentum_score, item.momentum_label, item.momentum_status)}</td><td>${formatMomentumListLabel(item.extension_risk, item.extension_label, item.momentum_status)}</td><td>${formatDateTime(item.momentum_updated_at)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatCoreConfidenceDisplay(item)}</td><td>${formatPotentialConfidenceDisplay(item)}</td><td>${formatDate(item.latest_release_date)}</td><td>${formatDateTime(item.last_activity_at || item.updated_at)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
@@ -2955,6 +2961,10 @@ function renderVersionControls() {
 function renderAnalysisDetail() {
   const item = analysisDetailState.version;
   analysisDetailTitle.textContent = `Analysis: ${analysisDetailState.symbol}`;
+  if (analysisDetailMomentumEl) {
+    analysisDetailMomentumEl.textContent = `Momentum: ${formatMomentumDisplay(item.momentum_score, item.momentum_label)} · Extension Risk: ${formatMomentumDisplay(item.extension_risk, item.extension_label)}`;
+    analysisDetailMomentumEl.classList.remove('hidden');
+  }
   const effectiveBusinessModel = getEffectiveBusinessModel();
   const effectiveBusinessSummary = getEffectiveBusinessSummary();
   const safeBusinessModel = escapeHtml(effectiveBusinessModel);
@@ -3292,6 +3302,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   analysisDetailStatus.textContent = `Loading ${symbol} detail…`;
   analysisDetailStatus.className = 'status';
   analysisSummary.classList.add('hidden');
+  if (analysisDetailMomentumEl) analysisDetailMomentumEl.classList.add('hidden');
   analysisListView.classList.add('hidden');
   analysisDetailView.classList.remove('hidden');
   if (analysisDetailOrigin === 'positions') showAnalysisDetailFromPositionsOrigin();

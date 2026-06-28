@@ -78,7 +78,6 @@ const analysisListView = document.getElementById('analysis-list-view');
 const analysisDetailView = document.getElementById('analysis-detail-view');
 const analysisBackBtn = document.getElementById('analysis-back-btn');
 const analysisDetailTitle = document.getElementById('analysis-detail-title');
-const analysisDetailMomentumEl = document.getElementById('analysis-detail-momentum');
 const analysisDetailStatus = document.getElementById('analysis-detail-status');
 const analysisSummary = document.getElementById('analysis-summary');
 const analysisScenariosBody = document.querySelector('#analysis-scenarios-table tbody');
@@ -1773,6 +1772,15 @@ function formatMomentumDisplay(score, label) {
   return `${score.toFixed(1)} / 5${label ? ` — ${label}` : ''}`;
 }
 
+function formatMomentumSummaryValue(score, label) {
+  const hasScore = typeof score === 'number';
+  const hasLabel = Boolean(label);
+  if (hasScore && hasLabel) return `${score.toFixed(1)} / 5 — ${label}`;
+  if (hasScore) return `${score.toFixed(1)} / 5`;
+  if (hasLabel) return label;
+  return '—';
+}
+
 function formatMomentumListLabel(score, label, status) {
   if (status === 'Error' || typeof score !== 'number' || !label) return '—';
   return label;
@@ -2961,10 +2969,6 @@ function renderVersionControls() {
 function renderAnalysisDetail() {
   const item = analysisDetailState.version;
   analysisDetailTitle.textContent = `Analysis: ${analysisDetailState.symbol}`;
-  if (analysisDetailMomentumEl) {
-    analysisDetailMomentumEl.textContent = `Momentum: ${formatMomentumDisplay(item.momentum_score, item.momentum_label)} · Extension Risk: ${formatMomentumDisplay(item.extension_risk, item.extension_label)}`;
-    analysisDetailMomentumEl.classList.remove('hidden');
-  }
   const effectiveBusinessModel = getEffectiveBusinessModel();
   const effectiveBusinessSummary = getEffectiveBusinessSummary();
   const safeBusinessModel = escapeHtml(effectiveBusinessModel);
@@ -2977,7 +2981,7 @@ function renderAnalysisDetail() {
     ? `<div class="business-model-editor"><label><strong>Business Summary:</strong></label><textarea id="analysis-business-summary-input" class="analysis-business-model-input" rows="4">${safeBusinessSummary}</textarea><div class="table-actions"><button id="analysis-business-summary-save-btn">Save</button><button id="analysis-business-summary-cancel-btn">Cancel</button></div></div>`
     : `<div class="business-model-editor"><p><strong>Business Summary:</strong> ${safeBusinessSummary || 'N/A'}</p><div class="table-actions"><button id="analysis-business-summary-edit-btn">Edit Business Summary</button></div></div>`;
   const releaseSummaryCard = renderAnalysisReleaseSummaryCard();
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected CAGR</div><div class="value ${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value confidence-breakdown"><div>Core: ${formatCoreConfidenceDisplay(item)}</div><div>Potential: ${formatPotentialConfidenceDisplay(item)}</div></div></div>${releaseSummaryCard}<div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected CAGR</div><div class="value ${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value confidence-breakdown"><div>Core: ${formatCoreConfidenceDisplay(item)}</div><div>Potential: ${formatPotentialConfidenceDisplay(item)}</div></div></div>${releaseSummaryCard}<div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div><div class="summary-item" title="Short-term technical momentum calculated from TWS historical price and volume data."><div class="label">Momentum</div><div class="value">${formatMomentumSummaryValue(item.momentum_score, item.momentum_label)}</div></div><div class="summary-item" title="Measures whether the stock appears technically extended based on price distance from trend, recent return, and volatility."><div class="label">Extension Risk</div><div class="value">${formatMomentumSummaryValue(item.extension_risk, item.extension_label)}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   renderScenarioOverlayArea();
@@ -3302,7 +3306,6 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   analysisDetailStatus.textContent = `Loading ${symbol} detail…`;
   analysisDetailStatus.className = 'status';
   analysisSummary.classList.add('hidden');
-  if (analysisDetailMomentumEl) analysisDetailMomentumEl.classList.add('hidden');
   analysisListView.classList.add('hidden');
   analysisDetailView.classList.remove('hidden');
   if (analysisDetailOrigin === 'positions') showAnalysisDetailFromPositionsOrigin();

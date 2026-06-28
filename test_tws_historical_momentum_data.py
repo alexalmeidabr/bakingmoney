@@ -20,6 +20,8 @@ from datetime import date
 from pathlib import Path
 from typing import Sequence
 
+from momentum_service import calculate_momentum_snapshot
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional dependency
@@ -132,105 +134,39 @@ def safe_float(value) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def pct_return(bars: Sequence[DailyBar], days: int) -> float | None:
-    if len(bars) <= days:
-        return None
-    latest = bars[-1].close
-    prior = bars[-1 - days].close
-    if latest is None or prior is None or prior <= 0:
-        return None
-    return (latest / prior - 1.0) * 100.0
-
-
-def simple_moving_average(values: Sequence[float], window: int) -> float | None:
-    if len(values) < window:
-        return None
-    subset = values[-window:]
-    if len(subset) < window:
-        return None
-    return sum(subset) / window
-
-
-def ratio(numerator: float | None, denominator: float | None) -> float | None:
-    if numerator is None or denominator is None or denominator == 0:
-        return None
-    return numerator / denominator
-
-
 def calculate_metrics(symbol: str, bars: Sequence[DailyBar], benchmark_bars: Sequence[DailyBar]) -> dict[str, object]:
-    closes = [bar.close for bar in bars if bar.close is not None]
-    volumes = [bar.volume for bar in bars if bar.volume is not None]
-    latest_close = bars[-1].close if bars else None
-    latest_volume_available = any((bar.volume is not None and bar.volume > 0) for bar in bars)
-    first_day = bars[0].day if bars else None
-    last_day = bars[-1].day if bars else None
-
-    returns = {days: pct_return(bars, days) for days in (20, 60, 120)}
-    benchmark_returns = {days: pct_return(benchmark_bars, days) for days in (20, 60, 120)}
-    relative_returns = {
-        days: (returns[days] - benchmark_returns[days]) if returns[days] is not None and benchmark_returns[days] is not None else None
-        for days in (20, 60, 120)
-    }
-
-    sma_50 = simple_moving_average(closes, 50)
-    sma_200 = simple_moving_average(closes, 200)
-    prior_sma_50 = simple_moving_average(closes[:-20], 50) if len(closes) >= 70 else None
-    high_52w = max((bar.high for bar in bars[-252:] if bar.high is not None), default=None)
-
-    avg_vol_20 = simple_moving_average(volumes, 20)
-    avg_vol_60 = simple_moving_average(volumes, 60)
-    up_volume, down_volume = up_down_volume_last_60(bars)
-
-    data_quality = "OK" if len(bars) >= 200 and latest_close is not None and latest_volume_available else "CHECK"
+    snapshot = calculate_momentum_snapshot(bars, benchmark_bars)
+    metrics = snapshot["metrics"]
     return {
         "symbol": symbol,
-        "quality": data_quality,
-        "bars": len(bars),
-        "first_date": first_day,
-        "last_date": last_day,
-        "latest_close": latest_close,
-        "volume_available": latest_volume_available,
-        "ret_20": returns[20],
-        "ret_60": returns[60],
-        "ret_120": returns[120],
-        "rel_20": relative_returns[20],
-        "rel_60": relative_returns[60],
-        "rel_120": relative_returns[120],
-        "sma_50": sma_50,
-        "sma_200": sma_200,
-        "price_vs_50": percent_above(latest_close, sma_50),
-        "price_vs_200": percent_above(latest_close, sma_200),
-        "sma_50_slope_20": percent_above(sma_50, prior_sma_50),
-        "high_52w": high_52w,
-        "distance_52w_high": percent_above(latest_close, high_52w),
-        "avg_vol_20": avg_vol_20,
-        "avg_vol_60": avg_vol_60,
-        "vol_20_60_ratio": ratio(avg_vol_20, avg_vol_60),
-        "up_down_vol_ratio_60": ratio(up_volume, down_volume),
+        "quality": snapshot["momentum_status"],
+        "bars": metrics.get("bars"),
+        "first_date": metrics.get("first_date"),
+        "last_date": metrics.get("last_date"),
+        "latest_close": metrics.get("latest_close"),
+        "volume_available": metrics.get("has_volume"),
+        "ret_20": metrics.get("ret_20"),
+        "ret_60": metrics.get("ret_60"),
+        "ret_120": metrics.get("ret_120"),
+        "rel_20": metrics.get("rel_20"),
+        "rel_60": metrics.get("rel_60"),
+        "rel_120": metrics.get("rel_120"),
+        "sma_50": metrics.get("sma_50"),
+        "sma_200": metrics.get("sma_200"),
+        "price_vs_50": metrics.get("price_vs_sma_50"),
+        "price_vs_200": metrics.get("price_vs_sma_200"),
+        "sma_50_slope_20": metrics.get("sma_50_slope_20d"),
+        "high_52w": metrics.get("high_52w"),
+        "distance_52w_high": metrics.get("distance_from_52w_high"),
+        "avg_vol_20": metrics.get("avg_vol_20"),
+        "avg_vol_60": metrics.get("avg_vol_60"),
+        "vol_20_60_ratio": metrics.get("volume_ratio_20_60"),
+        "up_down_vol_ratio_60": metrics.get("up_down_volume_ratio"),
+        "momentum_score": snapshot.get("momentum_score"),
+        "momentum_label": snapshot.get("momentum_label"),
+        "extension_risk": snapshot.get("extension_risk"),
+        "extension_label": snapshot.get("extension_label"),
     }
-
-
-def percent_above(value: float | None, baseline: float | None) -> float | None:
-    if value is None or baseline is None or baseline <= 0:
-        return None
-    return (value / baseline - 1.0) * 100.0
-
-
-def up_down_volume_last_60(bars: Sequence[DailyBar]) -> tuple[float | None, float | None]:
-    if len(bars) < 2:
-        return None, None
-    recent = bars[-60:]
-    up_volume = 0.0
-    down_volume = 0.0
-    for previous, current in zip(recent, recent[1:]):
-        if previous.close is None or current.close is None or current.volume is None:
-            continue
-        if current.close > previous.close:
-            up_volume += current.volume
-        elif current.close < previous.close:
-            down_volume += current.volume
-    return up_volume, down_volume
-
 
 def save_bars_csv(symbol: str, bars: Sequence[DailyBar], output_dir: Path = OUTPUT_DIR) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -266,6 +202,10 @@ def print_summary_table(metrics_rows: Sequence[dict[str, object]]) -> None:
         ("Last", "last_date", 10),
         ("Close", "latest_close", 10),
         ("Vol?", "volume_available", 5),
+        ("Mom", "momentum_score", 6),
+        ("Mom Label", "momentum_label", 15),
+        ("Ext", "extension_risk", 6),
+        ("Ext Label", "extension_label", 14),
         ("20D%", "ret_20", 8),
         ("60D%", "ret_60", 8),
         ("120D%", "ret_120", 8),

@@ -21,6 +21,8 @@ from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 
+from momentum_service import calculate_momentum_snapshot
+
 from analysis_service import (
     AnalysisValidationError,
     calculate_confidence_breakdown,
@@ -73,6 +75,7 @@ BACKUP_REQUIRED_TABLES = (
     "positions_cache",
     "thesis_review_alerts",
     "recent_event_checks",
+    "analysis_momentum_snapshots",
 )
 
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
@@ -2885,6 +2888,32 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS analysis_momentum_snapshots (
+              symbol TEXT PRIMARY KEY,
+              benchmark_symbol TEXT,
+              duration TEXT,
+              momentum_score REAL,
+              momentum_label TEXT,
+              extension_risk REAL,
+              extension_label TEXT,
+              momentum_status TEXT,
+              warning TEXT,
+              bars INTEGER,
+              first_date TEXT,
+              last_date TEXT,
+              latest_close REAL,
+              trend_score REAL,
+              relative_strength_score REAL,
+              volume_score REAL,
+              price_structure_score REAL,
+              metrics_json TEXT,
+              components_json TEXT,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_dedupe
             ON thesis_review_alerts(symbol, alert_type, event_summary, impact_summary)
             """
@@ -3029,6 +3058,117 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+
+
+
+MOMENTUM_DEFAULT_BENCHMARK = "QQQ"
+MOMENTUM_DEFAULT_DURATION = "1 Y"
+
+
+def fetch_historical_daily_bars(symbol, duration=MOMENTUM_DEFAULT_DURATION):
+    """Fetch daily historical TRADES bars from TWS/IBKR for deterministic momentum."""
+    normalized_symbol = normalize_symbol(symbol)
+    if not normalized_symbol:
+        raise ValueError("symbol is required")
+    ensure_event_loop()
+    from ib_insync import Stock
+
+    ib = get_ib_connection()
+    contract = Stock(normalized_symbol, "SMART", "USD")
+    qualified = ib.qualifyContracts(contract)
+    request_contract = qualified[0] if qualified else contract
+    bars = ib.reqHistoricalData(
+        request_contract,
+        endDateTime="",
+        durationStr=duration or MOMENTUM_DEFAULT_DURATION,
+        barSizeSetting="1 day",
+        whatToShow="TRADES",
+        useRTH=True,
+        formatDate=1,
+        keepUpToDate=False,
+    )
+    return [
+        {
+            "date": getattr(bar, "date", None),
+            "open": safe_number(getattr(bar, "open", None)),
+            "high": safe_number(getattr(bar, "high", None)),
+            "low": safe_number(getattr(bar, "low", None)),
+            "close": safe_number(getattr(bar, "close", None)),
+            "volume": safe_number(getattr(bar, "volume", None)),
+        }
+        for bar in bars
+    ]
+
+
+def save_momentum_snapshot(conn, symbol, benchmark_symbol, duration, snapshot):
+    now = utc_now_iso()
+    metrics = snapshot.get("metrics") or {}
+    components = snapshot.get("components") or {}
+    conn.execute(
+        """
+        INSERT INTO analysis_momentum_snapshots (
+          symbol, benchmark_symbol, duration, momentum_score, momentum_label, extension_risk, extension_label,
+          momentum_status, warning, bars, first_date, last_date, latest_close, trend_score,
+          relative_strength_score, volume_score, price_structure_score, metrics_json, components_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(symbol) DO UPDATE SET
+          benchmark_symbol=excluded.benchmark_symbol,
+          duration=excluded.duration,
+          momentum_score=excluded.momentum_score,
+          momentum_label=excluded.momentum_label,
+          extension_risk=excluded.extension_risk,
+          extension_label=excluded.extension_label,
+          momentum_status=excluded.momentum_status,
+          warning=excluded.warning,
+          bars=excluded.bars,
+          first_date=excluded.first_date,
+          last_date=excluded.last_date,
+          latest_close=excluded.latest_close,
+          trend_score=excluded.trend_score,
+          relative_strength_score=excluded.relative_strength_score,
+          volume_score=excluded.volume_score,
+          price_structure_score=excluded.price_structure_score,
+          metrics_json=excluded.metrics_json,
+          components_json=excluded.components_json,
+          updated_at=excluded.updated_at
+        """,
+        (
+            normalize_symbol(symbol),
+            normalize_symbol(benchmark_symbol),
+            duration,
+            snapshot.get("momentum_score"),
+            snapshot.get("momentum_label"),
+            snapshot.get("extension_risk"),
+            snapshot.get("extension_label"),
+            snapshot.get("momentum_status"),
+            snapshot.get("warning"),
+            metrics.get("bars"),
+            metrics.get("first_date"),
+            metrics.get("last_date"),
+            metrics.get("latest_close"),
+            components.get("trend_score"),
+            components.get("relative_strength_score"),
+            components.get("volume_score"),
+            components.get("price_structure_score"),
+            json.dumps(metrics),
+            json.dumps(components),
+            now,
+        ),
+    )
+    return now
+
+
+def summarize_momentum_snapshot(symbol, snapshot, updated_at):
+    return {
+        "symbol": normalize_symbol(symbol),
+        "momentum_score": snapshot.get("momentum_score"),
+        "momentum_label": snapshot.get("momentum_label"),
+        "extension_risk": snapshot.get("extension_risk"),
+        "extension_label": snapshot.get("extension_label"),
+        "momentum_status": snapshot.get("momentum_status"),
+        "warning": snapshot.get("warning"),
+        "updated_at": updated_at,
+    }
 
 
 def fetch_ib_prices(symbols):
@@ -4055,9 +4195,16 @@ def list_analysis_symbols(conn):
                    FROM recent_event_checks rc
                    WHERE rc.symbol = r.symbol
                ) AS last_recent_event_check_at,
+               m.momentum_score,
+               m.momentum_label,
+               m.extension_risk,
+               m.extension_label,
+               m.momentum_status,
+               m.updated_at AS momentum_updated_at,
                v.created_at AS updated_at
         FROM analysis_roots r
         JOIN analysis_versions v ON v.analysis_root_id = r.id
+        LEFT JOIN analysis_momentum_snapshots m ON m.symbol = r.symbol
         WHERE v.id = (
             SELECT id FROM analysis_versions latest
             WHERE latest.analysis_root_id = r.id
@@ -9321,6 +9468,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_analysis_rerun_scenarios_batch()
         if path == "/api/analysis/refresh-prices":
             return self.handle_analysis_refresh_prices()
+        if path == "/api/analysis/momentum/update":
+            return self.handle_analysis_momentum_update()
         if path.startswith("/api/analysis/versions/"):
             parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
             if len(parts) == 2 and parts[0].isdigit() and parts[1] == "external-scenarios":
@@ -10081,6 +10230,52 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 {"error": "Unable to refresh analysis prices.", "details": str(exc)},
                 status=500,
             )
+        finally:
+            conn.close()
+
+
+    def handle_analysis_momentum_update(self):
+        payload = self._read_json_body() or {}
+        requested_symbols = payload.get("symbols")
+        benchmark = normalize_symbol(payload.get("benchmark") or MOMENTUM_DEFAULT_BENCHMARK) or MOMENTUM_DEFAULT_BENCHMARK
+        duration = str(payload.get("duration") or MOMENTUM_DEFAULT_DURATION).strip() or MOMENTUM_DEFAULT_DURATION
+        conn = get_db_connection()
+        try:
+            if isinstance(requested_symbols, list) and requested_symbols:
+                symbols = []
+                seen = set()
+                for item in requested_symbols:
+                    symbol = normalize_symbol(item)
+                    if symbol and symbol not in seen:
+                        seen.add(symbol)
+                        symbols.append(symbol)
+            else:
+                symbols = [normalize_symbol(row["symbol"]) for row in conn.execute("SELECT symbol FROM analysis_roots ORDER BY symbol ASC").fetchall()]
+            if not symbols:
+                self._send_json({"benchmark": benchmark, "duration": duration, "updated": [], "errors": []})
+                return
+
+            updated = []
+            errors = []
+            try:
+                benchmark_rows = fetch_historical_daily_bars(benchmark, duration=duration)
+            except Exception as exc:
+                logger.exception("Unable to fetch momentum benchmark bars for %s", benchmark)
+                self._send_json({"error": f"Unable to fetch benchmark {benchmark} historical bars.", "details": str(exc)}, status=502)
+                return
+
+            for symbol in symbols:
+                try:
+                    symbol_rows = fetch_historical_daily_bars(symbol, duration=duration)
+                    snapshot = calculate_momentum_snapshot(symbol_rows, benchmark_rows)
+                    updated_at = save_momentum_snapshot(conn, symbol, benchmark, duration, snapshot)
+                    conn.commit()
+                    updated.append(summarize_momentum_snapshot(symbol, snapshot, updated_at))
+                except Exception as exc:
+                    logger.exception("Unable to update momentum for %s", symbol)
+                    errors.append({"symbol": symbol, "error": str(exc)})
+            status = 207 if errors else 200
+            self._send_json({"benchmark": benchmark, "duration": duration, "updated": updated, "errors": errors}, status=status)
         finally:
             conn.close()
 

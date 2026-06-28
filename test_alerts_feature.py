@@ -706,8 +706,10 @@ class RatingCorePotentialConfidenceTests(unittest.TestCase):
             web_server.DEFAULT_RATING_SETTINGS[web_server.RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR],
             -0.5,
         )
-        html = open(os.path.join(os.path.dirname(__file__), "static", "index.html"), encoding="utf-8").read()
-        js = open(os.path.join(os.path.dirname(__file__), "static", "app.js"), encoding="utf-8").read()
+        with open(os.path.join(os.path.dirname(__file__), "static", "index.html"), encoding="utf-8") as handle:
+            html = handle.read()
+        with open(os.path.join(os.path.dirname(__file__), "static", "app.js"), encoding="utf-8") as handle:
+            js = handle.read()
         self.assertIn("config-rating-speculative-buy-min-core-diff-floor", html)
         self.assertIn('value="speculative_buy"', html)
         self.assertIn("Speculative Buy", js)
@@ -3653,3 +3655,93 @@ class ExternalScenarioOverlayTests(unittest.TestCase):
                         web_server.create_external_scenario(conn, version_one, invalid)
                 finally:
                     conn.close()
+
+
+class MomentumFeatureTests(unittest.TestCase):
+    def _bars(self, start=100.0, days=260, step=0.4, volume=1_000_000):
+        rows = []
+        price = start
+        for idx in range(days):
+            price += step
+            rows.append({
+                "date": f"2025-01-{(idx % 28) + 1:02d}",
+                "open": price - 0.5,
+                "high": price + 1.0,
+                "low": price - 1.0,
+                "close": price,
+                "volume": volume + idx * 1000,
+            })
+        return rows
+
+    def test_deterministic_momentum_snapshot_scores_and_labels(self):
+        import momentum_service
+
+        stock_rows = self._bars(start=100.0, step=0.5)
+        benchmark_rows = self._bars(start=100.0, step=0.2)
+        snapshot = momentum_service.calculate_momentum_snapshot(stock_rows, benchmark_rows)
+        self.assertGreaterEqual(snapshot["momentum_score"], 0.0)
+        self.assertLessEqual(snapshot["momentum_score"], 5.0)
+        self.assertGreaterEqual(snapshot["extension_risk"], 0.0)
+        self.assertLessEqual(snapshot["extension_risk"], 5.0)
+        self.assertIn(snapshot["momentum_label"], {"Very weak", "Weak", "Mixed / neutral", "Positive", "Strong"})
+        self.assertIn(snapshot["extension_label"], {"Low extension", "Normal", "Extended", "Very extended"})
+        self.assertEqual(snapshot["momentum_status"], "OK")
+        self.assertIn("trend_score", snapshot["components"])
+        self.assertIn("rel_60", snapshot["metrics"])
+
+    def test_init_db_and_analysis_payload_include_stored_momentum(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = web_server.utc_now_iso()
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("NVDA", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, current_price, expected_price,
+                            expected_cagr, upside, confidence_level, created_at
+                        ) VALUES (?, 1, 'NVDA', 100, 150, 15, 50, 8, ?)
+                        """,
+                        (root_id, now),
+                    )
+                    web_server.save_momentum_snapshot(
+                        conn,
+                        "NVDA",
+                        "QQQ",
+                        "1 Y",
+                        {
+                            "momentum_score": 3.61,
+                            "momentum_label": "Positive",
+                            "extension_risk": 1.42,
+                            "extension_label": "Normal",
+                            "momentum_status": "OK",
+                            "warning": None,
+                            "metrics": {"bars": 252, "first_date": "2025-01-01", "last_date": "2025-12-31", "latest_close": 123.45},
+                            "components": {"trend_score": 0.7, "relative_strength_score": 0.6, "volume_score": 0.5, "price_structure_score": 0.8},
+                        },
+                    )
+                    conn.commit()
+                    row = web_server.list_analysis_symbols(conn)[0]
+                    self.assertEqual(row["momentum_label"], "Positive")
+                    self.assertAlmostEqual(row["momentum_score"], 3.61)
+                    self.assertEqual(row["extension_label"], "Normal")
+                    self.assertIn("momentum_updated_at", row)
+                finally:
+                    conn.close()
+
+    def test_analysis_ui_contains_momentum_button_columns_and_endpoint(self):
+        with open(os.path.join(os.path.dirname(__file__), "static", "index.html"), encoding="utf-8") as handle:
+            html = handle.read()
+        with open(os.path.join(os.path.dirname(__file__), "static", "app.js"), encoding="utf-8") as handle:
+            js = handle.read()
+        self.assertIn('id="analysis-update-momentum-btn"', html)
+        self.assertIn('data-sort-key="momentum_score"', html)
+        self.assertIn('data-sort-key="extension_risk"', html)
+        self.assertIn('data-sort-key="momentum_updated_at"', html)
+        self.assertIn("/api/analysis/momentum/update", js)
+        self.assertIn("formatMomentumDisplay(item.momentum_score, item.momentum_label)", js)
+        self.assertIn("formatMomentumDisplay(item.extension_risk, item.extension_label)", js)

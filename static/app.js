@@ -31,6 +31,7 @@ const analysisRatingFilterClearEl = document.getElementById('analysis-rating-fil
 const analysisAddBtn = document.getElementById('analysis-add-btn');
 const analysisImportBtn = document.getElementById('analysis-import-btn');
 const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-prices-btn');
+const analysisUpdateMomentumBtn = document.getElementById('analysis-update-momentum-btn');
 const actionPlanStatusEl = document.getElementById('action-plan-status');
 const actionPlanSummaryEl = document.getElementById('action-plan-summary');
 const actionPlanTableBody = document.querySelector('#action-plan-table tbody');
@@ -1765,11 +1766,21 @@ function getFilteredAnalysisItems() {
   return items;
 }
 
+
+function formatMomentumDisplay(score, label) {
+  if (typeof score !== 'number') return '—';
+  return `${score.toFixed(1)} / 5${label ? ` — ${label}` : ''}`;
+}
+
+function getVisibleAnalysisSymbols() {
+  return getFilteredAnalysisItems().map((item) => item.symbol).filter(Boolean);
+}
+
 function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
   sortAnalysis(getFilteredAnalysisItems()).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatCoreConfidenceDisplay(item)}</td><td>${formatPotentialConfidenceDisplay(item)}</td><td>${formatDate(item.latest_release_date)}</td><td>${formatDateTime(item.last_activity_at || item.updated_at)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatMomentumDisplay(item.momentum_score, item.momentum_label)}</td><td>${formatMomentumDisplay(item.extension_risk, item.extension_label)}</td><td>${formatDateTime(item.momentum_updated_at)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatCoreConfidenceDisplay(item)}</td><td>${formatPotentialConfidenceDisplay(item)}</td><td>${formatDate(item.latest_release_date)}</td><td>${formatDateTime(item.last_activity_at || item.updated_at)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
@@ -3803,6 +3814,42 @@ async function refreshAnalysisPrices() {
 }
 
 
+async function updateAnalysisMomentum() {
+  const selectedSymbols = [...selectedAnalysisSymbols];
+  const symbols = selectedSymbols.length ? selectedSymbols : getVisibleAnalysisSymbols();
+  if (!symbols.length) {
+    analysisStatusEl.textContent = 'No analysis symbols to update momentum for.';
+    analysisStatusEl.className = 'status error';
+    return;
+  }
+  analysisStatusEl.textContent = `Updating momentum for ${symbols.length} symbol(s)…`;
+  analysisStatusEl.className = 'status';
+  analysisUpdateMomentumBtn.disabled = true;
+  try {
+    const response = await fetch('/api/analysis/momentum/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols }),
+    });
+    const payload = await response.json();
+    if (!response.ok && response.status !== 207) throw new Error(extractErrorMessage(payload, 'Unable to update momentum'));
+    await loadAnalysis();
+    const updatedCount = payload.updated?.length || 0;
+    const failedCount = payload.errors?.length || 0;
+    if (failedCount) console.warn('Momentum update failures:', payload.errors);
+    analysisStatusEl.textContent = failedCount
+      ? `Momentum updated for ${updatedCount} symbol(s); ${failedCount} failed.`
+      : `Momentum updated for ${updatedCount} symbol(s).`;
+    analysisStatusEl.className = failedCount ? 'status error' : 'status';
+  } catch (error) {
+    analysisStatusEl.textContent = `Error: ${error.message}`;
+    analysisStatusEl.className = 'status error';
+  } finally {
+    analysisUpdateMomentumBtn.disabled = false;
+  }
+}
+
+
 async function deleteAnalysis(symbol) {
   analysisStatusEl.textContent = `Deleting ${symbol}…`; analysisStatusEl.className = 'status';
   try { const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`, { method: 'DELETE' }); const payload = await response.json();
@@ -5562,6 +5609,7 @@ refreshBtn.addEventListener('click', () => loadPositions({ refresh: true }));
 analysisAddBtn.addEventListener('click', addAnalysisSymbol);
 analysisImportBtn.addEventListener('click', importAnalysisFromPositions);
 analysisRefreshPricesBtn.addEventListener('click', refreshAnalysisPrices);
+analysisUpdateMomentumBtn.addEventListener('click', updateAnalysisMomentum);
 analysisRerunSelectedBtn.addEventListener('click', rerunSelectedSymbolsScenarios);
 analysisCheckEventsBtn.addEventListener('click', checkRecentEventsForSelected);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });

@@ -2699,9 +2699,10 @@ class ActionPlanFeatureTests(unittest.TestCase):
                     buy_triggers = rows["BUY"]["trigger_breakdown"]
                     self.assertEqual(rows["BUY"].get("position_status"), "BELOW_TARGET")
                     self.assertEqual(buy_triggers["relevant_trigger_type"], "strong_add")
-                    self.assertIn("allocation-aware Strong Add trigger", rows["BUY"]["reason"])
-                    self.assertNotEqual(buy_triggers["strong_add_trigger_price"], buy_triggers["add_trigger_price"])
-                    self.assertNotEqual(buy_triggers["add_trigger_price"], buy_triggers["starter_buy_trigger_price"])
+                    self.assertIn("allocation-based Strong Add trigger", rows["BUY"]["reason"])
+                    self.assertEqual(buy_triggers["strong_add_trigger_price"], buy_triggers["add_trigger_price"])
+                    self.assertIsNotNone(buy_triggers["base_trigger_price"])
+                    self.assertEqual(buy_triggers["trigger_anchor"], "Target Low")
                     self.assertIn("Price is", buy_triggers["distance_to_relevant_trigger_label"])
                     self.assertIn("decision_path", rows["BUY"])
                     self.assertEqual(rows["SELL"]["action"], "Sell")
@@ -3162,9 +3163,9 @@ class ActionPlanFeatureTests(unittest.TestCase):
         }
         candidates = [
             dict(base, symbol="ADD_OK", current_position_weight=0.0, current_position_market_value=0.0, current_price=100.0),
-            dict(base, symbol="ADD_WAIT", current_position_weight=0.0, current_position_market_value=0.0, current_price=145.0),
+            dict(base, symbol="ADD_WAIT", current_position_weight=0.0, current_position_market_value=0.0, current_price=145.0, momentum_score=1.5, extension_risk=2.0),
             dict(base, symbol="TRIM_OK", current_position_weight=13.5, current_position_market_value=13500.0, current_price=140.0),
-            dict(base, symbol="TRIM_WAIT", current_position_weight=13.5, current_position_market_value=13500.0, current_price=100.0),
+            dict(base, symbol="TRIM_WAIT", current_position_weight=13.5, current_position_market_value=13500.0, current_price=100.0, momentum_score=5.0, extension_risk=0.0),
             dict(base, symbol="SELL", rating="Sell", current_position_weight=13.5, current_position_market_value=13500.0, current_price=100.0),
         ]
         rows = {row["symbol"]: row for row in web_server.compute_linear_action_plan(candidates, 100000.0, 100000.0, settings)["rows"]}
@@ -3176,24 +3177,24 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertEqual(rows["ADD_WAIT"]["action_amount_label"], "—")
         self.assertEqual(rows["ADD_WAIT"]["funding_status"], "Waiting for trigger")
         self.assertEqual(rows["ADD_WAIT"]["executable_action_amount"], 0.0)
-        self.assertGreater(rows["ADD_WAIT"]["distance_to_trigger_percent"], 0.0)
+        self.assertEqual(rows["ADD_WAIT"]["distance_to_trigger_percent"], 0.0)
+        self.assertIn("Starter buy fallback", rows["ADD_WAIT"].get("starter_buy_fallback_reason") or "")
 
         self.assertEqual(rows["TRIM_OK"]["action"], "Trim")
         self.assertEqual(rows["TRIM_OK"]["funding_status"], "Generates proceeds")
         self.assertGreater(rows["TRIM_OK"]["executable_action_amount"], 0.0)
-        self.assertEqual(rows["TRIM_WAIT"]["action"], "Hold / Overweight")
+        self.assertEqual(rows["TRIM_WAIT"]["action"], "Trim")
         self.assertGreater(rows["TRIM_WAIT"]["target_gap_amount"], 0.0)
-        self.assertEqual(rows["TRIM_WAIT"]["action_amount_label"], "—")
-        self.assertEqual(rows["TRIM_WAIT"]["funding_status"], "Waiting for trigger")
-        self.assertEqual(rows["TRIM_WAIT"]["executable_action_amount"], 0.0)
-        self.assertLess(rows["TRIM_WAIT"]["distance_to_trigger_percent"], 0.0)
+        self.assertEqual(rows["TRIM_WAIT"]["funding_status"], "Generates proceeds")
+        self.assertGreater(rows["TRIM_WAIT"]["executable_action_amount"], 0.0)
+        self.assertGreater(rows["TRIM_WAIT"]["distance_to_trigger_percent"], 0.0)
 
         self.assertEqual(rows["SELL"]["action"], "Sell")
         self.assertEqual(rows["SELL"]["funding_status"], "Generates proceeds")
         self.assertGreater(rows["SELL"]["executable_action_amount"], 0.0)
         self.assertAlmostEqual(rows["ADD_OK"]["total_add_demand"], rows["ADD_OK"]["target_gap_amount"])
         self.assertAlmostEqual(rows["ADD_WAIT"]["total_add_demand"], rows["ADD_OK"]["target_gap_amount"])
-        self.assertAlmostEqual(rows["TRIM_WAIT"]["executable_sell_trim_proceeds"], rows["TRIM_OK"]["target_gap_amount"] + rows["SELL"]["target_gap_amount"])
+        self.assertAlmostEqual(rows["TRIM_WAIT"]["executable_sell_trim_proceeds"], rows["TRIM_OK"]["target_gap_amount"] + rows["TRIM_WAIT"]["target_gap_amount"] + rows["SELL"]["target_gap_amount"])
 
     def test_linear_action_plan_populates_action_columns_and_summary(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
@@ -3394,13 +3395,16 @@ class ActionPlanFeatureTests(unittest.TestCase):
             "bucket_sizing_score": 0.8,
             "weighted_count": 1.0,
             "core_conviction_score": 0.8,
+            "current_position_market_value": 7000.0,
+            "total_portfolio_value": 100000.0,
         }
         action, trigger_price, _, _, reason = web_server._choose_action_plan_decision(row, settings)
-        self.assertEqual(action, "Hold / Overweight")
+        self.assertIn(action, {"Trim", "Strong Trim"})
         self.assertEqual(row["position_status"], "ABOVE_TARGET")
         self.assertEqual(row["relevant_trigger_type"], "trim")
-        self.assertGreater(trigger_price, row["current_price"])
-        self.assertIn("remaining upside is still attractive", reason)
+        self.assertLess(trigger_price, row["current_price"])
+        self.assertEqual(row["trigger_anchor"], "Target High")
+        self.assertIn("Trim trigger", reason)
 
 class ExternalScenarioOverlayTests(unittest.TestCase):
     def _seed_version_with_scenarios(self, conn, symbol="EXT"):
@@ -3752,3 +3756,148 @@ class MomentumFeatureTests(unittest.TestCase):
         self.assertIn("formatMomentumSummaryValue(item.momentum_score, item.momentum_label)", js)
         self.assertIn("formatMomentumSummaryValue(item.extension_risk, item.extension_label)", js)
         self.assertIn("Short-term technical momentum calculated from TWS historical price and volume data.", js)
+
+
+class AllocationBasedTriggerTests(unittest.TestCase):
+    def _decision_row(self, **overrides):
+        row = {
+            "symbol": "ALLOC",
+            "rating": "Buy",
+            "current_position_weight": 4.0,
+            "target_weight_low": 5.0,
+            "target_weight_mid": 6.0,
+            "target_weight_high": 7.0,
+            "current_price": 100.0,
+            "expected_price": 150.0,
+            "upside": 50.0,
+            "current_position_market_value": 4_000.0,
+            "total_portfolio_value": 100_000.0,
+            "allocation_score": 0.8,
+            "bucket_sizing_score": 0.8,
+            "weighted_count": 1.0,
+            "momentum_score": 2.5,
+            "extension_risk": 2.0,
+        }
+        row.update(overrides)
+        return row
+
+    def test_allocation_trigger_price_formula_for_existing_position(self):
+        trigger = web_server._allocation_trigger_price(
+            current_price=100.0,
+            current_market_value=10_000.0,
+            portfolio_value=100_000.0,
+            target_weight_pct=5.0,
+        )
+        expected = (0.05 * 90_000.0) / (100.0 * (1.0 - 0.05))
+        self.assertAlmostEqual(trigger, expected)
+
+    def test_momentum_and_extension_adjust_allocation_triggers(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        base_row = {
+            "current_position_weight": 4.0,
+            "target_weight_low": 5.0,
+            "target_weight_mid": 6.0,
+            "target_weight_high": 7.0,
+            "current_price": 100.0,
+            "expected_price": 150.0,
+            "upside": 50.0,
+            "current_position_market_value": 4_000.0,
+            "total_portfolio_value": 100_000.0,
+            "allocation_score": 0.8,
+            "bucket_sizing_score": 0.8,
+            "weighted_count": 1.0,
+        }
+        neutral = web_server._action_plan_trigger_context(dict(base_row, momentum_score=2.5, extension_risk=2.0), settings)
+        strong_healthy = web_server._action_plan_trigger_context(dict(base_row, momentum_score=5.0, extension_risk=0.0), settings)
+        extended = web_server._action_plan_trigger_context(dict(base_row, momentum_score=5.0, extension_risk=5.0), settings)
+        weak = web_server._action_plan_trigger_context(dict(base_row, momentum_score=0.0, extension_risk=2.0), settings)
+        self.assertEqual(neutral["trigger_anchor"], "Target Low")
+        self.assertGreater(strong_healthy["add_trigger_price"], neutral["add_trigger_price"])
+        self.assertLess(extended["add_trigger_price"], strong_healthy["add_trigger_price"])
+        self.assertLess(weak["add_trigger_price"], neutral["add_trigger_price"])
+
+        overweight_row = dict(base_row, current_position_weight=8.0, target_weight_low=5.0, target_weight_mid=6.0, target_weight_high=7.0, current_position_market_value=8_000.0)
+        neutral_trim = web_server._action_plan_trigger_context(dict(overweight_row, momentum_score=2.5, extension_risk=2.0), settings)
+        strong_trim = web_server._action_plan_trigger_context(dict(overweight_row, momentum_score=5.0, extension_risk=0.0), settings)
+        extended_trim = web_server._action_plan_trigger_context(dict(overweight_row, momentum_score=5.0, extension_risk=5.0), settings)
+        weak_trim = web_server._action_plan_trigger_context(dict(overweight_row, momentum_score=0.0, extension_risk=2.0), settings)
+        self.assertEqual(neutral_trim["trigger_anchor"], "Target High")
+        self.assertGreater(strong_trim["trim_trigger_price"], neutral_trim["trim_trigger_price"])
+        self.assertLess(extended_trim["trim_trigger_price"], strong_trim["trim_trigger_price"])
+        self.assertLess(weak_trim["trim_trigger_price"], neutral_trim["trim_trigger_price"])
+
+    def test_allocation_trigger_gates_actions_and_uses_target_mid_for_amount(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        add_row = self._decision_row(current_position_market_value=4_000.0, current_position_weight=4.0, momentum_score=5.0, extension_risk=0.0)
+        action, trigger_price, _, _, _ = web_server._choose_action_plan_decision(add_row, settings)
+        amount_fields = web_server._action_amount_fields(action, add_row["current_position_weight"], add_row["target_weight_mid"], 100_000.0, add_row["current_position_market_value"])
+        self.assertIn(action, {"Add", "Strong Add"})
+        self.assertEqual(add_row["trigger_anchor"], "Target Low")
+        self.assertLessEqual(add_row["current_price"], trigger_price)
+        self.assertAlmostEqual(amount_fields["action_amount"], 2_000.0)
+
+        wait_row = self._decision_row(current_position_weight=4.9, current_position_market_value=4_900.0, momentum_score=0.0, extension_risk=5.0)
+        action, trigger_price, _, _, _ = web_server._choose_action_plan_decision(wait_row, settings)
+        self.assertEqual(action, "Watch")
+        self.assertEqual(wait_row["trigger_anchor"], "Target Low")
+        self.assertGreater(wait_row["current_price"], trigger_price)
+
+        trim_wait_row = self._decision_row(current_position_weight=7.2, current_position_market_value=7_200.0, momentum_score=5.0, extension_risk=0.0)
+        action, trigger_price, _, _, _ = web_server._choose_action_plan_decision(trim_wait_row, settings)
+        self.assertEqual(action, "Hold / Overweight")
+        self.assertEqual(trim_wait_row["trigger_anchor"], "Target High")
+        self.assertLess(trim_wait_row["current_price"], trigger_price)
+
+        trim_row = self._decision_row(current_position_weight=8.0, current_position_market_value=8_000.0, momentum_score=0.0, extension_risk=5.0)
+        action, trigger_price, _, _, _ = web_server._choose_action_plan_decision(trim_row, settings)
+        amount_fields = web_server._action_amount_fields(action, trim_row["current_position_weight"], trim_row["target_weight_mid"], 100_000.0, trim_row["current_position_market_value"])
+        self.assertIn(action, {"Trim", "Strong Trim"})
+        self.assertEqual(trim_row["trigger_anchor"], "Target High")
+        self.assertGreaterEqual(trim_row["current_price"], trigger_price)
+        self.assertAlmostEqual(amount_fields["action_amount"], 2_000.0)
+
+    def test_sell_override_and_non_owned_fallback(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        sell_row = self._decision_row(rating="Sell", current_position_weight=8.0, current_position_market_value=8_000.0, current_price=80.0, momentum_score=5.0, extension_risk=0.0)
+        action, _, _, _, _ = web_server._choose_action_plan_decision(sell_row, settings)
+        self.assertEqual(action, "Sell")
+        self.assertEqual(sell_row["trigger_anchor"], "Sell Override")
+
+        fallback_row = self._decision_row(current_position_weight=0.0, current_position_market_value=0.0, momentum_score=1.5, extension_risk=2.0)
+        action, trigger_price, _, _, reason = web_server._choose_action_plan_decision(fallback_row, settings)
+        self.assertEqual(action, "Watch")
+        self.assertEqual(trigger_price, fallback_row["current_price"])
+        self.assertIn("Momentum is weak", reason)
+
+    def test_legacy_remaining_upside_settings_do_not_change_allocation_triggers(self):
+        row = self._decision_row()
+        base_settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        legacy_settings = dict(base_settings)
+        legacy_settings.update({
+            "action_add_required_upside": 99.0,
+            "action_strong_add_required_upside": 120.0,
+            "action_starter_buy_required_upside": 150.0,
+            "action_trigger_min_required_upside": 80.0,
+            "action_trigger_max_required_upside": 200.0,
+            "action_underweight_discount_max": 0.0,
+            "action_quality_discount_max": 0.0,
+        })
+        base_context = web_server._action_plan_trigger_context(dict(row), base_settings)
+        legacy_context = web_server._action_plan_trigger_context(dict(row), legacy_settings)
+        self.assertAlmostEqual(base_context["add_trigger_price"], legacy_context["add_trigger_price"])
+        self.assertEqual(legacy_context["trigger_anchor"], "Target Low")
+
+    def test_allocation_trigger_settings_validation(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_momentum_add_max_raise"] = 1.5
+        with self.assertRaisesRegex(ValueError, "action_momentum_add_max_raise must be between 0 and 1"):
+            web_server.validate_action_plan_settings(settings)
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_min_trigger_multiplier"] = 1.1
+        with self.assertRaisesRegex(ValueError, "action_min_trigger_multiplier"):
+            web_server.validate_action_plan_settings(settings)
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_min_trigger_multiplier"] = 1.0
+        settings["action_max_trigger_multiplier"] = 1.0
+        with self.assertRaisesRegex(ValueError, "action_max_trigger_multiplier must be greater"):
+            web_server.validate_action_plan_settings(settings)

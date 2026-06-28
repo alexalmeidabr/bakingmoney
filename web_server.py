@@ -268,6 +268,15 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_min_trade_gap_percent": 0.5,
     "action_min_executable_trade_amount": 100.0,
     "action_starter_buy_max_initial_weight": 1.0,
+    "action_use_allocation_based_triggers": True,
+    "action_momentum_add_max_raise": 0.08,
+    "action_momentum_add_max_lower": 0.10,
+    "action_extension_add_max_lower": 0.10,
+    "action_momentum_trim_max_raise": 0.15,
+    "action_momentum_trim_max_lower": 0.10,
+    "action_extension_trim_max_lower": 0.15,
+    "action_min_trigger_multiplier": 0.75,
+    "action_max_trigger_multiplier": 1.25,
     "action_add_required_upside": 30.0,
     "action_strong_add_required_upside": 50.0,
     "action_starter_buy_required_upside": 75.0,
@@ -346,6 +355,7 @@ ACTION_PLAN_BOOL_SETTINGS = {
     "action_allow_bucket_underallocation",
     "action_show_unallocated_bucket_amount",
     "action_treat_cash_equivalents_as_cash",
+    "action_use_allocation_based_triggers",
     "linear_zero_target_if_expected_cagr_negative",
     "linear_zero_target_if_upside_negative",
     "linear_enable_risk_caps",
@@ -1900,6 +1910,22 @@ def validate_action_plan_settings(settings):
     ):
         if effective[key] > 1.0:
             raise ValueError(f"{key} must be between 0 and 1")
+    for key in (
+        "action_momentum_add_max_raise",
+        "action_momentum_add_max_lower",
+        "action_extension_add_max_lower",
+        "action_momentum_trim_max_raise",
+        "action_momentum_trim_max_lower",
+        "action_extension_trim_max_lower",
+    ):
+        if effective[key] < 0.0 or effective[key] > 1.0:
+            raise ValueError(f"{key} must be between 0 and 1")
+    if effective["action_min_trigger_multiplier"] <= 0.0 or effective["action_min_trigger_multiplier"] > 1.0:
+        raise ValueError("action_min_trigger_multiplier must be > 0 and <= 1")
+    if effective["action_max_trigger_multiplier"] < 1.0 or effective["action_max_trigger_multiplier"] > 2.0:
+        raise ValueError("action_max_trigger_multiplier must be >= 1 and <= 2")
+    if effective["action_max_trigger_multiplier"] <= effective["action_min_trigger_multiplier"]:
+        raise ValueError("action_max_trigger_multiplier must be greater than action_min_trigger_multiplier")
     if effective["action_trigger_max_required_upside"] <= effective["action_trigger_min_required_upside"]:
         raise ValueError("action_trigger_max_required_upside must be greater than action_trigger_min_required_upside")
     if effective["action_target_band_lower_multiplier"] >= 1.0:
@@ -6528,7 +6554,131 @@ def calculate_dynamic_required_upside(action_type, base_required_upside, current
     return _clamp(dynamic_required, settings["action_trigger_min_required_upside"], settings["action_trigger_max_required_upside"]), trigger_quality_score
 
 
+
+def _allocation_trigger_price(current_price, current_market_value, portfolio_value, target_weight_pct):
+    price = safe_number(current_price)
+    market_value = safe_number(current_market_value)
+    portfolio = safe_number(portfolio_value)
+    target_pct = safe_number(target_weight_pct)
+    if price is None or price <= 0 or market_value is None or market_value <= 0 or portfolio is None or portfolio <= 0 or target_pct is None:
+        return None
+    target_weight = target_pct / 100.0
+    if target_weight <= 0 or target_weight >= 1:
+        return None
+    shares = market_value / price
+    if shares <= 0:
+        return None
+    other_value = max(0.0, portfolio - market_value)
+    denominator = shares * (1.0 - target_weight)
+    if denominator <= 0:
+        return None
+    return (target_weight * other_value) / denominator
+
+
+def _action_momentum_inputs(row):
+    momentum = safe_number(row.get("momentum_score"))
+    extension = safe_number(row.get("extension_risk"))
+    reason = None
+    if momentum is None:
+        momentum = 2.5
+        reason = "Momentum unavailable; neutral adjustment used."
+    if extension is None:
+        extension = 2.0
+        reason = "Momentum unavailable; neutral adjustment used."
+    return momentum, row.get("momentum_label"), extension, row.get("extension_label"), reason
+
+
+def _trigger_multiplier_for_action(row, trigger_family, settings):
+    momentum, momentum_label_value, extension, extension_label_value, neutral_reason = _action_momentum_inputs(row)
+    momentum_signal = _clamp((momentum - 2.5) / 2.5, -1.0, 1.0)
+    extension_signal = _clamp(extension / 5.0, 0.0, 1.0)
+    if trigger_family == "add":
+        healthy_momentum_signal = max(momentum_signal, 0.0) * (1.0 - extension_signal)
+        weak_momentum_signal = max(-momentum_signal, 0.0)
+        raw_multiplier = (
+            1.0
+            + healthy_momentum_signal * settings["action_momentum_add_max_raise"]
+            - weak_momentum_signal * settings["action_momentum_add_max_lower"]
+            - extension_signal * settings["action_extension_add_max_lower"]
+        )
+    else:
+        positive_momentum_signal = max(momentum_signal, 0.0)
+        weak_momentum_signal = max(-momentum_signal, 0.0)
+        raw_multiplier = (
+            1.0
+            + positive_momentum_signal * settings["action_momentum_trim_max_raise"]
+            - weak_momentum_signal * settings["action_momentum_trim_max_lower"]
+            - extension_signal * settings["action_extension_trim_max_lower"]
+        )
+    multiplier = _clamp(raw_multiplier, settings["action_min_trigger_multiplier"], settings["action_max_trigger_multiplier"])
+    parts = [
+        neutral_reason,
+        f"Momentum {momentum:.1f}/5 ({momentum_label_value or 'unlabeled'}); Extension Risk {extension:.1f}/5 ({extension_label_value or 'unlabeled'}).",
+        f"{trigger_family.title()} trigger multiplier {multiplier:.3f} from raw {raw_multiplier:.3f}.",
+    ]
+    return multiplier, " ".join(part for part in parts if part), momentum, momentum_label_value, extension, extension_label_value
+
+
+def _allocation_based_trigger_context(row, settings):
+    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    target_low = safe_number(row.get("target_weight_low")) or 0.0
+    target_mid = safe_number(row.get("target_weight_mid")) or 0.0
+    target_high = safe_number(row.get("target_weight_high")) or 0.0
+    current_price = safe_number(row.get("current_price"))
+    expected_price = safe_number(row.get("expected_price"))
+    upside = safe_number(row.get("upside"))
+    portfolio_value = safe_number(row.get("total_portfolio_value")) or 0.0
+    market_value = safe_number(row.get("current_position_market_value"))
+    if market_value is None and portfolio_value > 0:
+        market_value = current_weight / 100.0 * portfolio_value
+    market_value = market_value or 0.0
+    status = _position_status(current_weight, target_low, target_mid, target_high)
+    remaining_upside = (expected_price / current_price - 1.0) if current_price and expected_price else None
+    quality = _trigger_quality_score(row)
+
+    add_base = _allocation_trigger_price(current_price, market_value, portfolio_value, target_low)
+    trim_base = _allocation_trigger_price(current_price, market_value, portfolio_value, target_high)
+    add_multiplier, add_reason, momentum, momentum_label_value, extension, extension_label_value = _trigger_multiplier_for_action(row, "add", settings)
+    trim_multiplier, trim_reason, _, _, _, _ = _trigger_multiplier_for_action(row, "trim", settings)
+    add_trigger = add_base * add_multiplier if add_base is not None else None
+    trim_trigger = trim_base * trim_multiplier if trim_base is not None else None
+
+    starter_trigger = None
+    starter_reason = "Starter buy fallback; no existing shares."
+    if market_value <= 0 and current_price is not None and target_mid > 0:
+        starter_trigger = current_price
+        add_trigger = current_price
+        add_base = current_price
+    sell_trigger = current_price
+    return {
+        "position_status": status,
+        "remaining_upside": remaining_upside,
+        "trigger_quality_score": quality,
+        "starter_buy_required_upside": None,
+        "add_required_upside": None,
+        "strong_add_required_upside": None,
+        "starter_buy_trigger_price": starter_trigger,
+        "add_trigger_price": add_trigger,
+        "strong_add_trigger_price": add_trigger,
+        "trim_trigger_price": trim_trigger,
+        "sell_trigger_price": sell_trigger,
+        "base_trigger_price": add_base if status == "BELOW_TARGET" else trim_base if status == "ABOVE_TARGET" else None,
+        "adjusted_trigger_price": add_trigger if status == "BELOW_TARGET" else trim_trigger if status == "ABOVE_TARGET" else None,
+        "trigger_multiplier": add_multiplier if status == "BELOW_TARGET" else trim_multiplier if status == "ABOVE_TARGET" else None,
+        "trigger_adjustment_reason": add_reason if status == "BELOW_TARGET" else trim_reason if status == "ABOVE_TARGET" else None,
+        "trigger_anchor": "Target Low" if status == "BELOW_TARGET" else "Target High" if status == "ABOVE_TARGET" else "Hold",
+        "momentum_score": momentum,
+        "momentum_label": momentum_label_value,
+        "extension_risk": extension,
+        "extension_label": extension_label_value,
+        "starter_buy_fallback_reason": starter_reason if market_value <= 0 else None,
+        "trigger_formula": "Allocation-based trigger anchored to Target Low/Target High and adjusted by stored Momentum/Extension Risk.",
+    }
+
+
 def _action_plan_trigger_context(row, settings):
+    if settings.get("action_use_allocation_based_triggers", True):
+        return _allocation_based_trigger_context(row, settings)
     current_weight = safe_number(row.get("current_position_weight")) or 0.0
     target_low = safe_number(row.get("target_weight_low")) or 0.0
     target_mid = safe_number(row.get("target_weight_mid")) or 0.0
@@ -6606,11 +6756,20 @@ def _action_plan_trigger_breakdown(row):
         "strong_add_trigger_price": row.get("strong_add_trigger_price"),
         "trim_trigger_price": row.get("trim_trigger_price"),
         "sell_trigger_price": row.get("sell_trigger_price"),
+        "base_trigger_price": row.get("base_trigger_price"),
+        "adjusted_trigger_price": row.get("adjusted_trigger_price"),
+        "trigger_multiplier": row.get("trigger_multiplier"),
+        "trigger_adjustment_reason": row.get("trigger_adjustment_reason"),
+        "trigger_anchor": row.get("trigger_anchor"),
+        "momentum_score": row.get("momentum_score"),
+        "momentum_label": row.get("momentum_label"),
+        "extension_risk": row.get("extension_risk"),
+        "extension_label": row.get("extension_label"),
         "relevant_trigger_price": trigger_price,
         "relevant_trigger_type": trigger_type,
         "distance_to_relevant_trigger_percent": _distance_to_trigger(row.get("current_price"), trigger_price),
         "distance_to_relevant_trigger_label": _trigger_price_distance_label(row.get("current_price"), trigger_price, trigger_type),
-        "formula": "Buy triggers use allocation-aware required upside; trim/sell triggers use remaining-upside thresholds.",
+        "formula": row.get("trigger_formula") or "Legacy buy triggers use allocation-aware required upside; trim/sell triggers use remaining-upside thresholds.",
     }
 
 
@@ -6725,21 +6884,38 @@ def _choose_action_plan_decision(row, settings):
         row["relevant_trigger_price"] = trigger
         row["relevant_trigger_type"] = trigger_type
         row["dynamic_required_upside"] = required
+        if trigger is not None:
+            row["adjusted_trigger_price"] = trigger
         return action, trigger, "below" if trigger_type in {"strong_add", "add", "starter_buy"} else "above", _distance_to_trigger(current_price, trigger), reason
 
     if rating == "Strong Sell":
-        return choose("Sell", sell_trigger, "sell", settings["action_sell_remaining_upside_threshold"], "Rating is Strong Sell; target allocation should be zero or near zero.")
+        row["trigger_anchor"] = "Sell Override"
+        row["trigger_adjustment_reason"] = "Sell override used; momentum does not block explicit exits."
+        return choose("Sell", sell_trigger, "sell", settings.get("action_sell_remaining_upside_threshold"), "Rating is Strong Sell; target allocation should be zero or near zero.")
     if rating == "Sell" or target_mid <= 0:
-        return choose("Sell", sell_trigger, "sell", settings["action_sell_remaining_upside_threshold"], "Target allocation is zero or rating is Sell.")
+        row["trigger_anchor"] = "Sell Override"
+        row["trigger_adjustment_reason"] = "Sell override used; momentum does not block explicit exits."
+        return choose("Sell", sell_trigger, "sell", settings.get("action_sell_remaining_upside_threshold"), "Target allocation is zero or rating is Sell.")
 
     if position_status == "BELOW_TARGET":
+        if upside is None or upside <= 0 or target_mid <= 0 or current_price is None or expected_price is None:
+            return choose("Watch", add_trigger, "add", context.get("add_required_upside"), "Fundamental guardrail: Add is blocked because upside, target, current price, or expected price is unavailable/unattractive.")
+        if rating == "Hold" and current_weight <= 0:
+            return choose("Watch", add_trigger, "add", context.get("add_required_upside"), "Starter Buy guardrail: Hold-rated non-owned stocks are not starter buys.")
+        if rating in {"Sell", "Strong Sell"}:
+            return choose("Watch", add_trigger, "add", context.get("add_required_upside"), "Fundamental guardrail: Sell-rated stocks are not Add candidates.")
+        if current_weight <= 0:
+            if safe_number(context.get("extension_risk")) is not None and safe_number(context.get("extension_risk")) >= 4.0:
+                return choose("Watch", starter_trigger, "starter_buy", context.get("starter_buy_required_upside"), "Starter buy fallback blocked because Extension Risk is high.")
+            if safe_number(context.get("momentum_score")) is not None and safe_number(context.get("momentum_score")) < 2.0:
+                return choose("Watch", starter_trigger, "starter_buy", context.get("starter_buy_required_upside"), "Starter buy fallback blocked because Momentum is weak.")
         if strong_trigger is not None and current_price <= strong_trigger and quality >= 0.50:
-            return choose("Strong Add", strong_trigger, "strong_add", context["strong_add_required_upside"], "Position is below target band, trigger quality is high, and current price is below the allocation-aware Strong Add trigger.")
+            return choose("Strong Add", strong_trigger, "strong_add", context["strong_add_required_upside"], "Position is below target band, trigger quality is high, and current price is below the allocation-based Strong Add trigger.")
         if add_trigger is not None and current_price <= add_trigger:
-            return choose("Add", add_trigger, "add", context["add_required_upside"], "Position is below target band and current price is below the allocation-aware Add trigger.")
+            return choose("Add", add_trigger, "add", context["add_required_upside"], "Position is below target band and current price is below the allocation-based Add trigger.")
         if current_weight <= settings["action_starter_buy_max_initial_weight"] and starter_trigger is not None and current_price <= starter_trigger:
-            return choose("Starter Buy", starter_trigger, "starter_buy", context["starter_buy_required_upside"], "Position is below target band and current price is below the allocation-aware Starter Buy trigger.")
-        return choose("Watch", add_trigger, "add", context["add_required_upside"], "Position is below target band, but current price is above the allocation-aware Add trigger.")
+            return choose("Starter Buy", starter_trigger, "starter_buy", context["starter_buy_required_upside"], "Position is below target band and current price is below the allocation-based Starter Buy trigger.")
+        return choose("Watch", add_trigger, "add", context["add_required_upside"], "Position is below target band, but current price is above the allocation-based Add trigger.")
 
     if position_status == "INSIDE_TARGET":
         room_to_mid = target_mid - current_weight
@@ -6755,11 +6931,11 @@ def _choose_action_plan_decision(row, settings):
         hard_cap = _rating_cap_for_action_plan(rating, settings)
         hard_cap_exceeded = current_weight > hard_cap + settings["action_min_trade_gap_percent"]
         trim_reached = trim_trigger is not None and current_price >= trim_trigger
-        if trim_reached or hard_cap_exceeded:
+        if trim_reached:
             action = "Strong Trim" if overweight_ratio >= settings["action_strong_trim_gap_threshold"] or hard_cap_exceeded else "Trim"
             reason = "Position is above target band and current price has reached the Trim trigger."
             if hard_cap_exceeded:
-                reason = "Position is above target band and exceeds the hard risk cap."
+                reason = "Position is above target band, current price has reached the Trim trigger, and the hard risk cap is exceeded."
             return choose(action, trim_trigger, "trim", settings["action_trim_remaining_upside_threshold"], reason)
         row["relevant_trigger_price"] = trim_trigger
         row["relevant_trigger_type"] = "trim"
@@ -6769,7 +6945,7 @@ def _choose_action_plan_decision(row, settings):
     row["relevant_trigger_price"] = None
     row["relevant_trigger_type"] = "hold"
     row["dynamic_required_upside"] = None
-    return "Hold", None, None, None, "No allocation-aware trigger condition is active."
+    return "Hold", None, None, None, "No allocation-based trigger condition is active."
 
 
 def _action_plan_cap_details(rating, core_diff, settings):
@@ -7189,6 +7365,11 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "linear_rating_bonus_reason": rating_bonus_reason,
             "linear_allocation_score": _clamp(score, 0.0, 1.0),
             "linear_weights_used": weights,
+            "momentum_score": item.get("momentum_score"),
+            "momentum_label": item.get("momentum_label"),
+            "extension_risk": item.get("extension_risk"),
+            "extension_label": item.get("extension_label"),
+            "momentum_updated_at": item.get("momentum_updated_at"),
         }
         cap, cap_reason = _linear_cap_details(row, settings)
         row["linear_effective_cap"] = cap
@@ -7222,7 +7403,10 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             trigger_fields = _linear_action_trigger_fields({**row, "action": "Add"}, settings)
             current_price = safe_number(row.get("current_price"))
             add_trigger = safe_number(trigger_fields.get("trigger_price"))
-            action = "Add" if current_price is not None and add_trigger is not None and current_price <= add_trigger else "Watch / Underweight"
+            momentum_value = safe_number(trigger_fields.get("momentum_score"))
+            extension_value = safe_number(trigger_fields.get("extension_risk"))
+            starter_blocked = current_weight <= 0 and ((extension_value is not None and extension_value >= 4.0) or (momentum_value is not None and momentum_value < 2.0))
+            action = "Add" if not starter_blocked and current_price is not None and add_trigger is not None and current_price <= add_trigger else "Watch / Underweight"
             sizing_action = "Add"
         elif current_weight > target_high:
             trigger_fields = _linear_action_trigger_fields({**row, "action": "Trim"}, settings)
@@ -7561,6 +7745,11 @@ def build_action_plan(conn):
             },
             "uses_final_scenario_overlay": item.get("uses_final_scenario_overlay"),
             "final_scenario_stale": item.get("final_scenario_stale"),
+            "momentum_score": item.get("momentum_score"),
+            "momentum_label": item.get("momentum_label"),
+            "extension_risk": item.get("extension_risk"),
+            "extension_label": item.get("extension_label"),
+            "momentum_updated_at": item.get("momentum_updated_at"),
         }
         action, trigger_price, trigger_direction, distance, reason = _choose_action_plan_decision(row, settings)
         amount_fields = _action_amount_fields(action, item["current_position_weight"], target_mid, total_portfolio_value, item.get("current_position_market_value"))

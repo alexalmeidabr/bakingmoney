@@ -436,6 +436,15 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_min_trade_gap_percent: 0.5,
   action_min_executable_trade_amount: 100.0,
   action_starter_buy_max_initial_weight: 1.0,
+  action_use_allocation_based_triggers: true,
+  action_momentum_add_max_raise: 0.08,
+  action_momentum_add_max_lower: 0.10,
+  action_extension_add_max_lower: 0.10,
+  action_momentum_trim_max_raise: 0.15,
+  action_momentum_trim_max_lower: 0.10,
+  action_extension_trim_max_lower: 0.15,
+  action_min_trigger_multiplier: 0.75,
+  action_max_trigger_multiplier: 1.25,
   action_add_required_upside: 30.0,
   action_strong_add_required_upside: 50.0,
   action_starter_buy_required_upside: 75.0,
@@ -812,6 +821,24 @@ function registerActionPlanConfigHelp() {
     tuning: 'Keep this small. A reasonable default is 0.05. Higher values can make Linear Allocation behave too much like bucket allocation and recreate allocation cliffs.',
     related: ['Enable linear rating bonus', 'Buy rating bonus', 'Linear Score'],
   });
+
+
+  addConfigHelp('action_use_allocation_based_triggers', {
+    title: 'Use allocation-based triggers',
+    meaning: 'Uses target allocation bands instead of remaining-upside thresholds to calculate Action Plan trigger prices.',
+    usedIn: 'Action Plan trigger-price calculation. Add triggers anchor to Target Low and Trim triggers anchor to Target High; action amount still moves toward Target Mid.',
+    formula: 'Existing positions use Allocation Trigger Price = Target Weight × Other Value / (Shares × (1 - Target Weight)).',
+    tuning: 'Keep enabled for the allocation-based trigger system. Legacy remaining-upside trigger settings are retained only for backward compatibility.',
+    related: ['Momentum trigger adjustments', 'Extension Risk trigger adjustments', 'Target Band'],
+  });
+  addConfigHelp('action_momentum_add_max_raise', { title: 'Momentum add max raise', meaning: 'Maximum amount healthy positive momentum can raise an Add trigger.', usedIn: 'Allocation-based Add trigger adjustment.', tuning: 'Default 0.08 allows strong healthy momentum to raise buy triggers by up to 8%.', related: ['Extension add max lower', 'Momentum Score'] });
+  addConfigHelp('action_momentum_add_max_lower', { title: 'Momentum add max lower', meaning: 'Maximum amount weak momentum can lower an Add trigger.', usedIn: 'Allocation-based Add trigger adjustment.', tuning: 'Default 0.10 makes weak momentum require a lower price before adding.', related: ['Momentum Score'] });
+  addConfigHelp('action_extension_add_max_lower', { title: 'Extension add max lower', meaning: 'Maximum amount Extension Risk can lower an Add trigger.', usedIn: 'Allocation-based Add trigger adjustment.', tuning: 'Default 0.10 helps avoid chasing technically extended stocks.', related: ['Extension Risk'] });
+  addConfigHelp('action_momentum_trim_max_raise', { title: 'Momentum trim max raise', meaning: 'Maximum amount positive momentum can raise a Trim trigger.', usedIn: 'Allocation-based Trim trigger adjustment.', tuning: 'Default 0.15 lets strong winners run further before trimming.', related: ['Momentum Score'] });
+  addConfigHelp('action_momentum_trim_max_lower', { title: 'Momentum trim max lower', meaning: 'Maximum amount weak momentum can lower a Trim trigger.', usedIn: 'Allocation-based Trim trigger adjustment.', tuning: 'Default 0.10 can trim overweight weak-momentum stocks earlier.', related: ['Momentum Score'] });
+  addConfigHelp('action_extension_trim_max_lower', { title: 'Extension trim max lower', meaning: 'Maximum amount Extension Risk can lower a Trim trigger.', usedIn: 'Allocation-based Trim trigger adjustment.', tuning: 'Default 0.15 brings trim triggers lower for overextended stocks.', related: ['Extension Risk'] });
+  addConfigHelp('action_min_trigger_multiplier', { title: 'Minimum trigger multiplier', meaning: 'Lower clamp for Momentum/Extension trigger adjustments.', usedIn: 'Applied after add/trim trigger multipliers are calculated.', tuning: 'Default 0.75 prevents trigger prices from being adjusted too far down.', related: ['Maximum trigger multiplier'] });
+  addConfigHelp('action_max_trigger_multiplier', { title: 'Maximum trigger multiplier', meaning: 'Upper clamp for Momentum/Extension trigger adjustments.', usedIn: 'Applied after add/trim trigger multipliers are calculated.', tuning: 'Default 1.25 prevents trigger prices from being adjusted too far up.', related: ['Minimum trigger multiplier'] });
 
   addConfigHelp('linear_buy_rating_bonus', {
     title: 'Buy rating bonus',
@@ -5250,6 +5277,12 @@ function validateActionPlanSettings(settings) {
   if (settings.action_core_diff_full_score <= settings.action_core_diff_zero_score) return 'Action Plan core diff full score must be greater than zero score.';
   if (settings.action_core_bearish_penalty_full <= settings.action_core_bearish_penalty_start) return 'Action Plan core bearish penalty full must be greater than start.';
   if (settings.action_potential_diff_full_score <= settings.action_potential_diff_minimum) return 'Action Plan potential diff full score must be greater than minimum.';
+  for (const key of ['action_momentum_add_max_raise', 'action_momentum_add_max_lower', 'action_extension_add_max_lower', 'action_momentum_trim_max_raise', 'action_momentum_trim_max_lower', 'action_extension_trim_max_lower']) {
+    if (settings[key] < 0 || settings[key] > 1) return `${key} must be between 0 and 1.`;
+  }
+  if (settings.action_min_trigger_multiplier <= 0 || settings.action_min_trigger_multiplier > 1) return 'Action min trigger multiplier must be > 0 and <= 1.';
+  if (settings.action_max_trigger_multiplier < 1 || settings.action_max_trigger_multiplier > 2) return 'Action max trigger multiplier must be >= 1 and <= 2.';
+  if (settings.action_max_trigger_multiplier <= settings.action_min_trigger_multiplier) return 'Action max trigger multiplier must be greater than min trigger multiplier.';
   for (const key of ['action_starter_buy_base_required_upside', 'action_add_base_required_upside', 'action_strong_add_base_required_upside', 'action_hold_extra_add_required_upside']) {
     if (settings[key] < 0 || settings[key] > 2) return `${key} must be between 0 and 2.`;
   }

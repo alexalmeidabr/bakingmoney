@@ -6795,6 +6795,8 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
             executable_sell_trim_proceeds += theoretical_amount
         elif row.get("action") in buy_actions and theoretical_amount > 0:
             row["funding_status"] = "Unfunded / Watch"
+        elif row.get("action") in {"Watch", "Watch / Underweight", "Hold / Overweight"} and theoretical_amount > 0:
+            row["funding_status"] = "Waiting for trigger"
         else:
             row["funding_status"] = "No funding needed"
     available_buy_budget = max(0.0, cash_available + executable_sell_trim_proceeds - minimum_cash_reserve_amount)
@@ -6886,11 +6888,11 @@ def _linear_action_trigger_fields(row, settings):
         trigger_price = context.get("strong_add_trigger_price")
         trigger_type = "strong_add"
         dynamic_required = context.get("strong_add_required_upside")
-    elif action in {"Add", "Starter Buy"}:
+    elif action in {"Add", "Starter Buy", "Watch", "Watch / Underweight"}:
         trigger_price = context.get("add_trigger_price")
         trigger_type = "add"
         dynamic_required = context.get("add_required_upside")
-    elif action in {"Trim", "Strong Trim"}:
+    elif action in {"Trim", "Strong Trim", "Hold / Overweight"}:
         trigger_price = context.get("trim_trigger_price")
         trigger_type = "trim"
         dynamic_required = settings.get("action_trim_remaining_upside_threshold")
@@ -7039,17 +7041,34 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "cap_reason": row.get("linear_cap_reason"),
         })
         current_weight = safe_number(row.get("current_position_weight")) or 0.0
-        if target_mid <= 0 and current_weight > 0:
+        rating_label = str(row.get("rating") or "").strip()
+        if (rating_label in {"Sell", "Strong Sell"} or target_mid <= 0) and current_weight > 0:
             action = "Sell"
+            sizing_action = action
+            trigger_fields = _linear_action_trigger_fields({**row, "action": action}, settings)
         elif current_weight < target_low:
-            action = "Add"
+            trigger_fields = _linear_action_trigger_fields({**row, "action": "Add"}, settings)
+            current_price = safe_number(row.get("current_price"))
+            add_trigger = safe_number(trigger_fields.get("trigger_price"))
+            action = "Add" if current_price is not None and add_trigger is not None and current_price <= add_trigger else "Watch / Underweight"
+            sizing_action = "Add"
         elif current_weight > target_high:
-            action = "Trim"
+            trigger_fields = _linear_action_trigger_fields({**row, "action": "Trim"}, settings)
+            current_price = safe_number(row.get("current_price"))
+            trim_trigger = safe_number(trigger_fields.get("trigger_price"))
+            action = "Trim" if current_price is not None and trim_trigger is not None and current_price >= trim_trigger else "Hold / Overweight"
+            sizing_action = "Trim"
         else:
             action = "Hold"
-        amount_fields = _linear_action_amount_fields(action, target_mid, target_high, total_portfolio_value, row.get("current_position_market_value"))
-        row.update({"action": action, "reason": "Linear Allocation compares current weight with the linear target band; rating is displayed for context only.", **amount_fields})
-        row.update(_linear_action_trigger_fields(row, settings))
+            sizing_action = action
+            trigger_fields = _linear_action_trigger_fields({**row, "action": action}, settings)
+        amount_fields = _linear_action_amount_fields(sizing_action, target_mid, target_high, total_portfolio_value, row.get("current_position_market_value"))
+        if action in {"Watch", "Watch / Underweight", "Hold / Overweight"}:
+            amount_fields["action_amount"] = 0.0
+            amount_fields["action_amount_label"] = "—"
+            amount_fields["action_amount_direction"] = "none"
+        row.update({"action": action, "reason": "Linear Allocation compares current weight with the linear target band; rating is displayed for context only; Add/Trim actions require the relevant trigger price to be reached.", **amount_fields})
+        row.update(trigger_fields)
     execution = _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
     rows.sort(key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), row.get("symbol") or ""))
     summary = {

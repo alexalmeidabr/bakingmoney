@@ -1039,6 +1039,13 @@ const ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL = Object.fromEntries(
   ACTION_PLAN_ACTION_FILTER_OPTIONS.map((option) => [option.label, option.key])
 );
 
+function getActionPlanActionFilterKey(actionLabel) {
+  const label = String(actionLabel || '');
+  if (label.startsWith('Watch')) return 'watch';
+  if (label.startsWith('Hold')) return 'hold';
+  return ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL[label];
+}
+
 const EARNINGS_CALENDAR_DATE_FILTER_OPTIONS = [
   { key: 'past', label: 'Past' },
   { key: 'yesterday', label: 'Yesterday' },
@@ -2004,7 +2011,7 @@ function getFilteredActionPlanItems() {
 
   const selectedActions = getSelectedActionPlanActions();
   if (selectedActions.size > 0 && selectedActions.size < ACTION_PLAN_ACTION_FILTER_OPTIONS.length) {
-    items = items.filter((item) => selectedActions.has(ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL[item.action || '']));
+    items = items.filter((item) => selectedActions.has(getActionPlanActionFilterKey(item.action)));
   }
 
   return items;
@@ -2019,7 +2026,7 @@ function getFilteredLinearActionPlanItems() {
   }
   const selectedActions = getSelectedActionPlanActions();
   if (selectedActions.size > 0 && selectedActions.size < ACTION_PLAN_ACTION_FILTER_OPTIONS.length) {
-    items = items.filter((item) => selectedActions.has(ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL[item.action || '']));
+    items = items.filter((item) => selectedActions.has(getActionPlanActionFilterKey(item.action)));
   }
   return items;
 }

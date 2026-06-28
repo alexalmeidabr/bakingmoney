@@ -1585,7 +1585,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('action_amount_label', js)
         self.assertIn('setSelectedActionPlanRatings(getAllRatingFilterKeys())', js)
         self.assertIn('setSelectedActionPlanActions(getAllActionPlanActionFilterKeys())', js)
-        self.assertIn('selectedActions.has(ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL[item.action', js)
+        self.assertIn('selectedActions.has(getActionPlanActionFilterKey(item.action))', js)
         self.assertIn('openActionPlanDetail(btn.dataset.symbol)', js)
         self.assertIn("openAnalysisDetailForSymbol(selectedActionPlanDetail.symbol, { origin: 'action_plan' })", js)
         self.assertIn("analysisDetailOrigin === 'action_plan'", js)
@@ -3076,7 +3076,7 @@ class ActionPlanFeatureTests(unittest.TestCase):
         add_row = web_server.compute_linear_action_plan([below_add_band], 100000.0, 0.0, settings)["rows"][0]
         self.assertEqual(add_row["action"], "Add")
 
-        above_trim_band = dict(base_candidate, current_position_weight=13.5, current_position_market_value=13500.0)
+        above_trim_band = dict(base_candidate, current_position_weight=13.5, current_position_market_value=13500.0, current_price=150.0)
         trim_row = web_server.compute_linear_action_plan([above_trim_band], 100000.0, 0.0, settings)["rows"][0]
         self.assertEqual(trim_row["action"], "Trim")
         self.assertAlmostEqual(trim_row["target_gap_amount"], 500.0)
@@ -3131,6 +3131,68 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(disabled_row["linear_rating_bonus_factor"], 1.0)
         self.assertAlmostEqual(disabled_row["linear_allocation_score"], base_score)
 
+
+    def test_linear_action_gating_requires_add_and_trim_triggers(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_allocated_target_total_pct": 10.0,
+            "linear_min_score_threshold": 0.0,
+            "linear_score_allocation_power": 1.0,
+            "linear_max_single_stock_pct": 100.0,
+            "linear_add_band_tolerance_pct": 15.0,
+            "linear_trim_band_tolerance_pct": 30.0,
+            "linear_enable_risk_caps": False,
+            "linear_rating_bonus_enabled": False,
+            "action_min_cash_unallocated_target": 0.0,
+            "action_min_executable_trade_amount": 0.0,
+        })
+        base = {
+            "rating": "Strong Buy",
+            "expected_cagr": 20.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "potential_confidence_diff": 1.5,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 1.0,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "expected_price": 150.0,
+        }
+        candidates = [
+            dict(base, symbol="ADD_OK", current_position_weight=0.0, current_position_market_value=0.0, current_price=100.0),
+            dict(base, symbol="ADD_WAIT", current_position_weight=0.0, current_position_market_value=0.0, current_price=145.0),
+            dict(base, symbol="TRIM_OK", current_position_weight=13.5, current_position_market_value=13500.0, current_price=140.0),
+            dict(base, symbol="TRIM_WAIT", current_position_weight=13.5, current_position_market_value=13500.0, current_price=100.0),
+            dict(base, symbol="SELL", rating="Sell", current_position_weight=13.5, current_position_market_value=13500.0, current_price=100.0),
+        ]
+        rows = {row["symbol"]: row for row in web_server.compute_linear_action_plan(candidates, 100000.0, 100000.0, settings)["rows"]}
+
+        self.assertEqual(rows["ADD_OK"]["action"], "Add")
+        self.assertGreater(rows["ADD_OK"]["executable_action_amount"], 0.0)
+        self.assertEqual(rows["ADD_WAIT"]["action"], "Watch / Underweight")
+        self.assertGreater(rows["ADD_WAIT"]["target_gap_amount"], 0.0)
+        self.assertEqual(rows["ADD_WAIT"]["action_amount_label"], "—")
+        self.assertEqual(rows["ADD_WAIT"]["funding_status"], "Waiting for trigger")
+        self.assertEqual(rows["ADD_WAIT"]["executable_action_amount"], 0.0)
+        self.assertGreater(rows["ADD_WAIT"]["distance_to_trigger_percent"], 0.0)
+
+        self.assertEqual(rows["TRIM_OK"]["action"], "Trim")
+        self.assertEqual(rows["TRIM_OK"]["funding_status"], "Generates proceeds")
+        self.assertGreater(rows["TRIM_OK"]["executable_action_amount"], 0.0)
+        self.assertEqual(rows["TRIM_WAIT"]["action"], "Hold / Overweight")
+        self.assertGreater(rows["TRIM_WAIT"]["target_gap_amount"], 0.0)
+        self.assertEqual(rows["TRIM_WAIT"]["action_amount_label"], "—")
+        self.assertEqual(rows["TRIM_WAIT"]["funding_status"], "Waiting for trigger")
+        self.assertEqual(rows["TRIM_WAIT"]["executable_action_amount"], 0.0)
+        self.assertLess(rows["TRIM_WAIT"]["distance_to_trigger_percent"], 0.0)
+
+        self.assertEqual(rows["SELL"]["action"], "Sell")
+        self.assertEqual(rows["SELL"]["funding_status"], "Generates proceeds")
+        self.assertGreater(rows["SELL"]["executable_action_amount"], 0.0)
+        self.assertAlmostEqual(rows["ADD_OK"]["total_add_demand"], rows["ADD_OK"]["target_gap_amount"])
+        self.assertAlmostEqual(rows["ADD_WAIT"]["total_add_demand"], rows["ADD_OK"]["target_gap_amount"])
+        self.assertAlmostEqual(rows["TRIM_WAIT"]["executable_sell_trim_proceeds"], rows["TRIM_OK"]["target_gap_amount"] + rows["SELL"]["target_gap_amount"])
+
     def test_linear_action_plan_populates_action_columns_and_summary(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["linear_min_score_threshold"] = 0.0
@@ -3166,7 +3228,7 @@ class ActionPlanFeatureTests(unittest.TestCase):
                 "potential_bearish_confidence": 2.0,
                 "current_position_weight": 50.0,
                 "current_position_market_value": 50000.0,
-                "current_price": 100.0,
+                "current_price": 120.0,
                 "expected_price": 120.0,
             },
         ]

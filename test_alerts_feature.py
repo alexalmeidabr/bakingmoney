@@ -578,7 +578,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                 return []
 
             def portfolio(self):
-                return [types.SimpleNamespace(contract=FakeContract("HELD", 8), marketPrice=77.0)]
+                return [types.SimpleNamespace(contract=FakeContract("HELD", 8), marketPrice=77.0, position=0.0)]
 
             def qualifyContracts(self, *contracts):
                 return list(contracts)
@@ -593,7 +593,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
 
             def sleep(self, _seconds):
                 for ticker in self.tickers:
-                    if ticker.contract.symbol == "MISS":
+                    if ticker.contract.symbol in {"MISS", "HELD"}:
                         self.errorEvent.emit(ticker.tickerId, 10089, "Requested market data requires additional subscription for API", ticker.contract)
 
         conids = {"MISS": 1, "HELD": 2}
@@ -609,6 +609,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertIsNone(result["prices"]["MISS"])
         self.assertEqual(result["prices"]["HELD"], 77.0)
         self.assertEqual(result["price_sources"]["HELD"], "portfolio_market_price_fallback")
+        self.assertEqual(result["diagnostics"]["HELD"]["error_code"], 10089)
         self.assertEqual(result["skipped_symbols"][0]["symbol"], "MISS")
         self.assertEqual(result["skipped_symbols"][0]["error_code"], 10089)
         self.assertEqual(result["skipped_symbols"][0]["reason"], "Market data subscription/API permission issue")
@@ -648,9 +649,9 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                     ).fetchone()
                     self.assertEqual(row["current_price"], 250.0)
                     self.assertEqual(result["updated"], 0)
-                    self.assertEqual(result["skipped"], 1)
-                    self.assertEqual(result["skipped_symbols"][0]["symbol"], "MSFT")
-                    self.assertIn("No live API market data", result["skipped_symbols"][0]["reason"])
+                    self.assertEqual(result["skipped"], 0)
+                    self.assertEqual(result["kept_previous"], 1)
+                    self.assertEqual(result["kept_previous_symbols"][0]["symbol"], "MSFT")
                 finally:
                     conn.close()
 
@@ -691,6 +692,54 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                     self.assertEqual(result["updated"], 0)
                     self.assertEqual(result["skipped"], 1)
                     self.assertEqual(result["skipped_symbols"][0]["symbol"], "NVDA")
+                finally:
+                    conn.close()
+
+    def test_refresh_latest_analysis_market_prices_uses_historical_close_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = web_server.utc_now_iso()
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", ("HIST", now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'HIST'").fetchone()["id"]
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_versions (
+                            analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
+                            upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
+                            raw_ai_response, source_trigger, created_at
+                        ) VALUES (?, 1, 'HIST', 'Historical Fallback', NULL, 120.0, NULL, 6.0, 'a', 'b', 'c', '{}', 'test', ?)
+                        """,
+                        (root_id, now),
+                    )
+                    conn.commit()
+                    direct_failure = {
+                        "symbol": "HIST",
+                        "reason": "Market data subscription/API permission issue",
+                        "error_code": 10089,
+                        "message": "Requested market data requires additional subscription for API",
+                    }
+                    with mock.patch.object(
+                        web_server,
+                        "fetch_ib_prices",
+                        return_value={
+                            "prices": {"HIST": None},
+                            "warnings": {"HIST": direct_failure},
+                            "diagnostics": {"HIST": direct_failure},
+                            "price_sources": {"HIST": None},
+                            "skipped_symbols": [direct_failure],
+                        },
+                    ), mock.patch.object(web_server, "fetch_latest_historical_close", return_value=(99.0, None)):
+                        result = web_server.refresh_latest_analysis_market_prices(conn)
+
+                    self.assertEqual(result["updated"], 1)
+                    self.assertEqual(result["skipped"], 0)
+                    self.assertEqual(result["fallback_symbols"][0]["symbol"], "HIST")
+                    self.assertEqual(result["fallback_symbols"][0]["source"], "historical_daily_close_fallback")
+                    self.assertIn("10089", result["fallback_symbols"][0]["warning"])
                 finally:
                     conn.close()
 
@@ -1573,6 +1622,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('ib_delayed_price_extra_wait_seconds', js)
         self.assertIn('formatSkippedPriceSymbols', js)
         self.assertIn('logSkippedPriceDetails', js)
+        self.assertIn('logFallbackPriceDetails', js)
+        self.assertIn('fallback used for', js)
+        self.assertIn('kept previous price for', js)
         self.assertIn('.rating-filter-panel.is-floating', css)
         self.assertIn('function positionFloatingFilterPanel', js)
         self.assertIn('function repositionOpenFloatingFilters', js)

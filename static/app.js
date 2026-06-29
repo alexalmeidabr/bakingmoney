@@ -1556,6 +1556,17 @@ function logSkippedPriceDetails(skippedSymbols) {
   });
 }
 
+function logFallbackPriceDetails(fallbackSymbols, keptPreviousSymbols) {
+  (Array.isArray(fallbackSymbols) ? fallbackSymbols : []).forEach((item) => {
+    if (!item?.symbol) return;
+    console.info(`${item.symbol} price fallback: ${item.source || 'fallback'}${item.warning ? ` (${item.warning})` : ''}.`, item);
+  });
+  (Array.isArray(keptPreviousSymbols) ? keptPreviousSymbols : []).forEach((item) => {
+    if (!item?.symbol) return;
+    console.warn(`${item.symbol} kept previous price: ${item.warning || 'All refresh sources failed.'}`, item);
+  });
+}
+
 function shouldRetryTwsPositionsRefresh(payload) {
   if (!payload || typeof payload !== 'object') return false;
   if (payload.data_source && payload.data_source !== 'live') return true;
@@ -3920,8 +3931,15 @@ async function refreshAnalysisPrices() {
     renderAnalysisList();
     analysisTable.classList.toggle('hidden', latestAnalysis.length === 0);
     const skippedSymbolsText = formatSkippedPriceSymbols(payload.skipped_symbols);
+    const fallbackSymbolsText = formatSkippedPriceSymbols(payload.fallback_symbols);
+    const keptPreviousSymbolsText = formatSkippedPriceSymbols(payload.kept_previous_symbols);
+    logFallbackPriceDetails(payload.fallback_symbols, payload.kept_previous_symbols);
     if (payload.skipped) logSkippedPriceDetails(payload.skipped_symbols);
-    analysisStatusEl.textContent = `Updated ${payload.updated || 0} symbol(s), skipped ${payload.skipped || 0}${skippedSymbolsText ? `: ${skippedSymbolsText}` : ''}.`;
+    const statusParts = [`Updated ${payload.updated || 0} symbol(s)`];
+    if (payload.fallback_symbols?.length) statusParts.push(`fallback used for ${payload.fallback_symbols.length}: ${fallbackSymbolsText}`);
+    if (payload.kept_previous) statusParts.push(`kept previous price for ${payload.kept_previous}: ${keptPreviousSymbolsText}`);
+    if (payload.skipped) statusParts.push(`skipped ${payload.skipped}: ${skippedSymbolsText}`);
+    analysisStatusEl.textContent = `${statusParts.join(', ')}.`;
   } catch (error) {
     analysisStatusEl.textContent = `Error: ${error.message}`;
     analysisStatusEl.className = 'status error';

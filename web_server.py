@@ -3408,8 +3408,9 @@ def fetch_ib_prices(symbols, return_details=False):
     prices = {symbol: None for symbol in symbols}
     warnings = {symbol: None for symbol in symbols}
     price_sources = {symbol: None for symbol in symbols}
+    diagnostics = {symbol: None for symbol in symbols}
     if not symbols:
-        return {"prices": prices, "warnings": warnings, "price_sources": price_sources, "skipped_symbols": []} if return_details else (prices, warnings)
+        return {"prices": prices, "warnings": warnings, "price_sources": price_sources, "diagnostics": diagnostics, "skipped_symbols": []} if return_details else (prices, warnings)
     if not is_tws_data_enabled():
         logger.info("Skipping IBKR price fetch because use_tws_data is disabled symbols=%s", len(symbols))
         for symbol in symbols:
@@ -3422,9 +3423,10 @@ def fetch_ib_prices(symbols, return_details=False):
                 "fatal": False,
                 "source": "tws_disabled",
             }
+            diagnostics[symbol] = warnings[symbol]
         skipped_symbols = [make_price_skip_detail(symbol, warnings[symbol]) for symbol in symbols]
         if return_details:
-            return {"prices": prices, "warnings": warnings, "price_sources": price_sources, "skipped_symbols": skipped_symbols}
+            return {"prices": prices, "warnings": warnings, "price_sources": price_sources, "diagnostics": diagnostics, "skipped_symbols": skipped_symbols}
         return prices, {symbol: (detail.get("reason") if isinstance(detail, dict) else detail) for symbol, detail in warnings.items()}
 
     ensure_event_loop()
@@ -3480,6 +3482,8 @@ def fetch_ib_prices(symbols, return_details=False):
 
                 price = extract_price(ticker)
                 prices[symbol] = price
+                if symbol in request_diagnostics:
+                    diagnostics[symbol] = request_diagnostics[symbol]
                 if price is not None:
                     warnings[symbol] = None
                     if isinstance(request_diagnostics.get(symbol), dict) and request_diagnostics[symbol].get("delayed"):
@@ -3507,6 +3511,7 @@ def fetch_ib_prices(symbols, return_details=False):
                             "fatal": False,
                             "source": "market_data_timeout",
                         }
+                    diagnostics[symbol] = warnings[symbol]
 
         for symbol in symbols:
             if prices[symbol] is None and portfolio_price_by_symbol.get(symbol) is not None:
@@ -3523,6 +3528,7 @@ def fetch_ib_prices(symbols, return_details=False):
                     "fatal": False,
                     "source": "market_data_timeout",
                 }
+                diagnostics[symbol] = warnings[symbol]
     except Exception:
         logger.exception("Unable to fetch IBKR prices")
         for symbol in symbols:
@@ -3535,6 +3541,7 @@ def fetch_ib_prices(symbols, return_details=False):
                 "fatal": False,
                 "source": "fetch_exception",
             }
+            diagnostics[symbol] = warnings[symbol]
 
     skipped_symbols = [make_price_skip_detail(symbol, warnings[symbol]) for symbol in symbols if prices.get(symbol) is None]
     if return_details:
@@ -3542,9 +3549,45 @@ def fetch_ib_prices(symbols, return_details=False):
             "prices": prices,
             "warnings": warnings,
             "price_sources": price_sources,
+            "diagnostics": diagnostics,
             "skipped_symbols": skipped_symbols,
         }
     return prices, {symbol: (detail.get("reason") if isinstance(detail, dict) else detail) for symbol, detail in warnings.items()}
+
+
+def fetch_latest_historical_close(symbol):
+    normalized_symbol = normalize_symbol(symbol)
+    if not normalized_symbol:
+        return None, {"reason": "Invalid symbol", "message": "Symbol could not be normalized"}
+    if not is_tws_data_enabled():
+        return None, {"reason": NO_PRICE_WARNING, "message": "TWS data is disabled or unavailable"}
+
+    ensure_event_loop()
+    from ib_insync import Stock
+
+    try:
+        ib = get_ib_connection()
+        contracts = ib.qualifyContracts(Stock(normalized_symbol, "SMART", "USD"))
+        if not contracts:
+            return None, {"reason": "Contract not found", "message": "Unable to qualify contract for historical close fallback"}
+        bars = ib.reqHistoricalData(
+            contracts[0],
+            endDateTime="",
+            durationStr="5 D",
+            barSizeSetting="1 day",
+            whatToShow="TRADES",
+            useRTH=True,
+            formatDate=1,
+            keepUpToDate=False,
+        )
+        for bar in reversed(list(bars or [])):
+            close = normalize_market_price(getattr(bar, "close", None))
+            if close is not None:
+                return close, None
+        return None, {"reason": "No valid historical close returned", "message": "Historical daily bars did not include a valid close"}
+    except Exception as exc:
+        logger.info("Historical close fallback failed symbol=%s error=%s", normalized_symbol, exc)
+        return None, {"reason": "Historical close fallback failed", "message": str(exc)}
 
 
 def resolve_company_profile_from_tws(symbol):
@@ -4903,7 +4946,7 @@ def recalculate_version_dynamic_price_metrics(conn, version_id, current_price):
 def refresh_latest_analysis_market_prices(conn):
     rows = conn.execute(
         """
-        SELECT r.symbol, v.id AS version_id, v.expected_price
+        SELECT r.symbol, v.id AS version_id, v.current_price, v.expected_price
         FROM analysis_roots r
         JOIN analysis_versions v ON v.analysis_root_id = r.id
         WHERE v.id = (
@@ -4929,26 +4972,102 @@ def refresh_latest_analysis_market_prices(conn):
             if prices.get(symbol) is None
         }
         price_sources = {}
+        diagnostics = {}
     else:
         prices = fetch_details["prices"]
         skipped_details_by_symbol = {item["symbol"]: item for item in fetch_details.get("skipped_symbols", [])}
         price_sources = fetch_details.get("price_sources", {})
+        diagnostics = fetch_details.get("diagnostics", {})
     now = utc_now_iso()
     updated = 0
     skipped = 0
+    kept_previous = 0
     skipped_symbols = []
+    updated_symbols = []
+    fallback_symbols = []
+    kept_previous_symbols = []
+
+    previous_price_by_symbol = {
+        row["symbol"]: safe_number(row["current_price"])
+        for row in rows
+    }
+
+    for symbol in symbols:
+        if prices.get(symbol) is not None:
+            continue
+        historical_price, historical_warning = fetch_latest_historical_close(symbol)
+        if historical_price is not None:
+            prices[symbol] = historical_price
+            price_sources[symbol] = "historical_daily_close_fallback"
+            warning_message = None
+            direct_warning = diagnostics.get(symbol) or skipped_details_by_symbol.get(symbol)
+            if direct_warning:
+                code = direct_warning.get("error_code") if isinstance(direct_warning, dict) else None
+                warning_message = f"Direct market data failed{f' with {code}' if code else ''}; used historical daily close fallback."
+            diagnostics[symbol] = {
+                "symbol": symbol,
+                "reason": warning_message or "Used historical daily close fallback",
+                "error_code": (direct_warning or {}).get("error_code") if isinstance(direct_warning, dict) else None,
+                "message": (direct_warning or {}).get("message") if isinstance(direct_warning, dict) else None,
+                "severity": "warning",
+                "fatal": False,
+                "source": "historical_daily_close_fallback",
+            }
+            continue
+        if historical_warning:
+            existing = skipped_details_by_symbol.get(symbol)
+            if existing is None:
+                skipped_details_by_symbol[symbol] = make_price_skip_detail(symbol, {
+                    "symbol": symbol,
+                    "reason": historical_warning.get("reason"),
+                    "message": historical_warning.get("message"),
+                    "source": "historical_daily_close_fallback",
+                })
 
     for row in rows:
-        latest_price = prices.get(row["symbol"])
+        symbol = row["symbol"]
+        latest_price = prices.get(symbol)
         if latest_price is None:
+            previous_price = previous_price_by_symbol.get(symbol)
+            if previous_price is not None and previous_price > 0:
+                kept_previous += 1
+                source_counts_key = "previous_stored_price"
+                kept_previous_symbols.append({
+                    "symbol": symbol,
+                    "price": previous_price,
+                    "source": source_counts_key,
+                    "warning": "All TWS refresh sources failed; kept previous stored current_price.",
+                })
+                continue
             skipped += 1
-            skipped_symbols.append(skipped_details_by_symbol.get(row["symbol"]) or make_price_skip_detail(row["symbol"]))
+            skipped_symbols.append(skipped_details_by_symbol.get(symbol) or make_price_skip_detail(symbol))
             continue
         conn.execute(
             "UPDATE analysis_versions SET current_price = ? WHERE id = ?",
             (latest_price, row["version_id"]),
         )
         recalculate_version_dynamic_price_metrics(conn, row["version_id"], latest_price)
+        source = price_sources.get(symbol) or "unknown"
+        direct_warning = diagnostics.get(symbol)
+        warning = None
+        if source in {"portfolio_market_price_fallback", "historical_daily_close_fallback"}:
+            if isinstance(direct_warning, dict) and direct_warning.get("error_code"):
+                warning = f"Direct market data failed with {direct_warning.get('error_code')}; used {source}."
+            else:
+                warning = f"Used {source}."
+        updated_symbols.append({
+            "symbol": symbol,
+            "price": latest_price,
+            "source": source,
+            "warning": warning,
+        })
+        if source in {"portfolio_market_price_fallback", "historical_daily_close_fallback"}:
+            fallback_symbols.append({
+                "symbol": symbol,
+                "price": latest_price,
+                "source": source,
+                "warning": warning,
+            })
         updated += 1
 
     if updated:
@@ -4960,14 +5079,25 @@ def refresh_latest_analysis_market_prices(conn):
             continue
         source = price_sources.get(symbol) or "unknown"
         source_counts[source] = source_counts.get(source, 0) + 1
+    if kept_previous:
+        source_counts["previous_stored_price"] = kept_previous
     logger.info(
-        "Price refresh summary requested=%s updated=%s skipped=%s skipped_symbols=%s source_counts=%s",
+        "Price refresh summary requested=%s updated=%s skipped=%s kept_previous=%s fallback=%s skipped_symbols=%s source_counts=%s",
         len(symbols),
         updated,
         skipped,
+        kept_previous,
+        len(fallback_symbols),
         ",".join(item["symbol"] for item in skipped_symbols) or "none",
         source_counts,
     )
+    for item in fallback_symbols:
+        logger.info(
+            "Price refresh fallback symbol=%s source=%s reason=%s",
+            item.get("symbol"),
+            item.get("source"),
+            item.get("warning"),
+        )
     for item in skipped_symbols:
         logger.info(
             "Price refresh skipped symbol=%s reason=%s error_code=%s message=%s",
@@ -4976,7 +5106,17 @@ def refresh_latest_analysis_market_prices(conn):
             item.get("error_code"),
             item.get("message"),
         )
-    return {"updated": updated, "skipped": skipped, "skipped_symbols": skipped_symbols, "price_source_counts": source_counts}
+    return {
+        "updated": updated,
+        "skipped": skipped,
+        "kept_previous": kept_previous,
+        "updated_symbols": updated_symbols,
+        "fallback_symbols": fallback_symbols,
+        "kept_previous_symbols": kept_previous_symbols,
+        "skipped_symbols": skipped_symbols,
+        "source_counts": source_counts,
+        "price_source_counts": source_counts,
+    }
 
 
 def _normalize_imported_key_variables_payload(payload):

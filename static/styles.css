@@ -694,6 +694,17 @@ th.sortable[data-sort-direction='desc']::after {
   padding: 10px;
 }
 
+.rating-filter-panel.is-floating {
+  position: fixed;
+  top: auto;
+  left: auto;
+  right: auto;
+  z-index: 1000;
+  max-width: calc(100vw - 16px);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
 #earnings-calendar-date-filter .rating-filter-panel,
 .earnings-calendar-multiselect .rating-filter-panel {
   left: auto;

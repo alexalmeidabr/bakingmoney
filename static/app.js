@@ -1383,53 +1383,102 @@ function updateEarningsCalendarFiscalQuarterFilterLabel() {
   earningsCalendarFiscalQuarterFilterLabelEl.textContent = selectedCount === 1 ? selected[0] : `${selectedCount} selected`;
 }
 
+const FLOATING_FILTER_MARGIN = 8;
+
+function resetFloatingFilterPanel(panel) {
+  if (!panel) return;
+  panel.classList.remove('is-floating');
+  panel.style.left = '';
+  panel.style.right = '';
+  panel.style.top = '';
+  panel.style.width = '';
+  panel.style.minWidth = '';
+  panel.style.maxHeight = '';
+}
+
+function positionFloatingFilterPanel(toggle, panel) {
+  if (!toggle || !panel || panel.classList.contains('hidden')) return;
+  const rect = toggle.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const maxPanelWidth = Math.max(160, viewportWidth - FLOATING_FILTER_MARGIN * 2);
+  const preferredWidth = Math.min(
+    maxPanelWidth,
+    Math.max(rect.width, panel.scrollWidth || panel.offsetWidth || 236, 236)
+  );
+  const left = Math.min(
+    Math.max(FLOATING_FILTER_MARGIN, rect.left),
+    Math.max(FLOATING_FILTER_MARGIN, viewportWidth - preferredWidth - FLOATING_FILTER_MARGIN)
+  );
+  const availableBelow = Math.max(0, viewportHeight - rect.bottom - FLOATING_FILTER_MARGIN);
+  const availableAbove = Math.max(0, rect.top - FLOATING_FILTER_MARGIN);
+  const desiredHeight = Math.min(panel.scrollHeight || 400, 400);
+  const openUpward = availableBelow < desiredHeight && availableAbove > availableBelow;
+  const availableHeight = Math.max(120, (openUpward ? availableAbove : availableBelow) - 6);
+  const maxHeight = Math.min(400, availableHeight);
+  panel.classList.add('is-floating');
+  panel.style.width = `${preferredWidth}px`;
+  panel.style.minWidth = `${preferredWidth}px`;
+  panel.style.maxHeight = `${maxHeight}px`;
+  panel.style.left = `${left}px`;
+  panel.style.right = 'auto';
+  if (openUpward) {
+    const actualHeight = Math.min(panel.scrollHeight || maxHeight, maxHeight);
+    panel.style.top = `${Math.max(FLOATING_FILTER_MARGIN, rect.top - actualHeight - 6)}px`;
+  } else {
+    panel.style.top = `${Math.min(rect.bottom + 6, Math.max(FLOATING_FILTER_MARGIN, viewportHeight - maxHeight - FLOATING_FILTER_MARGIN))}px`;
+  }
+}
+
+function setFloatingFilterOpen(filterEl, panelEl, toggleEl, isOpen) {
+  if (!filterEl || !panelEl || !toggleEl) return;
+  filterEl.dataset.open = isOpen ? 'true' : 'false';
+  panelEl.classList.toggle('hidden', !isOpen);
+  toggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  if (isOpen) positionFloatingFilterPanel(toggleEl, panelEl);
+  else resetFloatingFilterPanel(panelEl);
+}
+
+function repositionOpenFloatingFilters() {
+  [
+    [analysisRatingFilterEl, analysisRatingFilterPanelEl, analysisRatingFilterToggleEl],
+    [positionsRatingFilterEl, positionsRatingFilterPanelEl, positionsRatingFilterToggleEl],
+    [actionPlanRatingFilterEl, actionPlanRatingFilterPanelEl, actionPlanRatingFilterToggleEl],
+    [actionPlanActionFilterEl, actionPlanActionFilterPanelEl, actionPlanActionFilterToggleEl],
+    [earningsCalendarDateFilterEl, earningsCalendarDateFilterPanelEl, earningsCalendarDateFilterToggleEl],
+    [earningsCalendarFiscalYearFilterEl, earningsCalendarFiscalYearFilterPanelEl, earningsCalendarFiscalYearFilterToggleEl],
+    [earningsCalendarFiscalQuarterFilterEl, earningsCalendarFiscalQuarterFilterPanelEl, earningsCalendarFiscalQuarterFilterToggleEl],
+  ].forEach(([filterEl, panelEl, toggleEl]) => {
+    if (filterEl?.dataset.open === 'true') positionFloatingFilterPanel(toggleEl, panelEl);
+  });
+}
+
 function setRatingFilterOpen(isOpen) {
-  if (!analysisRatingFilterEl || !analysisRatingFilterPanelEl || !analysisRatingFilterToggleEl) return;
-  analysisRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
-  analysisRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
-  analysisRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  setFloatingFilterOpen(analysisRatingFilterEl, analysisRatingFilterPanelEl, analysisRatingFilterToggleEl, isOpen);
 }
 
 function setPositionsRatingFilterOpen(isOpen) {
-  if (!positionsRatingFilterEl || !positionsRatingFilterPanelEl || !positionsRatingFilterToggleEl) return;
-  positionsRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
-  positionsRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
-  positionsRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  setFloatingFilterOpen(positionsRatingFilterEl, positionsRatingFilterPanelEl, positionsRatingFilterToggleEl, isOpen);
 }
 
 function setActionPlanRatingFilterOpen(isOpen) {
-  if (!actionPlanRatingFilterEl || !actionPlanRatingFilterPanelEl || !actionPlanRatingFilterToggleEl) return;
-  actionPlanRatingFilterEl.dataset.open = isOpen ? 'true' : 'false';
-  actionPlanRatingFilterPanelEl.classList.toggle('hidden', !isOpen);
-  actionPlanRatingFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  setFloatingFilterOpen(actionPlanRatingFilterEl, actionPlanRatingFilterPanelEl, actionPlanRatingFilterToggleEl, isOpen);
 }
 
 function setActionPlanActionFilterOpen(isOpen) {
-  if (!actionPlanActionFilterEl || !actionPlanActionFilterPanelEl || !actionPlanActionFilterToggleEl) return;
-  actionPlanActionFilterEl.dataset.open = isOpen ? 'true' : 'false';
-  actionPlanActionFilterPanelEl.classList.toggle('hidden', !isOpen);
-  actionPlanActionFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  setFloatingFilterOpen(actionPlanActionFilterEl, actionPlanActionFilterPanelEl, actionPlanActionFilterToggleEl, isOpen);
 }
 
 function setEarningsCalendarDateFilterOpen(isOpen) {
-  if (!earningsCalendarDateFilterEl || !earningsCalendarDateFilterPanelEl || !earningsCalendarDateFilterToggleEl) return;
-  earningsCalendarDateFilterEl.dataset.open = isOpen ? 'true' : 'false';
-  earningsCalendarDateFilterPanelEl.classList.toggle('hidden', !isOpen);
-  earningsCalendarDateFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  setFloatingFilterOpen(earningsCalendarDateFilterEl, earningsCalendarDateFilterPanelEl, earningsCalendarDateFilterToggleEl, isOpen);
 }
 
 function setEarningsCalendarFiscalYearFilterOpen(isOpen) {
-  if (!earningsCalendarFiscalYearFilterEl || !earningsCalendarFiscalYearFilterPanelEl || !earningsCalendarFiscalYearFilterToggleEl) return;
-  earningsCalendarFiscalYearFilterEl.dataset.open = isOpen ? 'true' : 'false';
-  earningsCalendarFiscalYearFilterPanelEl.classList.toggle('hidden', !isOpen);
-  earningsCalendarFiscalYearFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  setFloatingFilterOpen(earningsCalendarFiscalYearFilterEl, earningsCalendarFiscalYearFilterPanelEl, earningsCalendarFiscalYearFilterToggleEl, isOpen);
 }
 
 function setEarningsCalendarFiscalQuarterFilterOpen(isOpen) {
-  if (!earningsCalendarFiscalQuarterFilterEl || !earningsCalendarFiscalQuarterFilterPanelEl || !earningsCalendarFiscalQuarterFilterToggleEl) return;
-  earningsCalendarFiscalQuarterFilterEl.dataset.open = isOpen ? 'true' : 'false';
-  earningsCalendarFiscalQuarterFilterPanelEl.classList.toggle('hidden', !isOpen);
-  earningsCalendarFiscalQuarterFilterToggleEl.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  setFloatingFilterOpen(earningsCalendarFiscalQuarterFilterEl, earningsCalendarFiscalQuarterFilterPanelEl, earningsCalendarFiscalQuarterFilterToggleEl, isOpen);
 }
 
 function loadCachedPositions() {
@@ -5630,6 +5679,8 @@ document.addEventListener('click', (event) => {
   if (earningsCalendarFiscalYearFilterEl && !earningsCalendarFiscalYearFilterEl.contains(event.target)) setEarningsCalendarFiscalYearFilterOpen(false);
   if (earningsCalendarFiscalQuarterFilterEl && !earningsCalendarFiscalQuarterFilterEl.contains(event.target)) setEarningsCalendarFiscalQuarterFilterOpen(false);
 });
+window.addEventListener('resize', repositionOpenFloatingFilters);
+window.addEventListener('scroll', repositionOpenFloatingFilters, true);
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   setRatingFilterOpen(false);

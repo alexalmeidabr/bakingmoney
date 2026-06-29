@@ -598,6 +598,10 @@
               <label>Price wait time for IB/TWS (seconds)
                 <input id="config-ib-price-wait-seconds" type="number" min="1" max="30" step="0.5" value="5" />
               </label>
+              <label>Delayed price extra wait time for IB/TWS (seconds)
+                <input id="config-ib-delayed-price-extra-wait-seconds" type="number" min="0" max="30" step="0.5" value="5" />
+                <small class="form-help">Used when TWS reports delayed market data so slower delayed prices are less likely to be skipped.</small>
+              </label>
               <label><input id="config-scenario-multi-pass-enabled" type="checkbox" /> Enable scenario multi-pass consensus</label>
               <label>Scenario pass count <input id="config-scenario-pass-count" type="number" min="1" max="10" value="1" /></label>
             </div>

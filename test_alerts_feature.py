@@ -400,6 +400,10 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         ticker = types.SimpleNamespace(marketPrice=lambda: -1, last=125.5, close=120.0)
         self.assertEqual(web_server.extract_price(ticker), 125.5)
 
+    def test_extract_price_accepts_previous_close_as_last_fallback(self):
+        ticker = types.SimpleNamespace(marketPrice=lambda: -1, last=None, close=0, prevClose=119.5)
+        self.assertEqual(web_server.extract_price(ticker), 119.5)
+
     def test_extract_price_rejects_non_positive_values(self):
         ticker = types.SimpleNamespace(marketPrice=lambda: 0, last=-1, close=0)
         self.assertIsNone(web_server.extract_price(ticker))
@@ -455,8 +459,159 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(prices["MSFT"], None)
         self.assertEqual(prices["NVDA"], None)
         self.assertEqual(warnings["AAPL"], None)
-        self.assertEqual(warnings["MSFT"], web_server.NO_PRICE_WARNING)
-        self.assertEqual(warnings["NVDA"], web_server.NO_PRICE_WARNING)
+        self.assertEqual(warnings["MSFT"], "No valid market price returned before timeout")
+        self.assertEqual(warnings["NVDA"], "No valid market price returned before timeout")
+
+    def test_fetch_ib_prices_waits_for_delayed_warning_and_reports_diagnostics(self):
+        class FakeEvent:
+            def __init__(self):
+                self.handlers = []
+
+            def __iadd__(self, handler):
+                self.handlers.append(handler)
+                return self
+
+            def __isub__(self, handler):
+                self.handlers.remove(handler)
+                return self
+
+            def emit(self, *args):
+                for handler in list(self.handlers):
+                    handler(*args)
+
+        class FakeContract:
+            def __init__(self, symbol, conid):
+                self.symbol = symbol
+                self.conId = conid
+
+        class FakeTicker:
+            def __init__(self, contract, ticker_id):
+                self.contract = contract
+                self.tickerId = ticker_id
+                self.last = None
+                self.close = None
+                self.prevClose = None
+
+            def marketPrice(self):
+                return None
+
+        class FakeIB:
+            def __init__(self):
+                self.errorEvent = FakeEvent()
+                self.tickers = []
+                self.cancelled = []
+                self.sleep_calls = 0
+
+            def positions(self):
+                return []
+
+            def portfolio(self):
+                return []
+
+            def qualifyContracts(self, *contracts):
+                return list(contracts)
+
+            def reqMktData(self, contract, *_args):
+                ticker = FakeTicker(contract, len(self.tickers) + 1)
+                self.tickers.append(ticker)
+                return ticker
+
+            def cancelMktData(self, contract):
+                self.cancelled.append(contract.conId)
+
+            def sleep(self, _seconds):
+                self.sleep_calls += 1
+                if self.tickers and self.sleep_calls == 1:
+                    self.errorEvent.emit(self.tickers[0].tickerId, 10167, "Requested market data is not subscribed. Displaying delayed market data.", self.tickers[0].contract)
+                    self.tickers[0].last = 123.45
+
+        fake_ib = FakeIB()
+        fake_module = types.SimpleNamespace(Stock=lambda symbol, *_args: FakeContract(symbol, 42))
+        with mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
+             mock.patch.object(web_server, "get_ib_connection", return_value=fake_ib), \
+             mock.patch.object(web_server, "is_tws_data_enabled", return_value=True), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0.5), \
+             mock.patch.object(web_server, "get_ib_delayed_price_extra_wait_seconds", return_value=1.0):
+            result = web_server.fetch_ib_prices(["MSFT"], return_details=True)
+
+        self.assertEqual(result["prices"]["MSFT"], 123.45)
+        self.assertEqual(result["price_sources"]["MSFT"], "delayed_market_data")
+        self.assertEqual(result["skipped_symbols"], [])
+        self.assertEqual(fake_ib.cancelled, [42])
+
+    def test_fetch_ib_prices_reports_subscription_failures_and_portfolio_fallback(self):
+        class FakeEvent:
+            def __init__(self):
+                self.handlers = []
+
+            def __iadd__(self, handler):
+                self.handlers.append(handler)
+                return self
+
+            def __isub__(self, handler):
+                self.handlers.remove(handler)
+                return self
+
+            def emit(self, *args):
+                for handler in list(self.handlers):
+                    handler(*args)
+
+        class FakeContract:
+            def __init__(self, symbol, conid):
+                self.symbol = symbol
+                self.conId = conid
+
+        class FakeTicker:
+            def __init__(self, contract, ticker_id):
+                self.contract = contract
+                self.tickerId = ticker_id
+
+            def marketPrice(self):
+                return None
+
+        class FakeIB:
+            def __init__(self):
+                self.errorEvent = FakeEvent()
+                self.tickers = []
+
+            def positions(self):
+                return []
+
+            def portfolio(self):
+                return [types.SimpleNamespace(contract=FakeContract("HELD", 8), marketPrice=77.0)]
+
+            def qualifyContracts(self, *contracts):
+                return list(contracts)
+
+            def reqMktData(self, contract, *_args):
+                ticker = FakeTicker(contract, len(self.tickers) + 1)
+                self.tickers.append(ticker)
+                return ticker
+
+            def cancelMktData(self, _contract):
+                return None
+
+            def sleep(self, _seconds):
+                for ticker in self.tickers:
+                    if ticker.contract.symbol == "MISS":
+                        self.errorEvent.emit(ticker.tickerId, 10089, "Requested market data requires additional subscription for API", ticker.contract)
+
+        conids = {"MISS": 1, "HELD": 2}
+        fake_ib = FakeIB()
+        fake_module = types.SimpleNamespace(Stock=lambda symbol, *_args: FakeContract(symbol, conids[symbol]))
+        with mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
+             mock.patch.object(web_server, "get_ib_connection", return_value=fake_ib), \
+             mock.patch.object(web_server, "is_tws_data_enabled", return_value=True), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0.01), \
+             mock.patch.object(web_server, "get_ib_delayed_price_extra_wait_seconds", return_value=0):
+            result = web_server.fetch_ib_prices(["MISS", "HELD"], return_details=True)
+
+        self.assertIsNone(result["prices"]["MISS"])
+        self.assertEqual(result["prices"]["HELD"], 77.0)
+        self.assertEqual(result["price_sources"]["HELD"], "portfolio_market_price_fallback")
+        self.assertEqual(result["skipped_symbols"][0]["symbol"], "MISS")
+        self.assertEqual(result["skipped_symbols"][0]["error_code"], 10089)
+        self.assertEqual(result["skipped_symbols"][0]["reason"], "Market data subscription/API permission issue")
 
     def test_refresh_latest_analysis_market_prices_preserves_previous_valid_price_on_invalid_tws_price(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -494,6 +649,8 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                     self.assertEqual(row["current_price"], 250.0)
                     self.assertEqual(result["updated"], 0)
                     self.assertEqual(result["skipped"], 1)
+                    self.assertEqual(result["skipped_symbols"][0]["symbol"], "MSFT")
+                    self.assertIn("No live API market data", result["skipped_symbols"][0]["reason"])
                 finally:
                     conn.close()
 
@@ -533,6 +690,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                     self.assertIsNone(row["current_price"])
                     self.assertEqual(result["updated"], 0)
                     self.assertEqual(result["skipped"], 1)
+                    self.assertEqual(result["skipped_symbols"][0]["symbol"], "NVDA")
                 finally:
                     conn.close()
 
@@ -1411,6 +1569,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="action-plan-rating-filter"', html)
         self.assertIn('id="action-plan-action-filter"', html)
         self.assertIn('Action Filter', html)
+        self.assertIn('id="config-ib-delayed-price-extra-wait-seconds"', html)
+        self.assertIn('ib_delayed_price_extra_wait_seconds', js)
+        self.assertIn('formatSkippedPriceSymbols', js)
+        self.assertIn('logSkippedPriceDetails', js)
         self.assertIn('.rating-filter-panel.is-floating', css)
         self.assertIn('function positionFloatingFilterPanel', js)
         self.assertIn('function repositionOpenFloatingFilters', js)

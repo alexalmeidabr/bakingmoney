@@ -171,6 +171,7 @@ const alertDetailRerunBtn = document.getElementById('alert-detail-rerun-btn');
 
 const configurationStatusEl = document.getElementById('configuration-status');
 const configIbPriceWaitSecondsEl = document.getElementById('config-ib-price-wait-seconds');
+const configIbDelayedPriceExtraWaitSecondsEl = document.getElementById('config-ib-delayed-price-extra-wait-seconds');
 const configScenarioMultiPassEnabledEl = document.getElementById('config-scenario-multi-pass-enabled');
 const configScenarioPassCountEl = document.getElementById('config-scenario-pass-count');
 const configScenarioProbabilitySourceModeEl = document.getElementById('config-scenario-probability-source-mode');
@@ -514,6 +515,14 @@ function addConfigHelp(key, help) {
 }
 
 function registerActionPlanConfigHelp() {
+  addConfigHelp('ib_delayed_price_extra_wait_seconds', {
+    title: 'Delayed price extra wait time for IB/TWS',
+    meaning: 'Additional polling time used when TWS indicates delayed market data is being returned.',
+    usedIn: 'Analysis → Update Current Prices. The app adds this extra wait only after delayed/partial market-data warnings so slower delayed prices have more time to populate.',
+    tuning: 'Default 5 seconds. Increase if delayed prices often arrive late; keep at 0 if you want the refresh to use only the base IB/TWS price wait time.',
+    related: ['Price wait time for IB/TWS', 'Update Current Prices'],
+  });
+
   addConfigHelp('action_use_dynamic_bucket_sizing', {
     title: 'Use dynamic bucket sizing',
     meaning: 'Turns on the dynamic Action Plan bucket model instead of fixed bucket percentages.',
@@ -1530,6 +1539,22 @@ function extractErrorMessage(payload, fallback) {
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function formatSkippedPriceSymbols(skippedSymbols) {
+  const items = Array.isArray(skippedSymbols) ? skippedSymbols.filter((item) => item && item.symbol) : [];
+  if (!items.length) return '';
+  const symbols = items.map((item) => item.symbol);
+  if (symbols.length <= 4) return symbols.join(', ');
+  return `${symbols.slice(0, 4).join(', ')}, and ${symbols.length - 4} more`;
+}
+
+function logSkippedPriceDetails(skippedSymbols) {
+  const items = Array.isArray(skippedSymbols) ? skippedSymbols : [];
+  items.forEach((item) => {
+    if (!item?.symbol) return;
+    console.warn(`${item.symbol} skipped: ${item.reason || 'No valid market price returned before timeout'}.`, item);
+  });
+}
 
 function shouldRetryTwsPositionsRefresh(payload) {
   if (!payload || typeof payload !== 'object') return false;
@@ -3894,7 +3919,9 @@ async function refreshAnalysisPrices() {
     updateAnalysisSortHeaderState();
     renderAnalysisList();
     analysisTable.classList.toggle('hidden', latestAnalysis.length === 0);
-    analysisStatusEl.textContent = `Updated ${payload.updated || 0} symbol(s), skipped ${payload.skipped || 0}.`;
+    const skippedSymbolsText = formatSkippedPriceSymbols(payload.skipped_symbols);
+    if (payload.skipped) logSkippedPriceDetails(payload.skipped_symbols);
+    analysisStatusEl.textContent = `Updated ${payload.updated || 0} symbol(s), skipped ${payload.skipped || 0}${skippedSymbolsText ? `: ${skippedSymbolsText}` : ''}.`;
   } catch (error) {
     analysisStatusEl.textContent = `Error: ${error.message}`;
     analysisStatusEl.className = 'status error';
@@ -5351,6 +5378,7 @@ function validateActionPlanSettings(settings) {
 function cancelGeneralConfigurationEdits() {
   if (!savedGeneralSettings) return;
   configIbPriceWaitSecondsEl.value = savedGeneralSettings.ib_price_wait_seconds ?? 5;
+  configIbDelayedPriceExtraWaitSecondsEl.value = savedGeneralSettings.ib_delayed_price_extra_wait_seconds ?? 5;
   configScenarioMultiPassEnabledEl.checked = Boolean(savedGeneralSettings.scenario_multi_pass_enabled);
   configScenarioPassCountEl.value = savedGeneralSettings.scenario_pass_count || 1;
   applyScenarioProbabilitySettingsToForm(savedGeneralSettings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
@@ -5427,6 +5455,7 @@ async function loadGeneralConfiguration() {
     const settings = payload.settings || {};
     savedGeneralSettings = settings;
     configIbPriceWaitSecondsEl.value = settings.ib_price_wait_seconds ?? 5;
+    configIbDelayedPriceExtraWaitSecondsEl.value = settings.ib_delayed_price_extra_wait_seconds ?? 5;
     configScenarioMultiPassEnabledEl.checked = Boolean(settings.scenario_multi_pass_enabled);
     configScenarioPassCountEl.value = settings.scenario_pass_count || 1;
     applyScenarioProbabilitySettingsToForm(settings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
@@ -5439,9 +5468,15 @@ async function loadGeneralConfiguration() {
 
 async function saveGeneralConfiguration() {
   const waitSeconds = Number(configIbPriceWaitSecondsEl.value);
+  const delayedPriceExtraWaitSeconds = Number(configIbDelayedPriceExtraWaitSecondsEl.value);
   const passCount = Number(configScenarioPassCountEl.value);
   if (!Number.isFinite(waitSeconds) || waitSeconds < 1 || waitSeconds > 30) {
     configurationStatusEl.textContent = 'Error: Price wait time must be between 1 and 30 seconds.';
+    configurationStatusEl.className = 'status error';
+    return;
+  }
+  if (!Number.isFinite(delayedPriceExtraWaitSeconds) || delayedPriceExtraWaitSeconds < 0 || delayedPriceExtraWaitSeconds > 30) {
+    configurationStatusEl.textContent = 'Error: Delayed price extra wait time must be between 0 and 30 seconds.';
     configurationStatusEl.className = 'status error';
     return;
   }
@@ -5476,7 +5511,7 @@ async function saveGeneralConfiguration() {
   }
 
   configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings, action_plan_settings: actionPlanSettings, use_tws_data: Boolean(twsDataToggleEl.checked) } }) });
+  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, ib_delayed_price_extra_wait_seconds: delayedPriceExtraWaitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings, action_plan_settings: actionPlanSettings, use_tws_data: Boolean(twsDataToggleEl.checked) } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); savedGeneralSettings = payload.settings || null; configurationStatusEl.textContent = 'Configuration saved.';
     if (savedGeneralSettings) {
       applyScenarioProbabilitySettingsToForm(savedGeneralSettings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);

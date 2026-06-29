@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import statistics
 import tempfile
+import time
 import uuid
 import zipfile
 from html import unescape
@@ -124,12 +125,14 @@ ANALYSIS_SETTING_SCENARIO_MULTI_PASS_ENABLED = "scenario_multi_pass_enabled"
 ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
 ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
 ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS = "ib_price_wait_seconds"
+ANALYSIS_SETTING_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS = "ib_delayed_price_extra_wait_seconds"
 ANALYSIS_SETTING_USE_TWS_DATA = "use_tws_data"
 
 DEFAULT_SCENARIO_MULTI_PASS_ENABLED = False
 DEFAULT_SCENARIO_PASS_COUNT = 1
 DEFAULT_SCENARIO_OUTLIER_FILTER_ENABLED = True
 DEFAULT_IB_PRICE_WAIT_SECONDS = 5
+DEFAULT_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS = 5
 DEFAULT_IB_MARKET_DATA_BATCH_SIZE = 25
 
 RATING_SETTING_MIN_CONVICTION_HOLD_THRESHOLD = "min_conviction_hold_threshold"
@@ -1170,6 +1173,7 @@ def extract_price(ticker):
         normalize_market_price(market_price),
         normalize_market_price(getattr(ticker, "last", None)),
         normalize_market_price(getattr(ticker, "close", None)),
+        normalize_market_price(getattr(ticker, "prevClose", None)),
     )
 
 
@@ -2059,6 +2063,13 @@ def get_general_configuration(conn):
             minimum=1.0,
             maximum=30.0,
         ),
+        "ib_delayed_price_extra_wait_seconds": get_float_setting(
+            conn,
+            ANALYSIS_SETTING_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS,
+            DEFAULT_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS,
+            minimum=0.0,
+            maximum=30.0,
+        ),
         "scenario_multi_pass_enabled": scenario["scenario_multi_pass_enabled"],
         "scenario_pass_count": scenario["scenario_pass_count"],
         "scenario_outlier_filter_enabled": scenario["scenario_outlier_filter_enabled"],
@@ -2112,6 +2123,26 @@ def save_general_configuration(conn, settings):
               updated_at = excluded.updated_at
             """,
             (ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS, str(wait_seconds), now),
+        )
+
+    if "ib_delayed_price_extra_wait_seconds" in settings:
+        try:
+            delayed_wait_seconds = float(settings.get("ib_delayed_price_extra_wait_seconds"))
+        except (TypeError, ValueError):
+            raise ValueError("ib_delayed_price_extra_wait_seconds must be numeric")
+        if not math.isfinite(delayed_wait_seconds):
+            raise ValueError("ib_delayed_price_extra_wait_seconds must be finite")
+        if delayed_wait_seconds < 0 or delayed_wait_seconds > 30:
+            raise ValueError("ib_delayed_price_extra_wait_seconds must be between 0 and 30")
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            (ANALYSIS_SETTING_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS, str(delayed_wait_seconds), now),
         )
 
     scenario_payload = {}
@@ -2226,6 +2257,23 @@ def get_ib_price_wait_seconds():
         return DEFAULT_IB_PRICE_WAIT_SECONDS
 
 
+def get_ib_delayed_price_extra_wait_seconds():
+    try:
+        conn = get_db_connection()
+        try:
+            return get_float_setting(
+                conn,
+                ANALYSIS_SETTING_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS,
+                DEFAULT_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS,
+                minimum=0.0,
+                maximum=30.0,
+            )
+        finally:
+            conn.close()
+    except Exception:
+        return DEFAULT_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS
+
+
 def is_tws_data_enabled():
     try:
         conn = get_db_connection()
@@ -2252,9 +2300,97 @@ def batched(items, size):
         yield items[idx : idx + step]
 
 
+def classify_ib_market_data_error(code, message):
+    text = str(message or "")
+    if code == 10167:
+        return {
+            "severity": "warning",
+            "fatal": False,
+            "reason": "Delayed market data warning; waiting for delayed price",
+            "delayed": True,
+        }
+    if code == 10090:
+        return {
+            "severity": "warning",
+            "fatal": False,
+            "reason": "Partial/delayed market data warning; waiting for available price",
+            "delayed": True,
+        }
+    if code == 10089:
+        return {
+            "severity": "error",
+            "fatal": True,
+            "reason": "Market data subscription/API permission issue",
+            "delayed": False,
+        }
+    if code == 200 or "contract" in text.lower() and "not found" in text.lower():
+        return {
+            "severity": "error",
+            "fatal": True,
+            "reason": "Contract not found",
+            "delayed": False,
+        }
+    return {
+        "severity": "warning",
+        "fatal": False,
+        "reason": "TWS market data warning",
+        "delayed": False,
+    }
+
+
+def make_price_skip_detail(symbol, warning=None):
+    if isinstance(warning, dict):
+        return {
+            "symbol": symbol,
+            "reason": warning.get("reason") or "No valid market price returned before timeout",
+            "error_code": warning.get("error_code"),
+            "message": warning.get("message") or "No marketPrice, last, close, or previous close available",
+            "severity": warning.get("severity") or "warning",
+            "fatal": bool(warning.get("fatal")),
+            "source": warning.get("source"),
+        }
+    return {
+        "symbol": symbol,
+        "reason": warning or "No valid market price returned before timeout",
+        "error_code": None,
+        "message": "No marketPrice, last, close, or previous close available",
+        "severity": "warning",
+        "fatal": False,
+        "source": None,
+    }
+
+
+def _ticker_price_source(ticker):
+    if not ticker:
+        return None
+    if hasattr(ticker, "marketPrice") and normalize_market_price(ticker.marketPrice()) is not None:
+        return "marketPrice"
+    for field in ("last", "close", "prevClose"):
+        if normalize_market_price(getattr(ticker, field, None)) is not None:
+            return field
+    return None
+
+
+def _safe_cancel_market_data(ib, contract, purpose):
+    try:
+        ib.cancelMktData(contract)
+        logger.debug(
+            "Cancelled IBKR market data purpose=%s conid=%s symbol=%s",
+            purpose,
+            getattr(contract, "conId", None),
+            getattr(contract, "symbol", None),
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "No reqId found" in message:
+            logger.debug("Ignoring stale IBKR cancelMktData request purpose=%s symbol=%s", purpose, getattr(contract, "symbol", None))
+        else:
+            logger.warning("Unable to cancel IBKR market data purpose=%s symbol=%s error=%s", purpose, getattr(contract, "symbol", None), message)
+
+
 def request_ib_tickers_batched(ib, qualified_contracts, purpose):
     if not qualified_contracts:
-        return []
+        return [], {}
 
     batch_size = get_ib_market_data_batch_size()
     batches = list(batched(list(qualified_contracts), batch_size))
@@ -2267,6 +2403,7 @@ def request_ib_tickers_batched(ib, qualified_contracts, purpose):
     )
 
     tickers = []
+    diagnostics = {}
     for batch_idx, batch in enumerate(batches, start=1):
         logger.info(
             "IBKR market data batch purpose=%s index=%s/%s size=%s",
@@ -2275,21 +2412,91 @@ def request_ib_tickers_batched(ib, qualified_contracts, purpose):
             len(batches),
             len(batch),
         )
-        batch_tickers = ib.reqTickers(*batch)
-        ib.sleep(get_ib_price_wait_seconds())
-        tickers.extend(batch_tickers or [])
-        for contract in batch:
+        batch_symbol_by_req_id = {}
+        batch_symbols = {normalize_symbol(getattr(contract, "symbol", None)) for contract in batch}
+        delayed_warning_seen = False
+
+        def handle_error(req_id, code, message, contract=None):
+            nonlocal delayed_warning_seen
+            symbol = None
+            if req_id in batch_symbol_by_req_id:
+                symbol = batch_symbol_by_req_id.get(req_id)
+            if not symbol and contract is not None:
+                symbol = normalize_symbol(getattr(contract, "symbol", None))
+            classification = classify_ib_market_data_error(code, message)
+            delayed_warning_seen = delayed_warning_seen or bool(classification.get("delayed"))
+            if symbol and (symbol in batch_symbols):
+                previous = diagnostics.get(symbol)
+                detail = {
+                    "symbol": symbol,
+                    "error_code": code,
+                    "message": str(message or ""),
+                    "severity": classification["severity"],
+                    "fatal": classification["fatal"],
+                    "reason": classification["reason"],
+                    "source": "tws_error_event",
+                    "delayed": classification["delayed"],
+                }
+                if previous is None or (detail["fatal"] and not previous.get("fatal")):
+                    diagnostics[symbol] = detail
+            logger.info(
+                "IBKR market data event purpose=%s req_id=%s code=%s symbol=%s fatal=%s message=%s",
+                purpose,
+                req_id,
+                code,
+                symbol or "unknown",
+                classification["fatal"],
+                message,
+            )
+
+        subscribed = False
+        if hasattr(ib, "errorEvent"):
             try:
-                ib.cancelMktData(contract)
-                logger.debug(
-                    "Cancelled IBKR market data purpose=%s conid=%s symbol=%s",
-                    purpose,
-                    getattr(contract, "conId", None),
-                    getattr(contract, "symbol", None),
-                )
+                ib.errorEvent += handle_error
+                subscribed = True
             except Exception:
-                continue
-    return tickers
+                subscribed = False
+        try:
+            if hasattr(ib, "reqMktData"):
+                batch_tickers = []
+                for contract in batch:
+                    ticker = ib.reqMktData(contract, "", False, False)
+                    ticker_contract = getattr(ticker, "contract", None) or contract
+                    if getattr(ticker, "contract", None) is None:
+                        try:
+                            ticker.contract = ticker_contract
+                        except Exception:
+                            pass
+                    req_id = getattr(ticker, "tickerId", None)
+                    symbol = normalize_symbol(getattr(ticker_contract, "symbol", None))
+                    if req_id is not None and symbol:
+                        batch_symbol_by_req_id[req_id] = symbol
+                    batch_tickers.append(ticker)
+                base_wait = get_ib_price_wait_seconds()
+                extra_wait = get_ib_delayed_price_extra_wait_seconds()
+                deadline = time.monotonic() + base_wait
+                extended_deadline = deadline + extra_wait
+                unresolved = set(range(len(batch_tickers)))
+                while unresolved and time.monotonic() < (extended_deadline if delayed_warning_seen else deadline):
+                    for idx in list(unresolved):
+                        if extract_price(batch_tickers[idx]) is not None:
+                            unresolved.remove(idx)
+                    if unresolved:
+                        ib.sleep(0.25)
+                tickers.extend(batch_tickers)
+            else:
+                batch_tickers = ib.reqTickers(*batch)
+                ib.sleep(get_ib_price_wait_seconds())
+                tickers.extend(batch_tickers or [])
+        finally:
+            if subscribed:
+                try:
+                    ib.errorEvent -= handle_error
+                except Exception:
+                    pass
+        for contract in batch:
+            _safe_cancel_market_data(ib, contract, purpose)
+    return tickers, diagnostics
 
 
 def save_prompt_template(conn, key, template):
@@ -3197,16 +3404,28 @@ def summarize_momentum_snapshot(symbol, snapshot, updated_at):
     }
 
 
-def fetch_ib_prices(symbols):
+def fetch_ib_prices(symbols, return_details=False):
     prices = {symbol: None for symbol in symbols}
     warnings = {symbol: None for symbol in symbols}
+    price_sources = {symbol: None for symbol in symbols}
     if not symbols:
-        return prices, warnings
+        return {"prices": prices, "warnings": warnings, "price_sources": price_sources, "skipped_symbols": []} if return_details else (prices, warnings)
     if not is_tws_data_enabled():
         logger.info("Skipping IBKR price fetch because use_tws_data is disabled symbols=%s", len(symbols))
         for symbol in symbols:
-            warnings[symbol] = NO_PRICE_WARNING
-        return prices, warnings
+            warnings[symbol] = {
+                "symbol": symbol,
+                "reason": NO_PRICE_WARNING,
+                "error_code": None,
+                "message": "TWS data is disabled or unavailable",
+                "severity": "warning",
+                "fatal": False,
+                "source": "tws_disabled",
+            }
+        skipped_symbols = [make_price_skip_detail(symbol, warnings[symbol]) for symbol in symbols]
+        if return_details:
+            return {"prices": prices, "warnings": warnings, "price_sources": price_sources, "skipped_symbols": skipped_symbols}
+        return prices, {symbol: (detail.get("reason") if isinstance(detail, dict) else detail) for symbol, detail in warnings.items()}
 
     ensure_event_loop()
     from ib_insync import Stock
@@ -3214,6 +3433,7 @@ def fetch_ib_prices(symbols):
     try:
         ib = get_ib_connection()
         position_contracts_by_symbol = {}
+        portfolio_price_by_symbol = {}
         try:
             for position in ib.positions():
                 contract = getattr(position, "contract", None)
@@ -3222,6 +3442,15 @@ def fetch_ib_prices(symbols):
                     position_contracts_by_symbol[contract_symbol] = contract
         except Exception:
             position_contracts_by_symbol = {}
+        try:
+            for item in ib.portfolio():
+                contract = getattr(item, "contract", None)
+                symbol = normalize_symbol(getattr(contract, "symbol", None))
+                market_price = normalize_market_price(getattr(item, "marketPrice", None))
+                if symbol and market_price is not None:
+                    portfolio_price_by_symbol[symbol] = market_price
+        except Exception:
+            portfolio_price_by_symbol = {}
 
         contracts = [
             position_contracts_by_symbol.get(symbol, Stock(symbol, "SMART", "USD"))
@@ -3235,7 +3464,7 @@ def fetch_ib_prices(symbols):
         }
 
         if qualified:
-            tickers = request_ib_tickers_batched(
+            tickers, request_diagnostics = request_ib_tickers_batched(
                 ib,
                 qualified,
                 purpose="price_fetch",
@@ -3251,24 +3480,71 @@ def fetch_ib_prices(symbols):
 
                 price = extract_price(ticker)
                 prices[symbol] = price
+                if price is not None:
+                    warnings[symbol] = None
+                    if isinstance(request_diagnostics.get(symbol), dict) and request_diagnostics[symbol].get("delayed"):
+                        price_sources[symbol] = "delayed_market_data"
+                    else:
+                        price_sources[symbol] = _ticker_price_source(ticker) or "market_data"
+                elif symbol in request_diagnostics:
+                    warnings[symbol] = request_diagnostics[symbol]
                 if price is None:
                     raw_market_price = safe_number(ticker.marketPrice()) if hasattr(ticker, "marketPrice") else None
                     raw_last = safe_number(getattr(ticker, "last", None))
                     raw_close = safe_number(getattr(ticker, "close", None))
-                    for invalid_candidate in (raw_market_price, raw_last, raw_close):
+                    raw_prev_close = safe_number(getattr(ticker, "prevClose", None))
+                    for invalid_candidate in (raw_market_price, raw_last, raw_close, raw_prev_close):
                         if invalid_candidate is not None and invalid_candidate <= 0:
                             logger.info("Ignoring invalid TWS price symbol=%s price=%s", symbol, invalid_candidate)
                     logger.info("Keeping previous valid price for symbol=%s", symbol)
-                    warnings[symbol] = NO_PRICE_WARNING
+                    if warnings[symbol] is None:
+                        warnings[symbol] = {
+                            "symbol": symbol,
+                            "reason": "No valid market price returned before timeout",
+                            "error_code": None,
+                            "message": "No marketPrice, last, close, or previous close available",
+                            "severity": "warning",
+                            "fatal": False,
+                            "source": "market_data_timeout",
+                        }
 
         for symbol in symbols:
+            if prices[symbol] is None and portfolio_price_by_symbol.get(symbol) is not None:
+                prices[symbol] = portfolio_price_by_symbol[symbol]
+                price_sources[symbol] = "portfolio_market_price_fallback"
+                warnings[symbol] = None
             if prices[symbol] is None and warnings[symbol] is None:
-                warnings[symbol] = NO_PRICE_WARNING
+                warnings[symbol] = {
+                    "symbol": symbol,
+                    "reason": "No valid market price returned before timeout",
+                    "error_code": None,
+                    "message": "No marketPrice, last, close, or previous close available",
+                    "severity": "warning",
+                    "fatal": False,
+                    "source": "market_data_timeout",
+                }
     except Exception:
+        logger.exception("Unable to fetch IBKR prices")
         for symbol in symbols:
-            warnings[symbol] = NO_PRICE_WARNING
+            warnings[symbol] = {
+                "symbol": symbol,
+                "reason": NO_PRICE_WARNING,
+                "error_code": None,
+                "message": "IBKR/TWS price fetch failed",
+                "severity": "error",
+                "fatal": False,
+                "source": "fetch_exception",
+            }
 
-    return prices, warnings
+    skipped_symbols = [make_price_skip_detail(symbol, warnings[symbol]) for symbol in symbols if prices.get(symbol) is None]
+    if return_details:
+        return {
+            "prices": prices,
+            "warnings": warnings,
+            "price_sources": price_sources,
+            "skipped_symbols": skipped_symbols,
+        }
+    return prices, {symbol: (detail.get("reason") if isinstance(detail, dict) else detail) for symbol, detail in warnings.items()}
 
 
 def resolve_company_profile_from_tws(symbol):
@@ -4644,15 +4920,29 @@ def refresh_latest_analysis_market_prices(conn):
     if not symbols:
         return {"updated": 0, "skipped": 0}
 
-    prices, _warnings = fetch_ib_prices(symbols)
+    fetch_details = fetch_ib_prices(symbols, return_details=True)
+    if isinstance(fetch_details, tuple):
+        prices, warnings = fetch_details
+        skipped_details_by_symbol = {
+            symbol: make_price_skip_detail(symbol, warnings.get(symbol) if isinstance(warnings, dict) else None)
+            for symbol in symbols
+            if prices.get(symbol) is None
+        }
+        price_sources = {}
+    else:
+        prices = fetch_details["prices"]
+        skipped_details_by_symbol = {item["symbol"]: item for item in fetch_details.get("skipped_symbols", [])}
+        price_sources = fetch_details.get("price_sources", {})
     now = utc_now_iso()
     updated = 0
     skipped = 0
+    skipped_symbols = []
 
     for row in rows:
         latest_price = prices.get(row["symbol"])
         if latest_price is None:
             skipped += 1
+            skipped_symbols.append(skipped_details_by_symbol.get(row["symbol"]) or make_price_skip_detail(row["symbol"]))
             continue
         conn.execute(
             "UPDATE analysis_versions SET current_price = ? WHERE id = ?",
@@ -4664,7 +4954,29 @@ def refresh_latest_analysis_market_prices(conn):
     if updated:
         conn.execute("UPDATE analysis_roots SET updated_at = ?", (now,))
     conn.commit()
-    return {"updated": updated, "skipped": skipped}
+    source_counts = {}
+    for symbol, price in prices.items():
+        if price is None:
+            continue
+        source = price_sources.get(symbol) or "unknown"
+        source_counts[source] = source_counts.get(source, 0) + 1
+    logger.info(
+        "Price refresh summary requested=%s updated=%s skipped=%s skipped_symbols=%s source_counts=%s",
+        len(symbols),
+        updated,
+        skipped,
+        ",".join(item["symbol"] for item in skipped_symbols) or "none",
+        source_counts,
+    )
+    for item in skipped_symbols:
+        logger.info(
+            "Price refresh skipped symbol=%s reason=%s error_code=%s message=%s",
+            item.get("symbol"),
+            item.get("reason"),
+            item.get("error_code"),
+            item.get("message"),
+        )
+    return {"updated": updated, "skipped": skipped, "skipped_symbols": skipped_symbols, "price_source_counts": source_counts}
 
 
 def _normalize_imported_key_variables_payload(payload):
@@ -9963,7 +10275,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if contracts and tws_data_enabled:
                 qualified = ib.qualifyContracts(*contracts)
                 if qualified:
-                    tickers = request_ib_tickers_batched(
+                    tickers, _diagnostics = request_ib_tickers_batched(
                         ib,
                         qualified,
                         purpose="positions_api",

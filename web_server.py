@@ -342,6 +342,7 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "linear_rating_bonus_enabled": True,
     "linear_strong_buy_rating_bonus": 0.05,
     "linear_buy_rating_bonus": 0.02,
+    "linear_block_buy_actions_for_hold_rating": True,
 }
 ACTION_PLAN_BOOL_SETTINGS = {
     "action_include_current_positions",
@@ -364,6 +365,7 @@ ACTION_PLAN_BOOL_SETTINGS = {
     "linear_enable_risk_caps",
     "hold_rating_penalty_enabled",
     "linear_rating_bonus_enabled",
+    "linear_block_buy_actions_for_hold_rating",
 }
 ACTION_PLAN_TEXT_SETTINGS = {
     "action_cash_equivalent_symbols",
@@ -1825,6 +1827,8 @@ def validate_action_plan_settings(settings):
             effective["linear_trim_band_tolerance_pct"] = max(legacy_tolerance, ACTION_PLAN_DEFAULT_SETTINGS["linear_trim_band_tolerance_pct"])
     if "linear_rating_bonus_enabled" in settings and not isinstance(settings.get("linear_rating_bonus_enabled"), bool):
         raise ValueError("linear_rating_bonus_enabled must be boolean")
+    if "linear_block_buy_actions_for_hold_rating" in settings and not isinstance(settings.get("linear_block_buy_actions_for_hold_rating"), bool):
+        raise ValueError("linear_block_buy_actions_for_hold_rating must be boolean")
     for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
         if key in ACTION_PLAN_BOOL_SETTINGS or key in ACTION_PLAN_TEXT_SETTINGS:
             if key in ACTION_PLAN_TEXT_SETTINGS:
@@ -7595,6 +7599,8 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
             executable_sell_trim_proceeds += theoretical_amount
         elif row.get("action") in buy_actions and theoretical_amount > 0:
             row["funding_status"] = "Unfunded / Watch"
+        elif row.get("action") == "Watch / Rating Guardrail" and theoretical_amount > 0:
+            row["funding_status"] = "Rating blocks add"
         elif row.get("action") in {"Watch", "Watch / Underweight", "Hold / Overweight"} and theoretical_amount > 0:
             row["funding_status"] = "Waiting for trigger"
         else:
@@ -7754,6 +7760,14 @@ def _linear_rating_bonus_factor(rating, settings):
         return 1.0 + bonus, "Buy rating bonus" if bonus > 0 else "No rating bonus"
     return 1.0, "No rating bonus"
 
+
+def is_linear_buy_action_allowed_for_rating(rating, settings):
+    if not settings.get("linear_block_buy_actions_for_hold_rating", True):
+        return True
+    normalized_rating = str(rating or "").strip().casefold()
+    return normalized_rating in {"strong buy", "buy", "speculative buy"}
+
+
 def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings):
     target_total = safe_number(settings.get("linear_allocated_target_total_pct")) or 0.0
     weight_keys = ["linear_expected_cagr_weight", "linear_upside_weight", "linear_core_confidence_weight", "linear_potential_confidence_weight", "linear_confidence_quality_weight"]
@@ -7860,6 +7874,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             starter_blocked = current_weight <= 0 and ((extension_value is not None and extension_value >= 4.0) or (momentum_value is not None and momentum_value < 2.0))
             action = "Add" if not starter_blocked and current_price is not None and add_trigger is not None and current_price <= add_trigger else "Watch / Underweight"
             sizing_action = "Add"
+            if action in {"Strong Add", "Add", "Starter Buy"} and not is_linear_buy_action_allowed_for_rating(rating_label, settings):
+                action = "Watch / Rating Guardrail"
         elif current_weight > target_high:
             trigger_fields = _linear_action_trigger_fields({**row, "action": "Trim"}, settings)
             current_price = safe_number(row.get("current_price"))
@@ -7871,11 +7887,23 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             sizing_action = action
             trigger_fields = _linear_action_trigger_fields({**row, "action": action}, settings)
         amount_fields = _linear_action_amount_fields(sizing_action, target_mid, target_high, total_portfolio_value, row.get("current_position_market_value"))
-        if action in {"Watch", "Watch / Underweight", "Hold / Overweight"}:
+        rating_guardrail_applied = action == "Watch / Rating Guardrail"
+        if action in {"Watch", "Watch / Underweight", "Watch / Rating Guardrail", "Hold / Overweight"}:
             amount_fields["action_amount"] = 0.0
             amount_fields["action_amount_label"] = "—"
             amount_fields["action_amount_direction"] = "none"
-        row.update({"action": action, "reason": "Linear Allocation compares current weight with the linear target band; rating is displayed for context only; Add/Trim actions require the relevant trigger price to be reached.", **amount_fields})
+        reason = "Linear Allocation compares current weight with the linear target band; rating is displayed for context only; Add/Trim actions require the relevant trigger price to be reached."
+        rating_guardrail_reason = None
+        if rating_guardrail_applied:
+            rating_guardrail_reason = "Hold rating blocks buy-side action."
+            reason = rating_guardrail_reason
+        row.update({
+            "action": action,
+            "reason": reason,
+            "rating_guardrail_applied": rating_guardrail_applied,
+            "rating_guardrail_reason": rating_guardrail_reason,
+            **amount_fields,
+        })
         row.update(trigger_fields)
     execution = _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
     rows.sort(key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), row.get("symbol") or ""))

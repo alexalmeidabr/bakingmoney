@@ -1669,6 +1669,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-action-plan-setting="linear_rating_bonus_enabled"', html)
         self.assertIn('data-action-plan-setting="linear_strong_buy_rating_bonus"', html)
         self.assertIn('data-action-plan-setting="linear_buy_rating_bonus"', html)
+        self.assertIn('data-action-plan-setting="linear_block_buy_actions_for_hold_rating"', html)
         self.assertIn("'core_confidence_penalty', 'upside_penalty', 'potential_confidence_penalty', 'hold_rating_penalty', 'linear_strong_buy_rating_bonus', 'linear_buy_rating_bonus'", js)
         self.assertIn('function renderLinearAllocationRows()', js)
         self.assertIn('actionPlanLinearActionsTableBody', js)
@@ -1743,6 +1744,7 @@ class AlertsUiStructureTests(unittest.TestCase):
             'linear_rating_bonus_enabled',
             'linear_strong_buy_rating_bonus',
             'linear_buy_rating_bonus',
+            'linear_block_buy_actions_for_hold_rating',
         ]
         for key in penalty_help_keys:
             self.assertIn(f"addConfigHelp('{key}'", js)
@@ -1755,6 +1757,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('Final Linear Score = Penalty-adjusted Linear Score × Rating Bonus Factor', js)
         self.assertIn('A value of 0.05 means a Strong Buy stock keeps 105%', js)
         self.assertIn('A value of 0.02 means a Buy-rated stock keeps 102%', js)
+        self.assertIn('Watch / Rating Guardrail', js)
+        self.assertIn('Rating blocks add', js)
         self.assertIn('Allocation Weight = max(0, Linear Score - Min Score Threshold) ^ Allocation Power', js)
         self.assertIn('Target Low = Linear Target Mid × (1 - Add Band Tolerance %)', js)
         self.assertIn('Target High = Linear Target Mid × (1 + Trim Band Tolerance %)', js)
@@ -3474,6 +3478,141 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertIn("Trim about", trim["action_amount_label"])
         self.assertIsNotNone(trim["trigger_price"])
 
+    def test_linear_hold_rating_buy_guardrail_blocks_adds_without_consuming_budget(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_allocated_target_total_pct": 10.0,
+            "linear_min_score_threshold": 0.0,
+            "linear_score_allocation_power": 1.0,
+            "linear_max_single_stock_pct": 100.0,
+            "linear_add_band_tolerance_pct": 15.0,
+            "linear_trim_band_tolerance_pct": 30.0,
+            "linear_enable_risk_caps": False,
+            "linear_rating_bonus_enabled": False,
+            "action_min_cash_unallocated_target": 0.0,
+            "action_min_executable_trade_amount": 0.0,
+        })
+        base = {
+            "expected_cagr": 20.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "potential_confidence_diff": 1.5,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 1.0,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "current_position_weight": 0.0,
+            "current_position_market_value": 0.0,
+            "current_price": 100.0,
+            "expected_price": 150.0,
+            "momentum_score": 3.0,
+            "extension_risk": 1.0,
+        }
+        candidates = [
+            dict(base, symbol="HOLDADD", rating="Hold"),
+            dict(base, symbol="BUYADD", rating="Buy"),
+        ]
+        payload = web_server.compute_linear_action_plan(candidates, 100000.0, 100000.0, settings)
+        rows = {row["symbol"]: row for row in payload["rows"]}
+
+        hold_row = rows["HOLDADD"]
+        buy_row = rows["BUYADD"]
+        self.assertEqual(hold_row["action"], "Watch / Rating Guardrail")
+        self.assertEqual(hold_row["action_amount_label"], "—")
+        self.assertEqual(hold_row["funding_status"], "Rating blocks add")
+        self.assertTrue(hold_row["rating_guardrail_applied"])
+        self.assertEqual(hold_row["rating_guardrail_reason"], "Hold rating blocks buy-side action.")
+        self.assertGreater(hold_row["target_gap_amount"], 0.0)
+        self.assertEqual(hold_row["executable_action_amount"], 0.0)
+        self.assertEqual(buy_row["action"], "Add")
+        self.assertGreater(buy_row["executable_action_amount"], 0.0)
+        self.assertAlmostEqual(payload["summary"]["total_add_demand"], buy_row["target_gap_amount"])
+        self.assertAlmostEqual(payload["summary"]["funded_add_amount"], buy_row["target_gap_amount"])
+        self.assertAlmostEqual(payload["summary"]["unfunded_add_demand"], 0.0)
+        self.assertAlmostEqual(hold_row["total_add_demand"], buy_row["target_gap_amount"])
+
+    def test_linear_buy_guardrail_allows_eligible_ratings_and_blocks_missing_rating(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_allocated_target_total_pct": 10.0,
+            "linear_min_score_threshold": 0.0,
+            "linear_score_allocation_power": 1.0,
+            "linear_max_single_stock_pct": 100.0,
+            "linear_enable_risk_caps": False,
+            "linear_rating_bonus_enabled": False,
+            "action_min_cash_unallocated_target": 0.0,
+            "action_min_executable_trade_amount": 0.0,
+        })
+        base = {
+            "expected_cagr": 20.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "potential_confidence_diff": 1.5,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 1.0,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "current_position_weight": 0.0,
+            "current_position_market_value": 0.0,
+            "current_price": 100.0,
+            "expected_price": 150.0,
+            "momentum_score": 3.0,
+            "extension_risk": 1.0,
+        }
+        candidates = [
+            dict(base, symbol="STRONG", rating="Strong Buy"),
+            dict(base, symbol="BUY", rating="Buy"),
+            dict(base, symbol="SPEC", rating="Speculative Buy"),
+            dict(base, symbol="MISSING", rating=None),
+        ]
+        rows = {row["symbol"]: row for row in web_server.compute_linear_action_plan(candidates, 100000.0, 100000.0, settings)["rows"]}
+
+        self.assertEqual(rows["STRONG"]["action"], "Add")
+        self.assertEqual(rows["BUY"]["action"], "Add")
+        self.assertEqual(rows["SPEC"]["action"], "Add")
+        self.assertEqual(rows["MISSING"]["action"], "Watch / Rating Guardrail")
+        self.assertEqual(rows["MISSING"]["funding_status"], "Rating blocks add")
+
+    def test_linear_hold_guardrail_does_not_block_trim_or_sell_and_can_be_disabled(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_allocated_target_total_pct": 10.0,
+            "linear_min_score_threshold": 0.0,
+            "linear_score_allocation_power": 1.0,
+            "linear_max_single_stock_pct": 100.0,
+            "linear_enable_risk_caps": False,
+            "linear_rating_bonus_enabled": False,
+            "action_min_cash_unallocated_target": 0.0,
+            "action_min_executable_trade_amount": 0.0,
+        })
+        base = {
+            "expected_cagr": 20.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "potential_confidence_diff": 1.5,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 1.0,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "expected_price": 150.0,
+            "momentum_score": 3.0,
+            "extension_risk": 1.0,
+        }
+        trim_candidate = dict(base, symbol="HOLDTRIM", rating="Hold", current_position_weight=20.0, current_position_market_value=20000.0, current_price=200.0)
+        sell_candidate = dict(base, symbol="SELL", rating="Sell", current_position_weight=20.0, current_position_market_value=20000.0, current_price=100.0)
+        rows = {row["symbol"]: row for row in web_server.compute_linear_action_plan([trim_candidate, sell_candidate], 100000.0, 0.0, settings)["rows"]}
+        self.assertEqual(rows["HOLDTRIM"]["action"], "Trim")
+        self.assertEqual(rows["HOLDTRIM"]["funding_status"], "Generates proceeds")
+        self.assertEqual(rows["SELL"]["action"], "Sell")
+        self.assertEqual(rows["SELL"]["funding_status"], "Generates proceeds")
+
+        disabled_settings = dict(settings)
+        disabled_settings["linear_block_buy_actions_for_hold_rating"] = False
+        hold_add = dict(base, symbol="HOLDADD", rating="Hold", current_position_weight=0.0, current_position_market_value=0.0, current_price=100.0)
+        disabled_row = web_server.compute_linear_action_plan([hold_add], 100000.0, 100000.0, disabled_settings)["rows"][0]
+        self.assertEqual(disabled_row["action"], "Add")
+        self.assertGreater(disabled_row["executable_action_amount"], 0.0)
+
     def test_linear_action_plan_settings_reject_invalid_stock_level_penalties(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["upside_penalty"] = 1.5
@@ -3508,6 +3647,11 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["linear_rating_bonus_enabled"] = "yes"
         with self.assertRaisesRegex(ValueError, "linear_rating_bonus_enabled must be boolean"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_block_buy_actions_for_hold_rating"] = "yes"
+        with self.assertRaisesRegex(ValueError, "linear_block_buy_actions_for_hold_rating must be boolean"):
             web_server.validate_action_plan_settings(settings)
 
 

@@ -505,6 +505,7 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   linear_rating_bonus_enabled: true,
   linear_strong_buy_rating_bonus: 0.05,
   linear_buy_rating_bonus: 0.02,
+  linear_block_buy_actions_for_hold_rating: true,
 };
 
 const CONFIG_HELP = {};
@@ -857,6 +858,16 @@ function registerActionPlanConfigHelp() {
     example: 'A value of 0.02 means a Buy-rated stock keeps 102% of its penalty-adjusted Linear Score. A score of 0.70 becomes 0.714.',
     tuning: 'This should be smaller than the Strong Buy bonus. A reasonable default is 0.02. Keep it small so Linear Allocation remains mainly driven by expected CAGR, upside, core confidence, potential confidence, and risk penalties.',
     related: ['Enable linear rating bonus', 'Strong Buy rating bonus', 'Linear Score'],
+  });
+
+  addConfigHelp('linear_block_buy_actions_for_hold_rating', {
+    title: 'Block buy actions for Hold-rated stocks',
+    meaning: 'When enabled, Hold-rated stocks can keep their Linear Allocation score, target midpoint, and target band, but they cannot receive Add, Strong Add, or Starter Buy actions.',
+    usedIn: 'Used only in Linear Allocation action planning after target/action classification and before cash funding. Blocked rows show Watch / Rating Guardrail and do not consume buy budget.',
+    formula: 'If Rating = Hold and the row would otherwise be Add, Strong Add, or Starter Buy, action becomes Watch / Rating Guardrail.',
+    example: 'A Hold-rated stock below its Linear Target Low still shows its target gap and band, but Action Amount is — and Funding shows Rating blocks add.',
+    tuning: 'Keep enabled when Hold means acceptable to keep but not high-conviction enough for new capital. Disable only if you want the previous behavior where Hold-rated underweights can receive buy-side actions.',
+    related: ['Hold rating penalty', 'Linear Allocation Actions', 'Rating Settings'],
   });
 
   addConfigHelp('linear_allocated_target_total_pct', {

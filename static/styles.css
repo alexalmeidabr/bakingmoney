@@ -1232,7 +1232,7 @@ th.sortable[data-sort-direction='desc']::after {
 .action-plan-actions-table {
   table-layout: fixed;
   width: 100%;
-  min-width: 1900px;
+  min-width: 1980px;
   font-size: 0.85rem;
 }
 
@@ -1253,6 +1253,8 @@ th.sortable[data-sort-direction='desc']::after {
 .action-plan-actions-table .market-value-cell { width: 120px; min-width: 120px; text-align: right; white-space: nowrap; }
 .action-plan-actions-table .action-amount-column,
 .action-plan-actions-table .action-amount-cell { width: 140px; min-width: 140px; text-align: right; }
+.action-plan-actions-table .shares-column,
+.action-plan-actions-table .shares-cell { width: 80px; min-width: 80px; text-align: right; }
 .action-plan-actions-table .funding-column,
 .action-plan-actions-table .funding-cell { width: 130px; min-width: 130px; }
 .action-plan-actions-table .trigger-price-column,

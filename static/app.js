@@ -2193,6 +2193,7 @@ function getFilteredLinearActionPlanItems() {
 
 function getActionPlanNumericSortValue(item, key) {
   if (!item || !key) return null;
+  if (key === 'target_band') return window.ActionPlanSorting.getTargetBandMidpoint(item);
   if (key === 'current_position_market_value') {
     const value = Number(item.current_position_market_value ?? item.market_value ?? item.position_market_value ?? 0);
     return Number.isFinite(value) ? value : 0;
@@ -2217,28 +2218,14 @@ function getActionPlanNumericSortValue(item, key) {
 
 function sortActionPlanItemsWithState(items, sortState, secondarySort = null) {
   if (!sortState.key) return items;
-  const directionMultiplier = sortState.direction === 'desc' ? -1 : 1;
-  return items.map((item, index) => ({ item, index })).sort((left, right) => {
-    const leftValue = getActionPlanNumericSortValue(left.item, sortState.key);
-    const rightValue = getActionPlanNumericSortValue(right.item, sortState.key);
-    if (leftValue == null && rightValue == null) return left.index - right.index;
-    if (leftValue == null) return 1;
-    if (rightValue == null) return -1;
-    const delta = leftValue - rightValue;
-    if (delta !== 0) return delta * directionMultiplier;
-    if (secondarySort?.key) {
-      const leftSecondary = getActionPlanNumericSortValue(left.item, secondarySort.key);
-      const rightSecondary = getActionPlanNumericSortValue(right.item, secondarySort.key);
-      if (leftSecondary != null || rightSecondary != null) {
-        if (leftSecondary == null) return 1;
-        if (rightSecondary == null) return -1;
-        const secondaryDirection = secondarySort.direction === 'asc' ? 1 : -1;
-        const secondaryDelta = leftSecondary - rightSecondary;
-        if (secondaryDelta !== 0) return secondaryDelta * secondaryDirection;
-      }
-    }
-    return left.index - right.index;
-  }).map((entry) => entry.item);
+  return window.ActionPlanSorting.sortRowsByNumericValue(items, {
+    direction: sortState.direction,
+    getValue: (item) => getActionPlanNumericSortValue(item, sortState.key),
+    getSecondaryValue: secondarySort?.key
+      ? (item) => getActionPlanNumericSortValue(item, secondarySort.key)
+      : null,
+    secondaryDirection: secondarySort?.direction,
+  });
 }
 
 function sortActionPlanItems(items) {
@@ -2370,7 +2357,8 @@ const ACTION_PLAN_BUCKET_COLUMNS = [
 function getActionPlanBucketSortValue(item, key) {
   const tb = item?.target_weight_breakdown || {};
   if (key === 'current_weight') return safeNumberForSort(item.current_position_weight);
-  if (key === 'target_mid' || key === 'target_band') return safeNumberForSort(item.target_weight_mid);
+  if (key === 'target_mid') return safeNumberForSort(item.target_weight_mid);
+  if (key === 'target_band') return window.ActionPlanSorting.getTargetBandMidpoint(item);
   if (key === 'gap_to_mid') return safeNumberForSort(item.position_gap_to_mid);
   if (key === 'target_gap_amount') return safeNumberForSort(item.target_gap_amount);
   if (key === 'suggested_share_count') return safeNumberForSort(item.suggested_share_count);
@@ -2387,16 +2375,10 @@ function getActionPlanBucketSortValue(item, key) {
 function sortActionPlanBucketRows(bucket, rows) {
   const sort = actionPlanBucketSorts[bucket];
   if (!sort?.key) return rows;
-  const directionMultiplier = sort.direction === 'asc' ? 1 : -1;
-  return rows.map((item, index) => ({ item, index })).sort((left, right) => {
-    const leftValue = getActionPlanBucketSortValue(left.item, sort.key);
-    const rightValue = getActionPlanBucketSortValue(right.item, sort.key);
-    if (leftValue == null && rightValue == null) return left.index - right.index;
-    if (leftValue == null) return 1;
-    if (rightValue == null) return -1;
-    const delta = leftValue - rightValue;
-    return delta === 0 ? left.index - right.index : delta * directionMultiplier;
-  }).map((entry) => entry.item);
+  return window.ActionPlanSorting.sortRowsByNumericValue(rows, {
+    direction: sort.direction,
+    getValue: (item) => getActionPlanBucketSortValue(item, sort.key),
+  });
 }
 
 function renderActionPlanBucketHeaders(bucket) {

@@ -1099,6 +1099,8 @@ const EARNINGS_CALENDAR_DATE_FILTER_OPTIONS = [
   { key: 'yesterday', label: 'Yesterday' },
   { key: 'today', label: 'Today' },
   { key: 'tomorrow', label: 'Tomorrow' },
+  { key: 'current_week', label: 'Current Week' },
+  { key: 'next_week', label: 'Next Week' },
   { key: 'future', label: 'Future' },
 ];
 
@@ -4433,28 +4435,12 @@ function parseCalendarDisplayDateToIso(displayDateValue) {
   return { ok: true, isoDate };
 }
 
-function addCalendarDays(dateValue, days) {
-  const next = new Date(dateValue);
-  next.setDate(next.getDate() + days);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
-
 function releaseDateMatchesEarningsCalendarDateFilters(releaseDateValue, today, selectedDateFilters) {
-  const releaseDate = parseCalendarDate(releaseDateValue);
-  if (!releaseDate) return false;
-  const normalizedToday = new Date(today);
-  normalizedToday.setHours(0, 0, 0, 0);
-  const yesterday = addCalendarDays(normalizedToday, -1);
-  const tomorrow = addCalendarDays(normalizedToday, 1);
-  const releaseTime = releaseDate.getTime();
-  const todayTime = normalizedToday.getTime();
-  if (selectedDateFilters.has('past') && releaseTime < todayTime) return true;
-  if (selectedDateFilters.has('yesterday') && releaseTime === yesterday.getTime()) return true;
-  if (selectedDateFilters.has('today') && releaseTime === todayTime) return true;
-  if (selectedDateFilters.has('tomorrow') && releaseTime === tomorrow.getTime()) return true;
-  if (selectedDateFilters.has('future') && releaseTime > todayTime) return true;
-  return false;
+  return window.EarningsCalendarDateFilters.releaseDateMatchesEarningsCalendarDateFilters(
+    releaseDateValue,
+    today,
+    selectedDateFilters,
+  );
 }
 
 function getFilteredAndSortedEarningsCalendarItems() {
@@ -4464,26 +4450,20 @@ function getFilteredAndSortedEarningsCalendarItems() {
   const selectedFiscalYears = getSelectedEarningsCalendarFiscalYears();
   const selectedFiscalQuarters = getSelectedEarningsCalendarFiscalQuarters();
   const availableYearCount = getAvailableEarningsCalendarFiscalYears().length;
-  const hasSpecificDateFilter = selectedDateFilters.size > 0;
-  const hasSpecificYearFilter = selectedFiscalYears.size > 0 && selectedFiscalYears.size < availableYearCount;
-  const hasSpecificQuarterFilter = selectedFiscalQuarters.size > 0 && selectedFiscalQuarters.size < EARNINGS_CALENDAR_QUARTER_FILTER_OPTIONS.length;
-  const filtered = earningsCalendarItems.filter((item) => {
-    if (earningsCalendarPortfolioFilter === 'in_portfolio' && !item.in_portfolio) return false;
-    if (earningsCalendarPortfolioFilter === 'not_in_portfolio' && item.in_portfolio) return false;
-    if (hasSpecificDateFilter && !releaseDateMatchesEarningsCalendarDateFilters(item.release_date, today, selectedDateFilters)) return false;
-    if (hasSpecificYearFilter && !selectedFiscalYears.has(String(item.fiscal_year ?? ''))) return false;
-    if (hasSpecificQuarterFilter && !selectedFiscalQuarters.has(String(item.fiscal_quarter ?? ''))) return false;
-    return true;
-  });
-  return filtered.sort((a, b) => {
-    const left = parseCalendarDate(a.release_date);
-    const right = parseCalendarDate(b.release_date);
-    if (!left && !right) return String(a.symbol || '').localeCompare(String(b.symbol || ''));
-    if (!left) return 1; // always last
-    if (!right) return -1; // always last
-    const delta = left.getTime() - right.getTime();
-    return earningsCalendarReleaseDateSortDirection === 'asc' ? delta : -delta;
-  });
+  const filtered = earningsCalendarItems.filter((item) => window.EarningsCalendarDateFilters.earningsCalendarItemMatchesFilters(item, {
+    today,
+    selectedDateFilters,
+    portfolioFilter: earningsCalendarPortfolioFilter,
+    selectedFiscalYears,
+    availableYearCount,
+    selectedFiscalQuarters,
+    quarterOptionCount: EARNINGS_CALENDAR_QUARTER_FILTER_OPTIONS.length,
+  }));
+  return filtered.sort((left, right) => window.EarningsCalendarDateFilters.compareEarningsCalendarItems(
+    left,
+    right,
+    earningsCalendarReleaseDateSortDirection,
+  ));
 }
 
 function getEarningsCalendarQuarterOptions(selectedQuarter) {

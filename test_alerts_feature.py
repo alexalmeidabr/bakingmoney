@@ -4,6 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import web_server
@@ -1586,7 +1587,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('#action-plan-summary .status', css)
         self.assertIn('#action-plan-actions-panel .table-wrap', css)
         self.assertIn('overflow-x: auto;', css)
-        self.assertIn('min-width: 1900px;', css)
+        self.assertIn('min-width: 1980px;', css)
         self.assertIn('table-layout: fixed;', css)
         self.assertIn('.action-plan-actions-table .target-gap-column', css)
         self.assertIn('.action-plan-actions-table .funding-column', css)
@@ -2820,7 +2821,7 @@ class ActionPlanFeatureTests(unittest.TestCase):
                             "symbol": "BUY",
                             "company_name": "Buy Co",
                             "rating": "Buy",
-                            "current_price": 50.0,
+                            "current_price": 10.0,
                             "expected_price": 100.0,
                             "expected_cagr": 14.9,
                             "upside": 100.0,
@@ -2850,7 +2851,7 @@ class ActionPlanFeatureTests(unittest.TestCase):
                             "final_scenario_stale": False,
                         },
                     ]
-                    positions = [{"symbol": "SELL", "position": 10, "marketValue": 1000.0}]
+                    positions = [{"symbol": "SELL", "position": 50, "marketValue": 1000.0}]
                     with mock.patch.object(web_server, "list_analysis_symbols", return_value=analysis), \
                          mock.patch.object(web_server, "load_positions_cache", return_value=positions):
                         payload = web_server.build_action_plan(conn)
@@ -3111,6 +3112,7 @@ class ActionPlanFeatureTests(unittest.TestCase):
                 "action": "Strong Add",
                 "action_amount": 1500.0,
                 "action_amount_direction": "add",
+                "current_price": 100.0,
                 "allocation_score": 0.9,
                 "bucket_sizing_score": 0.8,
                 "trigger_quality_score": 0.9,
@@ -3122,6 +3124,7 @@ class ActionPlanFeatureTests(unittest.TestCase):
                 "action": "Add",
                 "action_amount": 800.0,
                 "action_amount_direction": "add",
+                "current_price": 100.0,
                 "allocation_score": 0.6,
                 "bucket_sizing_score": 0.6,
                 "trigger_quality_score": 0.6,
@@ -3417,7 +3420,10 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertGreater(rows["SELL"]["executable_action_amount"], 0.0)
         self.assertAlmostEqual(rows["ADD_OK"]["total_add_demand"], rows["ADD_OK"]["target_gap_amount"])
         self.assertAlmostEqual(rows["ADD_WAIT"]["total_add_demand"], rows["ADD_OK"]["target_gap_amount"])
-        self.assertAlmostEqual(rows["TRIM_WAIT"]["executable_sell_trim_proceeds"], rows["TRIM_OK"]["target_gap_amount"] + rows["TRIM_WAIT"]["target_gap_amount"] + rows["SELL"]["target_gap_amount"])
+        self.assertAlmostEqual(
+            rows["TRIM_WAIT"]["executable_sell_trim_proceeds"],
+            rows["TRIM_OK"]["action_amount"] + rows["TRIM_WAIT"]["action_amount"] + rows["SELL"]["action_amount"],
+        )
 
     def test_linear_action_plan_populates_action_columns_and_summary(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
@@ -3526,10 +3532,10 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertEqual(hold_row["executable_action_amount"], 0.0)
         self.assertEqual(buy_row["action"], "Add")
         self.assertGreater(buy_row["executable_action_amount"], 0.0)
-        self.assertAlmostEqual(payload["summary"]["total_add_demand"], buy_row["target_gap_amount"])
-        self.assertAlmostEqual(payload["summary"]["funded_add_amount"], buy_row["target_gap_amount"])
+        self.assertAlmostEqual(payload["summary"]["total_add_demand"], buy_row["desired_whole_share_amount"])
+        self.assertAlmostEqual(payload["summary"]["funded_add_amount"], buy_row["desired_whole_share_amount"])
         self.assertAlmostEqual(payload["summary"]["unfunded_add_demand"], 0.0)
-        self.assertAlmostEqual(hold_row["total_add_demand"], buy_row["target_gap_amount"])
+        self.assertAlmostEqual(hold_row["total_add_demand"], buy_row["desired_whole_share_amount"])
 
     def test_linear_buy_guardrail_allows_eligible_ratings_and_blocks_missing_rating(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
@@ -4264,3 +4270,189 @@ class AllocationBasedTriggerTests(unittest.TestCase):
         settings["action_max_trigger_multiplier"] = 1.0
         with self.assertRaisesRegex(ValueError, "action_max_trigger_multiplier must be greater"):
             web_server.validate_action_plan_settings(settings)
+
+
+class WholeShareActionPlanTests(unittest.TestCase):
+    def _settings(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["action_min_cash_unallocated_target"] = 0.0
+        settings["action_min_executable_trade_amount"] = 0.0
+        return settings
+
+    def _row(self, action, amount, price, direction, **overrides):
+        row = {
+            "symbol": overrides.pop("symbol", "TEST"),
+            "rating": overrides.pop("rating", "Buy"),
+            "action": action,
+            "action_amount": amount,
+            "raw_action_amount": amount,
+            "action_amount_direction": direction,
+            "current_price": price,
+            "current_position_market_value": 0.0,
+            "allocation_score": 0.8,
+            "bucket_sizing_score": 0.8,
+            "trigger_quality_score": 0.8,
+            "upside": 50.0,
+        }
+        row.update(overrides)
+        return row
+
+    def _execute(self, rows, cash=100_000.0):
+        return web_server._apply_cash_constrained_execution_layer(rows, 100_000.0, cash, self._settings())
+
+    def test_add_uses_floor_and_recomputes_whole_share_amount(self):
+        row = self._row("Add", 5_778.0, 377.24, "add")
+        summary = self._execute([row])
+        self.assertEqual(row["raw_action_amount"], 5_778.0)
+        self.assertEqual(row["desired_share_count"], 15)
+        self.assertAlmostEqual(row["desired_whole_share_amount"], 5_658.60)
+        self.assertEqual(row["suggested_share_count"], 15)
+        self.assertAlmostEqual(row["action_amount"], 5_658.60)
+        self.assertEqual(row["action_amount_label"], "Add about $5,658.60")
+        self.assertAlmostEqual(summary["total_add_demand"], 5_658.60)
+        self.assertAlmostEqual(summary["funded_add_amount"], 5_658.60)
+
+    def test_add_below_one_share_becomes_watch_and_contributes_zero_demand(self):
+        row = self._row("Add", 339.0, 444.49, "add")
+        summary = self._execute([row])
+        self.assertEqual(row["action"], "Watch")
+        self.assertEqual(row["desired_share_count"], 0)
+        self.assertEqual(row["suggested_share_count"], 0)
+        self.assertEqual(row["action_amount"], 0.0)
+        self.assertEqual(row["action_amount_label"], "—")
+        self.assertEqual(row["funding_status"], "Below one-share minimum")
+        self.assertTrue(row["minimum_trade_size_blocked"])
+        self.assertEqual(row["minimum_trade_size_reason"], "Calculated add amount is below the price of one whole share.")
+        self.assertEqual(summary["total_add_demand"], 0.0)
+        self.assertEqual(summary["funded_add_amount"], 0.0)
+        self.assertEqual(summary["unfunded_add_demand"], 0.0)
+
+    def test_trim_uses_whole_shares_and_below_minimum_becomes_hold(self):
+        trim = self._row(
+            "Trim",
+            1_360.65,
+            96.20,
+            "trim",
+            owned_share_quantity=50,
+            current_position_market_value=4_810.0,
+        )
+        blocked = self._row(
+            "Strong Trim",
+            80.0,
+            125.0,
+            "trim",
+            symbol="BLOCKED",
+            owned_share_quantity=10,
+            current_position_market_value=1_250.0,
+        )
+        summary = self._execute([trim, blocked], cash=0.0)
+        self.assertEqual(trim["desired_share_count"], 14)
+        self.assertEqual(trim["suggested_share_count"], 14)
+        self.assertAlmostEqual(trim["action_amount"], 1_346.80)
+        self.assertEqual(trim["action_amount_label"], "Trim about $1,346.80")
+        self.assertEqual(blocked["action"], "Hold")
+        self.assertEqual(blocked["suggested_share_count"], 0)
+        self.assertEqual(blocked["funding_status"], "Below one-share minimum")
+        self.assertTrue(blocked["minimum_trade_size_blocked"])
+        self.assertAlmostEqual(summary["executable_sell_trim_proceeds"], 1_346.80)
+
+    def test_full_sell_uses_actual_owned_whole_shares(self):
+        row = self._row(
+            "Sell",
+            850.0,
+            50.0,
+            "sell",
+            rating="Sell",
+            owned_share_quantity=17,
+            current_position_market_value=850.0,
+        )
+        summary = self._execute([row], cash=0.0)
+        self.assertEqual(row["desired_share_count"], 17)
+        self.assertEqual(row["suggested_share_count"], 17)
+        self.assertEqual(row["action_amount"], 850.0)
+        self.assertEqual(row["action_amount_label"], "Sell about $850.00")
+        self.assertEqual(summary["executable_sell_trim_proceeds"], 850.0)
+
+    def test_trim_cap_and_fractional_ownership_never_round_up(self):
+        row = self._row(
+            "Strong Trim",
+            1_000.0,
+            100.0,
+            "trim",
+            owned_share_quantity=3.6,
+            current_position_market_value=360.0,
+        )
+        self._execute([row], cash=0.0)
+        self.assertEqual(row["desired_share_count"], 10)
+        self.assertEqual(row["owned_whole_share_count"], 3)
+        self.assertEqual(row["suggested_share_count"], 3)
+        self.assertEqual(row["action_amount"], 300.0)
+        self.assertIn("fractional", row["whole_share_diagnostic_warning"])
+        self.assertEqual(web_server._whole_shares_from_quantity(16.9999999999), 17)
+
+    def test_invalid_prices_are_non_executable_without_crashing(self):
+        add = self._row("Strong Add", 1_000.0, 0.0, "add")
+        trim = self._row("Trim", 1_000.0, None, "trim", owned_share_quantity=20)
+        sell = self._row("Strong Sell", 1_000.0, "invalid", "sell", owned_share_quantity=20)
+        self._execute([add, trim, sell], cash=10_000.0)
+        self.assertEqual(add["action"], "Watch")
+        self.assertEqual(trim["action"], "Hold")
+        self.assertEqual(sell["action"], "Re-evaluate")
+        for row in (add, trim, sell):
+            self.assertEqual(row["suggested_share_count"], 0)
+            self.assertEqual(row["action_amount"], 0.0)
+            self.assertEqual(row["action_amount_label"], "—")
+            self.assertEqual(row["whole_share_diagnostic_reason"], "Cannot calculate whole-share action because current price is unavailable.")
+
+    def test_strong_add_and_starter_buy_follow_whole_share_rules(self):
+        rows = [
+            self._row("Strong Add", 1_050.0, 200.0, "add", symbol="STRONG", rating="Strong Buy"),
+            self._row("Starter Buy", 650.0, 200.0, "add", symbol="STARTER", rating="Speculative Buy"),
+        ]
+        self._execute(rows)
+        self.assertEqual(rows[0]["suggested_share_count"], 5)
+        self.assertEqual(rows[0]["action_amount"], 1_000.0)
+        self.assertEqual(rows[1]["suggested_share_count"], 3)
+        self.assertEqual(rows[1]["action_amount"], 600.0)
+
+    def test_cash_funding_allocates_only_whole_shares(self):
+        partial = self._row("Add", 1_500.0, 300.0, "add")
+        summary = self._execute([partial], cash=1_000.0)
+        self.assertEqual(partial["desired_share_count"], 5)
+        self.assertEqual(partial["suggested_share_count"], 3)
+        self.assertEqual(partial["action_amount"], 900.0)
+        self.assertEqual(partial["unfunded_share_count"], 2)
+        self.assertEqual(partial["unfunded_action_amount"], 600.0)
+        self.assertEqual(partial["funding_status"], "Partially funded")
+        self.assertEqual(summary["funded_add_amount"], 900.0)
+        self.assertEqual(summary["unfunded_add_demand"], 600.0)
+
+        unfunded = self._row("Add", 1_500.0, 300.0, "add")
+        summary = self._execute([unfunded], cash=250.0)
+        self.assertEqual(unfunded["suggested_share_count"], 0)
+        self.assertEqual(unfunded["action_amount"], 0.0)
+        self.assertEqual(unfunded["funding_status"], "Unfunded / Watch")
+        self.assertEqual(summary["funded_add_amount"], 0.0)
+        self.assertEqual(summary["unfunded_add_demand"], 1_500.0)
+
+    def test_linear_execution_uses_the_same_whole_share_layer(self):
+        add = self._row("Add", 5_778.0, 377.24, "add")
+        add["target_gap_amount"] = 5_778.0
+        add["linear_allocation_score"] = 0.9
+        add["expected_cagr"] = 20.0
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [add], 100_000.0, 10_000.0, self._settings()
+        )
+        self.assertEqual(add["suggested_share_count"], 15)
+        self.assertAlmostEqual(add["action_amount"], 5_658.60)
+        self.assertAlmostEqual(summary["total_add_demand"], 5_658.60)
+
+    def test_safe_floor_tolerance_and_ui_shares_columns(self):
+        self.assertEqual(web_server.whole_shares_for_amount(1_499.9999999, 100.0), 15)
+        self.assertEqual(web_server.whole_shares_for_amount(1_499.90, 100.0), 14)
+        html = Path("static/index.html").read_text(encoding="utf-8")
+        js = Path("static/app.js").read_text(encoding="utf-8")
+        self.assertGreaterEqual(html.count('data-sort-key="suggested_share_count"'), 3)
+        self.assertIn("function formatSuggestedShareCount(item)", js)
+        self.assertIn('<td class="shares-cell">${formatSuggestedShareCount(item)}</td>', js)
+        self.assertIn("{ label: 'Shares', key: 'suggested_share_count', sortable: true }", js)

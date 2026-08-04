@@ -11,6 +11,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from html import unescape
 from datetime import date, datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -6790,7 +6791,7 @@ def _format_action_amount_label(direction, amount):
     numeric_amount = safe_number(amount)
     if numeric_amount is None or numeric_amount <= 0:
         return "—"
-    rounded = f"${numeric_amount:,.0f}"
+    rounded = f"${numeric_amount:,.2f}"
     if direction == "add":
         return f"Add about {rounded}"
     if direction == "trim":
@@ -6798,6 +6799,154 @@ def _format_action_amount_label(direction, amount):
     if direction == "sell":
         return f"Sell about {rounded}"
     return "—"
+
+
+WHOLE_SHARE_FLOOR_TOLERANCE = Decimal("1e-9")
+
+
+def _finite_decimal(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
+def whole_shares_for_amount(amount, current_price):
+    amount_decimal = _finite_decimal(amount)
+    price_decimal = _finite_decimal(current_price)
+    if amount_decimal is None or price_decimal is None or amount_decimal <= 0 or price_decimal <= 0:
+        return 0
+    ratio = amount_decimal / price_decimal
+    return max(0, int((ratio + WHOLE_SHARE_FLOOR_TOLERANCE).to_integral_value(rounding=ROUND_FLOOR)))
+
+
+def _whole_shares_from_quantity(quantity):
+    quantity_decimal = _finite_decimal(quantity)
+    if quantity_decimal is None or quantity_decimal <= 0:
+        return 0
+    floored = quantity_decimal.to_integral_value(rounding=ROUND_FLOOR)
+    if quantity_decimal - floored >= Decimal("1") - WHOLE_SHARE_FLOOR_TOLERANCE:
+        floored += 1
+    return max(0, int(floored))
+
+
+def _whole_share_amount(share_count, current_price):
+    shares = max(0, int(share_count or 0))
+    price_decimal = _finite_decimal(current_price)
+    if shares <= 0 or price_decimal is None or price_decimal <= 0:
+        return 0.0
+    return float(Decimal(shares) * price_decimal)
+
+
+def _owned_whole_share_fields(row):
+    quantity = _finite_decimal(row.get("owned_share_quantity"))
+    warning = None
+    if quantity is not None:
+        if quantity <= 0:
+            return 0, "position_quantity", None
+        whole_shares = _whole_shares_from_quantity(quantity)
+        if abs(quantity - Decimal(whole_shares)) > WHOLE_SHARE_FLOOR_TOLERANCE:
+            warning = "Stored position quantity is fractional; executable trim/sell quantity is capped at the whole-share portion."
+        return whole_shares, "position_quantity", warning
+    fallback = whole_shares_for_amount(row.get("current_position_market_value"), row.get("current_price"))
+    return fallback, "market_value_fallback", None
+
+
+def _mark_whole_share_action_non_executable(row, action, funding_status, diagnostic_reason):
+    row["whole_share_original_action"] = row.get("action")
+    row["action"] = action
+    row["action_priority"] = ACTION_PLAN_ACTION_PRIORITY.get(action, 99)
+    row["action_amount_direction"] = "none"
+    row["suggested_share_count"] = 0
+    row["action_amount"] = 0.0
+    row["executable_action_amount"] = 0.0
+    row["action_amount_label"] = "—"
+    row["funding_status"] = funding_status
+    row["whole_share_diagnostic_reason"] = diagnostic_reason
+
+
+def _prepare_whole_share_execution(row):
+    direction = row.get("action_amount_direction") or "none"
+    raw_amount = max(0.0, safe_number(row.get("raw_action_amount")) or 0.0)
+    row["raw_action_amount"] = raw_amount
+    row.setdefault("target_gap_amount", raw_amount)
+    row["desired_share_count"] = 0
+    row["desired_whole_share_amount"] = 0.0
+    row["suggested_share_count"] = 0
+    row["minimum_trade_size_blocked"] = False
+    row["minimum_trade_size_reason"] = None
+    row["whole_share_diagnostic_reason"] = row.get("whole_share_diagnostic_reason")
+    row["whole_share_diagnostic_warning"] = row.get("whole_share_diagnostic_warning")
+    row["owned_whole_share_count"] = 0
+    row["owned_share_quantity_source"] = None
+
+    if direction not in {"add", "trim", "sell"}:
+        return
+
+    price = safe_number(row.get("current_price"))
+    if price is None or price <= 0:
+        safe_action = "Watch" if direction == "add" else ("Hold" if direction == "trim" else "Re-evaluate")
+        _mark_whole_share_action_non_executable(
+            row,
+            safe_action,
+            "Price unavailable",
+            "Cannot calculate whole-share action because current price is unavailable.",
+        )
+        return
+
+    owned_shares, quantity_source, quantity_warning = _owned_whole_share_fields(row)
+    row["owned_whole_share_count"] = owned_shares
+    row["owned_share_quantity_source"] = quantity_source
+    row["whole_share_diagnostic_warning"] = quantity_warning
+
+    if direction == "sell":
+        row["desired_share_count"] = owned_shares
+        row["desired_whole_share_amount"] = _whole_share_amount(owned_shares, price)
+        if owned_shares < 1:
+            _mark_whole_share_action_non_executable(
+                row,
+                "Re-evaluate",
+                "No whole shares available",
+                "Cannot identify at least one whole share for the requested full exit.",
+            )
+            return
+        row["suggested_share_count"] = owned_shares
+        row["action_amount"] = row["desired_whole_share_amount"]
+        return
+
+    desired_shares = whole_shares_for_amount(raw_amount, price)
+    row["desired_share_count"] = desired_shares
+    row["desired_whole_share_amount"] = _whole_share_amount(desired_shares, price)
+    if desired_shares < 1:
+        row["minimum_trade_size_blocked"] = True
+        row["minimum_trade_size_reason"] = (
+            "Calculated add amount is below the price of one whole share."
+            if direction == "add"
+            else "Calculated trim amount is below the price of one whole share."
+        )
+        _mark_whole_share_action_non_executable(
+            row,
+            "Watch" if direction == "add" else "Hold",
+            "Below one-share minimum",
+            row["minimum_trade_size_reason"],
+        )
+        return
+
+    if direction == "trim":
+        suggested_shares = min(desired_shares, owned_shares)
+        if suggested_shares < 1:
+            _mark_whole_share_action_non_executable(
+                row,
+                "Hold",
+                "No whole shares available",
+                "Cannot identify at least one owned whole share for the requested trim.",
+            )
+            return
+        row["suggested_share_count"] = suggested_shares
+        row["action_amount"] = _whole_share_amount(suggested_shares, price)
 
 
 def _action_amount_fields(action, current_weight, target_mid, total_portfolio_value, market_value):
@@ -6819,7 +6968,7 @@ def _action_amount_fields(action, current_weight, target_mid, total_portfolio_va
         direction = "trim"
         if total is not None and total > 0 and current is not None and target is not None and current > target:
             amount = (current - target) / 100.0 * total
-    elif action == "Sell":
+    elif action in {"Sell", "Strong Sell"}:
         direction = "sell"
         if market is not None and market > 0:
             amount = market
@@ -6827,6 +6976,7 @@ def _action_amount_fields(action, current_weight, target_mid, total_portfolio_va
             amount = current / 100.0 * total
 
     return {
+        "raw_action_amount": amount,
         "action_amount": amount,
         "action_amount_label": _format_action_amount_label(direction, amount),
         "action_amount_direction": direction,
@@ -6868,24 +7018,36 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
     executable_sell_trim_proceeds = 0.0
 
     for row in rows:
+        row["raw_action_amount"] = max(0.0, safe_number(row.get("raw_action_amount")) or safe_number(row.get("action_amount")) or 0.0)
+        row["target_gap_amount"] = row["raw_action_amount"]
+        _prepare_whole_share_execution(row)
         direction = row.get("action_amount_direction")
-        theoretical_amount = max(0.0, safe_number(row.get("action_amount")) or 0.0)
-        row["target_gap_amount"] = theoretical_amount
         row["executable_action_amount"] = 0.0
         row["unfunded_action_amount"] = 0.0
+        row["unfunded_share_count"] = 0
         row["funding_priority_score"] = 0.0
-        if row.get("action") in sell_trim_actions or direction in {"trim", "sell"}:
-            row["executable_action_amount"] = theoretical_amount
-            row["funding_status"] = "Generates proceeds" if theoretical_amount > 0 else "No funding needed"
-            executable_sell_trim_proceeds += theoretical_amount
-        elif row.get("action") in buy_actions and direction == "add" and theoretical_amount > 0:
+        if row.get("minimum_trade_size_blocked"):
+            row["funding_status"] = "Below one-share minimum"
+        elif row.get("whole_share_diagnostic_reason") and direction == "none":
+            row["funding_status"] = row.get("funding_status") or "No executable action"
+        elif row.get("action") in sell_trim_actions or direction in {"trim", "sell"}:
+            executable = max(0.0, safe_number(row.get("action_amount")) or 0.0)
+            row["executable_action_amount"] = executable
+            row["funding_status"] = "Generates proceeds" if executable > 0 else "No funding needed"
+            executable_sell_trim_proceeds += executable
+        elif row.get("action") in buy_actions and direction == "add" and row.get("desired_share_count", 0) > 0:
             row["funding_status"] = "Unfunded / Watch"
         else:
             row["funding_status"] = "No funding needed"
 
     available_buy_budget = max(0.0, cash_available + executable_sell_trim_proceeds - minimum_cash_reserve_amount)
-    buy_candidates = [row for row in rows if row.get("action") in buy_actions and row.get("target_gap_amount", 0.0) > 0]
-    total_add_demand = sum(row["target_gap_amount"] for row in buy_candidates)
+    buy_candidates = [
+        row for row in rows
+        if row.get("action") in buy_actions
+        and row.get("action_amount_direction") == "add"
+        and row.get("desired_share_count", 0) > 0
+    ]
+    total_add_demand = sum(row.get("desired_whole_share_amount", 0.0) for row in buy_candidates)
     min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
     remaining_budget = available_buy_budget
     for row in buy_candidates:
@@ -6901,16 +7063,23 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
         ),
     )
     for index, row in enumerate(sorted_buy_candidates):
-        demand = row["target_gap_amount"]
-        amount = min(remaining_budget, demand)
+        desired_shares = int(row.get("desired_share_count") or 0)
+        price = safe_number(row.get("current_price"))
+        affordable_shares = whole_shares_for_amount(remaining_budget, price)
+        funded_shares = min(desired_shares, affordable_shares)
+        amount = _whole_share_amount(funded_shares, price)
         is_last_candidate = index == len(sorted_buy_candidates) - 1
         if amount < min_trade and not (is_last_candidate and amount > 0):
+            funded_shares = 0
             amount = 0.0
+        unfunded_shares = max(0, desired_shares - funded_shares)
+        row["suggested_share_count"] = funded_shares
         row["executable_action_amount"] = amount
-        row["unfunded_action_amount"] = max(0.0, demand - amount)
-        if amount >= demand - 1e-6 and demand > 0:
+        row["unfunded_share_count"] = unfunded_shares
+        row["unfunded_action_amount"] = _whole_share_amount(unfunded_shares, price)
+        if funded_shares == desired_shares and desired_shares > 0:
             row["funding_status"] = "Fully funded"
-        elif amount > 0:
+        elif funded_shares > 0:
             row["funding_status"] = "Partially funded"
         else:
             row["funding_status"] = "Unfunded / Watch"
@@ -6928,15 +7097,19 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
         row["unfunded_add_demand"] = unfunded_add_demand
         row["executable_sell_trim_proceeds"] = executable_sell_trim_proceeds
         row["minimum_cash_reserve_amount"] = minimum_cash_reserve_amount
-        if row.get("action_amount_direction") == "add":
+        if row.get("minimum_trade_size_blocked"):
+            row["action_amount_cash_note"] = row.get("minimum_trade_size_reason")
+        elif row.get("whole_share_diagnostic_reason") and row.get("action_amount_direction") == "none":
+            row["action_amount_cash_note"] = row.get("whole_share_diagnostic_reason")
+        elif row.get("action_amount_direction") == "add":
             if row["funding_status"] == "Fully funded":
-                row["action_amount_cash_note"] = f"Add about ${executable:,.0f} to reach the calculated target midpoint."
+                row["action_amount_cash_note"] = f"Add about ${executable:,.2f} to reach the calculated target midpoint."
             elif row["funding_status"] == "Partially funded":
-                row["action_amount_cash_note"] = f"Target gap is ${row['target_gap_amount']:,.0f}, but only ${executable:,.0f} is executable now based on available cash and higher-priority actions."
+                row["action_amount_cash_note"] = f"Target gap is ${row['target_gap_amount']:,.2f}, but only ${executable:,.2f} is executable now based on available cash and higher-priority actions."
             else:
-                row["action_amount_cash_note"] = f"Target gap is ${row['target_gap_amount']:,.0f}, but this add is currently unfunded based on available cash and higher-priority actions."
+                row["action_amount_cash_note"] = f"Target gap is ${row['target_gap_amount']:,.2f}, but no whole share is currently funded based on available cash and higher-priority actions."
         elif row.get("action_amount_direction") in {"trim", "sell"}:
-            row["action_amount_cash_note"] = f"Sell/trim about ${executable:,.0f}. This action generates proceeds that can fund buy actions." if executable > 0 else "No funding needed."
+            row["action_amount_cash_note"] = f"Sell/trim about ${executable:,.2f}. This action generates proceeds that can fund buy actions." if executable > 0 else "No funding needed."
         else:
             row["action_amount_cash_note"] = "No funding needed."
     return {
@@ -7590,25 +7763,36 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     sell_trim_actions = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
     executable_sell_trim_proceeds = 0.0
     for row in rows:
-        theoretical_amount = max(0.0, safe_number(row.get("target_gap_amount")) or 0.0)
+        _prepare_whole_share_execution(row)
         row["executable_action_amount"] = 0.0
         row["unfunded_action_amount"] = 0.0
-        if row.get("action") in sell_trim_actions:
-            row["executable_action_amount"] = theoretical_amount
-            row["funding_status"] = "Generates proceeds" if theoretical_amount > 0 else "No funding needed"
-            executable_sell_trim_proceeds += theoretical_amount
-        elif row.get("action") in buy_actions and theoretical_amount > 0:
+        row["unfunded_share_count"] = 0
+        if row.get("minimum_trade_size_blocked"):
+            row["funding_status"] = "Below one-share minimum"
+        elif row.get("whole_share_diagnostic_reason") and row.get("action_amount_direction") == "none":
+            row["funding_status"] = row.get("funding_status") or "No executable action"
+        elif row.get("action") in sell_trim_actions:
+            executable = max(0.0, safe_number(row.get("action_amount")) or 0.0)
+            row["executable_action_amount"] = executable
+            row["funding_status"] = "Generates proceeds" if executable > 0 else "No funding needed"
+            executable_sell_trim_proceeds += executable
+        elif row.get("action") in buy_actions and row.get("desired_share_count", 0) > 0:
             row["funding_status"] = "Unfunded / Watch"
-        elif row.get("action") == "Watch / Rating Guardrail" and theoretical_amount > 0:
+        elif row.get("action") == "Watch / Rating Guardrail" and row.get("target_gap_amount", 0.0) > 0:
             row["funding_status"] = "Rating blocks add"
-        elif row.get("action") in {"Watch", "Watch / Underweight", "Hold / Overweight"} and theoretical_amount > 0:
+        elif row.get("action") in {"Watch", "Watch / Underweight", "Hold / Overweight"} and row.get("target_gap_amount", 0.0) > 0:
             row["funding_status"] = "Waiting for trigger"
         else:
             row["funding_status"] = "No funding needed"
     available_buy_budget = max(0.0, cash_available + executable_sell_trim_proceeds - minimum_cash_reserve_amount)
-    buy_candidates = [row for row in rows if row.get("action") in buy_actions and row.get("target_gap_amount", 0.0) > 0]
+    buy_candidates = [
+        row for row in rows
+        if row.get("action") in buy_actions
+        and row.get("action_amount_direction") == "add"
+        and row.get("desired_share_count", 0) > 0
+    ]
     for row in buy_candidates:
-        gap_score = min((row["target_gap_amount"] / total / 0.05), 1.0) if total > 0 else 0.0
+        gap_score = min((row["desired_whole_share_amount"] / total / 0.05), 1.0) if total > 0 else 0.0
         row["linear_action_priority"] = (
             (safe_number(row.get("linear_allocation_score")) or 0.0) * 0.50
             + gap_score * 0.20
@@ -7620,15 +7804,22 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
     sorted_candidates = sorted(buy_candidates, key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), -(safe_number(row.get("expected_cagr")) or 0.0), -(safe_number(row.get("upside")) or 0.0), row.get("symbol") or ""))
     for index, row in enumerate(sorted_candidates):
-        demand = row["target_gap_amount"]
-        amount = min(remaining_budget, demand)
+        desired_shares = int(row.get("desired_share_count") or 0)
+        price = safe_number(row.get("current_price"))
+        affordable_shares = whole_shares_for_amount(remaining_budget, price)
+        funded_shares = min(desired_shares, affordable_shares)
+        amount = _whole_share_amount(funded_shares, price)
         if amount < min_trade and not (index == len(sorted_candidates) - 1 and amount > 0):
+            funded_shares = 0
             amount = 0.0
+        unfunded_shares = max(0, desired_shares - funded_shares)
+        row["suggested_share_count"] = funded_shares
         row["executable_action_amount"] = amount
-        row["unfunded_action_amount"] = max(0.0, demand - amount)
-        row["funding_status"] = "Fully funded" if amount >= demand - 1e-6 and demand > 0 else ("Partially funded" if amount > 0 else "Unfunded / Watch")
+        row["unfunded_share_count"] = unfunded_shares
+        row["unfunded_action_amount"] = _whole_share_amount(unfunded_shares, price)
+        row["funding_status"] = "Fully funded" if funded_shares == desired_shares and desired_shares > 0 else ("Partially funded" if funded_shares > 0 else "Unfunded / Watch")
         remaining_budget = max(0.0, remaining_budget - amount)
-    total_add_demand = sum(row.get("target_gap_amount", 0.0) for row in buy_candidates)
+    total_add_demand = sum(row.get("desired_whole_share_amount", 0.0) for row in buy_candidates)
     funded_add_amount = sum(row.get("executable_action_amount", 0.0) for row in buy_candidates)
     unfunded_add_demand = sum(row.get("unfunded_action_amount", 0.0) for row in buy_candidates)
     for row in rows:
@@ -7663,16 +7854,17 @@ def _linear_action_amount_fields(action, target_mid, target_high, total_portfoli
             direction = "trim"
             target_high_value = total * (high if high is not None else mid) / 100.0
             target_gap_amount = max(0.0, market - target_high_value)
-        elif action == "Sell":
+        elif action in {"Sell", "Strong Sell"}:
             direction = "sell"
             target_high_value = total * (high if high is not None else 0.0) / 100.0
             target_gap_amount = max(0.0, market - target_high_value)
-    elif action == "Sell" and market > 0:
+    elif action in {"Sell", "Strong Sell"} and market > 0:
         direction = "sell"
         target_gap_amount = market
         action_amount_to_mid = market
     return {
         "target_gap_amount": target_gap_amount,
+        "raw_action_amount": target_gap_amount,
         "action_amount": target_gap_amount,
         "action_amount_label": _format_action_amount_label(direction, target_gap_amount),
         "action_amount_direction": direction,
@@ -7819,6 +8011,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "potential_bearish_confidence": item.get("potential_bearish_confidence"),
             "current_position_weight": item.get("current_position_weight") or 0.0,
             "current_position_market_value": item.get("current_position_market_value") or 0.0,
+            "owned_share_quantity": item.get("owned_share_quantity"),
             "total_portfolio_value": total_portfolio_value,
             "linear_expected_cagr_score": expected_cagr_score,
             "linear_upside_score": upside_score,
@@ -8053,6 +8246,7 @@ def build_action_plan(conn):
             "potential_conviction_score": potential_conviction,
             "potential_score_component": potential_score_component,
             "current_position_market_value": market_value,
+            "owned_share_quantity": position.get("position") if position else None,
             "bucket": rating,
         })
 
@@ -8130,6 +8324,7 @@ def build_action_plan(conn):
             "potential_bearish_confidence": item.get("potential_bearish_confidence"),
             "current_position_weight": item["current_position_weight"],
             "current_position_market_value": item.get("current_position_market_value"),
+            "owned_share_quantity": item.get("owned_share_quantity"),
             "total_portfolio_value": total_portfolio_value,
             "target_weight_mid": target_mid,
             "target_weight_low": target_low,

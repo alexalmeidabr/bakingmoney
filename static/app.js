@@ -1951,6 +1951,11 @@ function getActionPlanAmountDetailLabel(item) {
   return `${label} to reach the calculated target midpoint.`;
 }
 
+function formatSuggestedShareCount(item) {
+  const shares = Number(item?.suggested_share_count);
+  return Number.isInteger(shares) && shares > 0 ? formatNumber(shares, 0) : '—';
+}
+
 function renderActionPlanMetricList(items) {
   return `<dl class="action-detail-metrics">${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`).join('')}</dl>`;
 }
@@ -2020,7 +2025,11 @@ function renderActionPlanDetail(item) {
       ['Company Name', escapeHtml(item.company_name || 'N/A')],
       ['Action', escapeHtml(item.action || 'Hold')],
       ['Target Gap Amount', formatCurrencyValue(item.target_gap_amount, 'USD')],
+      ['Raw Action Amount', formatCurrencyValue(item.raw_action_amount, 'USD')],
+      ['Desired Whole Shares', Number.isInteger(Number(item.desired_share_count)) ? formatNumber(Number(item.desired_share_count), 0) : '—'],
+      ['Desired Whole-Share Amount', formatCurrencyValue(item.desired_whole_share_amount, 'USD')],
       ['Executable Action Amount', formatCurrencyValue(item.executable_action_amount, 'USD')],
+      ['Shares', formatSuggestedShareCount(item)],
       ['Funding Status', escapeHtml(item.funding_status || 'No funding needed')],
       ['Action Amount', escapeHtml(item.action_amount_label || '—')],
       ['Rating', escapeHtml(item.rating || 'Hold')],
@@ -2045,10 +2054,11 @@ function renderActionPlanDetail(item) {
       ['Executable Action Amount', formatCurrencyValue(item.executable_action_amount, 'USD')],
       ['Funding Status', escapeHtml(item.funding_status || 'No funding needed')],
       ['Unfunded Amount', formatCurrencyValue(item.unfunded_action_amount, 'USD')],
+      ['Unfunded Shares', Number.isInteger(Number(item.unfunded_share_count)) && Number(item.unfunded_share_count) > 0 ? formatNumber(Number(item.unfunded_share_count), 0) : '—'],
       ['Available Buy Budget', formatCurrencyValue(item.available_buy_budget, 'USD')],
       ['Funding Priority Score', formatNumber(item.funding_priority_score)],
       ['Action Amount to Mid', formatCurrencyValue(item.action_amount_to_mid, 'USD')],
-    ])}<p>${escapeHtml(getActionPlanAmountDetailLabel(item))}</p><p>${escapeHtml(item.action_amount_cash_note || '')}</p></section>
+    ])}<p>${escapeHtml(getActionPlanAmountDetailLabel(item))}</p><p>${escapeHtml(item.action_amount_cash_note || '')}</p><p>${escapeHtml(item.minimum_trade_size_reason || item.whole_share_diagnostic_reason || item.whole_share_diagnostic_warning || '')}</p></section>
     <section class="detail-card"><h4>Trigger Prices</h4>${renderActionPlanMetricList([
       ['Position Status', escapeHtml(trig.position_status || item.position_status || 'N/A')],
       ['Starter Buy Trigger', formatCurrencyValue(trig.starter_buy_trigger_price, 'USD')],
@@ -2343,6 +2353,7 @@ const ACTION_PLAN_BUCKET_COLUMNS = [
   { label: 'Gap to Mid', key: 'gap_to_mid', sortable: true },
   { label: 'Target Gap', key: 'target_gap_amount', sortable: true },
   { label: 'Action Amount', sortable: false },
+  { label: 'Shares', key: 'suggested_share_count', sortable: true },
   { label: 'Funding Status', sortable: false },
   { label: 'Market Value', key: 'market_value', sortable: true },
   { label: 'Upside', key: 'upside', sortable: true },
@@ -2360,6 +2371,7 @@ function getActionPlanBucketSortValue(item, key) {
   if (key === 'target_mid' || key === 'target_band') return safeNumberForSort(item.target_weight_mid);
   if (key === 'gap_to_mid') return safeNumberForSort(item.position_gap_to_mid);
   if (key === 'target_gap_amount') return safeNumberForSort(item.target_gap_amount);
+  if (key === 'suggested_share_count') return safeNumberForSort(item.suggested_share_count);
   if (key === 'market_value') return safeNumberForSort(item.current_position_market_value ?? item.market_value ?? item.position_market_value);
   if (key === 'upside') return safeNumberForSort(item.upside);
   if (key === 'core_confidence_diff') return getActionPlanNumericSortValue(item, 'core_confidence_diff');
@@ -2409,6 +2421,7 @@ function renderActionPlanBucketCompanyTable(rows, bucket) {
       <td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td>
       <td>${formatCurrencyValue(item.target_gap_amount, 'USD')}</td>
       <td>${escapeHtml(item.action_amount_label || '—')}</td>
+      <td>${formatSuggestedShareCount(item)}</td>
       <td>${escapeHtml(item.funding_status || 'No funding needed')}</td>
       <td>${marketValue}</td>
       <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
@@ -2511,7 +2524,7 @@ function renderLinearAllocationRows() {
     actionRows.forEach((item) => {
       const row = document.createElement('tr');
       const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
-      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
+      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
       actionPlanLinearActionsTableBody.appendChild(row);
     });
     actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
@@ -2541,7 +2554,8 @@ function renderLinearAllocationRows() {
         <td>${formatPercent(item.cap_applied ?? item.linear_cap_applied)}</td>
         <td>${escapeHtml(item.cap_reason || item.linear_cap_reason || '—')}</td>
         <td>${escapeHtml(item.funding_status || 'No funding needed')}</td>
-        <td>${escapeHtml(item.action_amount_label || '—')}</td>`;
+        <td>${escapeHtml(item.action_amount_label || '—')}</td>
+        <td>${formatSuggestedShareCount(item)}</td>`;
       actionPlanLinearDetailTableBody.appendChild(row);
     });
     actionPlanLinearDetailTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
@@ -2572,7 +2586,7 @@ function renderActionPlan() {
   sortActionPlanItems(getFilteredActionPlanItems()).forEach((item) => {
     const row = document.createElement('tr');
     const targetBand = `<span class="target-band-range">${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.target_weight_mid)})</span>`;
-    row.innerHTML = `<td class="symbol-cell"><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action)}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="reason-cell">${escapeHtml(item.reason)}</td>`;
+    row.innerHTML = `<td class="symbol-cell"><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action)}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="reason-cell">${escapeHtml(item.reason)}</td>`;
     actionPlanTableBody.appendChild(row);
   });
   actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));

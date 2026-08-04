@@ -139,7 +139,7 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
                  "symbol": symbol,
                  "assumptions": payload["assumptions"],
                  "scenarios": [
-                     {"scenario_name": s["name"], "price_low": s["price_low"], "price_high": s["price_high"], "cagr_low": s["cagr_low"], "cagr_high": s["cagr_high"], "probability": s["probability"]}
+                     {"scenario_name": s["name"], "price_low": s["price_low"], "price_high": s["price_high"], "probability": s["probability"]}
                      for s in payload["scenarios"]
                  ],
                  "key_variables": kv,
@@ -229,7 +229,7 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
                          "symbol": symbol,
                          "assumptions": payload["assumptions"],
                          "scenarios": [
-                             {"scenario_name": s["name"], "price_low": s["price_low"], "price_high": s["price_high"], "cagr_low": s["cagr_low"], "cagr_high": s["cagr_high"], "probability": s["probability"]}
+                             {"scenario_name": s["name"], "price_low": s["price_low"], "price_high": s["price_high"], "probability": s["probability"]}
                              for s in payload["scenarios"]
                          ],
                          "key_variables": kv,

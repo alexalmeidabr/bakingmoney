@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 SCENARIO_ORDER = ["Bear", "Base", "Bull"]
 SCENARIO_SET = set(SCENARIO_ORDER)
 VARIABLE_TYPES = {"Bullish", "Bearish"}
+DRIVER_CATEGORIES = {"Core Driver", "Potential Driver"}
+DEFAULT_DRIVER_CATEGORY = "Core Driver"
 MIN_KEY_VARIABLES = 6
 
 
@@ -37,6 +39,14 @@ def _safe_int_0_10(value: Any, name: str) -> int:
 
 def _normalize_probability(value: float) -> float:
     return value / 100.0 if value > 1 else value
+
+
+def normalize_driver_category(value: Any) -> str:
+    if value is None or value == "":
+        return DEFAULT_DRIVER_CATEGORY
+    if value not in DRIVER_CATEGORIES:
+        raise AnalysisValidationError("driver_category must be Core Driver or Potential Driver")
+    return value
 
 
 def extract_json_payload(text: str) -> Dict[str, Any]:
@@ -94,14 +104,10 @@ def parse_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         price_low = _safe_float(item.get("price_low"), f"{scenario_name}.price_low")
         price_high = _safe_float(item.get("price_high"), f"{scenario_name}.price_high")
-        cagr_low = _safe_float(item.get("cagr_low"), f"{scenario_name}.cagr_low")
-        cagr_high = _safe_float(item.get("cagr_high"), f"{scenario_name}.cagr_high")
         probability = _safe_float(item.get("probability"), f"{scenario_name}.probability")
 
         if price_low > price_high:
             raise AnalysisValidationError(f"{scenario_name} price_low cannot exceed price_high")
-        if cagr_low > cagr_high:
-            raise AnalysisValidationError(f"{scenario_name} cagr_low cannot exceed cagr_high")
 
         probability_normalized = _normalize_probability(probability)
         if probability_normalized < 0:
@@ -112,8 +118,6 @@ def parse_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "scenario_name": scenario_name,
                 "price_low": price_low,
                 "price_high": price_high,
-                "cagr_low": cagr_low,
-                "cagr_high": cagr_high,
                 "probability": probability_normalized,
             }
         )
@@ -147,11 +151,16 @@ def parse_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         confidence = _safe_int_0_10(item.get("confidence"), f"key_variables[{index}].confidence")
         importance = _safe_int_0_10(item.get("importance"), f"key_variables[{index}].importance")
+        try:
+            driver_category = normalize_driver_category(item.get("driver_category"))
+        except AnalysisValidationError:
+            raise AnalysisValidationError(f"key_variables[{index}].driver_category must be Core Driver or Potential Driver")
 
         key_variables.append(
             {
                 "variable_text": variable_text.strip(),
                 "variable_type": variable_type,
+                "driver_category": driver_category,
                 "confidence": confidence,
                 "importance": importance,
             }
@@ -192,3 +201,59 @@ def calculate_overall_confidence(key_variables: List[Dict[str, Any]]) -> Optiona
 
     weighted_confidence = sum(item["confidence"] * item["importance"] for item in key_variables)
     return weighted_confidence / weight_total
+
+
+def _key_variable_type(item: Dict[str, Any]) -> Optional[str]:
+    return item.get("variable_type") or item.get("type")
+
+
+def _key_variable_driver_category(item: Dict[str, Any]) -> str:
+    try:
+        return normalize_driver_category(item.get("driver_category"))
+    except AnalysisValidationError:
+        return DEFAULT_DRIVER_CATEGORY
+
+
+def calculate_confidence_for_category(
+    key_variables: List[Dict[str, Any]],
+    driver_category: str,
+    variable_type: str,
+) -> Optional[float]:
+    normalized_category = normalize_driver_category(driver_category)
+    filtered = [
+        item
+        for item in key_variables or []
+        if _key_variable_driver_category(item) == normalized_category
+        and _key_variable_type(item) == variable_type
+    ]
+    return calculate_overall_confidence(filtered)
+
+
+def _confidence_diff(bullish: Optional[float], bearish: Optional[float]) -> Optional[float]:
+    if bullish is None or bearish is None:
+        return None
+    return bullish - bearish
+
+
+def calculate_confidence_breakdown(key_variables: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    core_bullish = calculate_confidence_for_category(key_variables, "Core Driver", "Bullish")
+    core_bearish = calculate_confidence_for_category(key_variables, "Core Driver", "Bearish")
+    potential_bullish = calculate_confidence_for_category(key_variables, "Potential Driver", "Bullish")
+    potential_bearish = calculate_confidence_for_category(key_variables, "Potential Driver", "Bearish")
+    bullish = calculate_overall_confidence([
+        item for item in key_variables or [] if _key_variable_type(item) == "Bullish"
+    ])
+    bearish = calculate_overall_confidence([
+        item for item in key_variables or [] if _key_variable_type(item) == "Bearish"
+    ])
+    return {
+        "bullish_confidence": bullish,
+        "bearish_confidence": bearish,
+        "confidence_diff": _confidence_diff(bullish, bearish),
+        "core_bullish_confidence": core_bullish,
+        "core_bearish_confidence": core_bearish,
+        "core_confidence_diff": _confidence_diff(core_bullish, core_bearish),
+        "potential_bullish_confidence": potential_bullish,
+        "potential_bearish_confidence": potential_bearish,
+        "potential_confidence_diff": _confidence_diff(potential_bullish, potential_bearish),
+    }

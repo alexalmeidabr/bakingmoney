@@ -716,6 +716,13 @@ th.sortable[data-sort-direction='desc']::after {
   padding: 12px;
 }
 
+#earnings-calendar-date-filter .rating-filter-panel {
+  width: min(430px, calc(100vw - 16px));
+  min-width: min(430px, calc(100vw - 16px));
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 #earnings-calendar-date-filter .rating-filter-option,
 .earnings-calendar-multiselect .rating-filter-option {
   display: flex;
@@ -725,6 +732,7 @@ th.sortable[data-sort-direction='desc']::after {
   box-sizing: border-box;
   width: 100%;
   padding: 9px 12px;
+  white-space: nowrap;
 }
 
 #earnings-calendar-date-filter .rating-filter-option input[type="checkbox"],

@@ -6,6 +6,8 @@ const {
   getMondayWeekRange,
   releaseDateMatchesEarningsCalendarDateFilters,
   earningsCalendarItemMatchesFilters,
+  earningsReleaseTimingPriority,
+  compareEarningsCalendarItems,
 } = require('./static/earnings_calendar_date_filters.js');
 
 const wednesday = new Date(2026, 7, 5, 15, 30);
@@ -119,4 +121,71 @@ test('ISO release dates are parsed as local calendar dates without UTC conversio
   assert.equal(parsed.getMonth(), 7);
   assert.equal(parsed.getDate(), 3);
   assert.equal(parsed.getHours(), 0);
+});
+
+test('Earnings Calendar dates remain sorted ascending', () => {
+  const items = [
+    { symbol: 'LATE', release_date: '2026-08-11', release_timing: 'Before Open' },
+    { symbol: 'EARLY', release_date: '2026-08-10', release_timing: 'After Close' },
+  ];
+  items.sort((left, right) => compareEarningsCalendarItems(left, right, 'asc'));
+  assert.deepEqual(items.map((item) => item.symbol), ['EARLY', 'LATE']);
+});
+
+test('Before Open sorts before After Close on the same date', () => {
+  const items = [
+    { symbol: 'AMC', release_date: '2026-08-10', release_timing: 'After Close' },
+    { symbol: 'BMO', release_date: '2026-08-10', release_timing: 'Before Open' },
+  ];
+  items.sort(compareEarningsCalendarItems);
+  assert.deepEqual(items.map((item) => item.symbol), ['BMO', 'AMC']);
+});
+
+test('unknown timing sorts after recognized same-day timings', () => {
+  const items = [
+    { symbol: 'UNKNOWN', release_date: '2026-08-10', release_timing: 'During Market' },
+    { symbol: 'AFTER', release_date: '2026-08-10', release_timing: 'After Close' },
+    { symbol: 'BEFORE', release_date: '2026-08-10', release_timing: 'Before Open' },
+  ];
+  items.sort(compareEarningsCalendarItems);
+  assert.deepEqual(items.map((item) => item.symbol), ['BEFORE', 'AFTER', 'UNKNOWN']);
+});
+
+test('BMO is treated as Before Open', () => {
+  assert.equal(earningsReleaseTimingPriority('BMO'), earningsReleaseTimingPriority('Before Open'));
+});
+
+test('AMC is treated as After Close', () => {
+  assert.equal(earningsReleaseTimingPriority('AMC'), earningsReleaseTimingPriority('After Close'));
+});
+
+test('release timing priority is case-insensitive', () => {
+  assert.equal(earningsReleaseTimingPriority('before open'), 0);
+  assert.equal(earningsReleaseTimingPriority('BEFORE OPEN'), 0);
+  assert.equal(earningsReleaseTimingPriority('after close'), 1);
+  assert.equal(earningsReleaseTimingPriority('AFTER CLOSE'), 1);
+});
+
+test('same-date and same-priority ties sort deterministically by ticker', () => {
+  const items = [
+    { symbol: 'ZZZ', release_date: '2026-08-10', release_timing: 'Before Open' },
+    { symbol: 'AAA', release_date: '2026-08-10', release_timing: 'BMO' },
+  ];
+  items.sort(compareEarningsCalendarItems);
+  assert.deepEqual(items.map((item) => item.symbol), ['AAA', 'ZZZ']);
+});
+
+test('timing sorting works after Current Week and Next Week filtering', () => {
+  const items = [
+    { symbol: 'CURRENT_AFTER', release_date: '2026-08-09', release_timing: 'AMC' },
+    { symbol: 'CURRENT_BEFORE', release_date: '2026-08-09', release_timing: 'BMO' },
+    { symbol: 'NEXT_AFTER', release_date: '2026-08-10', release_timing: 'After Close' },
+    { symbol: 'NEXT_BEFORE', release_date: '2026-08-10', release_timing: 'before open' },
+  ];
+  const forFilter = (filter) => items
+    .filter((item) => releaseDateMatchesEarningsCalendarDateFilters(item.release_date, wednesday, new Set([filter])))
+    .sort(compareEarningsCalendarItems)
+    .map((item) => item.symbol);
+  assert.deepEqual(forFilter('current_week'), ['CURRENT_BEFORE', 'CURRENT_AFTER']);
+  assert.deepEqual(forFilter('next_week'), ['NEXT_BEFORE', 'NEXT_AFTER']);
 });

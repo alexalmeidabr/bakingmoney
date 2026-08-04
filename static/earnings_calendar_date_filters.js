@@ -75,6 +75,38 @@
     return true;
   }
 
+  function earningsReleaseTimingPriority(value) {
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ');
+    if (normalized === 'before open' || normalized === 'bmo' || normalized === 'before market open') return 0;
+    if (normalized === 'after close' || normalized === 'amc' || normalized === 'after market close') return 1;
+    return 2;
+  }
+
+  function compareEarningsCalendarItems(leftItem, rightItem, dateDirection = 'asc') {
+    const leftDate = parseCalendarDate(leftItem?.release_date);
+    const rightDate = parseCalendarDate(rightItem?.release_date);
+    if (!leftDate && !rightDate) {
+      return String(leftItem?.symbol || '').localeCompare(String(rightItem?.symbol || ''))
+        || String(leftItem?.company_name || '').localeCompare(String(rightItem?.company_name || ''));
+    }
+    if (!leftDate) return 1;
+    if (!rightDate) return -1;
+
+    const dateDelta = leftDate.getTime() - rightDate.getTime();
+    if (dateDelta !== 0) return dateDirection === 'desc' ? -dateDelta : dateDelta;
+
+    const timingDelta = earningsReleaseTimingPriority(leftItem?.release_timing)
+      - earningsReleaseTimingPriority(rightItem?.release_timing);
+    if (timingDelta !== 0) return timingDelta;
+
+    return String(leftItem?.symbol || '').localeCompare(String(rightItem?.symbol || ''))
+      || String(leftItem?.company_name || '').localeCompare(String(rightItem?.company_name || ''));
+  }
+
   const api = {
     parseCalendarDate,
     normalizeLocalCalendarDate,
@@ -82,6 +114,8 @@
     getMondayWeekRange,
     releaseDateMatchesEarningsCalendarDateFilters,
     earningsCalendarItemMatchesFilters,
+    earningsReleaseTimingPriority,
+    compareEarningsCalendarItems,
   };
 
   globalScope.EarningsCalendarDateFilters = api;

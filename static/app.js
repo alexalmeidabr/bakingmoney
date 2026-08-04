@@ -4459,15 +4459,11 @@ function getFilteredAndSortedEarningsCalendarItems() {
     selectedFiscalQuarters,
     quarterOptionCount: EARNINGS_CALENDAR_QUARTER_FILTER_OPTIONS.length,
   }));
-  return filtered.sort((a, b) => {
-    const left = parseCalendarDate(a.release_date);
-    const right = parseCalendarDate(b.release_date);
-    if (!left && !right) return String(a.symbol || '').localeCompare(String(b.symbol || ''));
-    if (!left) return 1; // always last
-    if (!right) return -1; // always last
-    const delta = left.getTime() - right.getTime();
-    return earningsCalendarReleaseDateSortDirection === 'asc' ? delta : -delta;
-  });
+  return filtered.sort((left, right) => window.EarningsCalendarDateFilters.compareEarningsCalendarItems(
+    left,
+    right,
+    earningsCalendarReleaseDateSortDirection,
+  ));
 }
 
 function getEarningsCalendarQuarterOptions(selectedQuarter) {

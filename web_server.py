@@ -330,7 +330,10 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "linear_negative_core_net_cap_pct": 2.0,
     "linear_low_core_net_threshold": 0.5,
     "linear_low_core_net_cap_pct": 4.0,
+    # Retained for compatibility with saved configurations from the binary-cap model.
     "linear_high_bearish_confidence_threshold": 8.0,
+    "linear_high_bearish_confidence_min_threshold": 4.0,
+    "linear_high_bearish_confidence_max_threshold": 8.0,
     "linear_high_bearish_confidence_cap_pct": 5.0,
     "core_confidence_penalty_threshold": 0.5,
     "core_confidence_penalty": 0.15,
@@ -1811,6 +1814,40 @@ def get_action_plan_settings(conn):
             settings["linear_add_band_tolerance_pct"] = legacy_tolerance
         if _get_setting_value(conn, "linear_trim_band_tolerance_pct") is None:
             settings["linear_trim_band_tolerance_pct"] = max(legacy_tolerance, ACTION_PLAN_DEFAULT_SETTINGS["linear_trim_band_tolerance_pct"])
+
+    min_key = "linear_high_bearish_confidence_min_threshold"
+    max_key = "linear_high_bearish_confidence_max_threshold"
+    legacy_key = "linear_high_bearish_confidence_threshold"
+    raw_min = _get_setting_value(conn, min_key)
+    raw_max = _get_setting_value(conn, max_key)
+    raw_legacy = _get_setting_value(conn, legacy_key)
+
+    def finite_setting_value(raw):
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    legacy_value = finite_setting_value(raw_legacy)
+    if raw_legacy is not None and legacy_value is None:
+        logger.warning("Invalid legacy %s setting; using progressive bearish-cap defaults", legacy_key)
+    if raw_min is not None and finite_setting_value(raw_min) is None:
+        logger.warning("Invalid %s setting; using the safe default", min_key)
+    if raw_max is not None and finite_setting_value(raw_max) is None:
+        logger.warning("Invalid %s setting; using the safe default", max_key)
+    if raw_min is None and legacy_value is not None:
+        settings[min_key] = legacy_value
+    if raw_max is None and legacy_value is not None:
+        settings[max_key] = legacy_value
+    if settings[min_key] > settings[max_key]:
+        logger.warning(
+            "Invalid progressive bearish-cap thresholds (%s > %s); using defaults",
+            settings[min_key],
+            settings[max_key],
+        )
+        settings[min_key] = ACTION_PLAN_DEFAULT_SETTINGS[min_key]
+        settings[max_key] = ACTION_PLAN_DEFAULT_SETTINGS[max_key]
     return settings
 
 
@@ -1818,6 +1855,17 @@ def validate_action_plan_settings(settings):
     if not isinstance(settings, dict):
         raise ValueError("action_plan_settings must be an object")
     effective = {**ACTION_PLAN_DEFAULT_SETTINGS, **settings}
+    legacy_bearish_key = "linear_high_bearish_confidence_threshold"
+    min_bearish_key = "linear_high_bearish_confidence_min_threshold"
+    max_bearish_key = "linear_high_bearish_confidence_max_threshold"
+    legacy_bearish_compatibility = (
+        min_bearish_key not in settings
+        and max_bearish_key not in settings
+        and legacy_bearish_key in settings
+    )
+    if legacy_bearish_compatibility:
+        effective[min_bearish_key] = settings[legacy_bearish_key]
+        effective[max_bearish_key] = settings[legacy_bearish_key]
     if "linear_add_band_tolerance_pct" not in settings:
         legacy_tolerance = safe_number(settings.get("linear_target_band_tolerance_pct"))
         if legacy_tolerance is not None:
@@ -1882,6 +1930,17 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{key} must be between 0 and 100")
     if effective["linear_score_allocation_power"] < 0.5 or effective["linear_score_allocation_power"] > 5.0:
         raise ValueError("linear_score_allocation_power must be between 0.5 and 5.0")
+    for threshold_key in (min_bearish_key, max_bearish_key):
+        if effective[threshold_key] < 0.0 or effective[threshold_key] > 10.0:
+            raise ValueError(f"{threshold_key} must be between 0 and 10")
+    if effective[min_bearish_key] > effective[max_bearish_key] or (
+        effective[min_bearish_key] == effective[max_bearish_key]
+        and not legacy_bearish_compatibility
+    ):
+        raise ValueError(
+            "linear_high_bearish_confidence_max_threshold must be greater than "
+            "linear_high_bearish_confidence_min_threshold"
+        )
     if effective["action_upside_full_score"] <= effective["action_upside_zero_score"]:
         raise ValueError("action_upside_full_score must be greater than action_upside_zero_score")
     if effective["action_core_diff_full_score"] <= effective["action_core_diff_zero_score"]:
@@ -7683,20 +7742,62 @@ def _linear_confidence_quality_score(core_bullish, core_bearish, potential_bulli
     return _clamp(quality, 0.0, 1.0)
 
 
+def _linear_progressive_bearish_cap_details(row, uncapped_midpoint, settings):
+    uncapped_midpoint = safe_number(uncapped_midpoint)
+    bearish_confidence = safe_number(row.get("core_bearish_confidence"))
+    min_threshold = safe_number(settings.get("linear_high_bearish_confidence_min_threshold"))
+    max_threshold = safe_number(settings.get("linear_high_bearish_confidence_max_threshold"))
+    full_cap = safe_number(settings.get("linear_high_bearish_confidence_cap_pct"))
+    details = {
+        "bearish_confidence": bearish_confidence,
+        "bearish_confidence_min_threshold": min_threshold,
+        "bearish_confidence_max_threshold": max_threshold,
+        "bearish_cap_progress": 0.0,
+        "bearish_cap_full_limit": full_cap,
+        "bearish_cap_candidate_mid": uncapped_midpoint,
+        "bearish_cap_applied": False,
+        "bearish_cap_configuration_valid": True,
+        "bearish_cap_diagnostic": None,
+    }
+    if min_threshold is None or max_threshold is None or full_cap is None or full_cap < 0:
+        details["bearish_cap_configuration_valid"] = False
+        details["bearish_cap_diagnostic"] = "Invalid or missing progressive bearish-cap setting; cap not applied"
+        return details
+    if min_threshold > max_threshold:
+        details["bearish_cap_configuration_valid"] = False
+        details["bearish_cap_diagnostic"] = "Minimum bearish threshold exceeds maximum; cap not applied"
+        return details
+    if uncapped_midpoint is None or bearish_confidence is None:
+        if bearish_confidence is None:
+            details["bearish_cap_diagnostic"] = "Missing bearish confidence; cap not applied"
+        return details
+    if min_threshold == max_threshold:
+        progress = 1.0 if bearish_confidence >= min_threshold else 0.0
+    else:
+        progress = _clamp((bearish_confidence - min_threshold) / (max_threshold - min_threshold), 0.0, 1.0)
+    details["bearish_cap_progress"] = progress
+    if uncapped_midpoint <= full_cap or progress <= 0.0:
+        return details
+    adjusted_midpoint = (
+        full_cap
+        if progress >= 1.0
+        else uncapped_midpoint + progress * (full_cap - uncapped_midpoint)
+    )
+    details["bearish_cap_candidate_mid"] = min(uncapped_midpoint, adjusted_midpoint)
+    return details
+
+
 def _linear_cap_details(row, settings):
     cap = safe_number(settings.get("linear_max_single_stock_pct")) or 0.0
     reason = "Linear max single-stock cap"
     if not settings.get("linear_enable_risk_caps", True):
         return cap, reason
     core_net = safe_number(row.get("core_confidence_diff")) or 0.0
-    core_bearish = safe_number(row.get("core_bearish_confidence")) or 0.0
     risk_caps = []
     if core_net < 0:
         risk_caps.append((safe_number(settings.get("linear_negative_core_net_cap_pct")) or cap, "Negative core net cap"))
     if core_net < (safe_number(settings.get("linear_low_core_net_threshold")) or 0.0):
         risk_caps.append((safe_number(settings.get("linear_low_core_net_cap_pct")) or cap, "Low core net cap"))
-    if core_bearish >= (safe_number(settings.get("linear_high_bearish_confidence_threshold")) or 0.0):
-        risk_caps.append((safe_number(settings.get("linear_high_bearish_confidence_cap_pct")) or cap, "High bearish confidence cap"))
     for candidate_cap, candidate_reason in risk_caps:
         if candidate_cap < cap:
             cap = candidate_cap
@@ -7714,6 +7815,7 @@ def _apply_linear_caps_and_redistribute(rows, target_total, settings):
         row["linear_target_mid"] = 0.0
         row["linear_cap_applied"] = 0.0
         row["linear_cap_reason"] = "—"
+        row.update(_linear_progressive_bearish_cap_details(row, 0.0, settings))
         allocation_score_input = max(0.0, (safe_number(row.get("linear_allocation_score")) or 0.0) - min_score_threshold)
         row["linear_allocation_score_input"] = allocation_score_input
         row["linear_allocation_weight"] = allocation_score_input ** allocation_power if allocation_score_input > 0 else 0.0
@@ -7723,6 +7825,25 @@ def _apply_linear_caps_and_redistribute(rows, target_total, settings):
     total_weight = sum(row["linear_allocation_weight"] for row in positive_rows)
     if target_total <= 0 or total_weight <= 0:
         return 0.0
+    for row in positive_rows:
+        uncapped_midpoint = target_total * row["linear_allocation_weight"] / total_weight
+        row["linear_target_mid_before_caps"] = uncapped_midpoint
+        bearish_details = _linear_progressive_bearish_cap_details(row, uncapped_midpoint, settings)
+        row.update(bearish_details)
+        bearish_candidate = safe_number(bearish_details.get("bearish_cap_candidate_mid"))
+        existing_cap = safe_number(row.get("linear_effective_cap"))
+        if (
+            settings.get("linear_enable_risk_caps", True)
+            and bearish_candidate is not None
+            and existing_cap is not None
+            and bearish_candidate < existing_cap - 1e-9
+            and bearish_candidate < uncapped_midpoint - 1e-9
+        ):
+            row["linear_effective_cap"] = bearish_candidate
+            row["linear_effective_cap_reason"] = (
+                f"Progressive high bearish confidence cap ({bearish_details['bearish_cap_progress']:.0%})"
+            )
+            row["bearish_cap_applied"] = True
     remaining_target = target_total
     uncapped = list(positive_rows)
     capped_allocated = 0.0
@@ -7734,8 +7855,6 @@ def _apply_linear_caps_and_redistribute(rows, target_total, settings):
         provisional = []
         for row in uncapped:
             target = remaining_target * row["linear_allocation_weight"] / weight_total
-            if row["linear_target_mid_before_caps"] == 0.0:
-                row["linear_target_mid_before_caps"] = target_total * row["linear_allocation_weight"] / total_weight
             cap = safe_number(row.get("linear_effective_cap")) or 0.0
             if target > cap + 1e-9:
                 row["linear_target_mid"] = cap
@@ -8041,6 +8160,9 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         target_mid = safe_number(row.get("linear_target_mid")) or 0.0
         target_low = target_mid * max(0.0, 1.0 - add_tolerance) if target_mid > 0 else 0.0
         target_high = target_mid * (1.0 + trim_tolerance) if target_mid > 0 else 0.0
+        uncapped_target_mid = safe_number(row.get("linear_target_mid_before_caps")) or 0.0
+        uncapped_target_low = uncapped_target_mid * max(0.0, 1.0 - add_tolerance) if uncapped_target_mid > 0 else 0.0
+        uncapped_target_high = uncapped_target_mid * (1.0 + trim_tolerance) if uncapped_target_mid > 0 else 0.0
         row.update({
             "target_weight_mid": target_mid,
             "target_weight_low": target_low,
@@ -8051,6 +8173,12 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "position_gap_to_mid": target_mid - (safe_number(row.get("current_position_weight")) or 0.0),
             "cap_applied": row.get("linear_cap_applied"),
             "cap_reason": row.get("linear_cap_reason"),
+            "uncapped_target_low": uncapped_target_low,
+            "uncapped_target_mid": uncapped_target_mid,
+            "uncapped_target_high": uncapped_target_high,
+            "adjusted_target_low": target_low,
+            "adjusted_target_mid": target_mid,
+            "adjusted_target_high": target_high,
         })
         current_weight = safe_number(row.get("current_position_weight")) or 0.0
         rating_label = str(row.get("rating") or "").strip()

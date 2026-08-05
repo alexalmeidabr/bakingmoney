@@ -492,7 +492,8 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   linear_negative_core_net_cap_pct: 2.0,
   linear_low_core_net_threshold: 0.5,
   linear_low_core_net_cap_pct: 4.0,
-  linear_high_bearish_confidence_threshold: 8.0,
+  linear_high_bearish_confidence_min_threshold: 4.0,
+  linear_high_bearish_confidence_max_threshold: 8.0,
   linear_high_bearish_confidence_cap_pct: 5.0,
   core_confidence_penalty_threshold: 0.5,
   core_confidence_penalty: 0.15,
@@ -1030,22 +1031,31 @@ function registerActionPlanConfigHelp() {
     related: ['Linear low core net threshold', 'Enable linear risk caps'],
   });
 
-  addConfigHelp('linear_high_bearish_confidence_threshold', {
-    title: 'Linear high bearish confidence threshold',
-    meaning: 'Bearish Core confidence level above which a stock is considered to have high bearish pressure.',
-    usedIn: 'Linear risk-cap logic can use this threshold to limit allocation to stocks with unusually strong bearish core variables.',
-    example: 'With a threshold of 8, a stock with Core Bearish Confidence 8.5 can be limited by the high-bearish cap.',
-    tuning: 'A reasonable default is 8. Lower values make the cap more conservative; higher values make it apply only to the highest-risk names.',
-    related: ['Linear high bearish confidence cap %', 'Enable linear risk caps'],
+  addConfigHelp('linear_high_bearish_confidence_min_threshold', {
+    title: 'Linear high bearish confidence min threshold',
+    meaning: 'Raw bearish-confidence score at or below which no bearish allocation cap is applied.',
+    usedIn: 'Starts progressive high-bearish-confidence capping. This is a raw confidence score, not a percentage.',
+    example: 'With a minimum of 4 and maximum of 8, Core Bearish Confidence 4 applies 0% of the cap.',
+    tuning: 'Raise this value to delay when progressive capping begins. It must remain below the maximum threshold.',
+    related: ['Linear high bearish confidence max threshold', 'Linear high bearish confidence cap %', 'Enable linear risk caps'],
+  });
+
+  addConfigHelp('linear_high_bearish_confidence_max_threshold', {
+    title: 'Linear high bearish confidence max threshold',
+    meaning: 'Raw bearish-confidence score at or above which the full bearish allocation cap is applied.',
+    usedIn: 'Ends progressive high-bearish-confidence capping. This is a raw confidence score, not a percentage.',
+    example: 'With a minimum of 4 and maximum of 8, Core Bearish Confidence 8 applies 100% of the cap.',
+    tuning: 'Lower this value to reach the full cap sooner. It must remain above the minimum threshold.',
+    related: ['Linear high bearish confidence min threshold', 'Linear high bearish confidence cap %', 'Enable linear risk caps'],
   });
 
   addConfigHelp('linear_high_bearish_confidence_cap_pct', {
     title: 'Linear high bearish confidence cap %',
-    meaning: 'Maximum target allocation allowed for stocks with bearish Core confidence above the high-bearish threshold.',
-    usedIn: 'Applied when linear risk caps are enabled and Core Bearish Confidence is above the configured threshold.',
-    example: 'If this cap is 5%, a high-upside stock with very high bearish core confidence cannot receive more than a 5% linear target.',
+    meaning: 'Maximum Target Band midpoint allowed when the bearish-confidence cap is fully applied.',
+    usedIn: 'The allocation percentage approached progressively between the raw minimum and maximum confidence thresholds.',
+    example: 'If this cap is 5%, a 10% uncapped midpoint is progressively reduced toward 5% as bearish confidence rises.',
     tuning: 'Use this to prevent overallocating to stocks with strong upside but unusually strong downside variables. A reasonable default is around 5%.',
-    related: ['Linear high bearish confidence threshold', 'Enable linear risk caps'],
+    related: ['Linear high bearish confidence min threshold', 'Linear high bearish confidence max threshold', 'Enable linear risk caps'],
   });
 
 }
@@ -5373,6 +5383,7 @@ function validateActionPlanSettings(settings) {
   if (settings.linear_full_core_net <= settings.linear_min_core_net) return 'linear_full_core_net must be greater than linear_min_core_net.';
   if (settings.linear_full_potential_net <= settings.linear_min_potential_net) return 'linear_full_potential_net must be greater than linear_min_potential_net.';
   if (settings.linear_score_allocation_power < 0.5 || settings.linear_score_allocation_power > 5) return 'linear_score_allocation_power must be between 0.5 and 5.0.';
+  if (settings.linear_high_bearish_confidence_min_threshold >= settings.linear_high_bearish_confidence_max_threshold) return 'Linear high bearish confidence max threshold must be greater than min threshold.';
   for (const key of ['linear_target_band_tolerance_pct', 'linear_add_band_tolerance_pct', 'linear_trim_band_tolerance_pct']) {
     if (settings[key] < 0 || settings[key] > 100) return `${key} must be between 0 and 100.`;
   }

@@ -1728,11 +1728,16 @@ class AlertsUiStructureTests(unittest.TestCase):
             'linear_negative_core_net_cap_pct',
             'linear_low_core_net_threshold',
             'linear_low_core_net_cap_pct',
-            'linear_high_bearish_confidence_threshold',
+            'linear_high_bearish_confidence_min_threshold',
+            'linear_high_bearish_confidence_max_threshold',
             'linear_high_bearish_confidence_cap_pct',
         ]
         for key in linear_help_keys:
             self.assertIn(f"'{key}'", js)
+        self.assertNotIn('data-action-plan-setting="linear_high_bearish_confidence_threshold"', html)
+        self.assertIn('Linear high bearish confidence min threshold (raw score)', html)
+        self.assertIn('Linear high bearish confidence max threshold (raw score)', html)
+        self.assertIn('This is a raw confidence score, not a percentage.', js)
         self.assertIn('Total percentage of the portfolio the Linear Allocation model is allowed to allocate to stocks.', js)
         self.assertIn('Negative values are valid.', js)
         self.assertIn('Core Net confidence level that receives zero score contribution', js)
@@ -2831,6 +2836,222 @@ if __name__ == "__main__":
 
 
 class ActionPlanFeatureTests(unittest.TestCase):
+    @staticmethod
+    def _progressive_bearish_settings(**overrides):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_high_bearish_confidence_min_threshold": 4.0,
+            "linear_high_bearish_confidence_max_threshold": 8.0,
+            "linear_high_bearish_confidence_cap_pct": 5.0,
+            **overrides,
+        })
+        return settings
+
+    def test_progressive_linear_bearish_cap_interpolates_and_clamps(self):
+        settings = self._progressive_bearish_settings()
+        expected = {
+            3.0: (0.0, 10.0),
+            4.0: (0.0, 10.0),
+            5.0: (0.25, 8.75),
+            6.0: (0.50, 7.50),
+            7.0: (0.75, 6.25),
+            8.0: (1.0, 5.00),
+            9.0: (1.0, 5.00),
+        }
+        for confidence, (expected_progress, expected_midpoint) in expected.items():
+            with self.subTest(confidence=confidence):
+                details = web_server._linear_progressive_bearish_cap_details(
+                    {"core_bearish_confidence": confidence}, 10.0, settings
+                )
+                self.assertAlmostEqual(details["bearish_cap_progress"], expected_progress)
+                self.assertAlmostEqual(details["bearish_cap_candidate_mid"], expected_midpoint)
+                self.assertGreaterEqual(details["bearish_cap_progress"], 0.0)
+                self.assertLessEqual(details["bearish_cap_progress"], 1.0)
+
+    def test_progressive_linear_bearish_cap_never_increases_midpoint_at_or_below_cap(self):
+        settings = self._progressive_bearish_settings()
+        for midpoint in (4.0, 5.0):
+            with self.subTest(midpoint=midpoint):
+                details = web_server._linear_progressive_bearish_cap_details(
+                    {"core_bearish_confidence": 8.0}, midpoint, settings
+                )
+                self.assertEqual(details["bearish_cap_progress"], 1.0)
+                self.assertEqual(details["bearish_cap_candidate_mid"], midpoint)
+
+    def test_progressive_linear_bearish_cap_handles_decimal_raw_confidence(self):
+        settings = self._progressive_bearish_settings()
+        details = web_server._linear_progressive_bearish_cap_details(
+            {"core_bearish_confidence": 6.875}, 10.0, settings
+        )
+        self.assertAlmostEqual(details["bearish_cap_progress"], 0.71875)
+        self.assertAlmostEqual(details["bearish_cap_candidate_mid"], 6.40625)
+        raw_score_details = web_server._linear_progressive_bearish_cap_details(
+            {"core_bearish_confidence": 0.06875}, 10.0, settings
+        )
+        self.assertEqual(raw_score_details["bearish_cap_progress"], 0.0)
+        self.assertEqual(raw_score_details["bearish_cap_candidate_mid"], 10.0)
+
+    def test_progressive_linear_bearish_cap_slightly_above_limit(self):
+        settings = self._progressive_bearish_settings()
+        details = web_server._linear_progressive_bearish_cap_details(
+            {"core_bearish_confidence": 6.0}, 6.0, settings
+        )
+        self.assertAlmostEqual(details["bearish_cap_candidate_mid"], 5.5)
+
+    def test_equal_progressive_bearish_thresholds_reproduce_binary_behavior(self):
+        settings = self._progressive_bearish_settings(
+            linear_high_bearish_confidence_min_threshold=8.0,
+            linear_high_bearish_confidence_max_threshold=8.0,
+        )
+        below = web_server._linear_progressive_bearish_cap_details(
+            {"core_bearish_confidence": 7.999}, 10.0, settings
+        )
+        at_threshold = web_server._linear_progressive_bearish_cap_details(
+            {"core_bearish_confidence": 8.0}, 10.0, settings
+        )
+        self.assertEqual(below["bearish_cap_progress"], 0.0)
+        self.assertEqual(below["bearish_cap_candidate_mid"], 10.0)
+        self.assertEqual(at_threshold["bearish_cap_progress"], 1.0)
+        self.assertEqual(at_threshold["bearish_cap_candidate_mid"], 5.0)
+
+    def test_invalid_progressive_bearish_settings_are_safe_and_rejected_on_save(self):
+        invalid_settings = self._progressive_bearish_settings(
+            linear_high_bearish_confidence_min_threshold=8.0,
+            linear_high_bearish_confidence_max_threshold=4.0,
+        )
+        details = web_server._linear_progressive_bearish_cap_details(
+            {"core_bearish_confidence": 6.0}, 10.0, invalid_settings
+        )
+        self.assertFalse(details["bearish_cap_configuration_valid"])
+        self.assertIn("Minimum bearish threshold exceeds maximum", details["bearish_cap_diagnostic"])
+        self.assertEqual(details["bearish_cap_candidate_mid"], 10.0)
+        with self.assertRaisesRegex(ValueError, "max_threshold must be greater"):
+            web_server.validate_action_plan_settings(invalid_settings)
+
+        missing_settings = self._progressive_bearish_settings()
+        missing_settings["linear_high_bearish_confidence_min_threshold"] = None
+        missing = web_server._linear_progressive_bearish_cap_details(
+            {"core_bearish_confidence": None}, 10.0, missing_settings
+        )
+        self.assertFalse(missing["bearish_cap_configuration_valid"])
+        self.assertIn("Invalid or missing progressive bearish-cap setting", missing["bearish_cap_diagnostic"])
+        self.assertEqual(missing["bearish_cap_candidate_mid"], 10.0)
+
+    def test_legacy_linear_bearish_threshold_migrates_to_equal_min_and_max(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    conn.execute(
+                        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                        ("linear_high_bearish_confidence_threshold", "6.5", web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    settings = web_server.get_action_plan_settings(conn)
+                    self.assertEqual(settings["linear_high_bearish_confidence_min_threshold"], 6.5)
+                    self.assertEqual(settings["linear_high_bearish_confidence_max_threshold"], 6.5)
+                    stored = conn.execute(
+                        "SELECT value FROM app_settings WHERE key = ?",
+                        ("linear_high_bearish_confidence_threshold",),
+                    ).fetchone()
+                    self.assertEqual(stored["value"], "6.5")
+
+                    conn.executemany(
+                        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                        [
+                            ("linear_high_bearish_confidence_min_threshold", "invalid", web_server.utc_now_iso()),
+                            ("linear_high_bearish_confidence_max_threshold", "inf", web_server.utc_now_iso()),
+                        ],
+                    )
+                    conn.commit()
+                    with self.assertLogs(web_server.logger, level="WARNING") as captured:
+                        fallback = web_server.get_action_plan_settings(conn)
+                    self.assertEqual(fallback["linear_high_bearish_confidence_min_threshold"], 4.0)
+                    self.assertEqual(fallback["linear_high_bearish_confidence_max_threshold"], 8.0)
+                    self.assertTrue(any("safe default" in message for message in captured.output))
+                finally:
+                    conn.close()
+
+        legacy_payload = {"linear_high_bearish_confidence_threshold": 6.5}
+        effective = web_server.validate_action_plan_settings(legacy_payload)
+        self.assertEqual(effective["linear_high_bearish_confidence_min_threshold"], 6.5)
+        self.assertEqual(effective["linear_high_bearish_confidence_max_threshold"], 6.5)
+
+    def test_progressive_bearish_cap_keeps_linear_band_and_diagnostics_consistent(self):
+        settings = self._progressive_bearish_settings(
+            linear_allocated_target_total_pct=10.0,
+            linear_min_score_threshold=0.0,
+            linear_score_allocation_power=1.0,
+            linear_max_single_stock_pct=100.0,
+            linear_rating_bonus_enabled=False,
+            hold_rating_penalty_enabled=False,
+            core_confidence_penalty=0.0,
+            upside_penalty=0.0,
+            potential_confidence_penalty=0.0,
+            action_min_cash_unallocated_target=0.0,
+            action_min_executable_trade_amount=0.0,
+        )
+        candidate = {
+            "symbol": "PROGRESS",
+            "rating": "Strong Buy",
+            "expected_cagr": 20.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 6.0,
+            "potential_confidence_diff": 1.5,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "current_position_weight": 0.0,
+            "current_position_market_value": 0.0,
+            "current_price": 100.0,
+            "expected_price": 150.0,
+        }
+        result = web_server.compute_linear_action_plan([candidate], 100000.0, 100000.0, settings)
+        row = result["rows"][0]
+        self.assertAlmostEqual(row["uncapped_target_mid"], 10.0)
+        self.assertAlmostEqual(row["adjusted_target_mid"], 7.5)
+        self.assertAlmostEqual(row["adjusted_target_low"], 7.5 * 0.85)
+        self.assertAlmostEqual(row["adjusted_target_high"], 7.5 * 1.30)
+        self.assertAlmostEqual(row["uncapped_target_low"], 10.0 * 0.85)
+        self.assertAlmostEqual(row["uncapped_target_high"], 10.0 * 1.30)
+        self.assertEqual(row["bearish_confidence"], 6.0)
+        self.assertEqual(row["bearish_confidence_min_threshold"], 4.0)
+        self.assertEqual(row["bearish_confidence_max_threshold"], 8.0)
+        self.assertEqual(row["bearish_cap_progress"], 0.5)
+        self.assertEqual(row["bearish_cap_full_limit"], 5.0)
+        self.assertTrue(row["bearish_cap_applied"])
+        self.assertIn("Progressive high bearish confidence cap (50%)", row["cap_reason"])
+        self.assertAlmostEqual(result["summary"]["linear_allocated_target_total"], 7.5)
+        self.assertEqual(row["suggested_share_count"], 75)
+        self.assertAlmostEqual(row["executable_action_amount"], 7500.0)
+
+        full_cap_candidate = dict(candidate, core_bearish_confidence=8.0)
+        full_cap_row = web_server.compute_linear_action_plan(
+            [full_cap_candidate], 100000.0, 100000.0, settings
+        )["rows"][0]
+        self.assertAlmostEqual(full_cap_row["adjusted_target_mid"], 5.0)
+        self.assertAlmostEqual(full_cap_row["adjusted_target_low"], 5.0 * 0.85)
+        self.assertAlmostEqual(full_cap_row["adjusted_target_high"], 5.0 * 1.30)
+
+        no_cap_candidate = dict(candidate, core_bearish_confidence=4.0)
+        no_cap_row = web_server.compute_linear_action_plan(
+            [no_cap_candidate], 100000.0, 100000.0, settings
+        )["rows"][0]
+        self.assertAlmostEqual(no_cap_row["adjusted_target_mid"], 10.0)
+        self.assertAlmostEqual(no_cap_row["adjusted_target_low"], no_cap_row["uncapped_target_low"])
+        self.assertAlmostEqual(no_cap_row["adjusted_target_high"], no_cap_row["uncapped_target_high"])
+        self.assertFalse(no_cap_row["bearish_cap_applied"])
+
+        below_cap_settings = dict(settings, linear_allocated_target_total_pct=4.0)
+        below_cap_row = web_server.compute_linear_action_plan(
+            [full_cap_candidate], 100000.0, 100000.0, below_cap_settings
+        )["rows"][0]
+        self.assertAlmostEqual(below_cap_row["adjusted_target_mid"], 4.0)
+        self.assertFalse(below_cap_row["bearish_cap_applied"])
+
     def test_build_action_plan_uses_effective_analysis_and_cached_positions(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")

@@ -30,6 +30,23 @@
     return midpointValue === undefined ? (low + high) / 2 : finiteNumber(midpointValue);
   }
 
+  function getLinearCagrValue(item) {
+    if (!item) return null;
+    if (Object.prototype.hasOwnProperty.call(item, 'expected_equity_cagr')) {
+      return finiteNumber(item.expected_equity_cagr);
+    }
+    return finiteNumber(firstPresent(item, [
+      'expected_cagr',
+      'weighted_expected_cagr',
+      'scenario_expected_cagr',
+    ]));
+  }
+
+  function formatCagrPercent(value) {
+    const number = finiteNumber(value);
+    return number == null ? '—' : `${number.toFixed(1)}%`;
+  }
+
   function compareDeterministicLabels(left, right) {
     const leftSymbol = String(left?.symbol ?? '').trim();
     const rightSymbol = String(right?.symbol ?? '').trim();
@@ -74,6 +91,8 @@
 
   const api = {
     finiteNumber,
+    formatCagrPercent,
+    getLinearCagrValue,
     getTargetBandMidpoint,
     compareDeterministicLabels,
     compareNullableNumbers,

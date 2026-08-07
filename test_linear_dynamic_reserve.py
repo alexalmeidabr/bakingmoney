@@ -96,6 +96,70 @@ class LinearExpectedCagrTests(unittest.TestCase):
         self.assertIsNone(diagnostic)
         self.assertAlmostEqual(expected_cagr, 15.0)
 
+    def test_linear_rows_expose_dynamic_reserve_expected_cagr(self):
+        settings = reserve_settings(
+            action_min_cash_unallocated_target=0.0,
+            linear_max_reserve_pct=0.0,
+            linear_min_score_threshold=0.0,
+            linear_max_single_stock_pct=100.0,
+            action_min_executable_trade_amount=0.0,
+        )
+        candidate = {
+            "symbol": "CAGR",
+            "rating": "Buy",
+            "expected_cagr": 99.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "potential_confidence_diff": 1.5,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 1.0,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "current_position_weight": 0.0,
+            "current_position_market_value": 0.0,
+            "current_price": 100.0,
+            "expected_price": 150.0,
+            "effective_scenarios": [
+                scenario_for_cagr(10.0, probability=0.25, name="Bear"),
+                scenario_for_cagr(20.0, probability=0.75, name="Bull"),
+            ],
+        }
+        row = web_server.compute_linear_action_plan([candidate], 100_000.0, 100_000.0, settings)["rows"][0]
+        self.assertIn("expected_equity_cagr", row)
+        self.assertAlmostEqual(row["expected_equity_cagr"], 17.5)
+        self.assertNotEqual(row["expected_equity_cagr"], row["expected_cagr"])
+        self.assertEqual(row["effective_scenarios"], candidate["effective_scenarios"])
+
+    def test_linear_rows_leave_dynamic_reserve_expected_cagr_missing_when_inputs_invalid(self):
+        settings = reserve_settings(
+            action_min_cash_unallocated_target=0.0,
+            linear_max_reserve_pct=0.0,
+            linear_min_score_threshold=0.0,
+            action_min_executable_trade_amount=0.0,
+        )
+        base = {
+            "rating": "Buy",
+            "expected_cagr": 10.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "potential_confidence_diff": 1.5,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 1.0,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "current_position_weight": 0.0,
+            "current_position_market_value": 0.0,
+            "expected_price": 150.0,
+        }
+        missing_price = {**base, "symbol": "NO_PRICE", "current_price": None, "effective_scenarios": [scenario_for_cagr(10.0)]}
+        missing_scenarios = {**base, "symbol": "NO_SCENARIOS", "current_price": 100.0, "effective_scenarios": []}
+        rows = {
+            row["symbol"]: row
+            for row in web_server.compute_linear_action_plan([missing_price, missing_scenarios], 100_000.0, 100_000.0, settings)["rows"]
+        }
+        self.assertIsNone(rows["NO_PRICE"]["expected_equity_cagr"])
+        self.assertIsNone(rows["NO_SCENARIOS"]["expected_equity_cagr"])
+
 
 class LinearAbsoluteOpportunityTests(unittest.TestCase):
     def test_absolute_attractiveness_interpolates_and_clamps(self):

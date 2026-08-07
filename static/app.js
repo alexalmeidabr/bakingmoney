@@ -877,7 +877,7 @@ function registerActionPlanConfigHelp() {
 
   addConfigHelp('linear_allocated_target_total_pct', {
     title: 'Linear allocated target total %',
-    meaning: 'Pre-reserve percentage of the portfolio the Linear Allocation model may allocate to stocks.',
+    meaning: 'Total percentage of the portfolio the Linear Allocation model is allowed to allocate to stocks. Dynamic Reserve scaling may reduce final stock exposure below this pre-reserve target.',
     usedIn: 'The linear model normalizes positive Linear Scores toward this percentage before company caps and the portfolio-wide Dynamic Reserve scaling are applied.',
     example: 'If set to 95%, Linear Allocation can allocate up to 95% to stocks and leave roughly 5% unallocated or cash-like.',
     tuning: 'Use 100% to fully allocate across stocks. Use a lower value such as 90% or 95% when you want explicit cash or unallocated capacity.',
@@ -2244,6 +2244,7 @@ function getFilteredLinearActionPlanItems() {
 function getActionPlanNumericSortValue(item, key) {
   if (!item || !key) return null;
   if (key === 'target_band') return window.ActionPlanSorting.getTargetBandMidpoint(item);
+  if (key === 'expected_equity_cagr') return window.ActionPlanSorting.getLinearCagrValue(item);
   if (key === 'current_position_market_value') {
     const value = Number(item.current_position_market_value ?? item.market_value ?? item.position_market_value ?? 0);
     return Number.isFinite(value) ? value : 0;
@@ -2330,6 +2331,10 @@ function getActionPlanBucketRows(bucket) {
 function safeNumberForSort(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function formatLinearCagrPercent(item) {
+  return window.ActionPlanSorting.formatCagrPercent(window.ActionPlanSorting.getLinearCagrValue(item));
 }
 
 function findActionPlanBucketSummary(bucket) {
@@ -2557,8 +2562,9 @@ function renderLinearAllocationRows() {
     actionPlanLinearActionsTableBody.innerHTML = '';
     actionRows.forEach((item) => {
       const row = document.createElement('tr');
+      const cagr = window.ActionPlanSorting.getLinearCagrValue(item);
       const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
-      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
+      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
       actionPlanLinearActionsTableBody.appendChild(row);
     });
     actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
@@ -2568,6 +2574,7 @@ function renderLinearAllocationRows() {
     actionPlanLinearDetailTableBody.innerHTML = '';
     sortLinearActionPlanDetailItems(rows).forEach((item) => {
       const row = document.createElement('tr');
+      const cagr = window.ActionPlanSorting.getLinearCagrValue(item);
       const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
       row.innerHTML = `<td><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td>
         <td>${escapeHtml(item.company_name || '—')}</td>
@@ -2578,9 +2585,9 @@ function renderLinearAllocationRows() {
         <td>${targetBand}</td>
         <td class="${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td>
         <td>${formatCurrencyValue(item.target_gap_amount, 'USD')}</td>
-        <td>${formatNumber(item.linear_allocation_score)}</td>
-        <td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td>
         <td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td>
+        <td class="${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td>
+        <td>${formatNumber(item.linear_allocation_score)}</td>
         <td class="${valueClass(item.core_confidence_diff)}">${formatNumber(item.core_confidence_diff)}</td>
         <td class="${valueClass(item.potential_confidence_diff)}">${formatNumber(item.potential_confidence_diff)}</td>
         <td>${formatNumber(item.core_bullish_confidence)}</td>

@@ -3490,6 +3490,8 @@ class ActionPlanFeatureTests(unittest.TestCase):
             "linear_zero_target_if_expected_cagr_negative": False,
             "linear_zero_target_if_upside_negative": False,
             "hold_rating_penalty_enabled": False,
+            "action_min_cash_unallocated_target": 0.0,
+            "linear_max_reserve_pct": 0.0,
         })
         for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty"):
             settings[key] = 0.0
@@ -3672,6 +3674,7 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["linear_min_score_threshold"] = 0.0
         settings["action_min_cash_unallocated_target"] = 0.0
+        settings["linear_max_reserve_pct"] = 0.0
         settings["action_min_executable_trade_amount"] = 0.0
         candidates = [
             {

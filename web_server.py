@@ -305,6 +305,10 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "action_treat_cash_equivalents_as_cash": True,
     "action_cash_equivalent_symbols": "SGOV",
     "linear_allocated_target_total_pct": 100.0,
+    "linear_reserve_benchmark_yield_pct": 4.0,
+    "linear_min_equity_excess_cagr_pct": 2.0,
+    "linear_full_attractiveness_equity_excess_cagr_pct": 7.0,
+    "linear_max_reserve_pct": 40.0,
     "linear_min_expected_cagr": 0.0,
     "linear_full_expected_cagr": 15.0,
     "linear_min_upside": 0.0,
@@ -1891,11 +1895,12 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{key} must be numeric")
         if not math.isfinite(value):
             raise ValueError(f"{key} must be finite")
-        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold", "core_confidence_penalty_threshold", "potential_confidence_penalty_threshold", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus", "linear_score_allocation_power", "linear_add_band_tolerance_pct", "linear_trim_band_tolerance_pct"}:
+        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_reserve_benchmark_yield_pct", "linear_min_equity_excess_cagr_pct", "linear_full_attractiveness_equity_excess_cagr_pct", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold", "core_confidence_penalty_threshold", "potential_confidence_penalty_threshold", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus", "linear_score_allocation_power", "linear_add_band_tolerance_pct", "linear_trim_band_tolerance_pct"}:
             raise ValueError(f"{key} cannot be negative")
         effective[key] = value
 
     for min_key, full_key in (
+        ("linear_min_equity_excess_cagr_pct", "linear_full_attractiveness_equity_excess_cagr_pct"),
         ("linear_min_expected_cagr", "linear_full_expected_cagr"),
         ("linear_min_upside", "linear_full_upside"),
         ("linear_min_core_net", "linear_full_core_net"),
@@ -1903,6 +1908,8 @@ def validate_action_plan_settings(settings):
     ):
         if effective[full_key] <= effective[min_key]:
             raise ValueError(f"{full_key} must be greater than {min_key}")
+    if effective["action_min_cash_unallocated_target"] < 0.0 or effective["action_min_cash_unallocated_target"] > 100.0:
+        raise ValueError("action_min_cash_unallocated_target must be between 0 and 100")
     for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus"):
         if effective[key] < 0 or effective[key] > 1:
             raise ValueError(f"{key} must be between 0 and 1")
@@ -1918,6 +1925,7 @@ def validate_action_plan_settings(settings):
         raise ValueError("Linear Allocation weights must total more than 0")
     for key in (
         "linear_allocated_target_total_pct",
+        "linear_max_reserve_pct",
         "linear_max_single_stock_pct",
         "linear_target_band_tolerance_pct",
         "linear_add_band_tolerance_pct",
@@ -1928,6 +1936,8 @@ def validate_action_plan_settings(settings):
     ):
         if effective[key] < 0.0 or effective[key] > 100.0:
             raise ValueError(f"{key} must be between 0 and 100")
+    if effective["action_min_cash_unallocated_target"] > effective["linear_max_reserve_pct"]:
+        raise ValueError("linear_max_reserve_pct must be greater than or equal to action_min_cash_unallocated_target")
     if effective["linear_score_allocation_power"] < 0.5 or effective["linear_score_allocation_power"] > 5.0:
         raise ValueError("linear_score_allocation_power must be between 0.5 and 5.0")
     for threshold_key in (min_bearish_key, max_bearish_key):
@@ -4639,6 +4649,12 @@ def list_analysis_symbols(conn):
                 item.get("upside"),
             )
         )
+        effective_scenarios, effective_scenario_source = get_effective_analysis_scenarios(
+            conn,
+            item.get("analysis_version_id"),
+        )
+        item["effective_scenarios"] = effective_scenarios
+        item["effective_scenario_source"] = effective_scenario_source
         rating, confidence_diff = calculate_rating(
             item.get("upside"),
             item.get("bullish_confidence"),
@@ -5693,6 +5709,35 @@ def get_effective_analysis_metrics(conn, version_id, expected_price, expected_ca
         "uses_final_scenario_overlay": uses_overlay,
         "final_scenario_stale": bool(row and row["is_stale"]),
     }
+
+
+def get_effective_analysis_scenarios(conn, version_id):
+    """Return the same internal/final scenario set used by the active analysis view."""
+    overlay = conn.execute(
+        """
+        SELECT final_scenarios_json, is_stale
+        FROM analysis_final_scenario_overlays
+        WHERE analysis_version_id = ?
+        """,
+        (version_id,),
+    ).fetchone()
+    if overlay and not overlay["is_stale"]:
+        try:
+            scenarios = json.loads(overlay["final_scenarios_json"] or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            scenarios = []
+        return scenarios, "final_scenario_overlay"
+
+    rows = conn.execute(
+        """
+        SELECT scenario_name, price_low, price_high, probability
+        FROM analysis_version_scenarios
+        WHERE analysis_version_id = ?
+        ORDER BY CASE scenario_name WHEN 'Bear' THEN 1 WHEN 'Base' THEN 2 WHEN 'Bull' THEN 3 ELSE 99 END
+        """,
+        (version_id,),
+    ).fetchall()
+    return [dict(row) for row in rows], "internal_scenarios"
 
 
 def _serialize_final_overlay_row(row):
@@ -7733,6 +7778,179 @@ def _linear_score_range(value, minimum, full):
     return _clamp((numeric - minimum) / (full - minimum), 0.0, 1.0)
 
 
+def calculate_probability_weighted_expected_cagr(scenarios, current_price, years=5):
+    """Calculate expected CAGR from every effective scenario midpoint and probability."""
+    current = safe_number(current_price)
+    if current is None or current <= 0:
+        return None, "Missing or invalid current price"
+    if not isinstance(scenarios, list) or not scenarios:
+        return None, "Missing effective scenario data"
+
+    validated = []
+    for index, scenario in enumerate(scenarios):
+        if not isinstance(scenario, dict):
+            return None, f"Invalid scenario data at index {index}"
+        low = safe_number(scenario.get("price_low"))
+        high = safe_number(scenario.get("price_high"))
+        probability = safe_number(scenario.get("probability"))
+        if low is None or high is None or low <= 0 or high <= 0 or low > high:
+            return None, f"Invalid scenario prices for {scenario.get('scenario_name') or scenario.get('name') or index}"
+        if probability is None or probability < 0:
+            return None, f"Invalid scenario probability for {scenario.get('scenario_name') or scenario.get('name') or index}"
+        probability = probability / 100.0 if probability > 1.0 else probability
+        if probability > 1.0:
+            return None, f"Invalid scenario probability for {scenario.get('scenario_name') or scenario.get('name') or index}"
+        midpoint = compute_price_mid(low, high)
+        scenario_cagr = compute_scenario_cagr(midpoint, current, years=years)
+        if scenario_cagr is None:
+            return None, f"Unable to calculate scenario CAGR for {scenario.get('scenario_name') or scenario.get('name') or index}"
+        validated.append({"probability": probability, "scenario_cagr": scenario_cagr})
+
+    probability_total = sum(item["probability"] for item in validated)
+    if probability_total < 0.9 or probability_total > 1.1:
+        return None, "Scenario probabilities must total approximately 100%"
+    try:
+        normalized = _normalize_probabilities(validated)
+    except (AnalysisValidationError, TypeError, ValueError, OverflowError):
+        return None, "Invalid scenario probability distribution"
+    expected_cagr = sum(item["probability"] * item["scenario_cagr"] for item in normalized)
+    if not math.isfinite(expected_cagr):
+        return None, "Probability-weighted expected CAGR is not finite"
+    return expected_cagr, None
+
+
+def _linear_absolute_attractiveness(expected_equity_cagr, benchmark_yield, minimum_excess, full_excess):
+    expected = safe_number(expected_equity_cagr)
+    benchmark = safe_number(benchmark_yield)
+    minimum = safe_number(minimum_excess)
+    full = safe_number(full_excess)
+    if expected is None or benchmark is None or minimum is None or full is None:
+        return 0.0
+    excess = expected - benchmark
+    if full < minimum:
+        return 0.0
+    if full == minimum:
+        return 1.0 if excess >= minimum else 0.0
+    return _clamp((excess - minimum) / (full - minimum), 0.0, 1.0)
+
+
+def _linear_portfolio_opportunity_score(rows, settings):
+    benchmark = safe_number(settings.get("linear_reserve_benchmark_yield_pct"))
+    minimum_excess = safe_number(settings.get("linear_min_equity_excess_cagr_pct"))
+    full_excess = safe_number(settings.get("linear_full_attractiveness_equity_excess_cagr_pct"))
+    configuration_diagnostic = None
+    if benchmark is None:
+        configuration_diagnostic = "Invalid reserve benchmark yield"
+    elif minimum_excess is None or full_excess is None:
+        configuration_diagnostic = "Missing equity excess CAGR threshold"
+    elif full_excess < minimum_excess:
+        configuration_diagnostic = "Minimum equity excess CAGR exceeds full-attractiveness threshold"
+    elif full_excess == minimum_excess:
+        configuration_diagnostic = "Equal equity excess CAGR thresholds use binary compatibility behavior"
+    weighted_attractiveness = 0.0
+    total_weight = 0.0
+    for row in rows:
+        weight = max(0.0, safe_number(row.get("pre_reserve_target_mid")) or 0.0)
+        expected_cagr, diagnostic = calculate_probability_weighted_expected_cagr(
+            row.get("effective_scenarios"),
+            row.get("current_price"),
+        )
+        if diagnostic is None and configuration_diagnostic is not None:
+            diagnostic = configuration_diagnostic
+        excess_cagr = expected_cagr - benchmark if expected_cagr is not None and benchmark is not None else None
+        attractiveness = _linear_absolute_attractiveness(
+            expected_cagr,
+            benchmark,
+            minimum_excess,
+            full_excess,
+        )
+        row.update({
+            "expected_equity_cagr": expected_cagr,
+            "equity_excess_cagr": excess_cagr,
+            "absolute_attractiveness": attractiveness,
+            "opportunity_weight": weight,
+            "absolute_attractiveness_diagnostic": diagnostic,
+        })
+        total_weight += weight
+        weighted_attractiveness += weight * attractiveness
+    if total_weight <= 0:
+        return 0.0
+    return _clamp(weighted_attractiveness / total_weight, 0.0, 1.0)
+
+
+def _linear_dynamic_reserve(opportunity_score, minimum_reserve, maximum_reserve):
+    score = _clamp(safe_number(opportunity_score) or 0.0, 0.0, 1.0)
+    minimum = safe_number(minimum_reserve)
+    maximum = safe_number(maximum_reserve)
+    if minimum is None or maximum is None:
+        return 100.0
+    minimum = _clamp(minimum, 0.0, 100.0)
+    maximum = _clamp(maximum, 0.0, 100.0)
+    if maximum < minimum:
+        return minimum
+    return _clamp(minimum + (1.0 - score) * (maximum - minimum), minimum, maximum)
+
+
+def _apply_linear_dynamic_reserve(rows, settings):
+    pre_reserve_total_mid = sum(max(0.0, safe_number(row.get("pre_reserve_target_mid")) or 0.0) for row in rows)
+    opportunity_score = _linear_portfolio_opportunity_score(rows, settings)
+    minimum_reserve = safe_number(settings.get("action_min_cash_unallocated_target")) or 0.0
+    maximum_reserve = safe_number(settings.get("linear_max_reserve_pct"))
+    if maximum_reserve is None:
+        maximum_reserve = ACTION_PLAN_DEFAULT_SETTINGS["linear_max_reserve_pct"]
+    benchmark = safe_number(settings.get("linear_reserve_benchmark_yield_pct"))
+    minimum_excess = safe_number(settings.get("linear_min_equity_excess_cagr_pct"))
+    full_excess = safe_number(settings.get("linear_full_attractiveness_equity_excess_cagr_pct"))
+    configuration_valid = (
+        0.0 <= minimum_reserve <= maximum_reserve <= 100.0
+        and benchmark is not None
+        and minimum_excess is not None
+        and full_excess is not None
+        and minimum_excess < full_excess
+    )
+    dynamic_reserve = _linear_dynamic_reserve(opportunity_score, minimum_reserve, maximum_reserve)
+    maximum_deployable_equity = max(0.0, 100.0 - dynamic_reserve)
+    reserve_scale_factor = 1.0
+    if pre_reserve_total_mid > maximum_deployable_equity + 1e-9:
+        reserve_scale_factor = maximum_deployable_equity / pre_reserve_total_mid if pre_reserve_total_mid > 0 else 1.0
+    reserve_scale_factor = _clamp(reserve_scale_factor, 0.0, 1.0)
+    for row in rows:
+        final_low = (safe_number(row.get("pre_reserve_target_low")) or 0.0) * reserve_scale_factor
+        final_mid = (safe_number(row.get("pre_reserve_target_mid")) or 0.0) * reserve_scale_factor
+        final_high = (safe_number(row.get("pre_reserve_target_high")) or 0.0) * reserve_scale_factor
+        row.update({
+            "final_target_low": final_low,
+            "final_target_mid": final_mid,
+            "final_target_high": final_high,
+            "target_weight_low": final_low,
+            "target_weight_mid": final_mid,
+            "target_weight_high": final_high,
+            "linear_target_weight_low": final_low,
+            "linear_target_weight_mid": final_mid,
+            "linear_target_weight_high": final_high,
+            "linear_target_mid": final_mid,
+            "adjusted_target_low": final_low,
+            "adjusted_target_mid": final_mid,
+            "adjusted_target_high": final_high,
+            "reserve_scale_factor": reserve_scale_factor,
+        })
+    final_total_mid = sum(safe_number(row.get("final_target_mid")) or 0.0 for row in rows)
+    return {
+        "reserve_benchmark_yield": safe_number(settings.get("linear_reserve_benchmark_yield_pct")),
+        "minimum_equity_excess_cagr": safe_number(settings.get("linear_min_equity_excess_cagr_pct")),
+        "full_attractiveness_equity_excess_cagr": safe_number(settings.get("linear_full_attractiveness_equity_excess_cagr_pct")),
+        "minimum_reserve_pct": minimum_reserve,
+        "maximum_reserve_pct": maximum_reserve,
+        "reserve_configuration_valid": configuration_valid,
+        "portfolio_opportunity_score": opportunity_score,
+        "dynamic_reserve_pct": dynamic_reserve,
+        "maximum_deployable_equity_pct": maximum_deployable_equity,
+        "pre_reserve_total_target_mid": pre_reserve_total_mid,
+        "reserve_scale_factor": reserve_scale_factor,
+        "final_total_target_mid": final_total_mid,
+    }
+
+
 def _linear_confidence_quality_score(core_bullish, core_bearish, potential_bullish, potential_bearish):
     core_bullish = safe_number(core_bullish) or 0.0
     core_bearish = safe_number(core_bearish) or 0.0
@@ -7874,10 +8092,15 @@ def _apply_linear_caps_and_redistribute(rows, target_total, settings):
     return sum(safe_number(row.get("linear_target_mid")) or 0.0 for row in rows)
 
 
-def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings):
+def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings, dynamic_reserve_pct=None):
     total = safe_number(total_portfolio_value) or 0.0
     cash_available = safe_number(cash_like_available) or 0.0
     minimum_cash_reserve_amount = total * (safe_number(settings.get("action_min_cash_unallocated_target")) or 0.0) / 100.0
+    effective_reserve_pct = safe_number(dynamic_reserve_pct)
+    if effective_reserve_pct is None:
+        effective_reserve_pct = safe_number(settings.get("action_min_cash_unallocated_target")) or 0.0
+    effective_reserve_pct = _clamp(effective_reserve_pct, 0.0, 100.0)
+    target_reserve_amount = total * effective_reserve_pct / 100.0
     buy_actions = {"Strong Add", "Add", "Starter Buy"}
     sell_trim_actions = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
     executable_sell_trim_proceeds = 0.0
@@ -7903,7 +8126,10 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
             row["funding_status"] = "Waiting for trigger"
         else:
             row["funding_status"] = "No funding needed"
-    available_buy_budget = max(0.0, cash_available + executable_sell_trim_proceeds - minimum_cash_reserve_amount)
+    projected_cash_before_buys = cash_available + executable_sell_trim_proceeds
+    available_buy_budget = max(0.0, projected_cash_before_buys - target_reserve_amount)
+    reserve_shortfall = max(0.0, target_reserve_amount - projected_cash_before_buys)
+    reserve_excess = max(0.0, projected_cash_before_buys - target_reserve_amount)
     buy_candidates = [
         row for row in rows
         if row.get("action") in buy_actions
@@ -7951,7 +8177,26 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         row["unfunded_add_demand"] = unfunded_add_demand
         row["executable_sell_trim_proceeds"] = executable_sell_trim_proceeds
         row["minimum_cash_reserve_amount"] = minimum_cash_reserve_amount
-    return {"available_buy_budget": available_buy_budget, "total_add_demand": total_add_demand, "funded_add_amount": funded_add_amount, "unfunded_add_demand": unfunded_add_demand, "executable_sell_trim_proceeds": executable_sell_trim_proceeds, "minimum_cash_reserve_amount": minimum_cash_reserve_amount}
+        row["target_reserve_amount"] = target_reserve_amount
+        row["current_cash_unallocated"] = cash_available
+        row["projected_cash_before_buys"] = projected_cash_before_buys
+        row["reserve_shortfall"] = reserve_shortfall
+        row["reserve_excess"] = reserve_excess
+        row["cash_available_for_linear_buys"] = available_buy_budget
+    return {
+        "available_buy_budget": available_buy_budget,
+        "cash_available_for_linear_buys": available_buy_budget,
+        "total_add_demand": total_add_demand,
+        "funded_add_amount": funded_add_amount,
+        "unfunded_add_demand": unfunded_add_demand,
+        "executable_sell_trim_proceeds": executable_sell_trim_proceeds,
+        "minimum_cash_reserve_amount": minimum_cash_reserve_amount,
+        "target_reserve_amount": target_reserve_amount,
+        "current_cash_unallocated": cash_available,
+        "projected_cash_before_buys": projected_cash_before_buys,
+        "reserve_shortfall": reserve_shortfall,
+        "reserve_excess": reserve_excess,
+    }
 
 
 
@@ -8121,6 +8366,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "current_price": item.get("current_price"),
             "expected_price": item.get("expected_price"),
             "expected_cagr": expected_cagr,
+            "effective_scenarios": item.get("effective_scenarios"),
+            "effective_scenario_source": item.get("effective_scenario_source"),
             "upside": upside,
             "core_confidence_diff": core_net,
             "core_bullish_confidence": item.get("core_bullish_confidence"),
@@ -8156,6 +8403,17 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
     allocated_total = _apply_linear_caps_and_redistribute(rows, target_total, settings)
     add_tolerance = (safe_number(settings.get("linear_add_band_tolerance_pct")) or 0.0) / 100.0
     trim_tolerance = (safe_number(settings.get("linear_trim_band_tolerance_pct")) or 0.0) / 100.0
+    for row in rows:
+        pre_reserve_mid = safe_number(row.get("linear_target_mid")) or 0.0
+        pre_reserve_low = pre_reserve_mid * max(0.0, 1.0 - add_tolerance) if pre_reserve_mid > 0 else 0.0
+        pre_reserve_high = pre_reserve_mid * (1.0 + trim_tolerance) if pre_reserve_mid > 0 else 0.0
+        row.update({
+            "pre_reserve_target_low": pre_reserve_low,
+            "pre_reserve_target_mid": pre_reserve_mid,
+            "pre_reserve_target_high": pre_reserve_high,
+        })
+    reserve_details = _apply_linear_dynamic_reserve(rows, settings)
+    allocated_total = reserve_details["final_total_target_mid"]
     for row in rows:
         target_mid = safe_number(row.get("linear_target_mid")) or 0.0
         target_low = target_mid * max(0.0, 1.0 - add_tolerance) if target_mid > 0 else 0.0
@@ -8226,7 +8484,13 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             **amount_fields,
         })
         row.update(trigger_fields)
-    execution = _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
+    execution = _apply_linear_cash_constrained_execution_layer(
+        rows,
+        total_portfolio_value,
+        cash_like_available,
+        settings,
+        dynamic_reserve_pct=reserve_details["dynamic_reserve_pct"],
+    )
     rows.sort(key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), row.get("symbol") or ""))
     summary = {
         "mode_label": "Linear Allocation",
@@ -8236,6 +8500,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         "cash_like_available": cash_like_available,
         "eligible_stock_count": len(rows),
         "capped_stock_count": sum(1 for row in rows if (safe_number(row.get("linear_cap_applied")) or 0.0) > 1e-9),
+        **reserve_details,
         **execution,
         "execution_warning": "Linear add demand exceeds available funding. Action amounts have been cash-constrained and prioritized." if execution["total_add_demand"] > execution["available_buy_budget"] + 1e-6 else None,
     }

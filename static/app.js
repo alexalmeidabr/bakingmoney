@@ -467,6 +467,10 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   action_treat_cash_equivalents_as_cash: true,
   action_cash_equivalent_symbols: 'SGOV',
   linear_allocated_target_total_pct: 100.0,
+  linear_reserve_benchmark_yield_pct: 4.0,
+  linear_min_equity_excess_cagr_pct: 2.0,
+  linear_full_attractiveness_equity_excess_cagr_pct: 7.0,
+  linear_max_reserve_pct: 40.0,
   linear_min_expected_cagr: 0.0,
   linear_full_expected_cagr: 15.0,
   linear_min_upside: 0.0,
@@ -545,9 +549,9 @@ function registerActionPlanConfigHelp() {
   });
   addConfigHelp('action_min_cash_unallocated_target', {
     title: 'Minimum cash/unallocated %',
-    meaning: 'Minimum percentage of the portfolio reserved for cash or unallocated capacity.',
-    usedIn: 'Used in bucket reconciliation and the cash-constrained execution layer.',
-    formula: 'Available Buy Budget = Cash-like Available + Executable Sell/Trim Proceeds - Minimum Cash Reserve',
+    meaning: 'Minimum percentage kept in cash or unallocated capacity even when equity opportunities are very attractive.',
+    usedIn: 'Used in bucket reconciliation and cash-constrained execution, and reused as the minimum Dynamic Reserve for Linear Allocation.',
+    formula: 'Available Buy Budget = Cash-like Available + Executable Sell/Trim Proceeds - Protected Reserve (minimum reserve for Bucket, Dynamic Reserve for Linear)',
     example: 'With a $100,000 portfolio and 10% reserve, the execution layer protects $10,000 before funding adds.',
     tuning: 'Increase this to keep more liquidity. Decrease it to allow more capital to be deployed into stock targets.',
     related: ['Cash-equivalent symbols', 'Minimum executable trade amount'],
@@ -873,11 +877,47 @@ function registerActionPlanConfigHelp() {
 
   addConfigHelp('linear_allocated_target_total_pct', {
     title: 'Linear allocated target total %',
-    meaning: 'Total percentage of the portfolio the Linear Allocation model is allowed to allocate to stocks.',
-    usedIn: 'The linear model normalizes all positive Linear Scores so final stock target weights sum to this percentage, subject to caps and eligibility rules.',
+    meaning: 'Pre-reserve percentage of the portfolio the Linear Allocation model may allocate to stocks.',
+    usedIn: 'The linear model normalizes positive Linear Scores toward this percentage before company caps and the portfolio-wide Dynamic Reserve scaling are applied.',
     example: 'If set to 95%, Linear Allocation can allocate up to 95% to stocks and leave roughly 5% unallocated or cash-like.',
     tuning: 'Use 100% to fully allocate across stocks. Use a lower value such as 90% or 95% when you want explicit cash or unallocated capacity.',
     related: ['Linear Score', 'Linear max single-stock %', 'Minimum cash/unallocated %'],
+  });
+
+  addConfigHelp('linear_reserve_benchmark_yield_pct', {
+    title: 'Linear reserve benchmark yield %',
+    meaning: 'Annualized expected yield of the cash-like reserve alternative, such as SGOV. Used as the hurdle rate for measuring absolute equity attractiveness.',
+    usedIn: 'Linear Allocation only, when expected five-year equity CAGR is compared with the reserve alternative.',
+    formula: 'Equity Excess CAGR = Probability-weighted Expected Equity CAGR - Reserve Benchmark Yield',
+    tuning: 'Keep this aligned with the annualized yield reasonably available from the reserve alternative.',
+    related: ['Linear minimum equity excess CAGR %', 'Dynamic Reserve Target'],
+  });
+
+  addConfigHelp('linear_min_equity_excess_cagr_pct', {
+    title: 'Linear minimum equity excess CAGR %',
+    meaning: 'Minimum expected annual equity return premium above the reserve benchmark. Stocks at or below this premium contribute zero absolute attractiveness.',
+    usedIn: 'Linear Allocation only, as the zero-credit point for absolute opportunity.',
+    formula: 'Absolute Attractiveness = clamp((Equity Excess CAGR - Minimum Excess) / (Full Excess - Minimum Excess), 0, 1)',
+    tuning: 'Raise this to require a larger equity premium before deploying reserve capital.',
+    related: ['Linear reserve benchmark yield %', 'Linear full-attractiveness equity excess CAGR %'],
+  });
+
+  addConfigHelp('linear_full_attractiveness_equity_excess_cagr_pct', {
+    title: 'Linear full-attractiveness equity excess CAGR %',
+    meaning: 'Expected annual equity return premium above the reserve benchmark at which a stock receives full absolute-attractiveness credit.',
+    usedIn: 'Linear Allocation only, as the full-credit point for absolute opportunity.',
+    formula: 'Absolute Attractiveness = clamp((Equity Excess CAGR - Minimum Excess) / (Full Excess - Minimum Excess), 0, 1)',
+    tuning: 'Raise this to require a larger equity premium before the Dynamic Reserve reaches its minimum.',
+    related: ['Linear minimum equity excess CAGR %', 'Portfolio Opportunity Score'],
+  });
+
+  addConfigHelp('linear_max_reserve_pct', {
+    title: 'Linear maximum reserve %',
+    meaning: 'Maximum portfolio percentage that Linear Allocation may intentionally leave in cash or a cash-like reserve when equity opportunities are unattractive.',
+    usedIn: 'Linear Allocation only, as the upper bound of the Dynamic Reserve Target.',
+    formula: 'Dynamic Reserve = Minimum Reserve + (1 - Opportunity Score) x (Maximum Reserve - Minimum Reserve)',
+    tuning: 'Increase this to permit a larger defensive reserve when expected returns are weak.',
+    related: ['Minimum cash/unallocated %', 'Maximum Deployable Equity'],
   });
 
   [
@@ -2558,7 +2598,27 @@ function renderLinearAllocationRows() {
 
 function renderActionPlanSummaryCards(summary, modeLabel) {
   if (modeLabel === 'Linear Allocation') {
-    return `<div class="summary-item summary-mode-card"><div class="label">Active Mode</div><div class="value">Linear Allocation</div></div><div class="summary-item"><div class="label">Linear Allocated Target Total</div><div class="value">${formatPercent(summary.linear_allocated_target_total ?? summary.linear_configured_target_total)}</div></div><div class="summary-item"><div class="label">Current Equity Allocation</div><div class="value">${formatPercent(summary.current_equity_allocation)}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${formatCurrencyValue(summary.available_buy_budget, 'USD')}</div></div><div class="summary-item"><div class="label">Total Linear Add Demand</div><div class="value">${formatCurrencyValue(summary.total_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Funded Linear Add Amount</div><div class="value">${formatCurrencyValue(summary.funded_add_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Unfunded Linear Add Demand</div><div class="value">${formatCurrencyValue(summary.unfunded_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Eligible Stocks</div><div class="value">${formatNumber(summary.eligible_stock_count, 0)}</div></div><div class="summary-item"><div class="label">Capped Stocks</div><div class="value">${formatNumber(summary.capped_stock_count, 0)}</div></div>${summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : ''}`;
+    const reserveBalanceLabel = (summary.reserve_shortfall || 0) > 0 ? 'Reserve Shortfall' : 'Reserve Excess Before Buys';
+    const reserveBalanceValue = (summary.reserve_shortfall || 0) > 0 ? summary.reserve_shortfall : summary.reserve_excess;
+    return `<div class="summary-item summary-mode-card"><div class="label">Active Mode</div><div class="value">Linear Allocation</div></div>
+      <div class="summary-item"><div class="label">Opportunity Score</div><div class="value">${formatPercent(isFiniteNumber(summary.portfolio_opportunity_score) ? summary.portfolio_opportunity_score * 100 : null)}</div></div>
+      <div class="summary-item"><div class="label">Dynamic Reserve Target</div><div class="value">${formatPercent(summary.dynamic_reserve_pct)}</div></div>
+      <div class="summary-item"><div class="label">Max Equity Allocation</div><div class="value">${formatPercent(summary.maximum_deployable_equity_pct)}</div></div>
+      <div class="summary-item"><div class="label">Reserve Benchmark</div><div class="value">${formatPercent(summary.reserve_benchmark_yield)}</div></div>
+      <div class="summary-item"><div class="label">Reserve Target Amount</div><div class="value">${formatCurrencyValue(summary.target_reserve_amount, 'USD')}</div></div>
+      <div class="summary-item"><div class="label">Current Cash / Unallocated</div><div class="value">${formatCurrencyValue(summary.current_cash_unallocated, 'USD')}</div></div>
+      <div class="summary-item"><div class="label">${reserveBalanceLabel}</div><div class="value">${formatCurrencyValue(reserveBalanceValue, 'USD')}</div></div>
+      <div class="summary-item"><div class="label">Reserve Scale Factor</div><div class="value">${formatNumber(summary.reserve_scale_factor)}</div></div>
+      <div class="summary-item"><div class="label">Linear Allocated Target Total</div><div class="value">${formatPercent(summary.linear_allocated_target_total ?? summary.linear_configured_target_total)}</div></div>
+      <div class="summary-item"><div class="label">Current Equity Allocation</div><div class="value">${formatPercent(summary.current_equity_allocation)}</div></div>
+      <div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${formatCurrencyValue(summary.cash_available_for_linear_buys ?? summary.available_buy_budget, 'USD')}</div></div>
+      <div class="summary-item"><div class="label">Total Linear Add Demand</div><div class="value">${formatCurrencyValue(summary.total_add_demand, 'USD')}</div></div>
+      <div class="summary-item"><div class="label">Funded Linear Add Amount</div><div class="value">${formatCurrencyValue(summary.funded_add_amount, 'USD')}</div></div>
+      <div class="summary-item"><div class="label">Unfunded Linear Add Demand</div><div class="value">${formatCurrencyValue(summary.unfunded_add_demand, 'USD')}</div></div>
+      <div class="summary-item"><div class="label">Eligible Stocks</div><div class="value">${formatNumber(summary.eligible_stock_count, 0)}</div></div>
+      <div class="summary-item"><div class="label">Capped Stocks</div><div class="value">${formatNumber(summary.capped_stock_count, 0)}</div></div>
+      ${summary.reserve_configuration_valid === false ? '<p class="status warning">Dynamic Reserve configuration is invalid; the minimum reserve is being protected.</p>' : ''}
+      ${summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : ''}`;
   }
   return `<div class="summary-item summary-mode-card"><div class="label">Active Mode</div><div class="value">Bucket Allocation</div></div><div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.portfolio_value_used ?? summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(summary.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(summary.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${formatCurrencyValue(summary.available_buy_budget, 'USD')}</div></div><div class="summary-item"><div class="label">Total Add Demand</div><div class="value">${formatCurrencyValue(summary.total_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Funded Add Amount</div><div class="value">${formatCurrencyValue(summary.funded_add_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Unfunded Add Demand</div><div class="value">${formatCurrencyValue(summary.unfunded_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Executable Sell/Trim Proceeds</div><div class="value">${formatCurrencyValue(summary.executable_sell_trim_proceeds, 'USD')}</div></div><div class="summary-item"><div class="label">Minimum Cash Reserve</div><div class="value">${formatCurrencyValue(summary.minimum_cash_reserve_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated Target Capacity</div><div class="value">${formatPercent(summary.unallocated_target_capacity ?? summary.unallocated_target_total)}</div></div>`;
 }
@@ -5344,11 +5404,12 @@ function validateActionPlanSettings(settings) {
     if (typeof value === 'boolean') continue;
     if (key === 'action_cash_equivalent_symbols') continue;
     if (!Number.isFinite(value)) return `${key} must be numeric.`;
-    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score', 'action_trim_remaining_upside_threshold', 'action_sell_remaining_upside_threshold', 'linear_min_core_net', 'linear_min_potential_net', 'core_confidence_penalty_threshold', 'potential_confidence_penalty_threshold', 'linear_strong_buy_rating_bonus', 'linear_buy_rating_bonus', 'linear_score_allocation_power', 'linear_add_band_tolerance_pct', 'linear_trim_band_tolerance_pct'].includes(key)) return `${key} cannot be negative.`;
+    if (value < 0 && !['action_core_diff_zero_score', 'action_core_diff_full_score', 'action_trim_remaining_upside_threshold', 'action_sell_remaining_upside_threshold', 'linear_reserve_benchmark_yield_pct', 'linear_min_equity_excess_cagr_pct', 'linear_full_attractiveness_equity_excess_cagr_pct', 'linear_min_core_net', 'linear_min_potential_net', 'core_confidence_penalty_threshold', 'potential_confidence_penalty_threshold', 'linear_strong_buy_rating_bonus', 'linear_buy_rating_bonus', 'linear_score_allocation_power', 'linear_add_band_tolerance_pct', 'linear_trim_band_tolerance_pct'].includes(key)) return `${key} cannot be negative.`;
   }
   const bucketTotal = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
     .reduce((sum, key) => sum + settings[key], 0);
   if (!settings.action_use_dynamic_bucket_sizing && bucketTotal > 100) return 'Action Plan bucket targets cannot total more than 100%.';
+  if (settings.action_min_cash_unallocated_target < 0 || settings.action_min_cash_unallocated_target > 100) return 'Minimum cash/unallocated target must be between 0 and 100%.';
   if (settings.action_use_dynamic_bucket_sizing) {
     if (settings.action_min_cash_unallocated_target < 0 || settings.action_min_cash_unallocated_target > 50) return 'Minimum cash/unallocated target must be between 0 and 50%.';
     if (settings.action_weighted_count_full_score <= settings.action_weighted_count_min_score) return 'Weighted count full score must be greater than minimum score.';
@@ -5381,6 +5442,8 @@ function validateActionPlanSettings(settings) {
     if (settings[key] < 0 || settings[key] > 1) return `${key} must be between 0 and 1.`;
   }
   if (settings.linear_full_core_net <= settings.linear_min_core_net) return 'linear_full_core_net must be greater than linear_min_core_net.';
+  if (settings.linear_full_attractiveness_equity_excess_cagr_pct <= settings.linear_min_equity_excess_cagr_pct) return 'Linear full-attractiveness equity excess CAGR must be greater than the minimum equity excess CAGR.';
+  if (settings.linear_max_reserve_pct < settings.action_min_cash_unallocated_target || settings.linear_max_reserve_pct > 100) return 'Linear maximum reserve must be between Minimum cash/unallocated and 100%.';
   if (settings.linear_full_potential_net <= settings.linear_min_potential_net) return 'linear_full_potential_net must be greater than linear_min_potential_net.';
   if (settings.linear_score_allocation_power < 0.5 || settings.linear_score_allocation_power > 5) return 'linear_score_allocation_power must be between 0.5 and 5.0.';
   if (settings.linear_high_bearish_confidence_min_threshold >= settings.linear_high_bearish_confidence_max_threshold) return 'Linear high bearish confidence max threshold must be greater than min threshold.';

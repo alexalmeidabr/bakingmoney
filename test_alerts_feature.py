@@ -3548,7 +3548,9 @@ class ActionPlanFeatureTests(unittest.TestCase):
 
         below_add_band = dict(base_candidate, current_position_weight=8.0, current_position_market_value=8000.0)
         add_row = web_server.compute_linear_action_plan([below_add_band], 100000.0, 0.0, settings)["rows"][0]
-        self.assertEqual(add_row["action"], "Add")
+        self.assertEqual(add_row["desired_action"], "Add")
+        self.assertEqual(add_row["action"], "Watch")
+        self.assertEqual(add_row["funding_status"], "Unfunded / Watch")
 
         above_trim_band = dict(base_candidate, current_position_weight=13.5, current_position_market_value=13500.0, current_price=150.0)
         trim_row = web_server.compute_linear_action_plan([above_trim_band], 100000.0, 0.0, settings)["rows"][0]
@@ -4552,6 +4554,7 @@ class WholeShareActionPlanTests(unittest.TestCase):
         self.assertEqual(row["raw_action_amount"], 5_778.0)
         self.assertEqual(row["desired_share_count"], 15)
         self.assertAlmostEqual(row["desired_whole_share_amount"], 5_658.60)
+        self.assertEqual(row["action"], "Add")
         self.assertEqual(row["suggested_share_count"], 15)
         self.assertAlmostEqual(row["action_amount"], 5_658.60)
         self.assertEqual(row["action_amount_label"], "Add about $5,658.60")
@@ -4664,6 +4667,7 @@ class WholeShareActionPlanTests(unittest.TestCase):
     def test_cash_funding_allocates_only_whole_shares(self):
         partial = self._row("Add", 1_500.0, 300.0, "add")
         summary = self._execute([partial], cash=1_000.0)
+        self.assertEqual(partial["action"], "Add")
         self.assertEqual(partial["desired_share_count"], 5)
         self.assertEqual(partial["suggested_share_count"], 3)
         self.assertEqual(partial["action_amount"], 900.0)
@@ -4675,11 +4679,32 @@ class WholeShareActionPlanTests(unittest.TestCase):
 
         unfunded = self._row("Add", 1_500.0, 300.0, "add")
         summary = self._execute([unfunded], cash=250.0)
+        self.assertEqual(unfunded["action"], "Watch")
+        self.assertEqual(unfunded["desired_action"], "Add")
+        self.assertEqual(unfunded["executable_action"], "Watch")
         self.assertEqual(unfunded["suggested_share_count"], 0)
         self.assertEqual(unfunded["action_amount"], 0.0)
+        self.assertEqual(unfunded["action_amount_label"], "—")
+        self.assertEqual(unfunded["action_amount_direction"], "none")
         self.assertEqual(unfunded["funding_status"], "Unfunded / Watch")
         self.assertEqual(summary["funded_add_amount"], 0.0)
         self.assertEqual(summary["unfunded_add_demand"], 1_500.0)
+
+    def test_unfunded_add_types_become_watch_without_changing_funding_totals(self):
+        for action, rating in (("Strong Add", "Strong Buy"), ("Add", "Buy"), ("Starter Buy", "Speculative Buy")):
+            with self.subTest(action=action):
+                row = self._row(action, 1_500.0, 300.0, "add", rating=rating)
+                summary = self._execute([row], cash=0.0)
+                self.assertEqual(row["action"], "Watch")
+                self.assertEqual(row["desired_action"], action)
+                self.assertEqual(row["executable_action"], "Watch")
+                self.assertEqual(row["suggested_share_count"], 0)
+                self.assertEqual(row["action_amount"], 0.0)
+                self.assertEqual(row["action_amount_label"], "—")
+                self.assertEqual(row["action_amount_direction"], "none")
+                self.assertEqual(row["funding_status"], "Unfunded / Watch")
+                self.assertEqual(summary["funded_add_amount"], 0.0)
+                self.assertEqual(summary["unfunded_add_demand"], 1_500.0)
 
     def test_linear_execution_uses_the_same_whole_share_layer(self):
         add = self._row("Add", 5_778.0, 377.24, "add")

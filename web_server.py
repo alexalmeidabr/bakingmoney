@@ -6972,6 +6972,25 @@ def _mark_whole_share_action_non_executable(row, action, funding_status, diagnos
     row["whole_share_diagnostic_reason"] = diagnostic_reason
 
 
+def _mark_unfunded_add_as_watch(row):
+    """Expose a non-executable funded result without losing its desired action."""
+    add_actions = {"Strong Add", "Add", "Starter Buy"}
+    desired_action = row.get("action")
+    funded_shares = int(row.get("suggested_share_count") or 0)
+    if (
+        desired_action not in add_actions
+        or row.get("funding_status") != "Unfunded / Watch"
+        or funded_shares > 0
+    ):
+        return
+
+    row["desired_action"] = row.get("desired_action") or desired_action
+    row["executable_action"] = "Watch"
+    row["action"] = "Watch"
+    row["action_priority"] = ACTION_PLAN_ACTION_PRIORITY.get("Watch", 99)
+    row["action_amount_direction"] = "none"
+
+
 def _prepare_whole_share_execution(row):
     direction = row.get("action_amount_direction") or "none"
     raw_amount = max(0.0, safe_number(row.get("raw_action_amount")) or 0.0)
@@ -7216,6 +7235,7 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
             row["action_amount_cash_note"] = f"Sell/trim about ${executable:,.2f}. This action generates proceeds that can fund buy actions." if executable > 0 else "No funding needed."
         else:
             row["action_amount_cash_note"] = "No funding needed."
+        _mark_unfunded_add_as_watch(row)
     return {
         "available_buy_budget": available_buy_budget,
         "total_add_demand": total_add_demand,
@@ -8183,6 +8203,7 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         row["reserve_shortfall"] = reserve_shortfall
         row["reserve_excess"] = reserve_excess
         row["cash_available_for_linear_buys"] = available_buy_budget
+        _mark_unfunded_add_as_watch(row)
     return {
         "available_buy_budget": available_buy_budget,
         "cash_available_for_linear_buys": available_buy_budget,

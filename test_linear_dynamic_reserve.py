@@ -391,7 +391,13 @@ class LinearReserveFundingTests(unittest.TestCase):
         )
         self.assertEqual(summary["available_buy_budget"], 0.0)
         self.assertEqual(summary["reserve_shortfall"], 4_700.0)
+        self.assertEqual(add["action"], "Watch")
+        self.assertEqual(add["desired_action"], "Add")
+        self.assertEqual(add["executable_action"], "Watch")
         self.assertEqual(add["suggested_share_count"], 0)
+        self.assertEqual(add["action_amount"], 0.0)
+        self.assertEqual(add["action_amount_label"], "—")
+        self.assertEqual(add["action_amount_direction"], "none")
         self.assertEqual(add["funding_status"], "Unfunded / Watch")
 
     def test_bucket_calculation_is_unchanged_by_linear_reserve_settings(self):

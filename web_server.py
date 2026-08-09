@@ -7030,6 +7030,24 @@ def _mark_unfunded_add_as_watch(row):
     row["action_amount_direction"] = "none"
 
 
+def _mark_minimum_trade_amount_non_executable(row, action):
+    """Keep a desired Add/Trim visible while preventing an undersized execution."""
+    desired_action = row.get("desired_action") or row.get("action")
+    row["desired_action"] = desired_action
+    row["minimum_trade_size_blocked"] = True
+    row["minimum_trade_size_reason"] = (
+        "Final executable amount is below the configured minimum executable trade amount."
+    )
+    _mark_whole_share_action_non_executable(
+        row,
+        action,
+        "Below minimum trade amount",
+        row["minimum_trade_size_reason"],
+    )
+    row["minimum_trade_size_blocked"] = True
+    row["minimum_trade_size_blocked_by_configured_minimum"] = True
+
+
 def _prepare_whole_share_execution(row):
     direction = row.get("action_amount_direction") or "none"
     raw_amount = max(0.0, safe_number(row.get("raw_action_amount")) or 0.0)
@@ -7039,6 +7057,7 @@ def _prepare_whole_share_execution(row):
     row["desired_whole_share_amount"] = 0.0
     row["suggested_share_count"] = 0
     row["minimum_trade_size_blocked"] = False
+    row["minimum_trade_size_blocked_by_configured_minimum"] = False
     row["minimum_trade_size_reason"] = None
     row["whole_share_diagnostic_reason"] = row.get("whole_share_diagnostic_reason")
     row["whole_share_diagnostic_warning"] = row.get("whole_share_diagnostic_warning")
@@ -8162,6 +8181,7 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     target_reserve_amount = total * effective_reserve_pct / 100.0
     buy_actions = {"Strong Add", "Add", "Starter Buy"}
     sell_trim_actions = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
+    min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
     executable_sell_trim_proceeds = 0.0
     for row in rows:
         _prepare_whole_share_execution(row)
@@ -8169,11 +8189,14 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         row["unfunded_action_amount"] = 0.0
         row["unfunded_share_count"] = 0
         if row.get("minimum_trade_size_blocked"):
-            row["funding_status"] = "Below one-share minimum"
+            row["funding_status"] = row.get("funding_status") or "Below one-share minimum"
         elif row.get("whole_share_diagnostic_reason") and row.get("action_amount_direction") == "none":
             row["funding_status"] = row.get("funding_status") or "No executable action"
         elif row.get("action") in sell_trim_actions:
             executable = max(0.0, safe_number(row.get("action_amount")) or 0.0)
+            if row.get("action_amount_direction") == "trim" and 0.0 < executable < min_trade:
+                _mark_minimum_trade_amount_non_executable(row, "Hold")
+                continue
             row["executable_action_amount"] = executable
             row["funding_status"] = "Generates proceeds" if executable > 0 else "No funding needed"
             executable_sell_trim_proceeds += executable
@@ -8207,15 +8230,15 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         )
         row["funding_priority_score"] = row["linear_action_priority"]
     remaining_budget = available_buy_budget
-    min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
     sorted_candidates = sorted(buy_candidates, key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), -(safe_number(row.get("expected_cagr")) or 0.0), -(safe_number(row.get("upside")) or 0.0), row.get("symbol") or ""))
-    for index, row in enumerate(sorted_candidates):
+    for row in sorted_candidates:
         desired_shares = int(row.get("desired_share_count") or 0)
         price = safe_number(row.get("current_price"))
         affordable_shares = whole_shares_for_amount(remaining_budget, price)
         funded_shares = min(desired_shares, affordable_shares)
         amount = _whole_share_amount(funded_shares, price)
-        if amount < min_trade and not (index == len(sorted_candidates) - 1 and amount > 0):
+        below_minimum_trade_amount = 0.0 < amount < min_trade
+        if below_minimum_trade_amount:
             funded_shares = 0
             amount = 0.0
         unfunded_shares = max(0, desired_shares - funded_shares)
@@ -8224,6 +8247,8 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         row["unfunded_share_count"] = unfunded_shares
         row["unfunded_action_amount"] = _whole_share_amount(unfunded_shares, price)
         row["funding_status"] = "Fully funded" if funded_shares == desired_shares and desired_shares > 0 else ("Partially funded" if funded_shares > 0 else "Unfunded / Watch")
+        if below_minimum_trade_amount:
+            _mark_minimum_trade_amount_non_executable(row, "Watch")
         remaining_budget = max(0.0, remaining_budget - amount)
     total_add_demand = sum(row.get("desired_whole_share_amount", 0.0) for row in buy_candidates)
     funded_add_amount = sum(row.get("executable_action_amount", 0.0) for row in buy_candidates)

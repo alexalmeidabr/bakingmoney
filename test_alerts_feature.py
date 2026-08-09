@@ -1560,6 +1560,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('class="market-value-column sortable" data-sort-key="current_position_market_value"', linear_actions_markup)
         self.assertLess(linear_actions_markup.index('class="action-column"'), linear_actions_markup.index('class="market-value-column sortable"'))
         self.assertLess(linear_actions_markup.index('class="market-value-column sortable"'), linear_actions_markup.index('class="target-gap-column"'))
+        self.assertNotIn('trigger-price-column', linear_actions_markup)
+        self.assertNotIn('distance-column', linear_actions_markup)
+        self.assertIn('current-price-column', linear_actions_markup)
         self.assertNotIn('reason-column', linear_actions_markup)
         self.assertIn('class="reason-column">Reason</th>', html)
         self.assertIn('id="action-plan-tab-actions"', html)
@@ -3608,7 +3611,7 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(disabled_row["linear_allocation_score"], base_score)
 
 
-    def test_linear_action_gating_requires_add_and_trim_triggers(self):
+    def test_linear_target_bands_drive_actions_without_trigger_gating(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings.update({
             "linear_allocated_target_total_pct": 10.0,
@@ -3645,13 +3648,11 @@ class ActionPlanFeatureTests(unittest.TestCase):
 
         self.assertEqual(rows["ADD_OK"]["action"], "Add")
         self.assertGreater(rows["ADD_OK"]["executable_action_amount"], 0.0)
-        self.assertEqual(rows["ADD_WAIT"]["action"], "Watch / Underweight")
+        self.assertEqual(rows["ADD_WAIT"]["action"], "Add")
         self.assertGreater(rows["ADD_WAIT"]["target_gap_amount"], 0.0)
-        self.assertEqual(rows["ADD_WAIT"]["action_amount_label"], "—")
-        self.assertEqual(rows["ADD_WAIT"]["funding_status"], "Waiting for trigger")
-        self.assertEqual(rows["ADD_WAIT"]["executable_action_amount"], 0.0)
-        self.assertEqual(rows["ADD_WAIT"]["distance_to_trigger_percent"], 0.0)
-        self.assertIn("Starter buy fallback", rows["ADD_WAIT"].get("starter_buy_fallback_reason") or "")
+        self.assertGreater(rows["ADD_WAIT"]["executable_action_amount"], 0.0)
+        self.assertIsNone(rows["ADD_WAIT"]["trigger_price"])
+        self.assertIsNone(rows["ADD_WAIT"]["distance_to_trigger_percent"])
 
         self.assertEqual(rows["TRIM_OK"]["action"], "Trim")
         self.assertEqual(rows["TRIM_OK"]["funding_status"], "Generates proceeds")
@@ -3660,13 +3661,16 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertGreater(rows["TRIM_WAIT"]["target_gap_amount"], 0.0)
         self.assertEqual(rows["TRIM_WAIT"]["funding_status"], "Generates proceeds")
         self.assertGreater(rows["TRIM_WAIT"]["executable_action_amount"], 0.0)
-        self.assertGreater(rows["TRIM_WAIT"]["distance_to_trigger_percent"], 0.0)
+        self.assertIsNone(rows["TRIM_WAIT"]["trigger_price"])
+        self.assertIsNone(rows["TRIM_WAIT"]["distance_to_trigger_percent"])
 
         self.assertEqual(rows["SELL"]["action"], "Sell")
         self.assertEqual(rows["SELL"]["funding_status"], "Generates proceeds")
         self.assertGreater(rows["SELL"]["executable_action_amount"], 0.0)
-        self.assertAlmostEqual(rows["ADD_OK"]["total_add_demand"], rows["ADD_OK"]["target_gap_amount"])
-        self.assertAlmostEqual(rows["ADD_WAIT"]["total_add_demand"], rows["ADD_OK"]["target_gap_amount"])
+        self.assertAlmostEqual(
+            rows["ADD_OK"]["total_add_demand"],
+            rows["ADD_OK"]["desired_whole_share_amount"] + rows["ADD_WAIT"]["desired_whole_share_amount"],
+        )
         self.assertAlmostEqual(
             rows["TRIM_WAIT"]["executable_sell_trim_proceeds"],
             rows["TRIM_OK"]["action_amount"] + rows["TRIM_WAIT"]["action_amount"] + rows["SELL"]["action_amount"],
@@ -3723,14 +3727,50 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertGreater(add["executable_action_amount"], 0.0)
         self.assertLessEqual(add["executable_action_amount"], add["target_gap_amount"] + 1e-6)
         self.assertIn("Add about", add["action_amount_label"])
-        self.assertIsNotNone(add["trigger_price"])
-        self.assertIsNotNone(add["distance_to_trigger_percent"])
+        self.assertIsNone(add["trigger_price"])
+        self.assertIsNone(add["relevant_trigger_price"])
+        self.assertIsNone(add["distance_to_trigger_percent"])
+        self.assertIsNone(add["trigger_breakdown"])
+        self.assertNotIn("trigger", " ".join(step["text"].lower() for step in add["decision_path"]))
         trim = rows["TRIM"]
         self.assertEqual(trim["action"], "Trim")
         self.assertGreater(trim["target_gap_amount"], 0.0)
         self.assertEqual(trim["funding_status"], "Generates proceeds")
         self.assertIn("Trim about", trim["action_amount_label"])
-        self.assertIsNotNone(trim["trigger_price"])
+        self.assertIsNone(trim["trigger_price"])
+
+    def test_linear_zero_target_owned_position_becomes_sell_without_trigger_fields(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_min_score_threshold": 0.0,
+            "linear_max_reserve_pct": 0.0,
+            "action_min_cash_unallocated_target": 0.0,
+            "linear_enable_risk_caps": False,
+            "linear_rating_bonus_enabled": False,
+        })
+        candidate = {
+            "symbol": "ZERO",
+            "rating": "Buy",
+            "expected_cagr": -1.0,
+            "upside": -1.0,
+            "core_confidence_diff": 1.0,
+            "potential_confidence_diff": 1.0,
+            "core_bullish_confidence": 1.0,
+            "core_bearish_confidence": 0.0,
+            "potential_bullish_confidence": 1.0,
+            "potential_bearish_confidence": 0.0,
+            "current_position_weight": 3.0,
+            "current_position_market_value": 3_000.0,
+            "owned_share_quantity": 30,
+            "current_price": 100.0,
+            "expected_price": 90.0,
+        }
+        row = web_server.compute_linear_action_plan([candidate], 100_000.0, 0.0, settings)["rows"][0]
+        self.assertEqual(row["linear_target_weight_mid"], 0.0)
+        self.assertEqual(row["action"], "Sell")
+        self.assertEqual(row["funding_status"], "Generates proceeds")
+        self.assertIsNone(row["trigger_price"])
+        self.assertIn("Final target is zero", " ".join(step["text"] for step in row["decision_path"]))
 
     def test_linear_hold_rating_buy_guardrail_blocks_adds_without_consuming_budget(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

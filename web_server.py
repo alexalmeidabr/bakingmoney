@@ -8257,43 +8257,38 @@ def _linear_action_amount_fields(action, target_mid, target_high, total_portfoli
     }
 
 
-def _linear_action_trigger_fields(row, settings):
-    context_row = dict(row)
-    context_row["allocation_score"] = row.get("linear_allocation_score")
-    context_row["bucket_sizing_score"] = row.get("linear_upside_score")
-    context_row["weighted_count"] = row.get("linear_confidence_quality_score")
-    context = _action_plan_trigger_context(context_row, settings)
-    action = row.get("action")
-    trigger_price = None
-    trigger_type = "hold"
-    dynamic_required = None
-    if action == "Strong Add":
-        trigger_price = context.get("strong_add_trigger_price")
-        trigger_type = "strong_add"
-        dynamic_required = context.get("strong_add_required_upside")
-    elif action in {"Add", "Starter Buy", "Watch", "Watch / Underweight"}:
-        trigger_price = context.get("add_trigger_price")
-        trigger_type = "add"
-        dynamic_required = context.get("add_required_upside")
-    elif action in {"Trim", "Strong Trim", "Hold / Overweight"}:
-        trigger_price = context.get("trim_trigger_price")
-        trigger_type = "trim"
-        dynamic_required = settings.get("action_trim_remaining_upside_threshold")
-    elif action == "Sell":
-        trigger_price = context.get("sell_trigger_price")
-        trigger_type = "sell"
-        dynamic_required = settings.get("action_sell_remaining_upside_threshold")
-    distance = _distance_to_trigger(row.get("current_price"), trigger_price)
+def _linear_action_compatibility_fields():
+    """Keep shared row consumers safe without exposing unused Linear triggers."""
     return {
-        **context,
-        "relevant_trigger_price": trigger_price,
-        "relevant_trigger_type": trigger_type,
-        "trigger_price": trigger_price,
-        "dynamic_required_upside": dynamic_required,
-        "distance_to_trigger_percent": distance,
-        "distance_to_relevant_trigger_percent": distance,
-        "distance_to_relevant_trigger_label": _trigger_price_distance_label(row.get("current_price"), trigger_price, trigger_type),
+        "trigger_price": None,
+        "trigger_direction": None,
+        "relevant_trigger_price": None,
+        "relevant_trigger_type": None,
+        "distance_to_trigger_percent": None,
+        "distance_to_relevant_trigger_percent": None,
+        "distance_to_relevant_trigger_label": None,
+        "trigger_breakdown": None,
     }
+
+
+def _linear_action_decision_path(row, action):
+    path = [{"status": "pass", "text": f"Rating is {row.get('rating') or 'Hold'}."}]
+    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    target_low = safe_number(row.get("target_weight_low")) or 0.0
+    target_high = safe_number(row.get("target_weight_high")) or 0.0
+    target_mid = safe_number(row.get("target_weight_mid")) or 0.0
+    if target_mid <= 0 and current_weight > 0:
+        path.append({"status": "pass", "text": "Final target is zero while the position is owned."})
+    elif current_weight < target_low:
+        path.append({"status": "pass", "text": "Current position is below the target band."})
+    elif current_weight > target_high:
+        path.append({"status": "pass", "text": "Current position is above the target band."})
+    else:
+        path.append({"status": "pass", "text": "Current position is inside the target band."})
+    if action == "Watch / Rating Guardrail":
+        path.append({"status": "warning", "text": "Rating guardrail blocks the buy-side action."})
+    path.append({"status": "result", "text": f"Action = {action}."})
+    return path
 
 
 def _linear_stock_penalty_factor(item, core_net, potential_net, upside, rating, settings):
@@ -8464,35 +8459,24 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         if (rating_label in {"Sell", "Strong Sell"} or target_mid <= 0) and current_weight > 0:
             action = "Sell"
             sizing_action = action
-            trigger_fields = _linear_action_trigger_fields({**row, "action": action}, settings)
         elif current_weight < target_low:
-            trigger_fields = _linear_action_trigger_fields({**row, "action": "Add"}, settings)
-            current_price = safe_number(row.get("current_price"))
-            add_trigger = safe_number(trigger_fields.get("trigger_price"))
-            momentum_value = safe_number(trigger_fields.get("momentum_score"))
-            extension_value = safe_number(trigger_fields.get("extension_risk"))
-            starter_blocked = current_weight <= 0 and ((extension_value is not None and extension_value >= 4.0) or (momentum_value is not None and momentum_value < 2.0))
-            action = "Add" if not starter_blocked and current_price is not None and add_trigger is not None and current_price <= add_trigger else "Watch / Underweight"
+            action = "Add"
             sizing_action = "Add"
             if action in {"Strong Add", "Add", "Starter Buy"} and not is_linear_buy_action_allowed_for_rating(rating_label, settings):
                 action = "Watch / Rating Guardrail"
         elif current_weight > target_high:
-            trigger_fields = _linear_action_trigger_fields({**row, "action": "Trim"}, settings)
-            current_price = safe_number(row.get("current_price"))
-            trim_trigger = safe_number(trigger_fields.get("trigger_price"))
-            action = "Trim" if current_price is not None and trim_trigger is not None and current_price >= trim_trigger else "Hold / Overweight"
+            action = "Trim"
             sizing_action = "Trim"
         else:
             action = "Hold"
             sizing_action = action
-            trigger_fields = _linear_action_trigger_fields({**row, "action": action}, settings)
         amount_fields = _linear_action_amount_fields(sizing_action, target_mid, target_high, total_portfolio_value, row.get("current_position_market_value"))
         rating_guardrail_applied = action == "Watch / Rating Guardrail"
-        if action in {"Watch", "Watch / Underweight", "Watch / Rating Guardrail", "Hold / Overweight"}:
+        if action == "Watch / Rating Guardrail":
             amount_fields["action_amount"] = 0.0
             amount_fields["action_amount_label"] = "—"
             amount_fields["action_amount_direction"] = "none"
-        reason = "Linear Allocation compares current weight with the linear target band; rating is displayed for context only; Add/Trim actions require the relevant trigger price to be reached."
+        reason = "Linear Allocation compares current weight with the final target band. Add is suggested below Target Low, Hold inside the band, and Trim above Target High. Target Bands already reflect valuation, confidence, caps, Dynamic Reserve, and other Linear Allocation inputs."
         rating_guardrail_reason = None
         if rating_guardrail_applied:
             rating_guardrail_reason = "Hold rating blocks buy-side action."
@@ -8504,7 +8488,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "rating_guardrail_reason": rating_guardrail_reason,
             **amount_fields,
         })
-        row.update(trigger_fields)
+        row.update(_linear_action_compatibility_fields())
     execution = _apply_linear_cash_constrained_execution_layer(
         rows,
         total_portfolio_value,
@@ -8512,6 +8496,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         settings,
         dynamic_reserve_pct=reserve_details["dynamic_reserve_pct"],
     )
+    for row in rows:
+        row["decision_path"] = _linear_action_decision_path(row, row.get("action") or "Hold")
     rows.sort(key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), row.get("symbol") or ""))
     summary = {
         "mode_label": "Linear Allocation",

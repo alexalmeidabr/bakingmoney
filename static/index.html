@@ -653,7 +653,7 @@
             <p class="form-help">Shared execution settings used by Linear Allocation.</p>
             <div class="table-actions config-actions settings-grid">
               <label>Minimum cash/unallocated % <input id="config-action-min-cash-unallocated-target" data-action-plan-setting="action_min_cash_unallocated_target" type="number" min="0" max="50" step="0.1" value="10" /></label>
-              <label>Minimum executable trade amount <input id="config-action-min-executable-trade-amount" data-action-plan-setting="action_min_executable_trade_amount" type="number" min="0" step="10" value="100" /></label>
+              <label>Minimum executable trade amount <input id="config-action-min-executable-trade-amount" data-action-plan-setting="action_min_executable_trade_amount" type="number" min="0" step="10" value="100" /><small>Minimum dollar amount required for an executable Add or Trim action. Smaller Add/Trim actions are shown as Watch/Hold with Funding = Below minimum trade amount. Full Sell exits may still be allowed.</small></label>
             </div>
             <template data-legacy-action-plan-settings="true">
             <div class="table-actions config-actions settings-grid">

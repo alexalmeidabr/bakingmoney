@@ -400,6 +400,87 @@ class LinearReserveFundingTests(unittest.TestCase):
         self.assertEqual(add["action_amount_direction"], "none")
         self.assertEqual(add["funding_status"], "Unfunded / Watch")
 
+    def test_minimum_trade_amount_blocks_final_low_budget_add_without_consuming_cash(self):
+        upst = self.row("Add", 1_000.0, 31.08, "add", symbol="UPST")
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [upst],
+            10_000.0,
+            31.08,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+        self.assertEqual(upst["desired_action"], "Add")
+        self.assertEqual(upst["action"], "Watch")
+        self.assertEqual(upst["suggested_share_count"], 0)
+        self.assertEqual(upst["executable_action_amount"], 0.0)
+        self.assertEqual(upst["action_amount"], 0.0)
+        self.assertEqual(upst["action_amount_label"], "—")
+        self.assertEqual(upst["funding_status"], "Below minimum trade amount")
+        self.assertTrue(upst["minimum_trade_size_blocked"])
+        self.assertTrue(upst["minimum_trade_size_blocked_by_configured_minimum"])
+        self.assertEqual(summary["funded_add_amount"], 0.0)
+        self.assertEqual(summary["available_buy_budget"], 31.08)
+        self.assertEqual(summary["unfunded_add_demand"], upst["desired_whole_share_amount"])
+
+    def test_minimum_trade_amount_allows_equal_and_partially_funded_adds_above_minimum(self):
+        above = self.row("Add", 500.0, 100.0, "add", symbol="ABOVE")
+        equal = self.row("Add", 500.0, 100.0, "add", symbol="EQUAL")
+        partial = self.row("Add", 500.0, 100.0, "add", symbol="PARTIAL")
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [above],
+            10_000.0,
+            1_000.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+        self.assertEqual(above["action"], "Add")
+        self.assertEqual(above["funding_status"], "Fully funded")
+        self.assertEqual(summary["funded_add_amount"], 500.0)
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [equal],
+            10_000.0,
+            300.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+        self.assertEqual(equal["action"], "Add")
+        self.assertEqual(equal["suggested_share_count"], 3)
+        self.assertEqual(equal["funding_status"], "Partially funded")
+        self.assertEqual(summary["funded_add_amount"], 300.0)
+        self.assertFalse(equal["minimum_trade_size_blocked"])
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [partial],
+            10_000.0,
+            400.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+        self.assertEqual(partial["action"], "Add")
+        self.assertEqual(partial["suggested_share_count"], 4)
+        self.assertEqual(partial["funding_status"], "Partially funded")
+        self.assertEqual(summary["funded_add_amount"], 400.0)
+
+    def test_minimum_trade_amount_blocks_trim_but_allows_small_full_sell_exit(self):
+        trim = self.row("Trim", 200.0, 100.0, "trim", symbol="TRIM", owned_share_quantity=10)
+        sell = self.row("Sell", 100.0, 100.0, "sell", symbol="SELL", owned_share_quantity=1)
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [trim, sell],
+            10_000.0,
+            0.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+        self.assertEqual(trim["action"], "Hold")
+        self.assertEqual(trim["suggested_share_count"], 0)
+        self.assertEqual(trim["action_amount_label"], "—")
+        self.assertEqual(trim["funding_status"], "Below minimum trade amount")
+        self.assertEqual(sell["action"], "Sell")
+        self.assertEqual(sell["suggested_share_count"], 1)
+        self.assertEqual(sell["funding_status"], "Generates proceeds")
+        self.assertEqual(summary["executable_sell_trim_proceeds"], 100.0)
+
     def test_bucket_calculation_is_unchanged_by_linear_reserve_settings(self):
         raw_targets = {"Strong Buy": 35.0, "Buy": 30.0, "Speculative Buy": 15.0, "Hold": 10.0}
         baseline = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

@@ -1121,15 +1121,13 @@ const RATING_FILTER_OPTIONS = [
 const RATING_FILTER_LABEL_BY_KEY = Object.fromEntries(RATING_FILTER_OPTIONS.map((option) => [option.key, option.label]));
 
 const ACTION_PLAN_ACTION_FILTER_OPTIONS = [
-  { key: 'strong_add', label: 'Strong Add' },
   { key: 'add', label: 'Add' },
-  { key: 'starter_buy', label: 'Starter Buy' },
   { key: 'trim', label: 'Trim' },
-  { key: 'strong_trim', label: 'Strong Trim' },
   { key: 'sell', label: 'Sell' },
   { key: 'watch', label: 'Watch' },
   { key: 'hold', label: 'Hold' },
-  { key: 're_evaluate', label: 'Re-evaluate' },
+  { key: 'watch_extended', label: 'Watch / Extended' },
+  { key: 'watch_rating_guardrail', label: 'Watch / Rating Guardrail' },
 ];
 
 const ACTION_PLAN_ACTION_FILTER_LABEL_BY_KEY = Object.fromEntries(
@@ -1142,7 +1140,9 @@ const ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL = Object.fromEntries(
 
 function getActionPlanActionFilterKey(actionLabel) {
   const label = String(actionLabel || '');
-  if (label.startsWith('Watch')) return 'watch';
+  if (label === 'Watch / Extended') return 'watch_extended';
+  if (label === 'Watch / Rating Guardrail') return 'watch_rating_guardrail';
+  if (label === 'Watch') return 'watch';
   if (label.startsWith('Hold')) return 'hold';
   return ACTION_PLAN_ACTION_FILTER_KEY_BY_LABEL[label];
 }

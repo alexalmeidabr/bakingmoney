@@ -1627,6 +1627,16 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('id="action-plan-rating-filter"', html)
         self.assertIn('id="action-plan-action-filter"', html)
         self.assertIn('Action Filter', html)
+        action_filter_markup = html.split('id="action-plan-action-filter-panel"', 1)[1].split('id="action-plan-linear-actions-panel"', 1)[0]
+        for label in ('Add', 'Trim', 'Sell', 'Hold', 'Watch', 'Watch / Extended', 'Watch / Rating Guardrail'):
+            self.assertIn(f'>{label}</span>', action_filter_markup)
+        for label in ('Strong Add', 'Starter Buy', 'Strong Trim', 'Re-evaluate'):
+            self.assertNotIn(f'>{label}</span>', action_filter_markup)
+        self.assertIn("{ key: 'watch_extended', label: 'Watch / Extended' }", js)
+        self.assertIn("{ key: 'watch_rating_guardrail', label: 'Watch / Rating Guardrail' }", js)
+        self.assertIn("if (label === 'Watch / Extended') return 'watch_extended';", js)
+        self.assertIn("if (label === 'Watch / Rating Guardrail') return 'watch_rating_guardrail';", js)
+        self.assertIn("if (label === 'Watch') return 'watch';", js)
         self.assertIn('id="config-ib-delayed-price-extra-wait-seconds"', html)
         self.assertIn('ib_delayed_price_extra_wait_seconds', js)
         self.assertIn('formatSkippedPriceSymbols', js)

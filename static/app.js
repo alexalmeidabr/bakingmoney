@@ -498,6 +498,7 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   linear_block_buy_actions_for_hold_rating: true,
   linear_high_extension_guardrail_enabled: true,
   linear_high_extension_risk_threshold: 4.0,
+  linear_release_date_warning_days: 30,
 };
 
 const CONFIG_HELP = {};
@@ -551,6 +552,15 @@ function registerActionPlanConfigHelp() {
     example: 'If only $40 remains after higher-priority adds and this setting is $100, the remaining add is not recommended as an executable trade.',
     tuning: 'Raise this to avoid tiny trades. Lower it if you are comfortable with smaller incremental adds.',
     related: ['Available Buy Budget', 'Total Add Demand', 'Funding Status'],
+  });
+  addConfigHelp('linear_release_date_warning_days', {
+    title: 'Linear release date warning days',
+    meaning: 'Shows an informational warning beside a Linear Allocation release date that is near.',
+    usedIn: 'Action Plan → Linear Allocation Release Date column only. It does not change actions, targets, funding, scores, or guardrails.',
+    formula: 'Show when 0 ≤ calendar days until the stored release date ≤ this setting.',
+    example: 'With 30 days configured, a release date 30 days ahead shows a warning. Set to 0 to disable warnings.',
+    tuning: 'Default 30 days. Use a shorter window for fewer reminders.',
+    related: ['Release Date', 'Earnings Calendar'],
   });
   addConfigHelp('action_weighted_count_min_score', {
     title: 'Weighted Count Min Score',
@@ -1720,6 +1730,24 @@ function getLinearReleaseDateSortValue(item) {
   const todayTimestamp = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
   return parts.timestamp >= todayTimestamp ? parts.timestamp : 10000000000000000 + parts.timestamp;
 }
+function getLinearReleaseDateWarning(item) {
+  if (item?.release_date_warning !== true) return null;
+  const daysUntil = Number(item.release_date_days_until);
+  const warningDays = Number(item.release_date_warning_days);
+  if (!Number.isInteger(daysUntil) || daysUntil < 0 || !Number.isInteger(warningDays) || warningDays <= 0) return null;
+  const timeLabel = daysUntil === 0 ? 'is today' : `is in ${daysUntil} day${daysUntil === 1 ? '' : 's'}`;
+  const timingLabel = item.release_timing === 'Before Open' || item.release_timing === 'After Close' ? `, ${item.release_timing}` : '';
+  const message = `Release date ${timeLabel}${timingLabel}. Consider waiting for results before executing.`;
+  return {
+    message,
+    ariaLabel: `Release date is within ${warningDays} days for ${item.symbol || 'this stock'}. ${message}`,
+  };
+}
+function renderLinearReleaseDateWarning(item) {
+  const warning = getLinearReleaseDateWarning(item);
+  if (!warning) return '';
+  return `<span class="release-date-warning-icon" role="img" tabindex="0" title="${escapeHtml(warning.message)}" aria-label="${escapeHtml(warning.ariaLabel)}">⚠</span>`;
+}
 function formatLinearMomentum(item) {
   const score = Number(item?.momentum_score);
   return Number.isFinite(score) ? `${score.toFixed(1)}${item?.momentum_label ? ` ${item.momentum_label}` : ''}` : '—';
@@ -2662,7 +2690,7 @@ function renderLinearAllocationRows() {
       const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
       const releaseTitle = item.release_date ? `Next known earnings release date: ${formatLinearReleaseDate(item).replace(/ BMO| AMC/, '')}${item.release_timing ? `, ${item.release_timing}` : ''}.` : 'Next known earnings release date from BakingMoney earnings calendar.';
       const momentumTitle = Number.isFinite(Number(item.momentum_score)) ? `Momentum: ${Number(item.momentum_score).toFixed(1)}/5${item.momentum_label ? ` ${item.momentum_label}` : ''}${item.momentum_updated_at ? `. Updated: ${item.momentum_updated_at}` : ''}.` : 'Momentum score and label from the stored deterministic momentum snapshot.';
-      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="release-date-cell" title="${escapeHtml(releaseTitle)}">${escapeHtml(formatLinearReleaseDate(item))}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="momentum-cell" title="${escapeHtml(momentumTitle)}">${escapeHtml(formatLinearMomentum(item))}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
+      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="release-date-cell" title="${escapeHtml(releaseTitle)}">${escapeHtml(formatLinearReleaseDate(item))}${renderLinearReleaseDateWarning(item)}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="momentum-cell" title="${escapeHtml(momentumTitle)}">${escapeHtml(formatLinearMomentum(item))}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
       actionPlanLinearActionsTableBody.appendChild(row);
       if (hasLinearTargetCap(item)) {
         const warningButton = document.createElement('button');

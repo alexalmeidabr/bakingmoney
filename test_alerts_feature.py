@@ -1698,6 +1698,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-action-plan-setting="linear_score_allocation_power"', html)
         self.assertIn('data-action-plan-setting="linear_add_band_tolerance_pct"', html)
         self.assertIn('data-action-plan-setting="linear_trim_band_tolerance_pct"', html)
+        self.assertIn('data-action-plan-setting="linear_release_date_warning_days"', html)
+        self.assertIn('Linear release date warning days', html)
+        self.assertIn('Set to 0 to disable.', html)
         self.assertNotIn('data-action-plan-setting="linear_target_band_tolerance_pct" type="number"', html)
         self.assertIn('data-action-plan-setting="linear_rating_bonus_enabled"', html)
         self.assertIn('data-action-plan-setting="linear_strong_buy_rating_bonus"', html)
@@ -1705,6 +1708,12 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-action-plan-setting="linear_block_buy_actions_for_hold_rating"', html)
         self.assertIn("'core_confidence_penalty', 'upside_penalty', 'potential_confidence_penalty', 'hold_rating_penalty', 'linear_strong_buy_rating_bonus', 'linear_buy_rating_bonus'", js)
         self.assertIn('function renderLinearAllocationRows()', js)
+        self.assertIn('function getLinearReleaseDateWarning(item)', js)
+        self.assertIn('function renderLinearReleaseDateWarning(item)', js)
+        self.assertIn('class="release-date-warning-icon"', js)
+        self.assertIn('Release date is within ${warningDays} days', js)
+        self.assertIn('renderLinearReleaseDateWarning(item)', js)
+        self.assertIn('.release-date-warning-icon', css)
         self.assertIn('actionPlanLinearActionsTableBody', js)
         self.assertIn('getFilteredLinearActionPlanItems', js)
         self.assertIn('sortLinearActionPlanItems', js)
@@ -3911,6 +3920,28 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertEqual(populated["momentum_label"], "Positive")
         self.assertIsNone(missing["release_date"])
         self.assertIsNone(missing["momentum_score"])
+
+    def test_linear_release_date_warning_uses_inclusive_calendar_day_window(self):
+        today = web_server.date(2026, 8, 9)
+        self.assertEqual(web_server.ACTION_PLAN_DEFAULT_SETTINGS["linear_release_date_warning_days"], 30)
+        self.assertTrue(web_server._linear_release_date_warning_details("2026-08-09", 30, today)["release_date_warning"])
+        self.assertTrue(web_server._linear_release_date_warning_details("2026-09-08", 30, today)["release_date_warning"])
+        self.assertEqual(web_server._linear_release_date_warning_details("2026-09-08", 30, today)["release_date_days_until"], 30)
+        self.assertFalse(web_server._linear_release_date_warning_details("2026-09-09", 30, today)["release_date_warning"])
+        self.assertFalse(web_server._linear_release_date_warning_details("2026-08-08", 30, today)["release_date_warning"])
+        self.assertFalse(web_server._linear_release_date_warning_details(None, 30, today)["release_date_warning"])
+        self.assertFalse(web_server._linear_release_date_warning_details("invalid", 30, today)["release_date_warning"])
+        self.assertFalse(web_server._linear_release_date_warning_details("2026-08-09", 0, today)["release_date_warning"])
+
+    def test_linear_release_date_warning_setting_validation(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_release_date_warning_days"] = 365
+        self.assertEqual(web_server.validate_action_plan_settings(settings)["linear_release_date_warning_days"], 365.0)
+        for value in (-1, 366, 1.5):
+            invalid_settings = dict(settings)
+            invalid_settings["linear_release_date_warning_days"] = value
+            with self.assertRaisesRegex(ValueError, "linear_release_date_warning_days"):
+                web_server.validate_action_plan_settings(invalid_settings)
 
     def test_linear_hold_rating_buy_guardrail_blocks_adds_without_consuming_budget(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

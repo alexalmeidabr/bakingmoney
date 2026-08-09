@@ -46,6 +46,9 @@ const actionPlanOpenAnalysisBtn = document.getElementById('action-plan-open-anal
 const actionPlanDetailTitleEl = document.getElementById('action-plan-detail-title');
 const actionPlanDetailStatusEl = document.getElementById('action-plan-detail-status');
 const actionPlanDetailContentEl = document.getElementById('action-plan-detail-content');
+const linearCapExplanationModalEl = document.getElementById('linear-cap-explanation-modal');
+const linearCapExplanationContentEl = document.getElementById('linear-cap-explanation-content');
+const linearCapExplanationCloseBtn = document.getElementById('linear-cap-explanation-close-btn');
 const actionPlanRatingFilterEl = document.getElementById('action-plan-rating-filter');
 const actionPlanRatingFilterToggleEl = document.getElementById('action-plan-rating-filter-toggle');
 const actionPlanRatingFilterLabelEl = document.getElementById('action-plan-rating-filter-label');
@@ -2585,6 +2588,69 @@ function renderActionPlanBuckets() {
   }));
 }
 
+function getLinearCapAppliedAmount(item) {
+  const amounts = [item?.cap_applied, item?.linear_cap_applied]
+    .map((value) => Number(value))
+    .filter(Number.isFinite);
+  return amounts.length ? Math.max(...amounts) : null;
+}
+
+function hasLinearTargetCap(item) {
+  const amount = getLinearCapAppliedAmount(item);
+  return amount != null && amount > 0.0001;
+}
+
+function formatLinearTargetBand(low, mid, high) {
+  return `${formatLinearCapPercent(low)} – ${formatLinearCapPercent(high)} (mid ${formatLinearCapPercent(mid)})`;
+}
+
+function formatLinearCapPercent(value) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? formatPercent(numericValue) : '—';
+}
+
+function formatLinearCapNumber(value) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? formatNumber(numericValue) : '—';
+}
+
+function closeLinearCapExplanationModal() {
+  linearCapExplanationModalEl?.classList.add('hidden');
+}
+
+function openLinearCapExplanationModal(item) {
+  if (!linearCapExplanationModalEl || !linearCapExplanationContentEl) return;
+  const currentLow = item.adjusted_target_low ?? item.linear_target_weight_low ?? item.target_weight_low;
+  const currentMid = item.adjusted_target_mid ?? item.linear_target_weight_mid ?? item.target_weight_mid;
+  const currentHigh = item.adjusted_target_high ?? item.linear_target_weight_high ?? item.target_weight_high;
+  const uncappedLow = item.uncapped_target_low;
+  const uncappedMid = item.uncapped_target_mid ?? item.linear_target_mid_before_caps;
+  const uncappedHigh = item.uncapped_target_high;
+  const capAmount = getLinearCapAppliedAmount(item);
+  const calculatedReduction = Number(uncappedMid) - Number(currentMid);
+  const reduction = capAmount != null && capAmount > 0.0001
+    ? capAmount
+    : (Number.isFinite(calculatedReduction) && calculatedReduction > 0.0001 ? calculatedReduction : null);
+  const reason = item.cap_reason || item.linear_cap_reason || '—';
+  const details = [];
+  if (Number.isFinite(Number(item.bearish_cap_progress)) && Number(item.bearish_cap_progress) > 0) {
+    details.push(`Bearish confidence is ${formatLinearCapNumber(item.bearish_confidence ?? item.core_bearish_confidence)}; cap progress is ${formatLinearCapPercent(Number(item.bearish_cap_progress) * 100)}.`);
+    details.push(`Configured bearish-confidence thresholds: ${formatLinearCapNumber(item.bearish_confidence_min_threshold)} to ${formatLinearCapNumber(item.bearish_confidence_max_threshold)}; full cap: ${formatLinearCapPercent(item.bearish_cap_full_limit)}.`);
+  }
+  if (item.bearish_cap_diagnostic) details.push(String(item.bearish_cap_diagnostic));
+  const metricRows = [
+    ['Symbol', escapeHtml(item.symbol || '—')],
+    ['Reason', escapeHtml(reason)],
+    ['Target before cap', formatLinearTargetBand(uncappedLow, uncappedMid, uncappedHigh)],
+    ['Target after cap', formatLinearTargetBand(currentLow, currentMid, currentHigh)],
+    ['Cap impact', reduction == null ? '—' : `${formatLinearCapPercent(reduction)} percentage points`],
+    ['Effective cap', formatLinearCapPercent(item.linear_effective_cap)],
+  ];
+  linearCapExplanationContentEl.innerHTML = `${renderActionPlanMetricList(metricRows)}${details.length ? `<section class="cap-explanation-details"><h4>Details</h4>${details.map((detail) => `<p>${escapeHtml(detail)}</p>`).join('')}</section>` : ''}`;
+  linearCapExplanationModalEl.classList.remove('hidden');
+  linearCapExplanationCloseBtn?.focus();
+}
+
 function renderLinearAllocationRows() {
   const rows = Array.isArray(latestActionPlanPayload?.linear_action_plan) ? latestActionPlanPayload.linear_action_plan : [];
   const actionRows = sortLinearActionPlanItems(getFilteredLinearActionPlanItems());
@@ -2598,8 +2664,25 @@ function renderLinearAllocationRows() {
       const momentumTitle = Number.isFinite(Number(item.momentum_score)) ? `Momentum: ${Number(item.momentum_score).toFixed(1)}/5${item.momentum_label ? ` ${item.momentum_label}` : ''}${item.momentum_updated_at ? `. Updated: ${item.momentum_updated_at}` : ''}.` : 'Momentum score and label from the stored deterministic momentum snapshot.';
       row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="release-date-cell" title="${escapeHtml(releaseTitle)}">${escapeHtml(formatLinearReleaseDate(item))}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="momentum-cell" title="${escapeHtml(momentumTitle)}">${escapeHtml(formatLinearMomentum(item))}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
       actionPlanLinearActionsTableBody.appendChild(row);
+      if (hasLinearTargetCap(item)) {
+        const warningButton = document.createElement('button');
+        warningButton.type = 'button';
+        warningButton.className = 'cap-warning-button';
+        warningButton.dataset.symbol = item.symbol || '';
+        warningButton.setAttribute('aria-label', `View target cap explanation for ${item.symbol || 'this stock'}`);
+        warningButton.title = 'View target cap explanation';
+        warningButton.textContent = '⚠';
+        const targetBandRange = row.querySelector('.target-band-range');
+        if (targetBandRange) targetBandRange.after(warningButton);
+      }
     });
     actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+    actionPlanLinearActionsTableBody.querySelectorAll('.cap-warning-button').forEach((btn) => btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = actionRows.find((candidate) => candidate.symbol === btn.dataset.symbol);
+      if (item) openLinearCapExplanationModal(item);
+    }));
   }
 
   if (actionPlanLinearDetailTableBody) {
@@ -5825,10 +5908,15 @@ document.addEventListener('keydown', (event) => {
   setEarningsCalendarFiscalYearFilterOpen(false);
   setEarningsCalendarFiscalQuarterFilterOpen(false);
   closeConfigHelpModal();
+  closeLinearCapExplanationModal();
 });
 configHelpCloseBtn?.addEventListener('click', closeConfigHelpModal);
 configHelpModalEl?.addEventListener('click', (event) => {
   if (event.target === configHelpModalEl) closeConfigHelpModal();
+});
+linearCapExplanationCloseBtn?.addEventListener('click', closeLinearCapExplanationModal);
+linearCapExplanationModalEl?.addEventListener('click', (event) => {
+  if (event.target === linearCapExplanationModalEl) closeLinearCapExplanationModal();
 });
 analysisSelectAllEl.addEventListener('change', () => {
   const visibleItems = getFilteredAnalysisItems();

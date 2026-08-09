@@ -39,18 +39,10 @@ test('Linear Allocation action table includes CAGR between Upside and Core Confi
   assert.ok(headers.indexOf('CAGR') < headers.indexOf('Core Confidence'));
 });
 
-test('Linear Allocation detail table also keeps CAGR immediately after Upside', () => {
-  const headers = tableHeaders('action-plan-linear-detail-table');
-  assert.equal(headers[headers.indexOf('Upside') + 1], 'CAGR');
-  assert.ok(headers.indexOf('CAGR') < headers.indexOf('Core Net'));
-});
-
-test('Bucket Allocation table remains unchanged by the Linear CAGR column', () => {
-  const headers = tableHeaders('action-plan-table');
-  assert.ok(headers.includes('Upside'));
-  assert.ok(headers.includes('Core Confidence'));
-  assert.equal(headers.includes('CAGR'), false);
-  assert.equal(headers[headers.indexOf('Upside') + 1], 'Core Confidence');
+test('Action Plan exposes only the Linear Allocation table', () => {
+  assert.equal(indexHtml.includes('id="action-plan-linear-detail-table"'), false);
+  assert.equal(indexHtml.includes('id="action-plan-table"'), false);
+  assert.equal(indexHtml.includes('id="action-plan-tab-buckets"'), false);
 });
 
 test('Linear CAGR uses expected_equity_cagr before legacy expected CAGR fields', () => {

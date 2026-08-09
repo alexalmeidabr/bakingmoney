@@ -991,6 +991,48 @@ th.sortable[data-sort-direction='desc']::after {
   outline: none;
 }
 
+.cap-warning-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #b45309;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.cap-warning-button:hover,
+.cap-warning-button:focus {
+  color: #92400e;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cap-explanation-modal {
+  width: min(560px, 100%);
+}
+
+.cap-explanation-content .action-detail-metrics {
+  margin: 0;
+}
+
+.cap-explanation-details {
+  margin-top: 16px;
+}
+
+.cap-explanation-details h4 {
+  margin: 0 0 8px;
+}
+
+.cap-explanation-details p {
+  margin: 6px 0;
+}
+
 .config-help-modal-content {
   width: min(720px, 100%);
 }

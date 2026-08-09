@@ -1713,6 +1713,32 @@ function formatDate(value) {
   const year = d.getFullYear();
   return `${day}.${month}.${year}`;
 }
+function getLinearReleaseDateParts(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]);
+  const timestamp = Date.UTC(year, month - 1, day);
+  return Number.isFinite(timestamp) && month >= 1 && month <= 12 && day >= 1 && day <= 31 ? { year, month, day, timestamp } : null;
+}
+function formatLinearReleaseDate(item) {
+  const parts = getLinearReleaseDateParts(item?.release_date);
+  if (!parts) return '—';
+  const month = new Intl.DateTimeFormat(undefined, { month: 'short', timeZone: 'UTC' }).format(new Date(parts.timestamp));
+  const currentYear = new Date().getFullYear();
+  const timing = item?.release_timing === 'Before Open' ? ' BMO' : (item?.release_timing === 'After Close' ? ' AMC' : '');
+  return `${month} ${parts.day}${parts.year === currentYear ? '' : `, ${parts.year}`}${timing}`;
+}
+function getLinearReleaseDateSortValue(item) {
+  const parts = getLinearReleaseDateParts(item?.release_date);
+  if (!parts) return null;
+  const today = new Date();
+  const todayTimestamp = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+  return parts.timestamp >= todayTimestamp ? parts.timestamp : 10000000000000000 + parts.timestamp;
+}
+function formatLinearMomentum(item) {
+  const score = Number(item?.momentum_score);
+  return Number.isFinite(score) ? `${score.toFixed(1)}${item?.momentum_label ? ` ${item.momentum_label}` : ''}` : '—';
+}
 function formatLocalDateForExternalScenarioNotes(dateValue = new Date()) {
   const day = String(dateValue.getDate()).padStart(2, '0');
   const month = String(dateValue.getMonth() + 1).padStart(2, '0');
@@ -2264,6 +2290,7 @@ function getFilteredLinearActionPlanItems() {
 
 function getActionPlanNumericSortValue(item, key) {
   if (!item || !key) return null;
+  if (key === 'release_date') return getLinearReleaseDateSortValue(item);
   if (key === 'target_band') return window.ActionPlanSorting.getTargetBandMidpoint(item);
   if (key === 'expected_equity_cagr') return window.ActionPlanSorting.getLinearCagrValue(item);
   if (key === 'current_position_market_value') {
@@ -2585,7 +2612,9 @@ function renderLinearAllocationRows() {
       const row = document.createElement('tr');
       const cagr = window.ActionPlanSorting.getLinearCagrValue(item);
       const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
-      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
+      const releaseTitle = item.release_date ? `Next known earnings release date: ${formatLinearReleaseDate(item).replace(/ BMO| AMC/, '')}${item.release_timing ? `, ${item.release_timing}` : ''}.` : 'Next known earnings release date from BakingMoney earnings calendar.';
+      const momentumTitle = Number.isFinite(Number(item.momentum_score)) ? `Momentum: ${Number(item.momentum_score).toFixed(1)}/5${item.momentum_label ? ` ${item.momentum_label}` : ''}${item.momentum_updated_at ? `. Updated: ${item.momentum_updated_at}` : ''}.` : 'Momentum score and label from the stored deterministic momentum snapshot.';
+      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="release-date-cell" title="${escapeHtml(releaseTitle)}">${escapeHtml(formatLinearReleaseDate(item))}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="momentum-cell" title="${escapeHtml(momentumTitle)}">${escapeHtml(formatLinearMomentum(item))}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
       actionPlanLinearActionsTableBody.appendChild(row);
     });
     actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));

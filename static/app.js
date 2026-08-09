@@ -34,23 +34,10 @@ const analysisRefreshPricesBtn = document.getElementById('analysis-refresh-price
 const analysisUpdateMomentumBtn = document.getElementById('analysis-update-momentum-btn');
 const actionPlanStatusEl = document.getElementById('action-plan-status');
 const actionPlanSummaryEl = document.getElementById('action-plan-summary');
-const actionPlanTableBody = document.querySelector('#action-plan-table tbody');
-const actionPlanActionsPanelEl = document.getElementById('action-plan-actions-panel');
-const actionPlanBucketsPanelEl = document.getElementById('action-plan-buckets-panel');
-const actionPlanBucketActionsTableWrapEl = document.getElementById('action-plan-bucket-actions-table-wrap');
 const actionPlanLinearActionsPanelEl = document.getElementById('action-plan-linear-actions-panel');
-const actionPlanLinearDetailPanelEl = document.getElementById('action-plan-linear-detail-panel');
 const actionPlanLinearActionsTableBody = document.querySelector('#action-plan-linear-actions-table tbody');
-const actionPlanLinearDetailTableBody = document.querySelector('#action-plan-linear-detail-table tbody');
-const actionPlanModeBucketBtn = document.getElementById('action-plan-mode-bucket');
-const actionPlanModeLinearBtn = document.getElementById('action-plan-mode-linear');
-const actionPlanBucketsContentEl = document.getElementById('action-plan-buckets-content');
-const actionPlanTabActionsBtn = document.getElementById('action-plan-tab-actions');
-const actionPlanTabBucketsBtn = document.getElementById('action-plan-tab-buckets');
-const actionPlanTabLinearBtn = document.getElementById('action-plan-tab-linear');
-const actionPlanSortHeaders = document.querySelectorAll('#action-plan-table th.sortable');
+const actionPlanLinearDetailTableBody = null;
 const actionPlanLinearSortHeaders = document.querySelectorAll('#action-plan-linear-actions-table th.sortable');
-const actionPlanLinearDetailSortHeaders = document.querySelectorAll('#action-plan-linear-detail-table th.sortable');
 const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
 const actionPlanListViewEl = document.getElementById('action-plan-list-view');
 const actionPlanDetailViewEl = document.getElementById('action-plan-detail-view');
@@ -287,12 +274,7 @@ let positionSort = { key: 'marketValue', direction: 'desc' };
 let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
 let selectedActionPlanDetail = null;
-let actionPlanSort = { key: null, direction: 'asc' };
 let actionPlanLinearSort = { key: 'linear_allocation_score', direction: 'desc' };
-let actionPlanLinearDetailSort = { key: 'linear_allocation_score', direction: 'desc' };
-let actionPlanBucketSorts = {};
-let actionPlanActiveTab = 'actions';
-let actionPlanActionMode = 'bucket';
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
 let ratingFilters = new Set();
@@ -1878,7 +1860,7 @@ const sortAnalysis = (items) => [...items].sort((a, b) => {
 
 function updateSortHeaderState() { positionSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === positionSort.key ? positionSort.direction : ''; }); }
 function updateAnalysisSortHeaderState() { analysisSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === analysisSort.key ? analysisSort.direction : ''; }); }
-function updateActionPlanSortHeaderState() { actionPlanSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanSort.key ? actionPlanSort.direction : ''; }); actionPlanLinearSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanLinearSort.key ? actionPlanLinearSort.direction : ''; }); actionPlanLinearDetailSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanLinearDetailSort.key ? actionPlanLinearDetailSort.direction : ''; }); }
+function updateActionPlanSortHeaderState() { actionPlanLinearSortHeaders.forEach((h) => { h.dataset.sortDirection = h.dataset.sortKey === actionPlanLinearSort.key ? actionPlanLinearSort.direction : ''; }); }
 
 function renderPositionsPortfolioSummary(summary = latestPositionsPortfolioSummary) {
   if (!positionsPortfolioSummaryEl) return;
@@ -2239,7 +2221,7 @@ async function openActionPlanDetail(symbol) {
 }
 
 async function loadActionPlan() {
-  if (!actionPlanTableBody) return;
+  if (!actionPlanLinearActionsTableBody) return;
   showActionPlanList();
   actionPlanStatusEl.textContent = 'Loading Action Plan…';
   actionPlanStatusEl.className = 'status';
@@ -2249,7 +2231,7 @@ async function loadActionPlan() {
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load Action Plan'));
     latestActionPlanPayload = payload || { action_plan: [], summary: {} };
     renderActionPlan();
-    actionPlanStatusEl.textContent = `Loaded ${payload.action_plan?.length || 0} Action Plan rows.`;
+    actionPlanStatusEl.textContent = `Loaded ${payload.linear_action_plan?.length || 0} Linear Allocation rows.`;
     actionPlanStatusEl.className = 'status';
   } catch (error) {
     actionPlanStatusEl.textContent = `Error: ${error.message}`;
@@ -2681,15 +2663,10 @@ function renderActionPlanSummaryCards(summary, modeLabel) {
 }
 
 function renderActionPlan() {
-  const payload = latestActionPlanPayload || { action_plan: [], summary: {} };
-  const summary = payload.summary || {};
-  const cashEquivalentNote = (summary.cash_equivalent_symbols || []).length ? `<p class="status">Cash-like holdings include ${escapeHtml((summary.cash_equivalent_symbols || []).join(', '))}.</p>` : '';
-  const portfolioWarning = summary.portfolio_value_warning ? `<p class="status warning">${escapeHtml(summary.portfolio_value_warning)}</p>` : '';
-  const executionWarning = summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : '';
-  const showLinearMode = actionPlanActiveTab === 'linear' || (actionPlanActiveTab === 'actions' && actionPlanActionMode === 'linear');
-  const visibleSummary = showLinearMode ? (summary.linear_summary || {}) : summary;
-  actionPlanSummaryEl.innerHTML = renderActionPlanSummaryCards(visibleSummary, showLinearMode ? 'Linear Allocation' : 'Bucket Allocation') + (showLinearMode ? '' : `${portfolioWarning}${executionWarning}${cashEquivalentNote}`);
+  const summary = latestActionPlanPayload?.summary?.linear_summary || {};
+  actionPlanSummaryEl.innerHTML = renderActionPlanSummaryCards(summary, 'Linear Allocation');
   renderLinearAllocationRows();
+  return;
   if (actionPlanBucketActionsTableWrapEl) actionPlanBucketActionsTableWrapEl.classList.toggle('hidden', actionPlanActiveTab !== 'actions' || actionPlanActionMode !== 'bucket');
   if (actionPlanLinearActionsPanelEl) actionPlanLinearActionsPanelEl.classList.toggle('hidden', !(actionPlanActiveTab === 'actions' && actionPlanActionMode === 'linear'));
   if (actionPlanLinearDetailPanelEl) actionPlanLinearDetailPanelEl.classList.toggle('hidden', actionPlanActiveTab !== 'linear');
@@ -5441,6 +5418,7 @@ function applyActionPlanSettingsToForm(settings) {
 }
 
 function updateActionPlanBucketTotal() {
+  if (!configActionPlanTotalEl) return;
   const settings = getActionPlanSettingsFromForm();
   const total = ['action_bucket_strong_buy_target', 'action_bucket_buy_target', 'action_bucket_speculative_buy_target', 'action_bucket_hold_target', 'action_bucket_cash_target', 'action_bucket_sell_target', 'action_bucket_strong_sell_target']
     .reduce((sum, key) => sum + (Number.isFinite(settings[key]) ? settings[key] : 0), 0);
@@ -5669,26 +5647,11 @@ analysisSortHeaders.forEach((header) => header.addEventListener('click', () => {
   if (analysisSort.key === sortKey) analysisSort.direction = analysisSort.direction === 'asc' ? 'desc' : 'asc'; else analysisSort = { key: sortKey, direction: 'asc' };
   updateAnalysisSortHeaderState(); renderAnalysisList();
 }));
-actionPlanSortHeaders.forEach((header) => header.addEventListener('click', () => {
-  const { sortKey } = header.dataset; if (!sortKey) return;
-  if (actionPlanSort.key === sortKey) actionPlanSort.direction = actionPlanSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanSort = { key: sortKey, direction: 'asc' };
-  updateActionPlanSortHeaderState(); renderActionPlan();
-}));
 actionPlanLinearSortHeaders.forEach((header) => header.addEventListener('click', () => {
   const { sortKey } = header.dataset; if (!sortKey) return;
   if (actionPlanLinearSort.key === sortKey) actionPlanLinearSort.direction = actionPlanLinearSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanLinearSort = { key: sortKey, direction: sortKey === 'linear_allocation_score' ? 'desc' : 'asc' };
   updateActionPlanSortHeaderState(); renderActionPlan();
 }));
-actionPlanLinearDetailSortHeaders.forEach((header) => header.addEventListener('click', () => {
-  const { sortKey } = header.dataset; if (!sortKey) return;
-  if (actionPlanLinearDetailSort.key === sortKey) actionPlanLinearDetailSort.direction = actionPlanLinearDetailSort.direction === 'asc' ? 'desc' : 'asc'; else actionPlanLinearDetailSort = { key: sortKey, direction: sortKey === 'linear_allocation_score' ? 'desc' : 'asc' };
-  updateActionPlanSortHeaderState(); renderActionPlan();
-}));
-actionPlanTabActionsBtn.addEventListener('click', () => setActionPlanTab('actions'));
-actionPlanTabBucketsBtn.addEventListener('click', () => setActionPlanTab('buckets'));
-actionPlanTabLinearBtn?.addEventListener('click', () => setActionPlanTab('linear'));
-actionPlanModeBucketBtn?.addEventListener('click', () => setActionPlanActionMode('bucket'));
-actionPlanModeLinearBtn?.addEventListener('click', () => setActionPlanActionMode('linear'));
 analysisPortfolioFilterEl.addEventListener('change', () => {
   portfolioFilter = analysisPortfolioFilterEl.value || 'all';
   renderAnalysisList();

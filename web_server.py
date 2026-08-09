@@ -353,6 +353,7 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "linear_block_buy_actions_for_hold_rating": True,
     "linear_high_extension_guardrail_enabled": True,
     "linear_high_extension_risk_threshold": 4.0,
+    "linear_release_date_warning_days": 30,
 }
 ACTION_PLAN_BOOL_SETTINGS = {
     "action_include_current_positions",
@@ -1942,6 +1943,8 @@ def validate_action_plan_settings(settings):
     ):
         if effective[key] < 0.0 or effective[key] > 100.0:
             raise ValueError(f"{key} must be between 0 and 100")
+    if effective["linear_release_date_warning_days"] < 0 or effective["linear_release_date_warning_days"] > 365 or not effective["linear_release_date_warning_days"].is_integer():
+        raise ValueError("linear_release_date_warning_days must be a whole number between 0 and 365")
     if effective["action_min_cash_unallocated_target"] > effective["linear_max_reserve_pct"]:
         raise ValueError("linear_max_reserve_pct must be greater than or equal to action_min_cash_unallocated_target")
     if effective["linear_score_allocation_power"] < 0.5 or effective["linear_score_allocation_power"] > 5.0:
@@ -8411,6 +8414,28 @@ def is_linear_buy_action_allowed_for_rating(rating, settings):
     return normalized_rating in {"strong buy", "buy", "speculative buy"}
 
 
+def _linear_release_date_warning_details(release_date, warning_days, today=None):
+    """Return display-only release-date warning metadata using the server's local date."""
+    safe_warning_days = safe_number(warning_days)
+    if safe_warning_days is None or safe_warning_days <= 0:
+        return {"release_date_warning": False, "release_date_warning_days": 0, "release_date_days_until": None, "release_date_warning_reason": None}
+    normalized_date = str(release_date or "").strip()
+    try:
+        parsed_date = date.fromisoformat(normalized_date)
+    except (TypeError, ValueError):
+        return {"release_date_warning": False, "release_date_warning_days": int(safe_warning_days), "release_date_days_until": None, "release_date_warning_reason": None}
+    if parsed_date.isoformat() != normalized_date:
+        return {"release_date_warning": False, "release_date_warning_days": int(safe_warning_days), "release_date_days_until": None, "release_date_warning_reason": None}
+    days_until = (parsed_date - (today or date.today())).days
+    is_near = 0 <= days_until <= safe_warning_days
+    return {
+        "release_date_warning": is_near,
+        "release_date_warning_days": int(safe_warning_days),
+        "release_date_days_until": days_until,
+        "release_date_warning_reason": "Release date is within the configured warning window" if is_near else None,
+    }
+
+
 def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings):
     target_total = safe_number(settings.get("linear_allocated_target_total_pct")) or 0.0
     weight_keys = ["linear_expected_cagr_weight", "linear_upside_weight", "linear_core_confidence_weight", "linear_potential_confidence_weight", "linear_confidence_quality_weight"]
@@ -8485,6 +8510,9 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "release_date": item.get("release_date"),
             "release_timing": item.get("release_timing"),
         }
+        row.update(_linear_release_date_warning_details(
+            row["release_date"], settings.get("linear_release_date_warning_days"),
+        ))
         cap, cap_reason = _linear_cap_details(row, settings)
         row["linear_effective_cap"] = cap
         row["linear_effective_cap_reason"] = cap_reason

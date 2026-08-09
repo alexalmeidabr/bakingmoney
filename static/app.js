@@ -511,6 +511,8 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   linear_strong_buy_rating_bonus: 0.05,
   linear_buy_rating_bonus: 0.02,
   linear_block_buy_actions_for_hold_rating: true,
+  linear_high_extension_guardrail_enabled: true,
+  linear_high_extension_risk_threshold: 4.0,
 };
 
 const CONFIG_HELP = {};
@@ -873,6 +875,25 @@ function registerActionPlanConfigHelp() {
     example: 'A Hold-rated stock below its Linear Target Low still shows its target gap and band, but Action Amount is — and Funding shows Rating blocks add.',
     tuning: 'Keep enabled when Hold means acceptable to keep but not high-conviction enough for new capital. Disable only if you want the previous behavior where Hold-rated underweights can receive buy-side actions.',
     related: ['Hold rating penalty', 'Linear Allocation Actions', 'Rating Settings'],
+  });
+
+  addConfigHelp('linear_high_extension_guardrail_enabled', {
+    title: 'Linear high extension guardrail enabled',
+    meaning: 'When enabled, Linear Allocation defers Add actions for stocks with Extension Risk at or above this 0–5 threshold to avoid chasing extended moves.',
+    usedIn: 'Used only after the Target Band and rating guardrail decisions, before whole-share execution and funding. Deferred rows show Watch / Extended and do not consume buy budget.',
+    formula: 'If the final Target Band action is Add and Extension Risk >= linear_high_extension_risk_threshold, action becomes Watch / Extended.',
+    example: 'An underweight Buy-rated stock with Extension Risk 4.3 and a threshold of 4.0 remains strategically underweight but displays Watch / Extended.',
+    tuning: 'Keep enabled to defer tactical entries after extended moves. Disable it to let target-band Add actions proceed regardless of Extension Risk.',
+    related: ['Linear high extension risk threshold', 'Extension Risk', 'Linear Allocation Actions'],
+  });
+
+  addConfigHelp('linear_high_extension_risk_threshold', {
+    title: 'Linear high extension risk threshold',
+    meaning: 'Raw 0–5 Extension Risk score at or above which the Linear high extension guardrail defers Add actions.',
+    usedIn: 'Used only by the Linear high extension guardrail; it does not change Linear Score, Target Bands, or Extension Risk calculation.',
+    example: 'With a threshold of 4.0, Extension Risk 4.0 or 4.3 defers an otherwise executable Add.',
+    tuning: 'Default 4.0 reserves the guardrail for high Extension Risk. Lower it to defer more entries, or raise it to defer only the most extended moves.',
+    related: ['Linear high extension guardrail enabled', 'Extension Risk'],
   });
 
   addConfigHelp('linear_allocated_target_total_pct', {

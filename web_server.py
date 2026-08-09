@@ -351,6 +351,8 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "linear_strong_buy_rating_bonus": 0.05,
     "linear_buy_rating_bonus": 0.02,
     "linear_block_buy_actions_for_hold_rating": True,
+    "linear_high_extension_guardrail_enabled": True,
+    "linear_high_extension_risk_threshold": 4.0,
 }
 ACTION_PLAN_BOOL_SETTINGS = {
     "action_include_current_positions",
@@ -374,6 +376,7 @@ ACTION_PLAN_BOOL_SETTINGS = {
     "hold_rating_penalty_enabled",
     "linear_rating_bonus_enabled",
     "linear_block_buy_actions_for_hold_rating",
+    "linear_high_extension_guardrail_enabled",
 }
 ACTION_PLAN_TEXT_SETTINGS = {
     "action_cash_equivalent_symbols",
@@ -394,6 +397,7 @@ ACTION_PLAN_ACTION_PRIORITY = {
     "Strong Trim": 5,
     "Sell": 6,
     "Watch": 7,
+    "Watch / Extended": 7,
     "Hold": 8,
     "Hold / Overweight": 8,
     "Re-evaluate": 9,
@@ -1882,6 +1886,8 @@ def validate_action_plan_settings(settings):
         raise ValueError("linear_rating_bonus_enabled must be boolean")
     if "linear_block_buy_actions_for_hold_rating" in settings and not isinstance(settings.get("linear_block_buy_actions_for_hold_rating"), bool):
         raise ValueError("linear_block_buy_actions_for_hold_rating must be boolean")
+    if "linear_high_extension_guardrail_enabled" in settings and not isinstance(settings.get("linear_high_extension_guardrail_enabled"), bool):
+        raise ValueError("linear_high_extension_guardrail_enabled must be boolean")
     for key, default in ACTION_PLAN_DEFAULT_SETTINGS.items():
         if key in ACTION_PLAN_BOOL_SETTINGS or key in ACTION_PLAN_TEXT_SETTINGS:
             if key in ACTION_PLAN_TEXT_SETTINGS:
@@ -1951,6 +1957,8 @@ def validate_action_plan_settings(settings):
             "linear_high_bearish_confidence_max_threshold must be greater than "
             "linear_high_bearish_confidence_min_threshold"
         )
+    if effective["linear_high_extension_risk_threshold"] < 0.0 or effective["linear_high_extension_risk_threshold"] > 5.0:
+        raise ValueError("linear_high_extension_risk_threshold must be between 0 and 5")
     if effective["action_upside_full_score"] <= effective["action_upside_zero_score"]:
         raise ValueError("action_upside_full_score must be greater than action_upside_zero_score")
     if effective["action_core_diff_full_score"] <= effective["action_core_diff_zero_score"]:
@@ -8140,6 +8148,8 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
             executable_sell_trim_proceeds += executable
         elif row.get("action") in buy_actions and row.get("desired_share_count", 0) > 0:
             row["funding_status"] = "Unfunded / Watch"
+        elif row.get("action") == "Watch / Extended" and row.get("target_gap_amount", 0.0) > 0:
+            row["funding_status"] = "Extension guardrail"
         elif row.get("action") == "Watch / Rating Guardrail" and row.get("target_gap_amount", 0.0) > 0:
             row["funding_status"] = "Rating blocks add"
         elif row.get("action") in {"Watch", "Watch / Underweight", "Hold / Overweight"} and row.get("target_gap_amount", 0.0) > 0:
@@ -8287,6 +8297,11 @@ def _linear_action_decision_path(row, action):
         path.append({"status": "pass", "text": "Current position is inside the target band."})
     if action == "Watch / Rating Guardrail":
         path.append({"status": "warning", "text": "Rating guardrail blocks the buy-side action."})
+    elif action == "Watch / Extended":
+        extension_risk = safe_number(row.get("extension_risk"))
+        threshold = safe_number(row.get("extension_guardrail_threshold"))
+        if extension_risk is not None and threshold is not None:
+            path.append({"status": "warning", "text": f"Extension Risk is {extension_risk:.1f}/5, at or above the configured threshold of {threshold:.1f}."})
     path.append({"status": "result", "text": f"Action = {action}."})
     return path
 
@@ -8456,6 +8471,11 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         })
         current_weight = safe_number(row.get("current_position_weight")) or 0.0
         rating_label = str(row.get("rating") or "").strip()
+        extension_risk = safe_number(row.get("extension_risk"))
+        extension_guardrail_applied = False
+        extension_guardrail_reason = None
+        extension_guardrail_diagnostic = None
+        extension_guardrail_threshold = safe_number(settings.get("linear_high_extension_risk_threshold"))
         if (rating_label in {"Sell", "Strong Sell"} or target_mid <= 0) and current_weight > 0:
             action = "Sell"
             sizing_action = action
@@ -8471,8 +8491,21 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             action = "Hold"
             sizing_action = action
         amount_fields = _linear_action_amount_fields(sizing_action, target_mid, target_high, total_portfolio_value, row.get("current_position_market_value"))
+        desired_action = "Add" if action == "Watch / Rating Guardrail" else action
         rating_guardrail_applied = action == "Watch / Rating Guardrail"
-        if action == "Watch / Rating Guardrail":
+        if (
+            action in {"Strong Add", "Add", "Starter Buy"}
+            and settings.get("linear_high_extension_guardrail_enabled", True)
+            and extension_risk is not None
+            and extension_guardrail_threshold is not None
+            and extension_risk >= extension_guardrail_threshold
+        ):
+            action = "Watch / Extended"
+            extension_guardrail_applied = True
+            extension_guardrail_reason = "Target Band indicates Add, but Extension Risk is high. Add is deferred to avoid chasing an extended move."
+        elif action in {"Strong Add", "Add", "Starter Buy"} and extension_risk is None:
+            extension_guardrail_diagnostic = "Extension Risk unavailable; guardrail not applied."
+        if action in {"Watch / Rating Guardrail", "Watch / Extended"}:
             amount_fields["action_amount"] = 0.0
             amount_fields["action_amount_label"] = "—"
             amount_fields["action_amount_direction"] = "none"
@@ -8481,11 +8514,20 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         if rating_guardrail_applied:
             rating_guardrail_reason = "Hold rating blocks buy-side action."
             reason = rating_guardrail_reason
+        elif extension_guardrail_applied:
+            reason = extension_guardrail_reason
         row.update({
             "action": action,
+            "desired_action": desired_action,
+            "executable_action": action,
+            "action_priority": ACTION_PLAN_ACTION_PRIORITY.get(action, 99),
             "reason": reason,
             "rating_guardrail_applied": rating_guardrail_applied,
             "rating_guardrail_reason": rating_guardrail_reason,
+            "extension_guardrail_applied": extension_guardrail_applied,
+            "extension_guardrail_reason": extension_guardrail_reason,
+            "extension_guardrail_diagnostic": extension_guardrail_diagnostic,
+            "extension_guardrail_threshold": extension_guardrail_threshold,
             **amount_fields,
         })
         row.update(_linear_action_compatibility_fields())

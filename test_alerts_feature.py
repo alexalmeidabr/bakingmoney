@@ -1734,6 +1734,8 @@ class AlertsUiStructureTests(unittest.TestCase):
             'linear_high_bearish_confidence_min_threshold',
             'linear_high_bearish_confidence_max_threshold',
             'linear_high_bearish_confidence_cap_pct',
+            'linear_high_extension_guardrail_enabled',
+            'linear_high_extension_risk_threshold',
         ]
         for key in linear_help_keys:
             self.assertIn(f"'{key}'", js)
@@ -1758,6 +1760,8 @@ class AlertsUiStructureTests(unittest.TestCase):
             'linear_strong_buy_rating_bonus',
             'linear_buy_rating_bonus',
             'linear_block_buy_actions_for_hold_rating',
+            'linear_high_extension_guardrail_enabled',
+            'linear_high_extension_risk_threshold',
         ]
         for key in penalty_help_keys:
             self.assertIn(f"addConfigHelp('{key}'", js)
@@ -1772,6 +1776,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('A value of 0.02 means a Buy-rated stock keeps 102%', js)
         self.assertIn('Watch / Rating Guardrail', js)
         self.assertIn('Rating blocks add', js)
+        self.assertIn('data-action-plan-setting="linear_high_extension_guardrail_enabled"', html)
+        self.assertIn('data-action-plan-setting="linear_high_extension_risk_threshold"', html)
+        self.assertIn('Watch / Extended', js)
+        self.assertIn('Extension Risk at or above this 0–5 threshold', js)
         self.assertIn('Allocation Weight = max(0, Linear Score - Min Score Threshold) ^ Allocation Power', js)
         self.assertIn('Target Low = Linear Target Mid × (1 - Add Band Tolerance %)', js)
         self.assertIn('Target High = Linear Target Mid × (1 + Trim Band Tolerance %)', js)
@@ -3772,6 +3780,105 @@ class ActionPlanFeatureTests(unittest.TestCase):
         self.assertIsNone(row["trigger_price"])
         self.assertIn("Final target is zero", " ".join(step["text"] for step in row["decision_path"]))
 
+    def test_linear_high_extension_guardrail_defers_adds_without_funding_demand(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_allocated_target_total_pct": 10.0,
+            "linear_min_score_threshold": 0.0,
+            "linear_score_allocation_power": 1.0,
+            "linear_max_single_stock_pct": 100.0,
+            "linear_enable_risk_caps": False,
+            "linear_rating_bonus_enabled": False,
+            "linear_max_reserve_pct": 0.0,
+            "action_min_cash_unallocated_target": 0.0,
+            "action_min_executable_trade_amount": 0.0,
+            "linear_high_extension_guardrail_enabled": True,
+            "linear_high_extension_risk_threshold": 4.0,
+        })
+        base = {
+            "rating": "Buy",
+            "expected_cagr": 20.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "potential_confidence_diff": 1.5,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 1.0,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "current_position_weight": 0.0,
+            "current_position_market_value": 0.0,
+            "current_price": 100.0,
+            "expected_price": 150.0,
+        }
+
+        def linear_row(symbol, extension_risk, **overrides):
+            candidate = dict(base, symbol=symbol, extension_risk=extension_risk, **overrides)
+            return web_server.compute_linear_action_plan([candidate], 100_000.0, 100_000.0, settings)["rows"][0]
+
+        healthy = linear_row("HEALTHY", 3.9)
+        threshold = linear_row("THRESHOLD", 4.0)
+        extended = linear_row("EXTENDED", 4.3)
+        missing = linear_row("MISSING", None)
+        overweight = linear_row("OVERWEIGHT", 4.5, current_position_weight=20.0, current_position_market_value=20_000.0)
+        inside_band = linear_row("INSIDE", 4.5, current_position_weight=10.0, current_position_market_value=10_000.0)
+
+        self.assertEqual(healthy["action"], "Add")
+        self.assertEqual(missing["action"], "Add")
+        self.assertEqual(missing["extension_guardrail_diagnostic"], "Extension Risk unavailable; guardrail not applied.")
+        for row in (threshold, extended):
+            with self.subTest(symbol=row["symbol"]):
+                self.assertEqual(row["desired_action"], "Add")
+                self.assertEqual(row["action"], "Watch / Extended")
+                self.assertEqual(row["executable_action"], "Watch / Extended")
+                self.assertTrue(row["extension_guardrail_applied"])
+                self.assertEqual(row["extension_guardrail_threshold"], 4.0)
+                self.assertEqual(row["funding_status"], "Extension guardrail")
+                self.assertEqual(row["suggested_share_count"], 0)
+                self.assertEqual(row["action_amount"], 0.0)
+                self.assertEqual(row["action_amount_label"], "—")
+                self.assertEqual(row["action_amount_direction"], "none")
+                self.assertEqual(row["total_add_demand"], 0.0)
+                self.assertEqual(row["funded_add_amount"], 0.0)
+                self.assertEqual(row["unfunded_add_demand"], 0.0)
+                self.assertEqual(row["available_buy_budget"], 100_000.0)
+                self.assertIn("Extension Risk is", " ".join(step["text"] for step in row["decision_path"]))
+        self.assertEqual(overweight["action"], "Trim")
+        self.assertEqual(inside_band["action"], "Hold")
+
+    def test_linear_high_extension_guardrail_can_be_disabled(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({
+            "linear_min_score_threshold": 0.0,
+            "linear_max_single_stock_pct": 100.0,
+            "linear_enable_risk_caps": False,
+            "linear_rating_bonus_enabled": False,
+            "linear_max_reserve_pct": 0.0,
+            "action_min_cash_unallocated_target": 0.0,
+            "action_min_executable_trade_amount": 0.0,
+            "linear_high_extension_guardrail_enabled": False,
+            "linear_high_extension_risk_threshold": 4.0,
+        })
+        candidate = {
+            "symbol": "DISABLED",
+            "rating": "Buy",
+            "expected_cagr": 20.0,
+            "upside": 50.0,
+            "core_confidence_diff": 2.0,
+            "potential_confidence_diff": 1.5,
+            "core_bullish_confidence": 8.0,
+            "core_bearish_confidence": 1.0,
+            "potential_bullish_confidence": 7.0,
+            "potential_bearish_confidence": 1.0,
+            "current_position_weight": 0.0,
+            "current_position_market_value": 0.0,
+            "current_price": 100.0,
+            "expected_price": 150.0,
+            "extension_risk": 5.0,
+        }
+        row = web_server.compute_linear_action_plan([candidate], 100_000.0, 100_000.0, settings)["rows"][0]
+        self.assertEqual(row["action"], "Add")
+        self.assertFalse(row["extension_guardrail_applied"])
+
     def test_linear_hold_rating_buy_guardrail_blocks_adds_without_consuming_budget(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings.update({
@@ -3800,11 +3907,11 @@ class ActionPlanFeatureTests(unittest.TestCase):
             "current_price": 100.0,
             "expected_price": 150.0,
             "momentum_score": 3.0,
-            "extension_risk": 1.0,
+            "extension_risk": 4.5,
         }
         candidates = [
             dict(base, symbol="HOLDADD", rating="Hold"),
-            dict(base, symbol="BUYADD", rating="Buy"),
+            dict(base, symbol="BUYADD", rating="Buy", extension_risk=1.0),
         ]
         payload = web_server.compute_linear_action_plan(candidates, 100000.0, 100000.0, settings)
         rows = {row["symbol"]: row for row in payload["rows"]}
@@ -3812,9 +3919,11 @@ class ActionPlanFeatureTests(unittest.TestCase):
         hold_row = rows["HOLDADD"]
         buy_row = rows["BUYADD"]
         self.assertEqual(hold_row["action"], "Watch / Rating Guardrail")
+        self.assertEqual(hold_row["desired_action"], "Add")
         self.assertEqual(hold_row["action_amount_label"], "—")
         self.assertEqual(hold_row["funding_status"], "Rating blocks add")
         self.assertTrue(hold_row["rating_guardrail_applied"])
+        self.assertFalse(hold_row["extension_guardrail_applied"])
         self.assertEqual(hold_row["rating_guardrail_reason"], "Hold rating blocks buy-side action.")
         self.assertGreater(hold_row["target_gap_amount"], 0.0)
         self.assertEqual(hold_row["executable_action_amount"], 0.0)
@@ -3946,6 +4055,16 @@ class ActionPlanFeatureTests(unittest.TestCase):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
         settings["linear_block_buy_actions_for_hold_rating"] = "yes"
         with self.assertRaisesRegex(ValueError, "linear_block_buy_actions_for_hold_rating must be boolean"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_high_extension_guardrail_enabled"] = "yes"
+        with self.assertRaisesRegex(ValueError, "linear_high_extension_guardrail_enabled must be boolean"):
+            web_server.validate_action_plan_settings(settings)
+
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings["linear_high_extension_risk_threshold"] = 5.1
+        with self.assertRaisesRegex(ValueError, "linear_high_extension_risk_threshold must be between 0 and 5"):
             web_server.validate_action_plan_settings(settings)
 
 

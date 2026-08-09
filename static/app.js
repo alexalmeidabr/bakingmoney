@@ -2807,6 +2807,8 @@ function updateAnalysisBackButton() {
     analysisBackBtn.textContent = '← Back to My Positions';
   } else if (analysisDetailOrigin === 'action_plan') {
     analysisBackBtn.textContent = '← Back to Action Plan';
+  } else if (analysisDetailOrigin === 'earnings_review') {
+    analysisBackBtn.textContent = '← Back to Earnings Review';
   } else {
     analysisBackBtn.textContent = '← Back to Analysis';
   }
@@ -2820,6 +2822,9 @@ function showAnalysisDetailFromPositionsOrigin() {
 }
 function showAnalysisDetailFromActionPlanOrigin() {
   showAnalysisDetailFromOriginMenu('action-plan');
+}
+function showAnalysisDetailFromEarningsReviewOrigin() {
+  showAnalysisDetailFromOriginMenu('earnings-review');
 }
 function loadBackupView() {
   if (!backupStatusEl) return;
@@ -3618,13 +3623,15 @@ function renderVariablesTable() {
 }
 
 async function openAnalysisDetailForSymbol(symbol, options = {}) {
-  const origin = ['positions', 'action_plan'].includes(options.origin) ? options.origin : 'analysis';
+  const origin = ['positions', 'action_plan', 'earnings_review'].includes(options.origin) ? options.origin : 'analysis';
   analysisDetailOrigin = origin;
 
   if (origin === 'positions') {
     showAnalysisDetailFromPositionsOrigin();
   } else if (origin === 'action_plan') {
     showAnalysisDetailFromActionPlanOrigin();
+  } else if (origin === 'earnings_review') {
+    showAnalysisDetailFromEarningsReviewOrigin();
   } else {
     setView('analysis');
   }
@@ -3646,6 +3653,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   analysisDetailView.classList.remove('hidden');
   if (analysisDetailOrigin === 'positions') showAnalysisDetailFromPositionsOrigin();
   if (analysisDetailOrigin === 'action_plan') showAnalysisDetailFromActionPlanOrigin();
+  if (analysisDetailOrigin === 'earnings_review') showAnalysisDetailFromEarningsReviewOrigin();
   updateAnalysisBackButton();
   isEditingVariables = false;
   activeAnalysisVariableCategory = 'Core Driver';
@@ -4778,7 +4786,7 @@ function renderEarningsCalendarTable() {
     });
   });
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-symbol-link').forEach((btn) => {
-    btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'analysis' }));
+    btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'earnings_review' }));
   });
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-remove-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -5968,6 +5976,10 @@ analysisBackBtn.addEventListener('click', () => {
   }
   if (analysisDetailOrigin === 'action_plan') {
     setView('action-plan', { skipLoad: true });
+    return;
+  }
+  if (analysisDetailOrigin === 'earnings_review') {
+    setView('earnings-review', { skipLoad: true });
     return;
   }
   showAnalysisList();

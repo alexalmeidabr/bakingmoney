@@ -1290,6 +1290,20 @@ th.sortable[data-sort-direction='desc']::after {
 .action-plan-actions-table .linear-score-column,
 .action-plan-actions-table .linear-score-cell { width: 100px; min-width: 100px; text-align: right; }
 
+#action-plan-linear-actions-table { min-width: 1690px; font-size: 0.8rem; }
+#action-plan-linear-actions-table th,
+#action-plan-linear-actions-table td { padding: 6px 7px; }
+#action-plan-linear-actions-table .funding-column,
+#action-plan-linear-actions-table .funding-cell { width: 112px; min-width: 112px; }
+#action-plan-linear-actions-table .release-date-column,
+#action-plan-linear-actions-table .release-date-cell { width: 94px; min-width: 94px; }
+#action-plan-linear-actions-table .momentum-column,
+#action-plan-linear-actions-table .momentum-cell { width: 104px; min-width: 104px; }
+#action-plan-linear-actions-table .core-confidence-column,
+#action-plan-linear-actions-table .core-confidence-cell { width: 132px; min-width: 132px; }
+#action-plan-linear-actions-table .potential-confidence-column,
+#action-plan-linear-actions-table .potential-confidence-cell { width: 142px; min-width: 142px; }
+
 .action-plan-actions-table .target-band-range,
 .action-plan-actions-table .target-band-mid {
   display: block;

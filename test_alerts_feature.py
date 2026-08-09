@@ -1563,6 +1563,12 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertNotIn('trigger-price-column', linear_actions_markup)
         self.assertNotIn('distance-column', linear_actions_markup)
         self.assertIn('current-price-column', linear_actions_markup)
+        self.assertIn('class="release-date-column sortable" data-sort-key="release_date"', linear_actions_markup)
+        self.assertIn('class="momentum-column sortable" data-sort-key="momentum_score"', linear_actions_markup)
+        self.assertLess(linear_actions_markup.index('class="rating-column"'), linear_actions_markup.index('class="release-date-column sortable"'))
+        self.assertLess(linear_actions_markup.index('class="release-date-column sortable"'), linear_actions_markup.index('class="upside-column sortable"'))
+        self.assertLess(linear_actions_markup.index('class="potential-confidence-column sortable"'), linear_actions_markup.index('class="momentum-column sortable"'))
+        self.assertLess(linear_actions_markup.index('class="momentum-column sortable"'), linear_actions_markup.index('class="current-weight-column sortable"'))
         self.assertNotIn('reason-column', linear_actions_markup)
         self.assertIn('class="reason-column">Reason</th>', html)
         self.assertIn('id="action-plan-tab-actions"', html)
@@ -1609,6 +1615,10 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('market-value-cell', js)
         self.assertIn("if (key === 'current_position_market_value')", js)
         self.assertIn("formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')", js)
+        self.assertIn('function formatLinearReleaseDate(item)', js)
+        self.assertIn('function getLinearReleaseDateSortValue(item)', js)
+        self.assertIn('function formatLinearMomentum(item)', js)
+        self.assertIn("if (key === 'release_date') return getLinearReleaseDateSortValue(item);", js)
         self.assertIn('distance-cell', js)
         self.assertIn('target-band-cell', js)
         self.assertIn('target-band-range', js)
@@ -1618,6 +1628,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('.action-plan-actions-table .target-band-column', css)
         self.assertIn('.action-plan-actions-table .target-band-range', css)
         self.assertIn('min-width: 150px;', css)
+        self.assertIn('#action-plan-linear-actions-table { min-width: 1690px;', css)
+        self.assertIn('#action-plan-linear-actions-table .release-date-column', css)
+        self.assertIn('#action-plan-linear-actions-table .momentum-column', css)
         self.assertIn('Open Full Analysis', html)
         self.assertIn('id="action-plan-rating-filter"', html)
         self.assertIn('id="action-plan-action-filter"', html)
@@ -3878,6 +3891,19 @@ class ActionPlanFeatureTests(unittest.TestCase):
         row = web_server.compute_linear_action_plan([candidate], 100_000.0, 100_000.0, settings)["rows"][0]
         self.assertEqual(row["action"], "Add")
         self.assertFalse(row["extension_guardrail_applied"])
+
+    def test_linear_rows_include_release_date_and_momentum_context(self):
+        settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)
+        settings.update({"linear_min_score_threshold": 0.0, "linear_max_single_stock_pct": 100.0, "linear_enable_risk_caps": False, "linear_rating_bonus_enabled": False, "linear_max_reserve_pct": 0.0, "action_min_cash_unallocated_target": 0.0})
+        base = {"rating": "Buy", "expected_cagr": 20.0, "upside": 50.0, "core_confidence_diff": 2.0, "potential_confidence_diff": 1.5, "core_bullish_confidence": 8.0, "core_bearish_confidence": 1.0, "potential_bullish_confidence": 7.0, "potential_bearish_confidence": 1.0, "current_position_weight": 0.0, "current_position_market_value": 0.0, "current_price": 100.0, "expected_price": 150.0}
+        populated = web_server.compute_linear_action_plan([dict(base, symbol="DATED", release_date="2026-08-14", release_timing="Before Open", momentum_score=3.8, momentum_label="Positive", momentum_updated_at="2026-08-08T12:00:00+00:00")], 100_000.0, 100_000.0, settings)["rows"][0]
+        missing = web_server.compute_linear_action_plan([dict(base, symbol="MISSING")], 100_000.0, 100_000.0, settings)["rows"][0]
+        self.assertEqual(populated["release_date"], "2026-08-14")
+        self.assertEqual(populated["release_timing"], "Before Open")
+        self.assertEqual(populated["momentum_score"], 3.8)
+        self.assertEqual(populated["momentum_label"], "Positive")
+        self.assertIsNone(missing["release_date"])
+        self.assertIsNone(missing["momentum_score"])
 
     def test_linear_hold_rating_buy_guardrail_blocks_adds_without_consuming_budget(self):
         settings = dict(web_server.ACTION_PLAN_DEFAULT_SETTINGS)

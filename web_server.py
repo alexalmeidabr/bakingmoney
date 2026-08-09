@@ -4570,6 +4570,33 @@ def get_latest_earnings_release_dates_by_symbol(conn):
     }
 
 
+def get_next_earnings_releases_by_symbol(conn, today=None):
+    today_value = today or datetime.now(timezone.utc).date().isoformat()
+    rows = conn.execute(
+        """
+        SELECT symbol, release_date, release_timing
+        FROM earnings_calendar_entries
+        WHERE release_date IS NOT NULL AND release_date != ''
+        ORDER BY symbol ASC, release_date ASC
+        """
+    ).fetchall()
+    releases = {}
+    for row in rows:
+        symbol = normalize_symbol(row["symbol"])
+        if not symbol:
+            continue
+        release = {"release_date": row["release_date"], "release_timing": row["release_timing"]}
+        existing = releases.get(symbol)
+        if row["release_date"] >= today_value:
+            if existing is None or existing["release_date"] < today_value or row["release_date"] < existing["release_date"]:
+                releases[symbol] = release
+        elif existing is None:
+            releases[symbol] = release
+        elif existing["release_date"] < today_value and row["release_date"] > existing["release_date"]:
+            releases[symbol] = release
+    return releases
+
+
 def _diff_or_none(bullish, bearish):
     if bullish is None or bearish is None:
         return None
@@ -4598,6 +4625,7 @@ def _confidence_sql(variable_type, driver_category=None):
 def list_analysis_symbols(conn):
     rating_settings = get_rating_settings(conn)
     latest_release_dates = get_latest_earnings_release_dates_by_symbol(conn)
+    next_releases = get_next_earnings_releases_by_symbol(conn)
     rows = conn.execute(
         f"""
         SELECT r.symbol, v.company_name, v.current_price, v.expected_price, v.expected_cagr, v.upside, v.confidence_level AS overall_confidence,
@@ -4673,6 +4701,9 @@ def list_analysis_symbols(conn):
         item["confidence_diff"] = confidence_diff
         item["rating"] = rating
         item["latest_release_date"] = latest_release_dates.get(normalize_symbol(item.get("symbol")))
+        next_release = next_releases.get(normalize_symbol(item.get("symbol"))) or {}
+        item["release_date"] = next_release.get("release_date")
+        item["release_timing"] = next_release.get("release_timing")
         scenario_updated = _parse_iso_datetime(item.get("updated_at"))
         event_checked = _parse_iso_datetime(item.get("last_recent_event_check_at"))
         activity_candidates = [dt for dt in (scenario_updated, event_checked) if dt is not None]
@@ -8426,6 +8457,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "extension_risk": item.get("extension_risk"),
             "extension_label": item.get("extension_label"),
             "momentum_updated_at": item.get("momentum_updated_at"),
+            "release_date": item.get("release_date"),
+            "release_timing": item.get("release_timing"),
         }
         cap, cap_reason = _linear_cap_details(row, settings)
         row["linear_effective_cap"] = cap

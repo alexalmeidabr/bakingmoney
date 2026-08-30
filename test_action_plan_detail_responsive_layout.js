@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const stylesCss = fs.readFileSync('static/styles.css', 'utf8');
 const appJs = fs.readFileSync('static/app.js', 'utf8');
@@ -29,6 +30,36 @@ function renderedFullDetailSection(title) {
   const next = appJs.indexOf('<section class="detail-card"><h4>', start + 1);
   assert.notEqual(next, -1, `Expected ${title} to be followed by another detail section`);
   return appJs.slice(start, next);
+}
+
+function appFunctionSource(name) {
+  const start = appJs.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `Expected ${name} to exist`);
+  const bodyStart = appJs.indexOf('{', start);
+  let depth = 0;
+  for (let index = bodyStart; index < appJs.length; index += 1) {
+    if (appJs[index] === '{') depth += 1;
+    if (appJs[index] === '}') depth -= 1;
+    if (depth === 0) return appJs.slice(start, index + 1);
+  }
+  throw new Error(`Could not parse ${name}`);
+}
+
+function linearAdjustmentFormatters() {
+  const context = {
+    escapeHtml: (value) => String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;'),
+    isFiniteNumber: (value) => typeof value === 'number' && Number.isFinite(value),
+  };
+  return vm.runInNewContext(`
+    ${appFunctionSource('formatLinearPenaltyApplied')}
+    ${appFunctionSource('formatLinearBonusApplied')}
+    ({ formatLinearPenaltyApplied, formatLinearBonusApplied });
+  `, context);
 }
 
 test('Action Plan Detail metrics use a responsive shrinkable grid', () => {
@@ -87,7 +118,9 @@ test('modern Linear Action Plan Detail sections keep responsive metric cards', (
       'Potential Confidence Score',
       'Confidence Quality Score',
       'Penalty Factor',
+      'Penalty Applied',
       'Rating Bonus Factor',
+      'Bonus Applied',
     ],
     'Linear Score Breakdown': [
       'Expected CAGR Score',
@@ -257,7 +290,9 @@ test('Linear Target Calculation renders score inputs in order with Linear Score 
     'Potential Confidence Score',
     'Confidence Quality Score',
     'Penalty Factor',
+    'Penalty Applied',
     'Rating Bonus Factor',
+    'Bonus Applied',
   ]);
 });
 
@@ -274,7 +309,41 @@ test('Linear Target Calculation sources backend Linear score diagnostics', () =>
   assert.ok(section.includes("['Potential Confidence Score', formatActionDetailNumber(score.potential_net_score)]"));
   assert.ok(section.includes("['Confidence Quality Score', formatActionDetailNumber(score.confidence_quality_score)]"));
   assert.ok(section.includes("['Penalty Factor', formatActionDetailNumber(score.penalty_factor)]"));
+  assert.ok(section.includes("['Penalty Applied', formatLinearPenaltyApplied(score)]"));
   assert.ok(section.includes("['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)]"));
+  assert.ok(section.includes("['Bonus Applied', formatLinearBonusApplied(score)]"));
+});
+
+test('Linear Target Calculation places adjustment reason cards after their factors', () => {
+  const labels = renderedDetailSectionLabels('Linear Target Calculation');
+  assert.equal(labels[labels.indexOf('Penalty Factor') + 1], 'Penalty Applied');
+  assert.equal(labels[labels.indexOf('Rating Bonus Factor') + 1], 'Bonus Applied');
+});
+
+test('Linear adjustment reason formatters render readable penalty and bonus text', () => {
+  const { formatLinearPenaltyApplied, formatLinearBonusApplied } = linearAdjustmentFormatters();
+  assert.equal(formatLinearPenaltyApplied({ penalties_applied: [], penalty_factor: 1 }), 'None');
+  assert.equal(
+    formatLinearPenaltyApplied({
+      penalties_applied: [{ key: 'core_confidence_penalty', label: 'Core confidence below threshold', penalty: 0.15 }],
+      penalty_factor: 0.85,
+    }),
+    'Core confidence below threshold',
+  );
+  assert.equal(
+    formatLinearPenaltyApplied({
+      penalties_applied: [
+        { key: 'core_confidence_penalty', label: 'Core confidence below threshold', penalty: 0.15 },
+        { key: 'upside_penalty', label: 'Upside below threshold', penalty: 0.2 },
+      ],
+      penalty_factor: 0.68,
+    }),
+    'Core confidence below threshold; Upside below threshold',
+  );
+  assert.equal(formatLinearPenaltyApplied({ penalties_applied: [], penalty_factor: 0.95 }), 'Penalty applied');
+  assert.equal(formatLinearBonusApplied({ rating_bonus_reason: 'Buy rating bonus', rating_bonus_factor: 1.01 }), 'Buy rating bonus');
+  assert.equal(formatLinearBonusApplied({ rating_bonus_reason: 'Strong Buy rating bonus', rating_bonus_factor: 1.02 }), 'Strong Buy rating bonus');
+  assert.equal(formatLinearBonusApplied({ rating_bonus_factor: 1 }), 'No rating bonus');
 });
 
 test('Linear Target Calculation explanation appears below cards and describes current method', () => {
@@ -350,6 +419,7 @@ test('Linear Target Calculation omits bucket, trigger, and old allocation fields
     'NaN',
     'Infinity',
     'N/A',
+    '[]',
   ]) {
     assert.ok(!section.includes(obsolete), `Expected Linear Target Calculation to omit ${obsolete}`);
   }

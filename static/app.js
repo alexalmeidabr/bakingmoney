@@ -2102,6 +2102,27 @@ function formatLinearPenalties(items) {
   return escapeHtml(items.map((item) => item.label || item.key).filter(Boolean).join(', ') || 'None');
 }
 
+function formatLinearPenaltyApplied(score) {
+  const penalties = score?.penalties_applied;
+  if (Array.isArray(penalties) && penalties.length) {
+    const labels = penalties
+      .map((item) => item?.label || (item?.key ? String(item.key).replace(/_/g, ' ') : ''))
+      .filter(Boolean);
+    return escapeHtml(labels.join('; ') || 'Penalty applied');
+  }
+  if (isFiniteNumber(score?.penalty_factor) && score.penalty_factor < 1) return 'Penalty applied';
+  if (isFiniteNumber(score?.penalty_factor)) return 'None';
+  return '—';
+}
+
+function formatLinearBonusApplied(score) {
+  const reason = typeof score?.rating_bonus_reason === 'string' ? score.rating_bonus_reason.trim() : '';
+  if (reason) return escapeHtml(reason);
+  if (isFiniteNumber(score?.rating_bonus_factor) && score.rating_bonus_factor > 1) return 'Rating bonus applied';
+  if (isFiniteNumber(score?.rating_bonus_factor)) return 'No rating bonus';
+  return '—';
+}
+
 function getLinearTargetMarketValue(item) {
   const total = item?.portfolio_value_used ?? item?.total_portfolio_value;
   const targetMid = item?.target_weight_mid;
@@ -2173,7 +2194,9 @@ function renderActionPlanDetail(item) {
       ['Potential Confidence Score', formatActionDetailNumber(score.potential_net_score)],
       ['Confidence Quality Score', formatActionDetailNumber(score.confidence_quality_score)],
       ['Penalty Factor', formatActionDetailNumber(score.penalty_factor)],
+      ['Penalty Applied', formatLinearPenaltyApplied(score)],
       ['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)],
+      ['Bonus Applied', formatLinearBonusApplied(score)],
     ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into 0-1 component scores using the configured Linear min/full ranges. Those component scores are combined using the configured Linear weights, then adjusted by penalty factors and any rating bonus. The resulting Linear Score determines the stock's pre-cap target allocation, subject to the minimum score threshold and zero-target rules for negative expected CAGR or negative upside.</p><p>After the pre-cap target is calculated, stock-specific caps may reduce it. Finally, Dynamic Reserve may scale all Linear targets down if total target allocation exceeds deployable equity. The final Target Low, Mid, and High are then calculated from the final target midpoint using the configured Add and Trim band tolerances.</p></div></section>
     <section class="detail-card"><h4>Linear Score Breakdown</h4>${renderActionPlanMetricList([
       ['Expected CAGR Score', formatNumber(score.expected_cagr_score)],

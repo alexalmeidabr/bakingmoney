@@ -2117,6 +2117,15 @@ function formatActionDetailPercent(value) {
   return isFiniteNumber(value) ? formatPercent(value) : '—';
 }
 
+function formatActionDetailNumber(value, digits = 2) {
+  return isFiniteNumber(value) ? formatNumber(value, digits) : '—';
+}
+
+function formatActionDetailNet(value) {
+  if (!isFiniteNumber(value)) return '—';
+  return `${value >= 0 ? '+' : ''}${formatNumber(value)}`;
+}
+
 function renderActionPlanDetail(item) {
   if (!item) return;
   selectedActionPlanDetail = item;
@@ -2153,22 +2162,19 @@ function renderActionPlanDetail(item) {
       ['Gap to Mid', formatActionDetailPercent(item.position_gap_to_mid)],
     ])}</section>
     <section class="detail-card"><h4>Linear Target Calculation</h4>${renderActionPlanMetricList([
-      ['Linear Score', formatNumber(target.linear_score ?? item.linear_allocation_score)],
-      ['Target Before Caps / Adjustments', formatPercent(target.target_before_caps)],
-      ['Cap Applied', target.cap_applied ? 'Yes' : 'No'],
-      ['Cap Amount', formatPercent(target.cap_amount)],
-      ['Cap Reason', escapeHtml(target.cap_reason || '—')],
-      ['Target After Cap Low', formatPercent(target.target_after_cap_low)],
-      ['Target After Cap Mid', formatPercent(target.target_after_cap_mid)],
-      ['Target After Cap High', formatPercent(target.target_after_cap_high)],
-      ['Reserve Scale Factor', formatNumber(target.reserve_scale_factor)],
-      ['Final Target Low', formatPercent(target.final_target_low ?? item.target_weight_low)],
-      ['Final Target Mid', formatPercent(target.final_target_mid ?? item.target_weight_mid)],
-      ['Final Target High', formatPercent(target.final_target_high ?? item.target_weight_high)],
-      ['Final Target Band', targetBand],
-      ['Bearish Confidence', formatNumber(target.bearish_confidence)],
-      ['Bearish Cap Progress', isFiniteNumber(target.bearish_cap_progress) ? formatPercent(target.bearish_cap_progress * 100) : '—'],
-    ])}</section>
+      ['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)],
+      ['Expected CAGR', formatActionDetailPercent(item.expected_cagr)],
+      ['Expected CAGR Score', formatActionDetailNumber(score.expected_cagr_score)],
+      ['Upside', formatActionDetailPercent(item.upside)],
+      ['Upside Score', formatActionDetailNumber(score.upside_score)],
+      ['Core Confidence Net', formatActionDetailNet(item.core_confidence_diff)],
+      ['Core Confidence Score', formatActionDetailNumber(score.core_net_score)],
+      ['Potential Confidence Net', formatActionDetailNet(item.potential_confidence_diff)],
+      ['Potential Confidence Score', formatActionDetailNumber(score.potential_net_score)],
+      ['Confidence Quality Score', formatActionDetailNumber(score.confidence_quality_score)],
+      ['Penalty Factor', formatActionDetailNumber(score.penalty_factor)],
+      ['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)],
+    ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into 0-1 component scores using the configured Linear min/full ranges. Those component scores are combined using the configured Linear weights, then adjusted by penalty factors and any rating bonus. The resulting Linear Score determines the stock's pre-cap target allocation, subject to the minimum score threshold and zero-target rules for negative expected CAGR or negative upside.</p><p>After the pre-cap target is calculated, stock-specific caps may reduce it. Finally, Dynamic Reserve may scale all Linear targets down if total target allocation exceeds deployable equity. The final Target Low, Mid, and High are then calculated from the final target midpoint using the configured Add and Trim band tolerances.</p></div></section>
     <section class="detail-card"><h4>Linear Score Breakdown</h4>${renderActionPlanMetricList([
       ['Expected CAGR Score', formatNumber(score.expected_cagr_score)],
       ['Expected CAGR Weight', formatNumber(weights.linear_expected_cagr_weight)],

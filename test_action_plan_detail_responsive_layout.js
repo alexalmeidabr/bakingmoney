@@ -23,6 +23,14 @@ function renderedDetailSectionLabels(title) {
   return [...section.matchAll(/\['([^']+)'/g)].map((match) => match[1]);
 }
 
+function renderedFullDetailSection(title) {
+  const start = appJs.indexOf(`<section class="detail-card"><h4>${title}</h4>`);
+  assert.notEqual(start, -1, `Expected ${title} detail section to exist`);
+  const next = appJs.indexOf('<section class="detail-card"><h4>', start + 1);
+  assert.notEqual(next, -1, `Expected ${title} to be followed by another detail section`);
+  return appJs.slice(start, next);
+}
+
 test('Action Plan Detail metrics use a responsive shrinkable grid', () => {
   const metrics = cssBlock('.action-detail-metrics');
   assert.match(metrics, /display:\s*grid/);
@@ -69,15 +77,17 @@ test('modern Linear Action Plan Detail sections keep responsive metric cards', (
     ],
     'Linear Target Calculation': [
       'Linear Score',
-      'Target Before Caps / Adjustments',
-      'Cap Applied',
-      'Cap Reason',
-      'Target After Cap Mid',
-      'Reserve Scale Factor',
-      'Final Target Low',
-      'Final Target Mid',
-      'Final Target High',
-      'Final Target Band',
+      'Expected CAGR',
+      'Expected CAGR Score',
+      'Upside',
+      'Upside Score',
+      'Core Confidence Net',
+      'Core Confidence Score',
+      'Potential Confidence Net',
+      'Potential Confidence Score',
+      'Confidence Quality Score',
+      'Penalty Factor',
+      'Rating Bonus Factor',
     ],
     'Linear Score Breakdown': [
       'Expected CAGR Score',
@@ -231,6 +241,117 @@ test('Position vs Target Band omits execution, funding, trigger, bucket, and exp
     '3.18%',
   ]) {
     assert.ok(!position.includes(obsolete), `Expected Position vs Target Band to omit ${obsolete}`);
+  }
+});
+
+test('Linear Target Calculation renders score inputs in order with Linear Score first', () => {
+  assert.deepEqual(renderedDetailSectionLabels('Linear Target Calculation'), [
+    'Linear Score',
+    'Expected CAGR',
+    'Expected CAGR Score',
+    'Upside',
+    'Upside Score',
+    'Core Confidence Net',
+    'Core Confidence Score',
+    'Potential Confidence Net',
+    'Potential Confidence Score',
+    'Confidence Quality Score',
+    'Penalty Factor',
+    'Rating Bonus Factor',
+  ]);
+});
+
+test('Linear Target Calculation sources backend Linear score diagnostics', () => {
+  const section = renderedDetailSection('Linear Target Calculation');
+  assert.ok(section.includes("['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)]"));
+  assert.ok(section.includes("['Expected CAGR', formatActionDetailPercent(item.expected_cagr)]"));
+  assert.ok(section.includes("['Expected CAGR Score', formatActionDetailNumber(score.expected_cagr_score)]"));
+  assert.ok(section.includes("['Upside', formatActionDetailPercent(item.upside)]"));
+  assert.ok(section.includes("['Upside Score', formatActionDetailNumber(score.upside_score)]"));
+  assert.ok(section.includes("['Core Confidence Net', formatActionDetailNet(item.core_confidence_diff)]"));
+  assert.ok(section.includes("['Core Confidence Score', formatActionDetailNumber(score.core_net_score)]"));
+  assert.ok(section.includes("['Potential Confidence Net', formatActionDetailNet(item.potential_confidence_diff)]"));
+  assert.ok(section.includes("['Potential Confidence Score', formatActionDetailNumber(score.potential_net_score)]"));
+  assert.ok(section.includes("['Confidence Quality Score', formatActionDetailNumber(score.confidence_quality_score)]"));
+  assert.ok(section.includes("['Penalty Factor', formatActionDetailNumber(score.penalty_factor)]"));
+  assert.ok(section.includes("['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)]"));
+});
+
+test('Linear Target Calculation explanation appears below cards and describes current method', () => {
+  const section = renderedFullDetailSection('Linear Target Calculation');
+  const metricIndex = section.indexOf('${renderActionPlanMetricList([');
+  const explanationIndex = section.indexOf('<div class="action-detail-explanation">');
+  assert.ok(explanationIndex > metricIndex, 'Expected explanation below the card grid');
+  for (const text of [
+    'How this target is calculated',
+    'Expected CAGR',
+    'Upside',
+    'Core Confidence',
+    'Potential Confidence',
+    'Confidence Quality',
+    'penalty factors',
+    'rating bonus',
+    'stock-specific caps',
+    'Dynamic Reserve',
+    'band tolerances',
+  ]) {
+    assert.ok(section.includes(text), `Expected Linear Target explanation to mention ${text}`);
+  }
+  assert.ok(!section.includes('Bucket Allocation'));
+  assert.ok(!section.includes('Trigger Prices'));
+});
+
+test('Linear Target Calculation omits bucket, trigger, and old allocation fields', () => {
+  const section = renderedFullDetailSection('Linear Target Calculation');
+  const labels = renderedDetailSectionLabels('Linear Target Calculation');
+  for (const obsolete of [
+    'Rating Bucket',
+    'Total Weighted Eligible Count in Bucket',
+    'Max Effective Count',
+    'Weighted Count Used',
+    'Bucket Weight / Effective Stock',
+    'Uncapped Bucket Target',
+    'Bucket Raw Target',
+    'Bucket Effective Target',
+    'Eligible Count in Bucket',
+    'Weighted Count',
+    'Bucket Share',
+    'Bucket Sizing Score',
+    'Bucket Sizing Risk Modifier',
+    'Total Bucket Allocation Score',
+    'Company Allocation Score',
+    'Bucket Score',
+    'Allocation Score',
+    'Trigger Price',
+    'Distance to Trigger',
+    'Target Before Caps / Adjustments',
+    'Cap Applied',
+    'Cap Amount',
+    'Cap Reason',
+    'Target After Cap Low',
+    'Target After Cap Mid',
+    'Target After Cap High',
+    'Reserve Scale Factor',
+    'Final Target Low',
+    'Final Target Mid',
+    'Final Target High',
+    'Final Target Band',
+  ]) {
+    assert.ok(!labels.includes(obsolete), `Expected Linear Target Calculation to omit ${obsolete}`);
+  }
+  for (const obsolete of [
+    'target_weight_breakdown.rating_bucket',
+    'target_weight_breakdown.bucket_',
+    'score_breakdown.bucket_',
+    'weighted_count',
+    'company_bucket_score',
+    'null',
+    'undefined',
+    'NaN',
+    'Infinity',
+    'N/A',
+  ]) {
+    assert.ok(!section.includes(obsolete), `Expected Linear Target Calculation to omit ${obsolete}`);
   }
 });
 

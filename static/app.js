@@ -2074,7 +2074,7 @@ function renderActionPlanMetricList(items) {
 
 function renderActionPlanMetricRows(rows) {
   const rowClass = (items) => (items.length === 1 ? 'single' : items.length === 2 ? 'two' : 'three');
-  return `<div class="action-detail-metric-rows">${rows.map((items) => `<dl class="action-detail-metrics detail-card-row detail-card-row-${rowClass(items)}">${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`).join('')}</dl>`).join('')}</div>`;
+  return `<div class="action-detail-metric-rows">${rows.map((items) => `<dl class="action-detail-metrics linear-score-card-row linear-score-card-row-${rowClass(items)}">${items.map(([label, value]) => `<div class="detail-metric-card"><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`).join('')}</dl>`).join('')}</div>`;
 }
 
 function formatLinearPositionStatus(status) {

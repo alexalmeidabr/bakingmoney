@@ -1247,26 +1247,26 @@ th.sortable[data-sort-direction='desc']::after {
   gap: 10px;
 }
 
-.detail-card-row {
-  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+.linear-score-card-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+  max-width: 100%;
 }
 
-.detail-card-row-single {
-  grid-template-columns: minmax(min(180px, 100%), 1fr);
+.linear-score-card-row .detail-metric-card {
+  flex: 0 1 200px;
+  max-width: 220px;
+  min-width: 170px;
 }
 
-.detail-card-row-two {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.detail-card-row-three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-@media (max-width: 900px) {
-  .detail-card-row-two,
-  .detail-card-row-three {
-    grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+@media (max-width: 600px) {
+  .linear-score-card-row .detail-metric-card {
+    flex: 1 1 100%;
+    max-width: none;
+    min-width: 0;
   }
 }
 

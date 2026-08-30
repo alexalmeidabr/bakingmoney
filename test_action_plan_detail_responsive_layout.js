@@ -91,9 +91,17 @@ test('Linear score metric rows keep fixed logical grouping without horizontal ov
   const rowStack = cssBlock('.action-detail-metric-rows');
   assert.match(rowStack, /display:\s*flex/);
   assert.match(rowStack, /flex-direction:\s*column/);
-  assert.match(cssBlock('.detail-card-row-two'), /repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
-  assert.match(cssBlock('.detail-card-row-three'), /repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
-  assert.match(stylesCss, /@media \(max-width:\s*900px\)[\s\S]*\.detail-card-row-three[\s\S]*auto-fit/);
+  const cardRow = cssBlock('.linear-score-card-row');
+  assert.match(cardRow, /display:\s*flex/);
+  assert.match(cardRow, /flex-wrap:\s*wrap/);
+  assert.match(cardRow, /justify-content:\s*flex-start/);
+  assert.match(cardRow, /max-width:\s*100%/);
+  assert.doesNotMatch(cardRow, /1fr/);
+  const metricCard = cssBlock('.linear-score-card-row .detail-metric-card');
+  assert.match(metricCard, /flex:\s*0 1 200px/);
+  assert.match(metricCard, /max-width:\s*220px/);
+  assert.match(metricCard, /min-width:\s*170px/);
+  assert.match(stylesCss, /@media \(max-width:\s*600px\)[\s\S]*\.linear-score-card-row \.detail-metric-card[\s\S]*flex:\s*1 1 100%[\s\S]*max-width:\s*none/);
 });
 
 test('Action Plan Detail containers can shrink inside the app shell', () => {
@@ -340,6 +348,12 @@ test('Linear Target Calculation renders score inputs in order with Linear Score 
 });
 
 test('Linear Target Calculation renders score cards in requested logical rows', () => {
+  const section = renderedFullDetailSection('Linear Target Calculation');
+  const rowHelper = appFunctionSource('renderActionPlanMetricRows');
+  assert.ok(section.includes('renderActionPlanMetricRows'), 'Expected Linear Target Calculation to use row renderer');
+  assert.ok(rowHelper.includes('linear-score-card-row'), 'Expected compact Linear score row class');
+  assert.ok(rowHelper.includes('detail-metric-card'), 'Expected compact Linear score card class');
+  assert.ok(rowHelper.includes('linear-score-card-row-${rowClass(items)}'), 'Expected row count modifier class');
   assert.deepEqual(renderedMetricRows('Linear Target Calculation'), [
     ['Linear Score'],
     ['Core Confidence Weight', 'Core Confidence Net', 'Core Confidence Score'],
@@ -516,6 +530,7 @@ test('Linear Target Calculation omits bucket, trigger, and old allocation fields
     'Infinity',
     'N/A',
     '[]',
+    '{}',
   ]) {
     assert.ok(!section.includes(obsolete), `Expected Linear Target Calculation to omit ${obsolete}`);
   }

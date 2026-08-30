@@ -53,30 +53,19 @@ test('modern Linear Action Plan Detail sections keep responsive metric cards', (
       'Rating',
       'Current Price',
       'Current Market Value',
-      'Current Weight',
       'Expected Price',
       'Upside',
       'Expected CAGR',
     ],
     'Position vs Target Band': [
-      'Total Portfolio Value Used',
       'Current Position Market Value',
+      'Target Gap Amount',
+      'Target Market Value',
       'Current Position Weight',
-      'Position Status',
       'Target Low',
       'Target Mid',
       'Target High',
       'Gap to Mid',
-      'Target Gap Amount',
-      'Desired Action Amount',
-      'Desired Whole Shares',
-      'Desired Whole-Share Amount',
-      'Executable Action Amount',
-      'Executable Shares',
-      'Funding Status',
-      'Unfunded Amount',
-      'Unfunded Shares',
-      'Available Buy Budget',
     ],
     'Linear Target Calculation': [
       'Linear Score',
@@ -120,7 +109,6 @@ test('Action Summary renders exactly the required Linear row fields in order', (
     'Rating',
     'Current Price',
     'Current Market Value',
-    'Current Weight',
     'Expected Price',
     'Upside',
     'Expected CAGR',
@@ -132,12 +120,11 @@ test('Action Summary sources action, amount, shares, and market values from the 
   assert.ok(summary.includes("['Action', escapeHtml(item.action || 'Hold')]"));
   assert.ok(summary.includes("['Action Amount', escapeHtml(item.action_amount_label || '—')]"));
   assert.ok(summary.includes("['Action Shares Amount', formatSuggestedShareCount(item)]"));
-  assert.ok(summary.includes("['Current Price', formatCurrencyValue(item.current_price, 'USD')]"));
-  assert.ok(summary.includes("['Current Market Value', formatCurrencyValue(item.current_position_market_value, 'USD')]"));
-  assert.ok(summary.includes("['Current Weight', formatPercent(item.current_position_weight)]"));
-  assert.ok(summary.includes("['Expected Price', formatCurrencyValue(item.expected_price, 'USD')]"));
-  assert.ok(summary.includes("['Upside', formatPercent(item.upside)]"));
-  assert.ok(summary.includes("['Expected CAGR', formatPercent(item.expected_cagr)]"));
+  assert.ok(summary.includes("['Current Price', formatActionDetailCurrencyValue(item.current_price, 'USD')]"));
+  assert.ok(summary.includes("['Current Market Value', formatActionDetailCurrencyValue(item.current_position_market_value, 'USD')]"));
+  assert.ok(summary.includes("['Expected Price', formatActionDetailCurrencyValue(item.expected_price, 'USD')]"));
+  assert.ok(summary.includes("['Upside', formatActionDetailPercent(item.upside)]"));
+  assert.ok(summary.includes("['Expected CAGR', formatActionDetailPercent(item.expected_cagr)]"));
 });
 
 test('Action Summary omits old target, funding, trigger, and explanation fields', () => {
@@ -156,6 +143,7 @@ test('Action Summary omits old target, funding, trigger, and explanation fields'
     'Trigger Price',
     'Distance to Trigger',
     'Shares',
+    'Current Weight',
   ]) {
     assert.ok(!labels.includes(obsolete), `Expected Action Summary to omit ${obsolete}`);
   }
@@ -165,6 +153,84 @@ test('Action Summary omits old target, funding, trigger, and explanation fields'
     '<p>',
   ]) {
     assert.ok(!summary.includes(obsolete), `Expected Action Summary to omit ${obsolete}`);
+  }
+});
+
+test('Position vs Target Band renders exactly the required Linear row fields in order', () => {
+  assert.deepEqual(renderedDetailSectionLabels('Position vs Target Band'), [
+    'Current Position Market Value',
+    'Target Gap Amount',
+    'Target Market Value',
+    'Current Position Weight',
+    'Target Low',
+    'Target Mid',
+    'Target High',
+    'Gap to Mid',
+  ]);
+});
+
+test('Position vs Target Band sources current Linear target-band values', () => {
+  const position = renderedDetailSection('Position vs Target Band');
+  assert.ok(position.includes("['Current Position Market Value', formatActionDetailCurrencyValue(item.current_position_market_value, 'USD')]"));
+  assert.ok(position.includes("['Target Gap Amount', formatActionDetailCurrencyValue(item.target_gap_amount, 'USD')]"));
+  assert.ok(position.includes("['Target Market Value', formatActionDetailCurrencyValue(getLinearTargetMarketValue(item), 'USD')]"));
+  assert.ok(position.includes("['Current Position Weight', formatActionDetailPercent(item.current_position_weight)]"));
+  assert.ok(position.includes("['Target Low', formatActionDetailPercent(item.target_weight_low)]"));
+  assert.ok(position.includes("['Target Mid', formatActionDetailPercent(item.target_weight_mid)]"));
+  assert.ok(position.includes("['Target High', formatActionDetailPercent(item.target_weight_high)]"));
+  assert.ok(position.includes("['Gap to Mid', formatActionDetailPercent(item.position_gap_to_mid)]"));
+});
+
+test('Target Market Value is calculated from portfolio value and Linear target midpoint', () => {
+  const helper = appJs.slice(
+    appJs.indexOf('function getLinearTargetMarketValue(item)'),
+    appJs.indexOf('function renderActionPlanDetail(item)'),
+  );
+  assert.match(helper, /item\?\.portfolio_value_used \?\? item\?\.total_portfolio_value/);
+  assert.match(helper, /item\?\.target_weight_mid/);
+  assert.match(helper, /return total \* targetMid \/ 100/);
+});
+
+test('Position vs Target Band omits execution, funding, trigger, bucket, and explanation fields', () => {
+  const position = renderedDetailSection('Position vs Target Band');
+  const labels = renderedDetailSectionLabels('Position vs Target Band');
+  for (const obsolete of [
+    'Total Portfolio Value Used',
+    'Executable Action Amount',
+    'Executable Shares',
+    'Funding Status',
+    'Unfunded Amount',
+    'Unfunded Shares',
+    'Available Buy Budget',
+    'Funding Priority Score',
+    'Action Amount to Mid',
+    'Desired Action Amount',
+    'Desired Whole Shares',
+    'Desired Whole-Share Amount',
+    'Position Status',
+    'Trigger Price',
+    'Distance to Trigger',
+    'Rating Bucket',
+    'Bucket Sizing',
+  ]) {
+    assert.ok(!labels.includes(obsolete), `Expected Position vs Target Band to omit ${obsolete}`);
+  }
+  for (const obsolete of [
+    'getActionPlanAmountDetailLabel',
+    'action_amount_cash_note',
+    'minimum_trade_size_reason',
+    'whole_share_diagnostic_reason',
+    'whole_share_diagnostic_warning',
+    '<p>',
+    'null',
+    'undefined',
+    'NaN',
+    'Infinity',
+    'N/A',
+    '2.12%',
+    '3.18%',
+  ]) {
+    assert.ok(!position.includes(obsolete), `Expected Position vs Target Band to omit ${obsolete}`);
   }
 });
 

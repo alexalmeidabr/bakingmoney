@@ -2102,6 +2102,21 @@ function formatLinearPenalties(items) {
   return escapeHtml(items.map((item) => item.label || item.key).filter(Boolean).join(', ') || 'None');
 }
 
+function getLinearTargetMarketValue(item) {
+  const total = item?.portfolio_value_used ?? item?.total_portfolio_value;
+  const targetMid = item?.target_weight_mid;
+  if (!isFiniteNumber(total) || !isFiniteNumber(targetMid)) return null;
+  return total * targetMid / 100;
+}
+
+function formatActionDetailCurrencyValue(value, currency, digits = 2) {
+  return isFiniteNumber(value) ? formatCurrencyValue(value, currency, digits) : '—';
+}
+
+function formatActionDetailPercent(value) {
+  return isFiniteNumber(value) ? formatPercent(value) : '—';
+}
+
 function renderActionPlanDetail(item) {
   if (!item) return;
   selectedActionPlanDetail = item;
@@ -2121,33 +2136,22 @@ function renderActionPlanDetail(item) {
       ['Action Amount', escapeHtml(item.action_amount_label || '—')],
       ['Action Shares Amount', formatSuggestedShareCount(item)],
       ['Rating', escapeHtml(item.rating || 'Hold')],
-      ['Current Price', formatCurrencyValue(item.current_price, 'USD')],
-      ['Current Market Value', formatCurrencyValue(item.current_position_market_value, 'USD')],
-      ['Current Weight', formatPercent(item.current_position_weight)],
-      ['Expected Price', formatCurrencyValue(item.expected_price, 'USD')],
-      ['Upside', formatPercent(item.upside)],
-      ['Expected CAGR', formatPercent(item.expected_cagr)],
+      ['Current Price', formatActionDetailCurrencyValue(item.current_price, 'USD')],
+      ['Current Market Value', formatActionDetailCurrencyValue(item.current_position_market_value, 'USD')],
+      ['Expected Price', formatActionDetailCurrencyValue(item.expected_price, 'USD')],
+      ['Upside', formatActionDetailPercent(item.upside)],
+      ['Expected CAGR', formatActionDetailPercent(item.expected_cagr)],
     ])}</section>
     <section class="detail-card"><h4>Position vs Target Band</h4>${renderActionPlanMetricList([
-      ['Total Portfolio Value Used', formatCurrencyValue(item.total_portfolio_value, 'USD')],
-      ['Current Position Market Value', formatCurrencyValue(item.current_position_market_value, 'USD')],
-      ['Current Position Weight', formatPercent(item.current_position_weight)],
-      ['Position Status', formatLinearPositionStatus(item.position_status)],
-      ['Target Low', formatPercent(item.target_weight_low)],
-      ['Target Mid', formatPercent(item.target_weight_mid)],
-      ['Target High', formatPercent(item.target_weight_high)],
-      ['Gap to Mid', formatPercent(item.position_gap_to_mid)],
-      ['Target Gap Amount', formatCurrencyValue(item.target_gap_amount, 'USD')],
-      ['Desired Action Amount', formatCurrencyValue(item.raw_action_amount, 'USD')],
-      ['Desired Whole Shares', Number.isInteger(Number(item.desired_share_count)) ? formatNumber(Number(item.desired_share_count), 0) : '—'],
-      ['Desired Whole-Share Amount', formatCurrencyValue(item.desired_whole_share_amount, 'USD')],
-      ['Executable Action Amount', formatCurrencyValue(item.executable_action_amount, 'USD')],
-      ['Executable Shares', formatSuggestedShareCount(item)],
-      ['Funding Status', escapeHtml(item.funding_status || 'No funding needed')],
-      ['Unfunded Amount', formatCurrencyValue(item.unfunded_action_amount, 'USD')],
-      ['Unfunded Shares', Number.isInteger(Number(item.unfunded_share_count)) && Number(item.unfunded_share_count) > 0 ? formatNumber(Number(item.unfunded_share_count), 0) : '—'],
-      ['Available Buy Budget', formatCurrencyValue(item.available_buy_budget, 'USD')],
-    ])}<p>${escapeHtml(getActionPlanAmountDetailLabel(item))}</p><p>${escapeHtml(item.action_amount_cash_note || '')}</p><p>${escapeHtml(item.minimum_trade_size_reason || item.whole_share_diagnostic_reason || item.whole_share_diagnostic_warning || '')}</p></section>
+      ['Current Position Market Value', formatActionDetailCurrencyValue(item.current_position_market_value, 'USD')],
+      ['Target Gap Amount', formatActionDetailCurrencyValue(item.target_gap_amount, 'USD')],
+      ['Target Market Value', formatActionDetailCurrencyValue(getLinearTargetMarketValue(item), 'USD')],
+      ['Current Position Weight', formatActionDetailPercent(item.current_position_weight)],
+      ['Target Low', formatActionDetailPercent(item.target_weight_low)],
+      ['Target Mid', formatActionDetailPercent(item.target_weight_mid)],
+      ['Target High', formatActionDetailPercent(item.target_weight_high)],
+      ['Gap to Mid', formatActionDetailPercent(item.position_gap_to_mid)],
+    ])}</section>
     <section class="detail-card"><h4>Linear Target Calculation</h4>${renderActionPlanMetricList([
       ['Linear Score', formatNumber(target.linear_score ?? item.linear_allocation_score)],
       ['Target Before Caps / Adjustments', formatPercent(target.target_before_caps)],

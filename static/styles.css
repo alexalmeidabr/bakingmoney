@@ -1241,6 +1241,35 @@ th.sortable[data-sort-direction='desc']::after {
   min-width: 0;
 }
 
+.action-detail-metric-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detail-card-row {
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+}
+
+.detail-card-row-single {
+  grid-template-columns: minmax(min(180px, 100%), 1fr);
+}
+
+.detail-card-row-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.detail-card-row-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .detail-card-row-two,
+  .detail-card-row-three {
+    grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  }
+}
+
 .action-detail-metrics div {
   border: 1px solid var(--border);
   border-radius: 10px;

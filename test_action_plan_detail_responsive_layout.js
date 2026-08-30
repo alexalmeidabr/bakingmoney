@@ -14,7 +14,7 @@ function cssBlock(selector) {
 }
 
 function renderedDetailSection(title) {
-  const match = appJs.match(new RegExp(`<section class="detail-card"><h4>${title}</h4>\\$\\{renderActionPlanMetricList\\(\\[([\\s\\S]*?)\\]\\)\\}`));
+  const match = appJs.match(new RegExp(`<section class="detail-card"><h4>${title}</h4>\\$\\{renderActionPlanMetric(?:List|Rows)\\(\\[([\\s\\S]*?)\\]\\)\\}`));
   assert.ok(match, `Expected ${title} detail section to render metric cards`);
   return match[1];
 }
@@ -30,6 +30,18 @@ function renderedFullDetailSection(title) {
   const next = appJs.indexOf('<section class="detail-card"><h4>', start + 1);
   assert.notEqual(next, -1, `Expected ${title} to be followed by another detail section`);
   return appJs.slice(start, next);
+}
+
+function renderedMetricRows(title) {
+  const section = renderedDetailSection(title);
+  const rows = [];
+  const rowPattern = /\n\s*(\[\[[\s\S]*?\]\]|\[\n[\s\S]*?\n\s*\])/g;
+  let match;
+  while ((match = rowPattern.exec(section)) !== null) {
+    const labels = [...match[1].matchAll(/\['([^']+)'/g)].map((labelMatch) => labelMatch[1]);
+    if (labels.length) rows.push(labels);
+  }
+  return rows;
 }
 
 function appFunctionSource(name) {
@@ -73,6 +85,15 @@ test('Action Plan Detail metrics use a responsive shrinkable grid', () => {
 
   assert.match(cssBlock('.action-detail-metrics div'), /min-width:\s*0/);
   assert.match(cssBlock('.action-detail-metrics dd'), /overflow-wrap:\s*anywhere/);
+});
+
+test('Linear score metric rows keep fixed logical grouping without horizontal overflow', () => {
+  const rowStack = cssBlock('.action-detail-metric-rows');
+  assert.match(rowStack, /display:\s*flex/);
+  assert.match(rowStack, /flex-direction:\s*column/);
+  assert.match(cssBlock('.detail-card-row-two'), /repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(cssBlock('.detail-card-row-three'), /repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(stylesCss, /@media \(max-width:\s*900px\)[\s\S]*\.detail-card-row-three[\s\S]*auto-fit/);
 });
 
 test('Action Plan Detail containers can shrink inside the app shell', () => {
@@ -318,6 +339,19 @@ test('Linear Target Calculation renders score inputs in order with Linear Score 
   ]);
 });
 
+test('Linear Target Calculation renders score cards in requested logical rows', () => {
+  assert.deepEqual(renderedMetricRows('Linear Target Calculation'), [
+    ['Linear Score'],
+    ['Core Confidence Weight', 'Core Confidence Net', 'Core Confidence Score'],
+    ['Upside Weight', 'Upside', 'Upside Score'],
+    ['Expected CAGR Weight', 'Expected CAGR', 'Expected CAGR Score'],
+    ['Potential Confidence Weight', 'Potential Confidence Net', 'Potential Confidence Score'],
+    ['Confidence Quality Weight', 'Confidence Quality Score'],
+    ['Penalty Factor', 'Penalty Applied'],
+    ['Rating Bonus Factor', 'Bonus Applied'],
+  ]);
+});
+
 test('Linear Target Calculation sources backend Linear score diagnostics', () => {
   const section = renderedDetailSection('Linear Target Calculation');
   assert.ok(section.includes("['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)]"));
@@ -339,6 +373,24 @@ test('Linear Target Calculation sources backend Linear score diagnostics', () =>
   assert.ok(section.includes("['Penalty Applied', formatLinearPenaltyApplied(score)]"));
   assert.ok(section.includes("['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)]"));
   assert.ok(section.includes("['Bonus Applied', formatLinearBonusApplied(score)]"));
+});
+
+test('Action Detail omits Decision Path and Action-Relevant Key Variables sections', () => {
+  const detailRenderer = appJs.slice(
+    appJs.indexOf('function renderActionPlanDetail(item)'),
+    appJs.indexOf('async function openActionPlanDetail(symbol)'),
+  );
+  for (const obsolete of [
+    '<h4>Decision Path</h4>',
+    '<h4>Action-Relevant Key Variables</h4>',
+    'renderDecisionPath',
+    'renderActionRelevantVariables',
+    'PASS:',
+    'FAIL:',
+    'RESULT:',
+  ]) {
+    assert.ok(!detailRenderer.includes(obsolete), `Expected detail renderer to omit ${obsolete}`);
+  }
 });
 
 test('Linear Target Calculation places adjustment reason cards after their factors', () => {
@@ -392,7 +444,7 @@ test('Linear adjustment reason formatters render readable penalty and bonus text
 
 test('Linear Target Calculation explanation appears below cards and describes current method', () => {
   const section = renderedFullDetailSection('Linear Target Calculation');
-  const metricIndex = section.indexOf('${renderActionPlanMetricList([');
+  const metricIndex = section.indexOf('${renderActionPlanMetricRows([');
   const explanationIndex = section.indexOf('<div class="action-detail-explanation">');
   assert.ok(explanationIndex > metricIndex, 'Expected explanation below the card grid');
   for (const text of [
@@ -402,8 +454,8 @@ test('Linear Target Calculation explanation appears below cards and describes cu
     'Core Confidence',
     'Potential Confidence',
     'Confidence Quality',
-    'penalty factors',
-    'rating bonus',
+    'Penalty Factor',
+    'Rating Bonus Factor',
     'stock-specific caps',
     'Dynamic Reserve',
     'band tolerances',

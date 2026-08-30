@@ -2072,15 +2072,9 @@ function renderActionPlanMetricList(items) {
   return `<dl class="action-detail-metrics">${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`).join('')}</dl>`;
 }
 
-function renderDecisionPath(path) {
-  const rows = (path || []).map((item) => `<li class="decision-${escapeHtml(item.status || 'pass')}"><strong>${escapeHtml(String(item.status || '').toUpperCase())}:</strong> ${escapeHtml(item.text || '')}</li>`).join('');
-  return `<ul class="decision-path">${rows || '<li>No decision path available.</li>'}</ul>`;
-}
-
-function renderActionRelevantVariables(variables) {
-  if (!Array.isArray(variables) || !variables.length) return '<p>No key variables available.</p>';
-  const rows = variables.map((item) => `<tr><td>${escapeHtml(item.variable || item.variable_text || '')}</td><td>${escapeHtml(item.type || item.variable_type || '')}</td><td>${escapeHtml(item.driver_category || 'Core Driver')}</td><td>${formatNumber(item.confidence)}</td><td>${formatNumber(item.importance)}</td></tr>`).join('');
-  return `<div class="table-wrap compact-table"><table><thead><tr><th>Variable</th><th>Type</th><th>Driver</th><th>Confidence</th><th>Importance</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+function renderActionPlanMetricRows(rows) {
+  const rowClass = (items) => (items.length === 1 ? 'single' : items.length === 2 ? 'two' : 'three');
+  return `<div class="action-detail-metric-rows">${rows.map((items) => `<dl class="action-detail-metrics detail-card-row detail-card-row-${rowClass(items)}">${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`).join('')}</dl>`).join('')}</div>`;
 }
 
 function formatLinearPositionStatus(status) {
@@ -2186,27 +2180,41 @@ function renderActionPlanDetail(item) {
       ['Target High', formatActionDetailPercent(item.target_weight_high)],
       ['Gap to Mid', formatActionDetailPercent(item.position_gap_to_mid)],
     ])}</section>
-    <section class="detail-card"><h4>Linear Target Calculation</h4>${renderActionPlanMetricList([
-      ['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)],
-      ['Core Confidence Weight', formatActionDetailWeight(weights.linear_core_confidence_weight)],
-      ['Core Confidence Net', formatActionDetailNet(item.core_confidence_diff)],
-      ['Core Confidence Score', formatActionDetailNumber(score.core_net_score)],
-      ['Upside Weight', formatActionDetailWeight(weights.linear_upside_weight)],
-      ['Upside', formatActionDetailPercent(item.upside)],
-      ['Upside Score', formatActionDetailNumber(score.upside_score)],
-      ['Expected CAGR Weight', formatActionDetailWeight(weights.linear_expected_cagr_weight)],
-      ['Expected CAGR', formatActionDetailPercent(item.expected_cagr)],
-      ['Expected CAGR Score', formatActionDetailNumber(score.expected_cagr_score)],
-      ['Potential Confidence Weight', formatActionDetailWeight(weights.linear_potential_confidence_weight)],
-      ['Potential Confidence Net', formatActionDetailNet(item.potential_confidence_diff)],
-      ['Potential Confidence Score', formatActionDetailNumber(score.potential_net_score)],
-      ['Confidence Quality Weight', formatActionDetailWeight(weights.linear_confidence_quality_weight)],
-      ['Confidence Quality Score', formatActionDetailNumber(score.confidence_quality_score)],
-      ['Penalty Factor', formatActionDetailNumber(score.penalty_factor)],
-      ['Penalty Applied', formatLinearPenaltyApplied(score)],
-      ['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)],
-      ['Bonus Applied', formatLinearBonusApplied(score)],
-    ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into 0-1 component scores using the configured Linear min/full ranges. Those component scores are combined using the configured Linear weights, then adjusted by penalty factors and any rating bonus. The resulting Linear Score determines the stock's pre-cap target allocation, subject to the minimum score threshold and zero-target rules for negative expected CAGR or negative upside.</p><p>After the pre-cap target is calculated, stock-specific caps may reduce it. Finally, Dynamic Reserve may scale all Linear targets down if total target allocation exceeds deployable equity. The final Target Low, Mid, and High are then calculated from the final target midpoint using the configured Add and Trim band tolerances.</p></div></section>
+    <section class="detail-card"><h4>Linear Target Calculation</h4>${renderActionPlanMetricRows([
+      [['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)]],
+      [
+        ['Core Confidence Weight', formatActionDetailWeight(weights.linear_core_confidence_weight)],
+        ['Core Confidence Net', formatActionDetailNet(item.core_confidence_diff)],
+        ['Core Confidence Score', formatActionDetailNumber(score.core_net_score)],
+      ],
+      [
+        ['Upside Weight', formatActionDetailWeight(weights.linear_upside_weight)],
+        ['Upside', formatActionDetailPercent(item.upside)],
+        ['Upside Score', formatActionDetailNumber(score.upside_score)],
+      ],
+      [
+        ['Expected CAGR Weight', formatActionDetailWeight(weights.linear_expected_cagr_weight)],
+        ['Expected CAGR', formatActionDetailPercent(item.expected_cagr)],
+        ['Expected CAGR Score', formatActionDetailNumber(score.expected_cagr_score)],
+      ],
+      [
+        ['Potential Confidence Weight', formatActionDetailWeight(weights.linear_potential_confidence_weight)],
+        ['Potential Confidence Net', formatActionDetailNet(item.potential_confidence_diff)],
+        ['Potential Confidence Score', formatActionDetailNumber(score.potential_net_score)],
+      ],
+      [
+        ['Confidence Quality Weight', formatActionDetailWeight(weights.linear_confidence_quality_weight)],
+        ['Confidence Quality Score', formatActionDetailNumber(score.confidence_quality_score)],
+      ],
+      [
+        ['Penalty Factor', formatActionDetailNumber(score.penalty_factor)],
+        ['Penalty Applied', formatLinearPenaltyApplied(score)],
+      ],
+      [
+        ['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)],
+        ['Bonus Applied', formatLinearBonusApplied(score)],
+      ],
+    ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into 0-1 component scores using the configured Linear min/full ranges. Those component scores are combined using the configured Linear weights, then adjusted by Penalty Factor and Rating Bonus Factor. The resulting Linear Score determines the stock's pre-cap target allocation, subject to the minimum score threshold and zero-target rules for negative expected CAGR or negative upside.</p><p>After the pre-cap target is calculated, stock-specific caps may reduce it. Finally, Dynamic Reserve may scale all Linear targets down if total target allocation exceeds deployable equity. The final Target Low, Mid, and High are then calculated from the final target midpoint using the configured Add and Trim band tolerances.</p></div></section>
     <section class="detail-card"><h4>Target Band Calculation</h4>${renderActionPlanMetricList([
       ['Current Position Weight', formatActionDetailPercent(item.current_position_weight)],
       ['Target Low', formatActionDetailPercent(item.target_weight_low)],
@@ -2227,18 +2235,6 @@ function renderActionPlanDetail(item) {
       ['Reserve Scale Factor', formatActionDetailNumber(target.reserve_scale_factor ?? item.reserve_scale_factor)],
       ['Final Target Mid', formatActionDetailPercent(target.final_target_mid ?? item.target_weight_mid)],
     ])}<div class="action-detail-explanation"><h5>How this target band is calculated</h5><p>BakingMoney first converts the stock's Linear Score into a target midpoint. The Linear Score, after the minimum score threshold, is raised to the configured Score Allocation Power, then compared with the total powered scores of all eligible Linear stocks. That determines the stock's share of the Linear target allocation pool and produces the pre-cap Target Mid.</p><p>Stock-specific caps may reduce that midpoint. Dynamic Reserve may then scale all Linear targets down if total target allocation exceeds deployable equity. The final Target Mid is the post-cap, post-reserve midpoint. Target Low is calculated from Final Target Mid using the configured Add Band Tolerance, and Target High is calculated from Final Target Mid using the configured Trim Band Tolerance.</p></div></section>
-    <section class="detail-card"><h4>Decision Path</h4>${renderActionPlanMetricList([
-      ['Rating', escapeHtml(item.rating || 'Hold')],
-      ['Current Weight', formatPercent(item.current_position_weight)],
-      ['Target Band', targetBand],
-      ['Position Status', formatLinearPositionStatus(item.position_status)],
-      ['Base Linear Action', escapeHtml(item.base_linear_action || item.desired_action || item.action || 'Hold')],
-      ['Rating Guardrail', formatLinearGuardrailState(guardrails.rating)],
-      ['Extension Risk Guardrail', formatLinearGuardrailState(guardrails.extension_risk)],
-      ['Minimum Trade Guardrail', formatLinearGuardrailState(guardrails.minimum_executable_trade)],
-      ['Funding', escapeHtml(item.funding_status || 'No funding needed')],
-      ['Final Action', escapeHtml(item.action || 'Hold')],
-    ])}</section>
     <section class="detail-card"><h4>Guardrails</h4>${renderActionPlanMetricList([
       ['Rating Guardrail', formatLinearGuardrailState(guardrails.rating)],
       ['Extension Risk Guardrail', formatLinearGuardrailState(guardrails.extension_risk)],
@@ -2258,8 +2254,7 @@ function renderActionPlanDetail(item) {
       ['Release Date', escapeHtml(formatLinearReleaseDate(item))],
       ['Using Final Scenario Overlay', item.uses_final_scenario_overlay ? 'Yes' : 'No'],
       ['Final Scenario Stale', item.final_scenario_stale ? 'Yes' : 'No'],
-    ])}</section>
-    <section class="detail-card"><h4>Action-Relevant Key Variables</h4>${renderActionRelevantVariables(item.action_relevant_key_variables)}</section>`;
+    ])}</section>`;
   showActionPlanDetailView();
 }
 

@@ -22,7 +22,7 @@ body {
 
 .layout {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 240px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -61,6 +61,7 @@ body {
 
 .content {
   padding: 28px;
+  min-width: 0;
 }
 
 .global-toolbar {
@@ -1233,9 +1234,11 @@ th.sortable[data-sort-direction='desc']::after {
 
 .action-detail-metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
   gap: 10px;
   margin: 0;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .action-detail-metrics div {
@@ -1243,6 +1246,7 @@ th.sortable[data-sort-direction='desc']::after {
   border-radius: 10px;
   padding: 10px;
   background: #fff;
+  min-width: 0;
 }
 
 .action-detail-metrics dt {
@@ -1254,6 +1258,8 @@ th.sortable[data-sort-direction='desc']::after {
 .action-detail-metrics dd {
   margin: 0;
   font-weight: 600;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .decision-path {
@@ -1268,6 +1274,17 @@ th.sortable[data-sort-direction='desc']::after {
 #action-plan {
   min-width: 0;
   overflow-x: hidden;
+}
+
+#action-plan-detail-view,
+#action-plan-detail-content {
+  max-width: 100%;
+  min-width: 0;
+}
+
+#action-plan-detail-view .detail-card {
+  max-width: 100%;
+  min-width: 0;
 }
 
 #action-plan-summary {

@@ -2161,7 +2161,7 @@ function renderActionPlanDetail(item) {
   const score = item.linear_score_breakdown || {};
   const weights = score.weights_used || {};
   const guardrails = item.guardrails || {};
-  const targetBand = `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}`;
+  const targetBand = `${formatActionDetailPercent(item.target_weight_low)} – ${formatActionDetailPercent(item.target_weight_high)}`;
   actionPlanDetailContentEl.innerHTML = `
     <section class="detail-card"><h4>Action Summary</h4>${renderActionPlanMetricList([
       ['Symbol', escapeHtml(item.symbol || '')],
@@ -2207,23 +2207,20 @@ function renderActionPlanDetail(item) {
       ['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)],
       ['Bonus Applied', formatLinearBonusApplied(score)],
     ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into 0-1 component scores using the configured Linear min/full ranges. Those component scores are combined using the configured Linear weights, then adjusted by penalty factors and any rating bonus. The resulting Linear Score determines the stock's pre-cap target allocation, subject to the minimum score threshold and zero-target rules for negative expected CAGR or negative upside.</p><p>After the pre-cap target is calculated, stock-specific caps may reduce it. Finally, Dynamic Reserve may scale all Linear targets down if total target allocation exceeds deployable equity. The final Target Low, Mid, and High are then calculated from the final target midpoint using the configured Add and Trim band tolerances.</p></div></section>
-    <section class="detail-card"><h4>Linear Score Breakdown</h4>${renderActionPlanMetricList([
-      ['Expected CAGR Score', formatNumber(score.expected_cagr_score)],
-      ['Expected CAGR Weight', formatNumber(weights.linear_expected_cagr_weight)],
-      ['Upside Score', formatNumber(score.upside_score)],
-      ['Upside Weight', formatNumber(weights.linear_upside_weight)],
-      ['Core Confidence Score', formatNumber(score.core_net_score)],
-      ['Core Confidence Weight', formatNumber(weights.linear_core_confidence_weight)],
-      ['Potential Confidence Score', formatNumber(score.potential_net_score)],
-      ['Potential Confidence Weight', formatNumber(weights.linear_potential_confidence_weight)],
-      ['Confidence Quality Score', formatNumber(score.confidence_quality_score)],
-      ['Confidence Quality Weight', formatNumber(weights.linear_confidence_quality_weight)],
-      ['Penalty Factor', formatNumber(score.penalty_factor)],
-      ['Penalties Applied', formatLinearPenalties(score.penalties_applied)],
-      ['Rating Bonus Factor', formatNumber(score.rating_bonus_factor)],
-      ['Rating Bonus', escapeHtml(score.rating_bonus_reason || 'None')],
-      ['Linear Score', formatNumber(score.linear_score ?? item.linear_allocation_score)],
-    ])}</section>
+    <section class="detail-card"><h4>Target Band Calculation</h4>${renderActionPlanMetricList([
+      ['Target Low', formatActionDetailPercent(item.target_weight_low)],
+      ['Target Mid', formatActionDetailPercent(item.target_weight_mid)],
+      ['Target High', formatActionDetailPercent(item.target_weight_high)],
+      ['Target Band', targetBand],
+      ['Add Band Tolerance', formatActionDetailPercent(item.linear_add_band_tolerance_pct)],
+      ['Trim Band Tolerance', formatActionDetailPercent(item.linear_trim_band_tolerance_pct)],
+      ['Uncapped Target Mid', formatActionDetailPercent(target.target_before_caps ?? item.uncapped_target_mid ?? item.linear_target_mid_before_caps)],
+      ['Cap Applied', formatActionDetailPercent(target.cap_amount ?? item.cap_applied ?? item.linear_cap_applied)],
+      ['Cap Reason', escapeHtml(target.cap_reason || item.cap_reason || item.linear_cap_reason || '—')],
+      ['Pre-Reserve Target Mid', formatActionDetailPercent(target.target_after_cap_mid ?? item.pre_reserve_target_mid)],
+      ['Reserve Scale Factor', formatActionDetailNumber(target.reserve_scale_factor ?? item.reserve_scale_factor)],
+      ['Final Target Mid', formatActionDetailPercent(target.final_target_mid ?? item.target_weight_mid)],
+    ])}<div class="action-detail-explanation"><h5>How this target band is calculated</h5><p>BakingMoney first derives a target midpoint from the stock's Linear Score and the portfolio-level Linear allocation rules. Before the final band is shown, stock-specific caps may reduce the target. Dynamic Reserve may then scale all Linear targets down if the total target allocation is above the maximum deployable equity allocation.</p><p>The final Target Mid is the post-cap, post-reserve target midpoint. Target Low is calculated from Target Mid using the configured Add Band Tolerance, and Target High is calculated from Target Mid using the configured Trim Band Tolerance.</p></div></section>
     <section class="detail-card"><h4>Decision Path</h4>${renderActionPlanMetricList([
       ['Rating', escapeHtml(item.rating || 'Hold')],
       ['Current Weight', formatPercent(item.current_position_weight)],

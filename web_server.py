@@ -8609,6 +8609,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "pre_reserve_target_low": pre_reserve_low,
             "pre_reserve_target_mid": pre_reserve_mid,
             "pre_reserve_target_high": pre_reserve_high,
+            "linear_add_band_tolerance_pct": add_tolerance * 100.0,
+            "linear_trim_band_tolerance_pct": trim_tolerance * 100.0,
         })
     reserve_details = _apply_linear_dynamic_reserve(rows, settings)
     allocated_total = reserve_details["final_total_target_mid"]
@@ -8635,6 +8637,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "adjusted_target_low": target_low,
             "adjusted_target_mid": target_mid,
             "adjusted_target_high": target_high,
+            "linear_add_band_tolerance_pct": add_tolerance * 100.0,
+            "linear_trim_band_tolerance_pct": trim_tolerance * 100.0,
         })
         current_weight = safe_number(row.get("current_position_weight")) or 0.0
         rating_label = str(row.get("rating") or "").strip()

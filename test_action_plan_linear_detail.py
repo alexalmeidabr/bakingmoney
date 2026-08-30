@@ -168,6 +168,8 @@ class LinearActionPlanDetailTests(unittest.TestCase):
         self.assertEqual(target["target_after_cap_mid"], row["pre_reserve_target_mid"])
         self.assertEqual(target["reserve_scale_factor"], row["reserve_scale_factor"])
         self.assertEqual(target["final_target_mid"], row["target_weight_mid"])
+        self.assertEqual(detail["linear_add_band_tolerance_pct"], row["linear_add_band_tolerance_pct"])
+        self.assertEqual(detail["linear_trim_band_tolerance_pct"], row["linear_trim_band_tolerance_pct"])
         self.assertFalse(target["cap_applied"])
         self.assertEqual(target["cap_reason"], "—")
         self.assertEqual(score["linear_score"], row["linear_allocation_score"])

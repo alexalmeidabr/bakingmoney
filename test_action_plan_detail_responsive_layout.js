@@ -129,15 +129,19 @@ test('modern Linear Action Plan Detail sections keep responsive metric cards', (
       'Rating Bonus Factor',
       'Bonus Applied',
     ],
-    'Linear Score Breakdown': [
-      'Expected CAGR Score',
-      'Upside Score',
-      'Core Confidence Score',
-      'Potential Confidence Score',
-      'Confidence Quality Score',
-      'Penalty Factor',
-      'Rating Bonus Factor',
-      'Linear Score',
+    'Target Band Calculation': [
+      'Target Low',
+      'Target Mid',
+      'Target High',
+      'Target Band',
+      'Add Band Tolerance',
+      'Trim Band Tolerance',
+      'Uncapped Target Mid',
+      'Cap Applied',
+      'Cap Reason',
+      'Pre-Reserve Target Mid',
+      'Reserve Scale Factor',
+      'Final Target Mid',
     ],
   };
 
@@ -459,6 +463,107 @@ test('Linear Target Calculation omits bucket, trigger, and old allocation fields
   }
 });
 
+test('Linear Score Breakdown section is replaced by Target Band Calculation', () => {
+  const detailRenderer = appJs.slice(
+    appJs.indexOf('function renderActionPlanDetail(item)'),
+    appJs.indexOf('async function openActionPlanDetail(symbol)'),
+  );
+  assert.ok(!detailRenderer.includes('<h4>Linear Score Breakdown</h4>'));
+  assert.ok(detailRenderer.includes('<h4>Target Band Calculation</h4>'));
+});
+
+test('Target Band Calculation renders final band and diagnostics in order', () => {
+  assert.deepEqual(renderedDetailSectionLabels('Target Band Calculation'), [
+    'Target Low',
+    'Target Mid',
+    'Target High',
+    'Target Band',
+    'Add Band Tolerance',
+    'Trim Band Tolerance',
+    'Uncapped Target Mid',
+    'Cap Applied',
+    'Cap Reason',
+    'Pre-Reserve Target Mid',
+    'Reserve Scale Factor',
+    'Final Target Mid',
+  ]);
+});
+
+test('Target Band Calculation sources current Linear target-band diagnostics', () => {
+  const section = renderedDetailSection('Target Band Calculation');
+  assert.ok(section.includes("['Target Low', formatActionDetailPercent(item.target_weight_low)]"));
+  assert.ok(section.includes("['Target Mid', formatActionDetailPercent(item.target_weight_mid)]"));
+  assert.ok(section.includes("['Target High', formatActionDetailPercent(item.target_weight_high)]"));
+  assert.ok(section.includes("['Target Band', targetBand]"));
+  assert.ok(section.includes("['Add Band Tolerance', formatActionDetailPercent(item.linear_add_band_tolerance_pct)]"));
+  assert.ok(section.includes("['Trim Band Tolerance', formatActionDetailPercent(item.linear_trim_band_tolerance_pct)]"));
+  assert.ok(section.includes("['Uncapped Target Mid', formatActionDetailPercent(target.target_before_caps ?? item.uncapped_target_mid ?? item.linear_target_mid_before_caps)]"));
+  assert.ok(section.includes("['Cap Applied', formatActionDetailPercent(target.cap_amount ?? item.cap_applied ?? item.linear_cap_applied)]"));
+  assert.ok(section.includes("['Cap Reason', escapeHtml(target.cap_reason || item.cap_reason || item.linear_cap_reason || '—')]"));
+  assert.ok(section.includes("['Pre-Reserve Target Mid', formatActionDetailPercent(target.target_after_cap_mid ?? item.pre_reserve_target_mid)]"));
+  assert.ok(section.includes("['Reserve Scale Factor', formatActionDetailNumber(target.reserve_scale_factor ?? item.reserve_scale_factor)]"));
+  assert.ok(section.includes("['Final Target Mid', formatActionDetailPercent(target.final_target_mid ?? item.target_weight_mid)]"));
+});
+
+test('Target Band Calculation explanation appears below cards and describes band method', () => {
+  const section = renderedFullDetailSection('Target Band Calculation');
+  const metricIndex = section.indexOf('${renderActionPlanMetricList([');
+  const explanationIndex = section.indexOf('<div class="action-detail-explanation">');
+  assert.ok(explanationIndex > metricIndex, 'Expected Target Band explanation below the card grid');
+  for (const text of [
+    'How this target band is calculated',
+    'Linear Score',
+    'stock-specific caps',
+    'Dynamic Reserve',
+    'Add Band Tolerance',
+    'Trim Band Tolerance',
+  ]) {
+    assert.ok(section.includes(text), `Expected Target Band explanation to mention ${text}`);
+  }
+  assert.ok(!section.includes('Bucket Allocation'));
+  assert.ok(!section.includes('Trigger Prices'));
+});
+
+test('Target Band Calculation omits score, bucket, trigger, and action labels', () => {
+  const section = renderedFullDetailSection('Target Band Calculation');
+  const labels = renderedDetailSectionLabels('Target Band Calculation');
+  for (const obsolete of [
+    'Upside Score',
+    'Core Conviction Score',
+    'Potential Conviction Score',
+    'Core Risk Modifier',
+    'Allocation Risk Modifier',
+    'Allocation Score',
+    'Bucket Sizing Score',
+    'Bucket Sizing Risk Modifier',
+    'Weighted Count',
+    'Company Allocation Score',
+    'Total Bucket Allocation Score',
+    'Rating Bucket',
+    'Bucket Share',
+    'Trigger Price',
+    'Distance to Trigger',
+    'Strong Add',
+    'Starter Buy',
+    'Strong Trim',
+  ]) {
+    assert.ok(!labels.includes(obsolete), `Expected Target Band Calculation to omit ${obsolete}`);
+  }
+  for (const obsolete of [
+    'Bucket Allocation',
+    'Trigger Prices',
+    'null',
+    'undefined',
+    'NaN',
+    'Infinity',
+    'N/A',
+    '[]',
+    '{}',
+  ]) {
+    assert.ok(!section.includes(obsolete), `Expected Target Band Calculation to omit ${obsolete}`);
+  }
+});
+
 test('Linear Action Plan Detail omits obsolete trigger and bucket UI', () => {
   const detailRenderer = appJs.slice(
     appJs.indexOf('function renderActionPlanDetail(item)'),
@@ -483,4 +588,6 @@ test('Linear Action Plan Detail omits obsolete trigger and bucket UI', () => {
   assert.match(detailRenderer, /linear_allocation_score/);
   assert.match(detailRenderer, /linear_target_breakdown/);
   assert.match(detailRenderer, /linear_score_breakdown/);
+  assert.match(detailRenderer, /Target Band Calculation/);
+  assert.ok(!detailRenderer.includes('Linear Score Breakdown'));
 });

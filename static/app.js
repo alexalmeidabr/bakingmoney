@@ -2116,8 +2116,10 @@ function renderActionPlanDetail(item) {
   actionPlanDetailContentEl.innerHTML = `
     <section class="detail-card"><h4>Action Summary</h4>${renderActionPlanMetricList([
       ['Symbol', escapeHtml(item.symbol || '')],
-      ['Company Name', escapeHtml(item.company_name || 'N/A')],
+      ['Company Name', escapeHtml(item.company_name || '—')],
       ['Action', escapeHtml(item.action || 'Hold')],
+      ['Action Amount', escapeHtml(item.action_amount_label || '—')],
+      ['Action Shares Amount', formatSuggestedShareCount(item)],
       ['Rating', escapeHtml(item.rating || 'Hold')],
       ['Current Price', formatCurrencyValue(item.current_price, 'USD')],
       ['Current Market Value', formatCurrencyValue(item.current_position_market_value, 'USD')],
@@ -2125,18 +2127,7 @@ function renderActionPlanDetail(item) {
       ['Expected Price', formatCurrencyValue(item.expected_price, 'USD')],
       ['Upside', formatPercent(item.upside)],
       ['Expected CAGR', formatPercent(item.expected_cagr)],
-      ['Release Date', escapeHtml(formatLinearReleaseDate(item))],
-      ['Target Low', formatPercent(item.target_weight_low)],
-      ['Target Mid', formatPercent(item.target_weight_mid)],
-      ['Target High', formatPercent(item.target_weight_high)],
-      ['Target Band', targetBand],
-      ['Gap to Mid', formatPercent(item.position_gap_to_mid)],
-      ['Target Gap Amount', formatCurrencyValue(item.target_gap_amount, 'USD')],
-      ['Action Amount', escapeHtml(item.action_amount_label || '—')],
-      ['Shares', formatSuggestedShareCount(item)],
-      ['Funding Status', escapeHtml(item.funding_status || 'No funding needed')],
-      ['Linear Score', formatNumber(item.linear_allocation_score)],
-    ])}<p>${escapeHtml(item.linear_explanation || item.reason || '')}</p></section>
+    ])}</section>
     <section class="detail-card"><h4>Position vs Target Band</h4>${renderActionPlanMetricList([
       ['Total Portfolio Value Used', formatCurrencyValue(item.total_portfolio_value, 'USD')],
       ['Current Position Market Value', formatCurrencyValue(item.current_position_market_value, 'USD')],

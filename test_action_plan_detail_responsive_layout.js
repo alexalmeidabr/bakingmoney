@@ -18,6 +18,11 @@ function renderedDetailSection(title) {
   return match[1];
 }
 
+function renderedDetailSectionLabels(title) {
+  const section = renderedDetailSection(title);
+  return [...section.matchAll(/\['([^']+)'/g)].map((match) => match[1]);
+}
+
 test('Action Plan Detail metrics use a responsive shrinkable grid', () => {
   const metrics = cssBlock('.action-detail-metrics');
   assert.match(metrics, /display:\s*grid/);
@@ -43,20 +48,15 @@ test('modern Linear Action Plan Detail sections keep responsive metric cards', (
       'Symbol',
       'Company Name',
       'Action',
+      'Action Amount',
+      'Action Shares Amount',
       'Rating',
       'Current Price',
       'Current Market Value',
       'Current Weight',
-      'Target Low',
-      'Target Mid',
-      'Target High',
-      'Target Band',
-      'Gap to Mid',
-      'Target Gap Amount',
-      'Shares',
-      'Funding Status',
-      'Action Amount',
-      'Linear Score',
+      'Expected Price',
+      'Upside',
+      'Expected CAGR',
     ],
     'Position vs Target Band': [
       'Total Portfolio Value Used',
@@ -107,6 +107,64 @@ test('modern Linear Action Plan Detail sections keep responsive metric cards', (
     for (const label of labels) {
       assert.ok(renderedSection.includes(`['${label}'`), `Expected ${section} to keep ${label}`);
     }
+  }
+});
+
+test('Action Summary renders exactly the required Linear row fields in order', () => {
+  assert.deepEqual(renderedDetailSectionLabels('Action Summary'), [
+    'Symbol',
+    'Company Name',
+    'Action',
+    'Action Amount',
+    'Action Shares Amount',
+    'Rating',
+    'Current Price',
+    'Current Market Value',
+    'Current Weight',
+    'Expected Price',
+    'Upside',
+    'Expected CAGR',
+  ]);
+});
+
+test('Action Summary sources action, amount, shares, and market values from the Linear row item', () => {
+  const summary = renderedDetailSection('Action Summary');
+  assert.ok(summary.includes("['Action', escapeHtml(item.action || 'Hold')]"));
+  assert.ok(summary.includes("['Action Amount', escapeHtml(item.action_amount_label || '—')]"));
+  assert.ok(summary.includes("['Action Shares Amount', formatSuggestedShareCount(item)]"));
+  assert.ok(summary.includes("['Current Price', formatCurrencyValue(item.current_price, 'USD')]"));
+  assert.ok(summary.includes("['Current Market Value', formatCurrencyValue(item.current_position_market_value, 'USD')]"));
+  assert.ok(summary.includes("['Current Weight', formatPercent(item.current_position_weight)]"));
+  assert.ok(summary.includes("['Expected Price', formatCurrencyValue(item.expected_price, 'USD')]"));
+  assert.ok(summary.includes("['Upside', formatPercent(item.upside)]"));
+  assert.ok(summary.includes("['Expected CAGR', formatPercent(item.expected_cagr)]"));
+});
+
+test('Action Summary omits old target, funding, trigger, and explanation fields', () => {
+  const summary = renderedDetailSection('Action Summary');
+  const labels = renderedDetailSectionLabels('Action Summary');
+  for (const obsolete of [
+    'Release Date',
+    'Target Low',
+    'Target Mid',
+    'Target High',
+    'Target Band',
+    'Gap to Mid',
+    'Target Gap Amount',
+    'Funding Status',
+    'Linear Score',
+    'Trigger Price',
+    'Distance to Trigger',
+    'Shares',
+  ]) {
+    assert.ok(!labels.includes(obsolete), `Expected Action Summary to omit ${obsolete}`);
+  }
+  for (const obsolete of [
+    'linear_explanation',
+    'reason',
+    '<p>',
+  ]) {
+    assert.ok(!summary.includes(obsolete), `Expected Action Summary to omit ${obsolete}`);
   }
 });
 

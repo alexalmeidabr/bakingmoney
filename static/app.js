@@ -2208,19 +2208,25 @@ function renderActionPlanDetail(item) {
       ['Bonus Applied', formatLinearBonusApplied(score)],
     ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into 0-1 component scores using the configured Linear min/full ranges. Those component scores are combined using the configured Linear weights, then adjusted by penalty factors and any rating bonus. The resulting Linear Score determines the stock's pre-cap target allocation, subject to the minimum score threshold and zero-target rules for negative expected CAGR or negative upside.</p><p>After the pre-cap target is calculated, stock-specific caps may reduce it. Finally, Dynamic Reserve may scale all Linear targets down if total target allocation exceeds deployable equity. The final Target Low, Mid, and High are then calculated from the final target midpoint using the configured Add and Trim band tolerances.</p></div></section>
     <section class="detail-card"><h4>Target Band Calculation</h4>${renderActionPlanMetricList([
+      ['Current Position Weight', formatActionDetailPercent(item.current_position_weight)],
       ['Target Low', formatActionDetailPercent(item.target_weight_low)],
       ['Target Mid', formatActionDetailPercent(item.target_weight_mid)],
       ['Target High', formatActionDetailPercent(item.target_weight_high)],
       ['Target Band', targetBand],
+      ['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)],
+      ['Score Allocation Power', formatActionDetailNumber(item.linear_score_allocation_power)],
+      ['Powered Linear Score', formatActionDetailNumber(item.linear_powered_score ?? item.linear_allocation_weight)],
+      ['Total Powered Linear Score', formatActionDetailNumber(item.linear_total_powered_score)],
+      ['Target Allocation Pool', formatActionDetailPercent(item.linear_target_allocation_pool)],
+      ['Pre-Cap Target Mid', formatActionDetailPercent(target.target_before_caps ?? item.linear_target_mid_before_caps ?? item.uncapped_target_mid)],
       ['Add Band Tolerance', formatActionDetailPercent(item.linear_add_band_tolerance_pct)],
       ['Trim Band Tolerance', formatActionDetailPercent(item.linear_trim_band_tolerance_pct)],
-      ['Uncapped Target Mid', formatActionDetailPercent(target.target_before_caps ?? item.uncapped_target_mid ?? item.linear_target_mid_before_caps)],
       ['Cap Applied', formatActionDetailPercent(target.cap_amount ?? item.cap_applied ?? item.linear_cap_applied)],
       ['Cap Reason', escapeHtml(target.cap_reason || item.cap_reason || item.linear_cap_reason || '—')],
       ['Pre-Reserve Target Mid', formatActionDetailPercent(target.target_after_cap_mid ?? item.pre_reserve_target_mid)],
       ['Reserve Scale Factor', formatActionDetailNumber(target.reserve_scale_factor ?? item.reserve_scale_factor)],
       ['Final Target Mid', formatActionDetailPercent(target.final_target_mid ?? item.target_weight_mid)],
-    ])}<div class="action-detail-explanation"><h5>How this target band is calculated</h5><p>BakingMoney first derives a target midpoint from the stock's Linear Score and the portfolio-level Linear allocation rules. Before the final band is shown, stock-specific caps may reduce the target. Dynamic Reserve may then scale all Linear targets down if the total target allocation is above the maximum deployable equity allocation.</p><p>The final Target Mid is the post-cap, post-reserve target midpoint. Target Low is calculated from Target Mid using the configured Add Band Tolerance, and Target High is calculated from Target Mid using the configured Trim Band Tolerance.</p></div></section>
+    ])}<div class="action-detail-explanation"><h5>How this target band is calculated</h5><p>BakingMoney first converts the stock's Linear Score into a target midpoint. The Linear Score, after the minimum score threshold, is raised to the configured Score Allocation Power, then compared with the total powered scores of all eligible Linear stocks. That determines the stock's share of the Linear target allocation pool and produces the pre-cap Target Mid.</p><p>Stock-specific caps may reduce that midpoint. Dynamic Reserve may then scale all Linear targets down if total target allocation exceeds deployable equity. The final Target Mid is the post-cap, post-reserve midpoint. Target Low is calculated from Final Target Mid using the configured Add Band Tolerance, and Target High is calculated from Final Target Mid using the configured Trim Band Tolerance.</p></div></section>
     <section class="detail-card"><h4>Decision Path</h4>${renderActionPlanMetricList([
       ['Rating', escapeHtml(item.rating || 'Hold')],
       ['Current Weight', formatPercent(item.current_position_weight)],

@@ -130,13 +130,19 @@ test('modern Linear Action Plan Detail sections keep responsive metric cards', (
       'Bonus Applied',
     ],
     'Target Band Calculation': [
+      'Current Position Weight',
       'Target Low',
       'Target Mid',
       'Target High',
       'Target Band',
+      'Linear Score',
+      'Score Allocation Power',
+      'Powered Linear Score',
+      'Total Powered Linear Score',
+      'Target Allocation Pool',
+      'Pre-Cap Target Mid',
       'Add Band Tolerance',
       'Trim Band Tolerance',
-      'Uncapped Target Mid',
       'Cap Applied',
       'Cap Reason',
       'Pre-Reserve Target Mid',
@@ -474,13 +480,19 @@ test('Linear Score Breakdown section is replaced by Target Band Calculation', ()
 
 test('Target Band Calculation renders final band and diagnostics in order', () => {
   assert.deepEqual(renderedDetailSectionLabels('Target Band Calculation'), [
+    'Current Position Weight',
     'Target Low',
     'Target Mid',
     'Target High',
     'Target Band',
+    'Linear Score',
+    'Score Allocation Power',
+    'Powered Linear Score',
+    'Total Powered Linear Score',
+    'Target Allocation Pool',
+    'Pre-Cap Target Mid',
     'Add Band Tolerance',
     'Trim Band Tolerance',
-    'Uncapped Target Mid',
     'Cap Applied',
     'Cap Reason',
     'Pre-Reserve Target Mid',
@@ -491,13 +503,19 @@ test('Target Band Calculation renders final band and diagnostics in order', () =
 
 test('Target Band Calculation sources current Linear target-band diagnostics', () => {
   const section = renderedDetailSection('Target Band Calculation');
+  assert.ok(section.includes("['Current Position Weight', formatActionDetailPercent(item.current_position_weight)]"));
   assert.ok(section.includes("['Target Low', formatActionDetailPercent(item.target_weight_low)]"));
   assert.ok(section.includes("['Target Mid', formatActionDetailPercent(item.target_weight_mid)]"));
   assert.ok(section.includes("['Target High', formatActionDetailPercent(item.target_weight_high)]"));
   assert.ok(section.includes("['Target Band', targetBand]"));
+  assert.ok(section.includes("['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)]"));
+  assert.ok(section.includes("['Score Allocation Power', formatActionDetailNumber(item.linear_score_allocation_power)]"));
+  assert.ok(section.includes("['Powered Linear Score', formatActionDetailNumber(item.linear_powered_score ?? item.linear_allocation_weight)]"));
+  assert.ok(section.includes("['Total Powered Linear Score', formatActionDetailNumber(item.linear_total_powered_score)]"));
+  assert.ok(section.includes("['Target Allocation Pool', formatActionDetailPercent(item.linear_target_allocation_pool)]"));
+  assert.ok(section.includes("['Pre-Cap Target Mid', formatActionDetailPercent(target.target_before_caps ?? item.linear_target_mid_before_caps ?? item.uncapped_target_mid)]"));
   assert.ok(section.includes("['Add Band Tolerance', formatActionDetailPercent(item.linear_add_band_tolerance_pct)]"));
   assert.ok(section.includes("['Trim Band Tolerance', formatActionDetailPercent(item.linear_trim_band_tolerance_pct)]"));
-  assert.ok(section.includes("['Uncapped Target Mid', formatActionDetailPercent(target.target_before_caps ?? item.uncapped_target_mid ?? item.linear_target_mid_before_caps)]"));
   assert.ok(section.includes("['Cap Applied', formatActionDetailPercent(target.cap_amount ?? item.cap_applied ?? item.linear_cap_applied)]"));
   assert.ok(section.includes("['Cap Reason', escapeHtml(target.cap_reason || item.cap_reason || item.linear_cap_reason || '—')]"));
   assert.ok(section.includes("['Pre-Reserve Target Mid', formatActionDetailPercent(target.target_after_cap_mid ?? item.pre_reserve_target_mid)]"));
@@ -513,13 +531,15 @@ test('Target Band Calculation explanation appears below cards and describes band
   for (const text of [
     'How this target band is calculated',
     'Linear Score',
-    'stock-specific caps',
+    'Score Allocation Power',
+    'powered scores',
     'Dynamic Reserve',
     'Add Band Tolerance',
     'Trim Band Tolerance',
   ]) {
     assert.ok(section.includes(text), `Expected Target Band explanation to mention ${text}`);
   }
+  assert.match(section, /stock-specific caps/i);
   assert.ok(!section.includes('Bucket Allocation'));
   assert.ok(!section.includes('Trigger Prices'));
 });
@@ -529,6 +549,10 @@ test('Target Band Calculation omits score, bucket, trigger, and action labels', 
   const labels = renderedDetailSectionLabels('Target Band Calculation');
   for (const obsolete of [
     'Upside Score',
+    'Core Confidence Score',
+    'Potential Confidence Score',
+    'Expected CAGR Score',
+    'Confidence Quality Score',
     'Core Conviction Score',
     'Potential Conviction Score',
     'Core Risk Modifier',

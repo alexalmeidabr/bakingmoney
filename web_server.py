@@ -8118,10 +8118,14 @@ def _apply_linear_caps_and_redistribute(rows, target_total, settings):
         allocation_score_input = max(0.0, (safe_number(row.get("linear_allocation_score")) or 0.0) - min_score_threshold)
         row["linear_allocation_score_input"] = allocation_score_input
         row["linear_allocation_weight"] = allocation_score_input ** allocation_power if allocation_score_input > 0 else 0.0
+        row["linear_powered_score"] = row["linear_allocation_weight"]
         row["linear_score_allocation_power"] = allocation_power
+        row["linear_target_allocation_pool"] = target_total
         if row["linear_allocation_weight"] > 0:
             positive_rows.append(row)
     total_weight = sum(row["linear_allocation_weight"] for row in positive_rows)
+    for row in rows:
+        row["linear_total_powered_score"] = total_weight
     if target_total <= 0 or total_weight <= 0:
         return 0.0
     for row in positive_rows:

@@ -8210,7 +8210,7 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         elif row.get("action") == "Watch / Rating Guardrail" and row.get("target_gap_amount", 0.0) > 0:
             row["funding_status"] = "Rating blocks add"
         elif row.get("action") in {"Watch", "Watch / Underweight", "Hold / Overweight"} and row.get("target_gap_amount", 0.0) > 0:
-            row["funding_status"] = "Waiting for trigger"
+            row["funding_status"] = "No executable add"
         else:
             row["funding_status"] = "No funding needed"
     projected_cash_before_buys = cash_available + executable_sell_trim_proceeds
@@ -8337,6 +8337,85 @@ def _linear_action_compatibility_fields():
         "distance_to_relevant_trigger_percent": None,
         "distance_to_relevant_trigger_label": None,
         "trigger_breakdown": None,
+    }
+
+
+def _linear_position_status(current_weight, target_low, target_high, target_mid):
+    if target_mid <= 0 and current_weight > 0:
+        return "ZERO_TARGET_OWNED"
+    if current_weight < target_low:
+        return "BELOW_TARGET"
+    if current_weight > target_high:
+        return "ABOVE_TARGET"
+    return "INSIDE_TARGET"
+
+
+def _linear_action_explanation(row):
+    action = row.get("action") or "Re-evaluate"
+    position_status = row.get("position_status")
+    if action == "Watch / Rating Guardrail":
+        return "The position is below its Linear target band, but the current rating prevents an Add action."
+    if action == "Watch / Extended":
+        return "The position is below its Linear target band, but the high Extension Risk guardrail prevents an Add action."
+    if action == "Watch" and row.get("desired_action") == "Add":
+        return "The position is below its Linear target band, but no executable Add is currently funded."
+    if action == "Add":
+        return "Current weight is below the Linear target band, so the position is eligible to add toward the target midpoint."
+    if action == "Hold" and position_status == "INSIDE_TARGET":
+        return "Current weight is inside the Linear target band, so no allocation change is required."
+    if action == "Trim":
+        return "Current weight is above the Linear target band, so the position is eligible to trim toward the target midpoint."
+    if action == "Sell":
+        if str(row.get("rating") or "").strip() in {"Sell", "Strong Sell"}:
+            return "The current rating requires a full exit under the Linear Allocation sell rule."
+        return "The final Linear target is zero while the position is owned, so the position is marked Sell."
+    if position_status == "BELOW_TARGET":
+        return "Current weight is below the Linear target band, but no executable allocation change is currently available."
+    if position_status == "ABOVE_TARGET":
+        return "Current weight is above the Linear target band, but no executable allocation change is currently available."
+    return "The final action is the executable result produced by the current Linear Allocation calculation."
+
+
+def _linear_detail_diagnostics(row):
+    cap_amount = safe_number(row.get("linear_cap_applied")) or 0.0
+    return {
+        "linear_explanation": _linear_action_explanation(row),
+        "linear_target_breakdown": {
+            "linear_score": row.get("linear_allocation_score"),
+            "target_before_caps": row.get("linear_target_mid_before_caps"),
+            "cap_applied": cap_amount > 1e-9,
+            "cap_amount": cap_amount,
+            "cap_reason": row.get("linear_cap_reason") if cap_amount > 1e-9 else "—",
+            "target_after_cap_low": row.get("pre_reserve_target_low"),
+            "target_after_cap_mid": row.get("pre_reserve_target_mid"),
+            "target_after_cap_high": row.get("pre_reserve_target_high"),
+            "reserve_scale_factor": row.get("reserve_scale_factor"),
+            "final_target_low": row.get("final_target_low"),
+            "final_target_mid": row.get("final_target_mid"),
+            "final_target_high": row.get("final_target_high"),
+            "bearish_confidence": row.get("bearish_confidence"),
+            "bearish_cap_progress": row.get("bearish_cap_progress"),
+            "bearish_cap_applied": row.get("bearish_cap_applied"),
+        },
+        "linear_score_breakdown": {
+            "expected_cagr_score": row.get("linear_expected_cagr_score"),
+            "upside_score": row.get("linear_upside_score"),
+            "core_net_score": row.get("linear_core_net_score"),
+            "potential_net_score": row.get("linear_potential_net_score"),
+            "confidence_quality_score": row.get("linear_confidence_quality_score"),
+            "weights_used": row.get("linear_weights_used"),
+            "penalty_factor": row.get("linear_penalty_factor"),
+            "penalties_applied": row.get("linear_penalties_applied"),
+            "rating_bonus_factor": row.get("linear_rating_bonus_factor"),
+            "rating_bonus_reason": row.get("linear_rating_bonus_reason"),
+            "linear_score": row.get("linear_allocation_score"),
+        },
+        "guardrails": {
+            "rating": "Triggered" if row.get("rating_guardrail_applied") else "Not triggered",
+            "extension_risk": "Triggered" if row.get("extension_guardrail_applied") else "Not triggered",
+            "minimum_executable_trade": "Triggered" if row.get("minimum_trade_size_blocked_by_configured_minimum") else "Not triggered",
+            "whole_share_minimum": "Triggered" if row.get("minimum_trade_size_blocked") and not row.get("minimum_trade_size_blocked_by_configured_minimum") else "Not triggered",
+        },
     }
 
 
@@ -8480,6 +8559,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "expected_cagr": expected_cagr,
             "effective_scenarios": item.get("effective_scenarios"),
             "effective_scenario_source": item.get("effective_scenario_source"),
+            "uses_final_scenario_overlay": item.get("uses_final_scenario_overlay"),
+            "final_scenario_stale": item.get("final_scenario_stale"),
             "upside": upside,
             "core_confidence_diff": core_net,
             "core_bullish_confidence": item.get("core_bullish_confidence"),
@@ -8562,6 +8643,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         extension_guardrail_reason = None
         extension_guardrail_diagnostic = None
         extension_guardrail_threshold = safe_number(settings.get("linear_high_extension_risk_threshold"))
+        position_status = _linear_position_status(current_weight, target_low, target_high, target_mid)
         if (rating_label in {"Sell", "Strong Sell"} or target_mid <= 0) and current_weight > 0:
             action = "Sell"
             sizing_action = action
@@ -8604,6 +8686,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             reason = extension_guardrail_reason
         row.update({
             "action": action,
+            "base_linear_action": sizing_action,
+            "position_status": position_status,
             "desired_action": desired_action,
             "executable_action": action,
             "action_priority": ACTION_PLAN_ACTION_PRIORITY.get(action, 99),
@@ -8626,6 +8710,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
     )
     for row in rows:
         row["decision_path"] = _linear_action_decision_path(row, row.get("action") or "Hold")
+        row.update(_linear_detail_diagnostics(row))
     rows.sort(key=lambda row: (-(safe_number(row.get("linear_action_priority")) or 0.0), -(safe_number(row.get("linear_allocation_score")) or 0.0), row.get("symbol") or ""))
     summary = {
         "mode_label": "Linear Allocation",
@@ -9077,24 +9162,47 @@ def build_action_plan(conn):
         },
     }
 
+def build_linear_action_plan_detail(payload, symbol, variables=None):
+    normalized = normalize_symbol(symbol)
+    row = next(
+        (
+            item for item in payload.get("linear_action_plan", [])
+            if normalize_symbol(item.get("symbol")) == normalized
+        ),
+        None,
+    )
+    if not row:
+        return None
+    row = dict(row)
+    for obsolete_key in (
+        "trigger_price",
+        "trigger_direction",
+        "relevant_trigger_price",
+        "relevant_trigger_type",
+        "distance_to_trigger_percent",
+        "distance_to_relevant_trigger_percent",
+        "distance_to_relevant_trigger_label",
+        "trigger_breakdown",
+    ):
+        row.pop(obsolete_key, None)
+    row["detail_source"] = "linear_action_plan"
+    row["action_relevant_key_variables"] = sorted(
+        variables or [],
+        key=lambda item: (safe_number(item.get("importance")) or 0.0, safe_number(item.get("confidence")) or 0.0),
+        reverse=True,
+    )[:10]
+    row["summary"] = payload.get("summary", {}).get("linear_summary", {})
+    return row
+
+
 def get_action_plan_detail(conn, symbol):
     normalized = normalize_symbol(symbol)
     payload = build_action_plan(conn)
-    row = next((item for item in payload.get("action_plan", []) if normalize_symbol(item.get("symbol")) == normalized), None)
-    if not row:
-        return None
     detail = get_analysis_detail(conn, normalized)
     variables = []
     if detail and detail.get("version"):
         variables = detail["version"].get("key_variables") or []
-    row = dict(row)
-    row["action_relevant_key_variables"] = sorted(
-        variables,
-        key=lambda item: (safe_number(item.get("importance")) or 0.0, safe_number(item.get("confidence")) or 0.0),
-        reverse=True,
-    )[:10]
-    row["summary"] = payload.get("summary", {})
-    return row
+    return build_linear_action_plan_detail(payload, normalized, variables)
 
 
 def overlay_cached_market_fields(live_rows, cached_rows):

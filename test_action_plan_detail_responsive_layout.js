@@ -37,54 +37,68 @@ test('Action Plan Detail containers can shrink inside the app shell', () => {
   assert.match(cssBlock('#action-plan-detail-view,\n#action-plan-detail-content'), /min-width:\s*0/);
 });
 
-test('primary Action Plan Detail metric sections still render all existing fields', () => {
+test('modern Linear Action Plan Detail sections keep responsive metric cards', () => {
   const expectedLabelsBySection = {
     'Action Summary': [
       'Symbol',
       'Company Name',
       'Action',
+      'Rating',
+      'Current Price',
+      'Current Market Value',
+      'Current Weight',
+      'Target Low',
+      'Target Mid',
+      'Target High',
+      'Target Band',
+      'Gap to Mid',
       'Target Gap Amount',
-      'Raw Action Amount',
-      'Desired Whole Shares',
-      'Desired Whole-Share Amount',
-      'Executable Action Amount',
       'Shares',
       'Funding Status',
       'Action Amount',
-      'Rating',
-      'Expected Price',
-      'Upside',
-      'Current Weight',
-      'Target Mid',
-      'Target Band',
-      'Gap to Mid',
-      'Trigger Price',
-      'Distance to Trigger',
+      'Linear Score',
     ],
     'Position vs Target Band': [
       'Total Portfolio Value Used',
       'Current Position Market Value',
       'Current Position Weight',
+      'Position Status',
       'Target Low',
       'Target Mid',
       'Target High',
+      'Gap to Mid',
       'Target Gap Amount',
+      'Desired Action Amount',
+      'Desired Whole Shares',
+      'Desired Whole-Share Amount',
       'Executable Action Amount',
+      'Executable Shares',
       'Funding Status',
-      'Action Amount to Mid',
+      'Unfunded Amount',
+      'Unfunded Shares',
+      'Available Buy Budget',
     ],
-    'Trigger Prices': [
-      'Position Status',
-      'Starter Buy Trigger',
-      'Add Trigger',
-      'Strong Add Trigger',
-      'Trim Trigger',
-      'Sell Trigger',
-      'Relevant Trigger',
-      'Relevant Trigger Type',
-      'Dynamic Required Upside',
-      'Trigger Quality Score',
-      'Distance to Relevant Trigger',
+    'Linear Target Calculation': [
+      'Linear Score',
+      'Target Before Caps / Adjustments',
+      'Cap Applied',
+      'Cap Reason',
+      'Target After Cap Mid',
+      'Reserve Scale Factor',
+      'Final Target Low',
+      'Final Target Mid',
+      'Final Target High',
+      'Final Target Band',
+    ],
+    'Linear Score Breakdown': [
+      'Expected CAGR Score',
+      'Upside Score',
+      'Core Confidence Score',
+      'Potential Confidence Score',
+      'Confidence Quality Score',
+      'Penalty Factor',
+      'Rating Bonus Factor',
+      'Linear Score',
     ],
   };
 
@@ -94,4 +108,30 @@ test('primary Action Plan Detail metric sections still render all existing field
       assert.ok(renderedSection.includes(`['${label}'`), `Expected ${section} to keep ${label}`);
     }
   }
+});
+
+test('Linear Action Plan Detail omits obsolete trigger and bucket UI', () => {
+  const detailRenderer = appJs.slice(
+    appJs.indexOf('function renderActionPlanDetail(item)'),
+    appJs.indexOf('async function openActionPlanDetail(symbol)'),
+  );
+  for (const obsolete of [
+    'Trigger Prices',
+    'Starter Buy Trigger',
+    'Relevant Trigger',
+    'Distance to Trigger',
+    'Target Weight Calculation',
+    'Rating Bucket',
+    'Bucket Sizing',
+    'Weighted Count',
+    'Strong Add',
+    'Starter Buy',
+    'Strong Trim',
+    'position reduction rule',
+  ]) {
+    assert.ok(!detailRenderer.includes(obsolete), `Expected detail renderer to omit ${obsolete}`);
+  }
+  assert.match(detailRenderer, /linear_allocation_score/);
+  assert.match(detailRenderer, /linear_target_breakdown/);
+  assert.match(detailRenderer, /linear_score_breakdown/);
 });

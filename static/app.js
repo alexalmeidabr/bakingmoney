@@ -2083,152 +2083,143 @@ function renderActionRelevantVariables(variables) {
   return `<div class="table-wrap compact-table"><table><thead><tr><th>Variable</th><th>Type</th><th>Driver</th><th>Confidence</th><th>Importance</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-function isHoldInsideTargetWithoutActiveTrigger(item) {
-  const trig = item?.trigger_breakdown || {};
-  const triggerType = String(trig.relevant_trigger_type || item?.relevant_trigger_type || '').toLowerCase();
-  const positionStatus = trig.position_status || item?.position_status;
-  const triggerPrice = trig.relevant_trigger_price ?? item?.relevant_trigger_price ?? item?.trigger_price;
-  return triggerType === 'hold' || (item?.action === 'Hold' && positionStatus === 'INSIDE_TARGET' && !isFiniteNumber(triggerPrice));
+function formatLinearPositionStatus(status) {
+  const labels = {
+    BELOW_TARGET: 'Below Target Band',
+    INSIDE_TARGET: 'Inside Target Band',
+    ABOVE_TARGET: 'Above Target Band',
+    ZERO_TARGET_OWNED: 'Owned with Zero Target',
+  };
+  return escapeHtml(labels[status] || 'N/A');
 }
 
-function formatRelevantTriggerType(item) {
-  const trig = item?.trigger_breakdown || {};
-  const triggerType = trig.relevant_trigger_type || item?.relevant_trigger_type;
-  if (isHoldInsideTargetWithoutActiveTrigger(item)) return 'Hold';
-  return triggerType ? escapeHtml(String(triggerType).replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())) : 'N/A';
+function formatLinearGuardrailState(value) {
+  return escapeHtml(value || 'N/A');
 }
 
-function formatRelevantTriggerPrice(item) {
-  if (isHoldInsideTargetWithoutActiveTrigger(item)) return 'No active trigger';
-  const trig = item?.trigger_breakdown || {};
-  return formatCurrencyValue(trig.relevant_trigger_price ?? item?.relevant_trigger_price ?? item?.trigger_price, 'USD');
-}
-
-function formatDynamicRequiredUpside(item) {
-  if (isHoldInsideTargetWithoutActiveTrigger(item)) return 'Not applicable';
-  const trig = item?.trigger_breakdown || {};
-  const required = trig.dynamic_required_upside ?? item?.dynamic_required_upside;
-  return isFiniteNumber(required) ? formatPercent(required * 100) : 'N/A';
-}
-
-function formatTriggerDistanceLabel(item) {
-  if (isHoldInsideTargetWithoutActiveTrigger(item)) return 'Position inside target band';
-  const triggerLabel = item?.trigger_breakdown?.distance_to_relevant_trigger_label || item?.distance_to_relevant_trigger_label;
-  if (triggerLabel) return escapeHtml(triggerLabel);
-  const distance = item?.distance_to_trigger_percent ?? item?.trigger_breakdown?.distance_to_relevant_trigger_percent;
-  if (!isFiniteNumber(distance)) return 'N/A';
-  if (Math.abs(distance) < 0.005) return 'At trigger';
-  const direction = distance < 0 ? 'below' : 'above';
-  return `${Math.abs(distance).toFixed(2)}% ${direction} trigger`;
+function formatLinearPenalties(items) {
+  if (!Array.isArray(items) || !items.length) return 'None';
+  return escapeHtml(items.map((item) => item.label || item.key).filter(Boolean).join(', ') || 'None');
 }
 
 function renderActionPlanDetail(item) {
   if (!item) return;
   selectedActionPlanDetail = item;
   actionPlanDetailTitleEl.textContent = `Action Detail: ${item.symbol}`;
-  actionPlanDetailStatusEl.textContent = item.reason || '';
+  actionPlanDetailStatusEl.textContent = item.linear_explanation || item.reason || '';
   actionPlanDetailStatusEl.className = item.final_scenario_stale ? 'status warning' : 'status';
-  const tb = item.target_weight_breakdown || {};
-  const sb = item.score_breakdown || {};
-  const trig = item.trigger_breakdown || {};
+  const target = item.linear_target_breakdown || {};
+  const score = item.linear_score_breakdown || {};
+  const weights = score.weights_used || {};
+  const guardrails = item.guardrails || {};
+  const targetBand = `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}`;
   actionPlanDetailContentEl.innerHTML = `
     <section class="detail-card"><h4>Action Summary</h4>${renderActionPlanMetricList([
       ['Symbol', escapeHtml(item.symbol || '')],
       ['Company Name', escapeHtml(item.company_name || 'N/A')],
       ['Action', escapeHtml(item.action || 'Hold')],
-      ['Target Gap Amount', formatCurrencyValue(item.target_gap_amount, 'USD')],
-      ['Raw Action Amount', formatCurrencyValue(item.raw_action_amount, 'USD')],
-      ['Desired Whole Shares', Number.isInteger(Number(item.desired_share_count)) ? formatNumber(Number(item.desired_share_count), 0) : '—'],
-      ['Desired Whole-Share Amount', formatCurrencyValue(item.desired_whole_share_amount, 'USD')],
-      ['Executable Action Amount', formatCurrencyValue(item.executable_action_amount, 'USD')],
-      ['Shares', formatSuggestedShareCount(item)],
-      ['Funding Status', escapeHtml(item.funding_status || 'No funding needed')],
-      ['Action Amount', escapeHtml(item.action_amount_label || '—')],
       ['Rating', escapeHtml(item.rating || 'Hold')],
       ['Current Price', formatCurrencyValue(item.current_price, 'USD')],
+      ['Current Market Value', formatCurrencyValue(item.current_position_market_value, 'USD')],
+      ['Current Weight', formatPercent(item.current_position_weight)],
       ['Expected Price', formatCurrencyValue(item.expected_price, 'USD')],
       ['Upside', formatPercent(item.upside)],
-      ['Current Weight', formatPercent(item.current_position_weight)],
+      ['Expected CAGR', formatPercent(item.expected_cagr)],
+      ['Release Date', escapeHtml(formatLinearReleaseDate(item))],
+      ['Target Low', formatPercent(item.target_weight_low)],
       ['Target Mid', formatPercent(item.target_weight_mid)],
-      ['Target Band', `${formatPercent(item.target_weight_low)} – ${formatPercent(item.target_weight_high)}`],
+      ['Target High', formatPercent(item.target_weight_high)],
+      ['Target Band', targetBand],
       ['Gap to Mid', formatPercent(item.position_gap_to_mid)],
-      ['Trigger Price', formatRelevantTriggerPrice(item)],
-      ['Distance to Trigger', formatTriggerDistanceLabel(item)],
-    ])}<p>${escapeHtml(item.reason || '')}</p></section>
+      ['Target Gap Amount', formatCurrencyValue(item.target_gap_amount, 'USD')],
+      ['Action Amount', escapeHtml(item.action_amount_label || '—')],
+      ['Shares', formatSuggestedShareCount(item)],
+      ['Funding Status', escapeHtml(item.funding_status || 'No funding needed')],
+      ['Linear Score', formatNumber(item.linear_allocation_score)],
+    ])}<p>${escapeHtml(item.linear_explanation || item.reason || '')}</p></section>
     <section class="detail-card"><h4>Position vs Target Band</h4>${renderActionPlanMetricList([
       ['Total Portfolio Value Used', formatCurrencyValue(item.total_portfolio_value, 'USD')],
       ['Current Position Market Value', formatCurrencyValue(item.current_position_market_value, 'USD')],
       ['Current Position Weight', formatPercent(item.current_position_weight)],
+      ['Position Status', formatLinearPositionStatus(item.position_status)],
       ['Target Low', formatPercent(item.target_weight_low)],
       ['Target Mid', formatPercent(item.target_weight_mid)],
       ['Target High', formatPercent(item.target_weight_high)],
+      ['Gap to Mid', formatPercent(item.position_gap_to_mid)],
       ['Target Gap Amount', formatCurrencyValue(item.target_gap_amount, 'USD')],
+      ['Desired Action Amount', formatCurrencyValue(item.raw_action_amount, 'USD')],
+      ['Desired Whole Shares', Number.isInteger(Number(item.desired_share_count)) ? formatNumber(Number(item.desired_share_count), 0) : '—'],
+      ['Desired Whole-Share Amount', formatCurrencyValue(item.desired_whole_share_amount, 'USD')],
       ['Executable Action Amount', formatCurrencyValue(item.executable_action_amount, 'USD')],
+      ['Executable Shares', formatSuggestedShareCount(item)],
       ['Funding Status', escapeHtml(item.funding_status || 'No funding needed')],
       ['Unfunded Amount', formatCurrencyValue(item.unfunded_action_amount, 'USD')],
       ['Unfunded Shares', Number.isInteger(Number(item.unfunded_share_count)) && Number(item.unfunded_share_count) > 0 ? formatNumber(Number(item.unfunded_share_count), 0) : '—'],
       ['Available Buy Budget', formatCurrencyValue(item.available_buy_budget, 'USD')],
-      ['Funding Priority Score', formatNumber(item.funding_priority_score)],
-      ['Action Amount to Mid', formatCurrencyValue(item.action_amount_to_mid, 'USD')],
     ])}<p>${escapeHtml(getActionPlanAmountDetailLabel(item))}</p><p>${escapeHtml(item.action_amount_cash_note || '')}</p><p>${escapeHtml(item.minimum_trade_size_reason || item.whole_share_diagnostic_reason || item.whole_share_diagnostic_warning || '')}</p></section>
-    <section class="detail-card"><h4>Trigger Prices</h4>${renderActionPlanMetricList([
-      ['Position Status', escapeHtml(trig.position_status || item.position_status || 'N/A')],
-      ['Starter Buy Trigger', formatCurrencyValue(trig.starter_buy_trigger_price, 'USD')],
-      ['Add Trigger', formatCurrencyValue(trig.add_trigger_price, 'USD')],
-      ['Strong Add Trigger', formatCurrencyValue(trig.strong_add_trigger_price, 'USD')],
-      ['Trim Trigger', formatCurrencyValue(trig.trim_trigger_price, 'USD')],
-      ['Sell Trigger', formatCurrencyValue(trig.sell_trigger_price, 'USD')],
-      ['Relevant Trigger', formatRelevantTriggerPrice(item)],
-      ['Relevant Trigger Type', formatRelevantTriggerType(item)],
-      ['Dynamic Required Upside', formatDynamicRequiredUpside(item)],
-      ['Trigger Quality Score', formatNumber(trig.trigger_quality_score ?? item.trigger_quality_score)],
-      ['Distance to Relevant Trigger', formatTriggerDistanceLabel(item)],
-    ])}<p>Buy triggers use allocation-aware required upside; trim/sell triggers use remaining-upside thresholds.</p></section>
-    <section class="detail-card"><h4>Target Weight Calculation</h4>${renderActionPlanMetricList([
-      ['Rating Bucket', escapeHtml(tb.rating_bucket || item.bucket || '')],
-      ['Total Weighted Eligible Count in Bucket', formatNumber(tb.weighted_eligible_count_in_bucket)],
-      ['Max Effective Count', formatNumber(tb.max_effective_count)],
-      ['Weighted Count Used', formatNumber(tb.weighted_count_used ?? tb.effective_weighted_count_used)],
-      ['Bucket Weight / Effective Stock', formatPercent(tb.bucket_weight_per_effective_stock)],
-      ['Uncapped Bucket Target', formatPercent(tb.uncapped_bucket_target)],
-      ['Bucket Raw Target', formatPercent(tb.bucket_raw_target ?? tb.raw_bucket_target ?? tb.bucket_target_percent)],
-      ['Bucket Effective Target', formatPercent(tb.bucket_effective_target ?? tb.bucket_target_percent)],
-      ['Eligible Count in Bucket', formatNumber(tb.eligible_count_in_bucket)],
-      ['Company Allocation Score', formatNumber(tb.company_allocation_score ?? tb.company_bucket_score)],
-      ['Bucket Sizing Score', formatNumber(tb.bucket_sizing_score ?? item.bucket_sizing_score)],
-      ['Weighted Count', formatNumber(tb.weighted_count ?? tb.weighted_count_contribution ?? item.weighted_count)],
-      ['Total Bucket Allocation Score', formatNumber(tb.total_bucket_allocation_score ?? tb.total_bucket_score)],
-      ['Bucket Share', formatPercent(tb.bucket_share_percent)],
-      ['Target Before Caps', formatPercent(tb.target_before_caps ?? item.target_mid_before_caps)],
-      ['Cap Applied', formatPercent(tb.cap_applied)],
-      ['Cap Reason', escapeHtml(tb.cap_reason || item.cap_reason || '—')],
-      ['Target After Caps', formatPercent(tb.target_mid_after_caps ?? item.target_mid_after_caps)],
-      ['Final Target Mid', formatPercent(tb.target_weight_mid ?? item.target_weight_mid)],
-      ['Target Band', `${formatPercent(tb.target_weight_low)} – ${formatPercent(tb.target_weight_high)}`],
+    <section class="detail-card"><h4>Linear Target Calculation</h4>${renderActionPlanMetricList([
+      ['Linear Score', formatNumber(target.linear_score ?? item.linear_allocation_score)],
+      ['Target Before Caps / Adjustments', formatPercent(target.target_before_caps)],
+      ['Cap Applied', target.cap_applied ? 'Yes' : 'No'],
+      ['Cap Amount', formatPercent(target.cap_amount)],
+      ['Cap Reason', escapeHtml(target.cap_reason || '—')],
+      ['Target After Cap Low', formatPercent(target.target_after_cap_low)],
+      ['Target After Cap Mid', formatPercent(target.target_after_cap_mid)],
+      ['Target After Cap High', formatPercent(target.target_after_cap_high)],
+      ['Reserve Scale Factor', formatNumber(target.reserve_scale_factor)],
+      ['Final Target Low', formatPercent(target.final_target_low ?? item.target_weight_low)],
+      ['Final Target Mid', formatPercent(target.final_target_mid ?? item.target_weight_mid)],
+      ['Final Target High', formatPercent(target.final_target_high ?? item.target_weight_high)],
+      ['Final Target Band', targetBand],
+      ['Bearish Confidence', formatNumber(target.bearish_confidence)],
+      ['Bearish Cap Progress', isFiniteNumber(target.bearish_cap_progress) ? formatPercent(target.bearish_cap_progress * 100) : '—'],
     ])}</section>
-    <section class="detail-card"><h4>Score Breakdown</h4>${renderActionPlanMetricList([
-      ['Upside Score', formatNumber(sb.upside_score)],
-      ['Core Conviction Score', formatNumber(sb.core_conviction_score)],
-      ['Potential Conviction Score', formatNumber(sb.potential_conviction_score)],
-      ['Core Risk Modifier', formatNumber(sb.core_risk_modifier)],
-      ['Allocation Risk Modifier', formatNumber(sb.allocation_risk_modifier ?? item.allocation_risk_modifier)],
-      ['Allocation Upside Weight Used', formatNumber(sb.allocation_upside_weight_used ?? item.allocation_upside_weight_used)],
-      ['Allocation Core Weight Used', formatNumber(sb.allocation_core_weight_used ?? item.allocation_core_weight_used)],
-      ['Allocation Potential Weight Used', formatNumber(sb.allocation_potential_weight_used ?? item.allocation_potential_weight_used)],
-      ['Allocation Risk Penalty Strength', formatNumber(sb.allocation_risk_penalty_strength ?? item.allocation_risk_penalty_strength)],
-      ['Core Score', formatNumber(sb.core_score)],
-      ['Potential Score Component', formatNumber(sb.potential_score_component)],
-      ['Allocation Score', formatNumber(sb.company_allocation_score ?? sb.allocation_score ?? sb.company_bucket_score)],
-      ['Bucket Sizing Score', formatNumber(sb.bucket_sizing_score ?? item.bucket_sizing_score)],
-      ['Bucket Sizing Risk Modifier', formatNumber(sb.bucket_sizing_risk_modifier ?? item.bucket_sizing_risk_modifier)],
-      ['Weighted Count', formatNumber(sb.weighted_count ?? item.weighted_count)],
+    <section class="detail-card"><h4>Linear Score Breakdown</h4>${renderActionPlanMetricList([
+      ['Expected CAGR Score', formatNumber(score.expected_cagr_score)],
+      ['Expected CAGR Weight', formatNumber(weights.linear_expected_cagr_weight)],
+      ['Upside Score', formatNumber(score.upside_score)],
+      ['Upside Weight', formatNumber(weights.linear_upside_weight)],
+      ['Core Confidence Score', formatNumber(score.core_net_score)],
+      ['Core Confidence Weight', formatNumber(weights.linear_core_confidence_weight)],
+      ['Potential Confidence Score', formatNumber(score.potential_net_score)],
+      ['Potential Confidence Weight', formatNumber(weights.linear_potential_confidence_weight)],
+      ['Confidence Quality Score', formatNumber(score.confidence_quality_score)],
+      ['Confidence Quality Weight', formatNumber(weights.linear_confidence_quality_weight)],
+      ['Penalty Factor', formatNumber(score.penalty_factor)],
+      ['Penalties Applied', formatLinearPenalties(score.penalties_applied)],
+      ['Rating Bonus Factor', formatNumber(score.rating_bonus_factor)],
+      ['Rating Bonus', escapeHtml(score.rating_bonus_reason || 'None')],
+      ['Linear Score', formatNumber(score.linear_score ?? item.linear_allocation_score)],
     ])}</section>
-    <section class="detail-card"><h4>Decision Path</h4>${renderDecisionPath(item.decision_path)}</section>
+    <section class="detail-card"><h4>Decision Path</h4>${renderActionPlanMetricList([
+      ['Rating', escapeHtml(item.rating || 'Hold')],
+      ['Current Weight', formatPercent(item.current_position_weight)],
+      ['Target Band', targetBand],
+      ['Position Status', formatLinearPositionStatus(item.position_status)],
+      ['Base Linear Action', escapeHtml(item.base_linear_action || item.desired_action || item.action || 'Hold')],
+      ['Rating Guardrail', formatLinearGuardrailState(guardrails.rating)],
+      ['Extension Risk Guardrail', formatLinearGuardrailState(guardrails.extension_risk)],
+      ['Minimum Trade Guardrail', formatLinearGuardrailState(guardrails.minimum_executable_trade)],
+      ['Funding', escapeHtml(item.funding_status || 'No funding needed')],
+      ['Final Action', escapeHtml(item.action || 'Hold')],
+    ])}</section>
+    <section class="detail-card"><h4>Guardrails</h4>${renderActionPlanMetricList([
+      ['Rating Guardrail', formatLinearGuardrailState(guardrails.rating)],
+      ['Extension Risk Guardrail', formatLinearGuardrailState(guardrails.extension_risk)],
+      ['Minimum Executable Trade', formatLinearGuardrailState(guardrails.minimum_executable_trade)],
+      ['Whole-Share Minimum', formatLinearGuardrailState(guardrails.whole_share_minimum)],
+    ])}</section>
     <section class="detail-card"><h4>Scenario Context</h4>${renderActionPlanMetricList([
       ['Current Price', formatCurrencyValue(item.current_price, 'USD')],
       ['Expected Price', formatCurrencyValue(item.expected_price, 'USD')],
       ['Upside', formatPercent(item.upside)],
       ['Expected CAGR', formatPercent(item.expected_cagr)],
+      ['Rating', escapeHtml(item.rating || 'Hold')],
+      ['Core Confidence', formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)],
+      ['Potential Confidence', formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)],
+      ['Momentum', escapeHtml(formatLinearMomentum(item))],
+      ['Extension Risk', isFiniteNumber(item.extension_risk) ? `${formatNumber(item.extension_risk)}${item.extension_label ? ` ${escapeHtml(item.extension_label)}` : ''}` : '—'],
+      ['Release Date', escapeHtml(formatLinearReleaseDate(item))],
       ['Using Final Scenario Overlay', item.uses_final_scenario_overlay ? 'Yes' : 'No'],
       ['Final Scenario Stale', item.final_scenario_stale ? 'Yes' : 'No'],
     ])}</section>
@@ -2237,7 +2228,7 @@ function renderActionPlanDetail(item) {
 }
 
 async function openActionPlanDetail(symbol) {
-  const cached = (latestActionPlanPayload.action_plan || []).find((item) => item.symbol === symbol);
+  const cached = (latestActionPlanPayload.linear_action_plan || []).find((item) => item.symbol === symbol);
   renderActionPlanDetail(cached || { symbol, action: 'Loading…' });
   actionPlanDetailStatusEl.textContent = `Loading ${symbol} Action Detail…`;
   try {

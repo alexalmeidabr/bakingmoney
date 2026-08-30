@@ -54,11 +54,13 @@ function linearAdjustmentFormatters() {
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;'),
     isFiniteNumber: (value) => typeof value === 'number' && Number.isFinite(value),
+    formatPercent: (value) => (typeof value !== 'number' || Number.isNaN(value) ? 'N/A' : `${value.toFixed(2)}%`),
   };
   return vm.runInNewContext(`
     ${appFunctionSource('formatLinearPenaltyApplied')}
     ${appFunctionSource('formatLinearBonusApplied')}
-    ({ formatLinearPenaltyApplied, formatLinearBonusApplied });
+    ${appFunctionSource('formatActionDetailWeight')}
+    ({ formatLinearPenaltyApplied, formatLinearBonusApplied, formatActionDetailWeight });
   `, context);
 }
 
@@ -108,14 +110,19 @@ test('modern Linear Action Plan Detail sections keep responsive metric cards', (
     ],
     'Linear Target Calculation': [
       'Linear Score',
-      'Expected CAGR',
-      'Expected CAGR Score',
-      'Upside',
-      'Upside Score',
+      'Core Confidence Weight',
       'Core Confidence Net',
       'Core Confidence Score',
+      'Upside Weight',
+      'Upside',
+      'Upside Score',
+      'Expected CAGR Weight',
+      'Expected CAGR',
+      'Expected CAGR Score',
+      'Potential Confidence Weight',
       'Potential Confidence Net',
       'Potential Confidence Score',
+      'Confidence Quality Weight',
       'Confidence Quality Score',
       'Penalty Factor',
       'Penalty Applied',
@@ -280,14 +287,19 @@ test('Position vs Target Band omits execution, funding, trigger, bucket, and exp
 test('Linear Target Calculation renders score inputs in order with Linear Score first', () => {
   assert.deepEqual(renderedDetailSectionLabels('Linear Target Calculation'), [
     'Linear Score',
-    'Expected CAGR',
-    'Expected CAGR Score',
-    'Upside',
-    'Upside Score',
+    'Core Confidence Weight',
     'Core Confidence Net',
     'Core Confidence Score',
+    'Upside Weight',
+    'Upside',
+    'Upside Score',
+    'Expected CAGR Weight',
+    'Expected CAGR',
+    'Expected CAGR Score',
+    'Potential Confidence Weight',
     'Potential Confidence Net',
     'Potential Confidence Score',
+    'Confidence Quality Weight',
     'Confidence Quality Score',
     'Penalty Factor',
     'Penalty Applied',
@@ -299,14 +311,19 @@ test('Linear Target Calculation renders score inputs in order with Linear Score 
 test('Linear Target Calculation sources backend Linear score diagnostics', () => {
   const section = renderedDetailSection('Linear Target Calculation');
   assert.ok(section.includes("['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)]"));
-  assert.ok(section.includes("['Expected CAGR', formatActionDetailPercent(item.expected_cagr)]"));
-  assert.ok(section.includes("['Expected CAGR Score', formatActionDetailNumber(score.expected_cagr_score)]"));
-  assert.ok(section.includes("['Upside', formatActionDetailPercent(item.upside)]"));
-  assert.ok(section.includes("['Upside Score', formatActionDetailNumber(score.upside_score)]"));
+  assert.ok(section.includes("['Core Confidence Weight', formatActionDetailWeight(weights.linear_core_confidence_weight)]"));
   assert.ok(section.includes("['Core Confidence Net', formatActionDetailNet(item.core_confidence_diff)]"));
   assert.ok(section.includes("['Core Confidence Score', formatActionDetailNumber(score.core_net_score)]"));
+  assert.ok(section.includes("['Upside Weight', formatActionDetailWeight(weights.linear_upside_weight)]"));
+  assert.ok(section.includes("['Upside', formatActionDetailPercent(item.upside)]"));
+  assert.ok(section.includes("['Upside Score', formatActionDetailNumber(score.upside_score)]"));
+  assert.ok(section.includes("['Expected CAGR Weight', formatActionDetailWeight(weights.linear_expected_cagr_weight)]"));
+  assert.ok(section.includes("['Expected CAGR', formatActionDetailPercent(item.expected_cagr)]"));
+  assert.ok(section.includes("['Expected CAGR Score', formatActionDetailNumber(score.expected_cagr_score)]"));
+  assert.ok(section.includes("['Potential Confidence Weight', formatActionDetailWeight(weights.linear_potential_confidence_weight)]"));
   assert.ok(section.includes("['Potential Confidence Net', formatActionDetailNet(item.potential_confidence_diff)]"));
   assert.ok(section.includes("['Potential Confidence Score', formatActionDetailNumber(score.potential_net_score)]"));
+  assert.ok(section.includes("['Confidence Quality Weight', formatActionDetailWeight(weights.linear_confidence_quality_weight)]"));
   assert.ok(section.includes("['Confidence Quality Score', formatActionDetailNumber(score.confidence_quality_score)]"));
   assert.ok(section.includes("['Penalty Factor', formatActionDetailNumber(score.penalty_factor)]"));
   assert.ok(section.includes("['Penalty Applied', formatLinearPenaltyApplied(score)]"));
@@ -320,8 +337,22 @@ test('Linear Target Calculation places adjustment reason cards after their facto
   assert.equal(labels[labels.indexOf('Rating Bonus Factor') + 1], 'Bonus Applied');
 });
 
+test('Linear Target Calculation groups each score component as weight input score', () => {
+  const labels = renderedDetailSectionLabels('Linear Target Calculation');
+  const before = (left, right) => assert.ok(labels.indexOf(left) < labels.indexOf(right), `Expected ${left} before ${right}`);
+  before('Core Confidence Weight', 'Core Confidence Net');
+  before('Core Confidence Net', 'Core Confidence Score');
+  before('Upside Weight', 'Upside');
+  before('Upside', 'Upside Score');
+  before('Expected CAGR Weight', 'Expected CAGR');
+  before('Expected CAGR', 'Expected CAGR Score');
+  before('Potential Confidence Weight', 'Potential Confidence Net');
+  before('Potential Confidence Net', 'Potential Confidence Score');
+  before('Confidence Quality Weight', 'Confidence Quality Score');
+});
+
 test('Linear adjustment reason formatters render readable penalty and bonus text', () => {
-  const { formatLinearPenaltyApplied, formatLinearBonusApplied } = linearAdjustmentFormatters();
+  const { formatLinearPenaltyApplied, formatLinearBonusApplied, formatActionDetailWeight } = linearAdjustmentFormatters();
   assert.equal(formatLinearPenaltyApplied({ penalties_applied: [], penalty_factor: 1 }), 'None');
   assert.equal(
     formatLinearPenaltyApplied({
@@ -344,6 +375,9 @@ test('Linear adjustment reason formatters render readable penalty and bonus text
   assert.equal(formatLinearBonusApplied({ rating_bonus_reason: 'Buy rating bonus', rating_bonus_factor: 1.01 }), 'Buy rating bonus');
   assert.equal(formatLinearBonusApplied({ rating_bonus_reason: 'Strong Buy rating bonus', rating_bonus_factor: 1.02 }), 'Strong Buy rating bonus');
   assert.equal(formatLinearBonusApplied({ rating_bonus_factor: 1 }), 'No rating bonus');
+  assert.equal(formatActionDetailWeight(0.25), '25.00%');
+  assert.equal(formatActionDetailWeight(0.2), '20.00%');
+  assert.equal(formatActionDetailWeight(null), '—');
 });
 
 test('Linear Target Calculation explanation appears below cards and describes current method', () => {

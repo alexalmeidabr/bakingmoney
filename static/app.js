@@ -2138,6 +2138,10 @@ function formatActionDetailPercent(value) {
   return isFiniteNumber(value) ? formatPercent(value) : '—';
 }
 
+function formatActionDetailWeight(value) {
+  return isFiniteNumber(value) ? formatPercent(value * 100) : '—';
+}
+
 function formatActionDetailNumber(value, digits = 2) {
   return isFiniteNumber(value) ? formatNumber(value, digits) : '—';
 }
@@ -2184,14 +2188,19 @@ function renderActionPlanDetail(item) {
     ])}</section>
     <section class="detail-card"><h4>Linear Target Calculation</h4>${renderActionPlanMetricList([
       ['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)],
-      ['Expected CAGR', formatActionDetailPercent(item.expected_cagr)],
-      ['Expected CAGR Score', formatActionDetailNumber(score.expected_cagr_score)],
-      ['Upside', formatActionDetailPercent(item.upside)],
-      ['Upside Score', formatActionDetailNumber(score.upside_score)],
+      ['Core Confidence Weight', formatActionDetailWeight(weights.linear_core_confidence_weight)],
       ['Core Confidence Net', formatActionDetailNet(item.core_confidence_diff)],
       ['Core Confidence Score', formatActionDetailNumber(score.core_net_score)],
+      ['Upside Weight', formatActionDetailWeight(weights.linear_upside_weight)],
+      ['Upside', formatActionDetailPercent(item.upside)],
+      ['Upside Score', formatActionDetailNumber(score.upside_score)],
+      ['Expected CAGR Weight', formatActionDetailWeight(weights.linear_expected_cagr_weight)],
+      ['Expected CAGR', formatActionDetailPercent(item.expected_cagr)],
+      ['Expected CAGR Score', formatActionDetailNumber(score.expected_cagr_score)],
+      ['Potential Confidence Weight', formatActionDetailWeight(weights.linear_potential_confidence_weight)],
       ['Potential Confidence Net', formatActionDetailNet(item.potential_confidence_diff)],
       ['Potential Confidence Score', formatActionDetailNumber(score.potential_net_score)],
+      ['Confidence Quality Weight', formatActionDetailWeight(weights.linear_confidence_quality_weight)],
       ['Confidence Quality Score', formatActionDetailNumber(score.confidence_quality_score)],
       ['Penalty Factor', formatActionDetailNumber(score.penalty_factor)],
       ['Penalty Applied', formatLinearPenaltyApplied(score)],

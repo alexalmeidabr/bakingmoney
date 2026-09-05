@@ -2956,7 +2956,6 @@ menuItems.forEach((item) => item.addEventListener('click', () => {
   const target = item.dataset.view;
   setView(target);
   if (target === 'earnings-review') {
-    setEarningsReviewHash(null);
     setEarningsReviewTab('calendar');
     loadEarningsReview();
   }
@@ -2973,22 +2972,6 @@ function showEarningsReviewDetail() {
   earningsReviewSymbolView.classList.add('hidden');
   earningsReviewDetailView.classList.remove('hidden');
 }
-
-function setEarningsReviewHash(symbol, reviewId = null) {
-  if (!symbol) {
-    if (window.location.hash === '#earnings-review') return;
-    window.location.hash = 'earnings-review';
-    return;
-  }
-  const target = reviewId
-    ? `#earnings-review/${encodeURIComponent(symbol)}/${encodeURIComponent(reviewId)}`
-    : `#earnings-review/${encodeURIComponent(symbol)}`;
-  if (window.location.hash === target) return;
-  window.location.hash = reviewId
-    ? `earnings-review/${encodeURIComponent(symbol)}/${encodeURIComponent(reviewId)}`
-    : `earnings-review/${encodeURIComponent(symbol)}`;
-}
-
 
 function getEffectiveBusinessModel() {
   const businessModelEdit = analysisDetailState?.saved_business_model_edit;
@@ -5143,7 +5126,6 @@ async function openEarningsReviewSymbolHistory(symbol) {
   earningsReviewSelectedSymbol = normalized;
   earningsReviewSelectedRecordId = null;
   showEarningsReviewSymbolHistoryView();
-  setEarningsReviewHash(normalized);
   earningsReviewSymbolTitleEl.textContent = `Earnings History: ${normalized}`;
   earningsReviewSymbolHeaderEl.textContent = `Loading ${normalized} earnings history…`;
   earningsReviewSymbolStatusEl.textContent = 'Loading earnings history…';
@@ -5288,7 +5270,6 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
   earningsReviewSelectedSymbol = normalized;
   earningsReviewSelectedRecordId = Number(reviewId);
   showEarningsReviewDetail();
-  setEarningsReviewHash(normalized, earningsReviewSelectedRecordId);
   earningsReviewDetailTitleEl.textContent = `Loading ${normalized} review…`;
   earningsReviewDetailHeaderEl.textContent = `Loading review detail…`;
   earningsReviewDetailMetaEl.textContent = 'Loading earnings review record…';
@@ -6176,22 +6157,18 @@ earningsReviewBackBtn.addEventListener('click', async () => {
   if (earningsReviewSelectedSymbol) {
     await openEarningsReviewSymbolHistory(earningsReviewSelectedSymbol);
   } else {
-    setEarningsReviewHash(null);
     await loadEarningsReview();
   }
 });
 earningsReviewSymbolBackBtn.addEventListener('click', async () => {
-  setEarningsReviewHash(null);
   await loadEarningsReview();
 });
 earningsReviewAddBtn.addEventListener('click', addEarningsReviewSymbol);
 earningsReviewTabWorkflowBtn.addEventListener('click', async () => {
-  setEarningsReviewHash(null);
   setEarningsReviewTab('workflow');
   await loadEarningsReview();
 });
 earningsReviewTabCalendarBtn.addEventListener('click', async () => {
-  setEarningsReviewHash(null);
   setEarningsReviewTab('calendar');
   await loadEarningsReview();
 });
@@ -6255,57 +6232,4 @@ setEarningsCalendarDateFilterOpen(false);
 initializeConfigHelpIcons();
 loadTwsDataToggleState();
 
-async function handleInitialRoute() {
-  const hash = (window.location.hash || '').replace(/^#/, '');
-  if (hash === 'earnings-review') {
-    setView('earnings-review');
-    setEarningsReviewTab('calendar');
-    await loadEarningsReview();
-    return;
-  }
-  if (hash.startsWith('earnings-review/')) {
-    const parts = hash.split('/').filter(Boolean);
-    const symbol = decodeURIComponent(parts[1] || '').trim().toUpperCase();
-    if (!symbol) {
-      setView('earnings-review');
-      return;
-    }
-    setView('earnings-review');
-    if (parts.length >= 3 && /^\d+$/.test(parts[2])) {
-      await openEarningsReviewRecordDetail(symbol, Number(parts[2]));
-      return;
-    }
-    await openEarningsReviewSymbolHistory(symbol);
-    return;
-  }
-  setView('analysis');
-}
-
-window.addEventListener('hashchange', async () => {
-  const hash = (window.location.hash || '').replace(/^#/, '');
-  if (hash === 'earnings-review') {
-    setEarningsReviewTab('calendar');
-    if (document.getElementById('earnings-review').classList.contains('active')) {
-      await loadEarningsReview();
-    } else {
-      setView('earnings-review');
-      await loadEarningsReview();
-    }
-    return;
-  }
-  if (hash.startsWith('earnings-review/')) {
-    const parts = hash.split('/').filter(Boolean);
-    const symbol = decodeURIComponent(parts[1] || '').trim().toUpperCase();
-    if (!symbol) return;
-    if (!document.getElementById('earnings-review').classList.contains('active')) {
-      setView('earnings-review');
-    }
-    if (parts.length >= 3 && /^\d+$/.test(parts[2])) {
-      await openEarningsReviewRecordDetail(symbol, Number(parts[2]));
-      return;
-    }
-    await openEarningsReviewSymbolHistory(symbol);
-  }
-});
-
-handleInitialRoute();
+setView('analysis');

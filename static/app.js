@@ -294,6 +294,7 @@ let activeScenarioOverlayTab = 'bakingmoney';
 let editingExternalScenarioId = null;
 let isEditingBusinessModel = false;
 let isEditingBusinessSummary = false;
+let isEditingFrontierOptionality = false;
 let currentAlertDetailId = null;
 let latestAlerts = [];
 let alertsStatusFilter = 'New';
@@ -495,6 +496,7 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   linear_rating_bonus_enabled: true,
   linear_strong_buy_rating_bonus: 0.05,
   linear_buy_rating_bonus: 0.02,
+  linear_frontier_optionality_max_boost_pct: 10.0,
   linear_block_buy_actions_for_hold_rating: true,
   linear_high_extension_guardrail_enabled: true,
   linear_high_extension_risk_threshold: 4.0,
@@ -2117,6 +2119,14 @@ function formatLinearBonusApplied(score) {
   return '—';
 }
 
+function formatFrontierOptionalityApplied(score) {
+  const reason = typeof score?.frontier_optionality_applied_reason === 'string'
+    ? score.frontier_optionality_applied_reason.trim()
+    : '';
+  if (score?.frontier_optionality_applied) return 'Yes';
+  return reason ? `No — ${escapeHtml(reason)}` : 'No';
+}
+
 function getLinearTargetMarketValue(item) {
   const total = item?.portfolio_value_used ?? item?.total_portfolio_value;
   const targetMid = item?.target_weight_mid;
@@ -2214,7 +2224,16 @@ function renderActionPlanDetail(item) {
         ['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)],
         ['Bonus Applied', formatLinearBonusApplied(score)],
       ],
-    ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into 0-1 component scores using the configured Linear min/full ranges. Those component scores are combined using the configured Linear weights, then adjusted by Penalty Factor and Rating Bonus Factor. The resulting Linear Score determines the stock's pre-cap target allocation, subject to the minimum score threshold and zero-target rules for negative expected CAGR or negative upside.</p><p>After the pre-cap target is calculated, stock-specific caps may reduce it. Finally, Dynamic Reserve may scale all Linear targets down if total target allocation exceeds deployable equity. The final Target Low, Mid, and High are then calculated from the final target midpoint using the configured Add and Trim band tolerances.</p></div></section>
+      [
+        ['Frontier Optionality Score', `${formatActionDetailNumber(score.frontier_optionality_score)} / 5`],
+        ['Frontier Optionality Boost Factor', formatActionDetailNumber(score.frontier_optionality_boost_factor)],
+        ['Frontier Optionality Applied', formatFrontierOptionalityApplied(score)],
+      ],
+      [
+        ['Linear Score Before Frontier Boost', formatActionDetailNumber(score.linear_score_before_frontier_boost)],
+        ['Frontier Optionality Reason', escapeHtml(score.frontier_optionality_applied_reason || '—')],
+      ],
+    ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into component scores using the configured Linear ranges and weights. Penalty Factor and Rating Bonus Factor then adjust the score. If a company has a manually assigned Frontier Optionality Score, BakingMoney may apply a small capped boost before target allocation, unless a guardrail blocks it. The resulting Linear Score is then used to calculate target allocation, subject to stock-specific caps, Dynamic Reserve, and target band tolerances.</p></div></section>
     <section class="detail-card"><h4>Target Band Calculation</h4>${renderActionPlanMetricList([
       ['Current Position Weight', formatActionDetailPercent(item.current_position_weight)],
       ['Target Low', formatActionDetailPercent(item.target_weight_low)],
@@ -3326,8 +3345,9 @@ function renderAnalysisDetail() {
   const businessSummarySection = isEditingBusinessSummary
     ? `<div class="business-model-editor"><label><strong>Business Summary:</strong></label><textarea id="analysis-business-summary-input" class="analysis-business-model-input" rows="4">${safeBusinessSummary}</textarea><div class="table-actions"><button id="analysis-business-summary-save-btn">Save</button><button id="analysis-business-summary-cancel-btn">Cancel</button></div></div>`
     : `<div class="business-model-editor"><p><strong>Business Summary:</strong> ${safeBusinessSummary || 'N/A'}</p><div class="table-actions"><button id="analysis-business-summary-edit-btn">Edit Business Summary</button></div></div>`;
+  const frontierOptionalitySection = renderFrontierOptionalitySection();
   const releaseSummaryCard = renderAnalysisReleaseSummaryCard();
-  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected CAGR</div><div class="value ${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value confidence-breakdown"><div>Core: ${formatCoreConfidenceDisplay(item)}</div><div>Potential: ${formatPotentialConfidenceDisplay(item)}</div></div></div>${releaseSummaryCard}<div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div><div class="summary-item" title="Short-term technical momentum calculated from TWS historical price and volume data."><div class="label">Momentum</div><div class="value">${formatMomentumSummaryValue(item.momentum_score, item.momentum_label)}</div></div><div class="summary-item" title="Measures whether the stock appears technically extended based on price distance from trend, recent return, and volatility."><div class="label">Extension Risk</div><div class="value">${formatMomentumSummaryValue(item.extension_risk, item.extension_label)}</div></div></div>${businessModelSection}${businessSummarySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
+  analysisSummary.innerHTML = `<div class="summary-grid"><div class="summary-item"><div class="label">Symbol</div><div class="value">${item.symbol}</div></div><div class="summary-item"><div class="label">Company Name</div><div class="value">${item.company_name || 'N/A'}</div></div><div class="summary-item"><div class="label">Current Price</div><div class="value">${formatCurrencyValue(item.current_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected Price</div><div class="value">${formatCurrencyValue(item.expected_price, 'USD')}</div></div><div class="summary-item"><div class="label">Expected CAGR</div><div class="value ${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</div></div><div class="summary-item"><div class="label">Upside</div><div class="value ${valueClass(item.upside)}">${formatPercent(item.upside)}</div></div><div class="summary-item"><div class="label">Confidence</div><div class="value confidence-breakdown"><div>Core: ${formatCoreConfidenceDisplay(item)}</div><div>Potential: ${formatPotentialConfidenceDisplay(item)}</div></div></div>${releaseSummaryCard}<div class="summary-item"><div class="label">Rating</div><div class="value">${item.rating || 'Hold'}</div></div><div class="summary-item" title="Short-term technical momentum calculated from TWS historical price and volume data."><div class="label">Momentum</div><div class="value">${formatMomentumSummaryValue(item.momentum_score, item.momentum_label)}</div></div><div class="summary-item" title="Measures whether the stock appears technically extended based on price distance from trend, recent return, and volatility."><div class="label">Extension Risk</div><div class="value">${formatMomentumSummaryValue(item.extension_risk, item.extension_label)}</div></div></div>${businessModelSection}${businessSummarySection}${frontierOptionalitySection}<p><strong>Assumptions:</strong> ${safeAssumptions || 'N/A'}</p>`;
   analysisSummary.classList.remove('hidden');
 
   renderScenarioOverlayArea();
@@ -3665,6 +3685,7 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   editableAnalysisVariables = null;
   isEditingBusinessModel = false;
   isEditingBusinessSummary = false;
+  isEditingFrontierOptionality = false;
 
   try {
     const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : '';
@@ -3750,6 +3771,68 @@ function cancelEditedBusinessSummary() {
   isEditingBusinessSummary = false;
   renderAnalysisDetail();
   analysisDetailStatus.textContent = 'Business summary editing canceled.';
+  analysisDetailStatus.className = 'status';
+}
+
+function getCurrentFrontierOptionality() {
+  const payload = analysisDetailState?.frontier_optionality || {};
+  const score = Number(payload.frontier_optionality_score ?? analysisDetailState?.version?.frontier_optionality_score ?? 0);
+  return {
+    score: Number.isFinite(score) ? score : 0,
+    notes: payload.frontier_optionality_notes ?? analysisDetailState?.version?.frontier_optionality_notes ?? '',
+  };
+}
+
+function formatFrontierOptionalityScore(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '0 / 5';
+  return `${formatNumber(number, 2)} / 5`;
+}
+
+function renderFrontierOptionalitySection() {
+  const frontier = getCurrentFrontierOptionality();
+  const safeNotes = escapeHtml(frontier.notes || '');
+  if (isEditingFrontierOptionality) {
+    return `<div class="business-model-editor"><label><strong>Frontier Optionality Score:</strong></label><input id="analysis-frontier-optionality-score-input" type="number" min="0" max="5" step="0.1" value="${escapeHtml(String(frontier.score))}"><label><strong>Frontier Optionality Notes:</strong></label><textarea id="analysis-frontier-optionality-notes-input" class="analysis-business-model-input" rows="3">${safeNotes}</textarea><div class="table-actions"><button id="analysis-frontier-optionality-save-btn">Save</button><button id="analysis-frontier-optionality-cancel-btn">Cancel</button></div></div>`;
+  }
+  return `<div class="business-model-editor"><p><strong>Frontier Optionality Score:</strong> ${formatFrontierOptionalityScore(frontier.score)}</p><p><strong>Frontier Optionality Notes:</strong> ${safeNotes || '—'}</p><div class="table-actions"><button id="analysis-frontier-optionality-edit-btn">Edit Frontier Optionality</button></div></div>`;
+}
+
+async function saveEditedFrontierOptionality() {
+  const symbol = analysisDetailState.symbol;
+  const rawScore = document.getElementById('analysis-frontier-optionality-score-input')?.value;
+  const notes = document.getElementById('analysis-frontier-optionality-notes-input')?.value || '';
+  const score = rawScore === '' ? 0 : Number(rawScore);
+  if (!Number.isFinite(score) || score < 0 || score > 5) {
+    analysisDetailStatus.textContent = 'Frontier Optionality Score must be between 0 and 5.';
+    analysisDetailStatus.className = 'status error';
+    return;
+  }
+
+  analysisDetailStatus.textContent = 'Saving Frontier Optionality…';
+  analysisDetailStatus.className = 'status';
+  try {
+    const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}/frontier-optionality`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frontier_optionality_score: score, frontier_optionality_notes: notes }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save Frontier Optionality'));
+    analysisDetailState = payload.analysis;
+    isEditingFrontierOptionality = false;
+    renderAnalysisDetail();
+    analysisDetailStatus.textContent = 'Frontier Optionality saved.';
+  } catch (error) {
+    analysisDetailStatus.textContent = `Error: ${error.message}`;
+    analysisDetailStatus.className = 'status error';
+  }
+}
+
+function cancelEditedFrontierOptionality() {
+  isEditingFrontierOptionality = false;
+  renderAnalysisDetail();
+  analysisDetailStatus.textContent = 'Frontier Optionality editing canceled.';
   analysisDetailStatus.className = 'status';
 }
 
@@ -6094,6 +6177,19 @@ analysisSummary.addEventListener('click', (event) => {
   }
   if (target.id === 'analysis-business-summary-cancel-btn') {
     cancelEditedBusinessSummary();
+    return;
+  }
+  if (target.id === 'analysis-frontier-optionality-edit-btn') {
+    isEditingFrontierOptionality = true;
+    renderAnalysisDetail();
+    return;
+  }
+  if (target.id === 'analysis-frontier-optionality-save-btn') {
+    saveEditedFrontierOptionality();
+    return;
+  }
+  if (target.id === 'analysis-frontier-optionality-cancel-btn') {
+    cancelEditedFrontierOptionality();
   }
 });
 analysisVariableTabButtons.forEach((button) => {

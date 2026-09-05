@@ -161,6 +161,157 @@ class LinearExpectedCagrTests(unittest.TestCase):
         self.assertIsNone(rows["NO_SCENARIOS"]["expected_equity_cagr"])
 
 
+def linear_candidate(**overrides):
+    candidate = {
+        "symbol": "FRONT",
+        "rating": "Buy",
+        "expected_cagr": 15.0,
+        "upside": 80.0,
+        "core_confidence_diff": 2.0,
+        "core_bullish_confidence": 8.0,
+        "core_bearish_confidence": 1.0,
+        "potential_confidence_diff": 1.5,
+        "potential_bullish_confidence": 7.0,
+        "potential_bearish_confidence": 1.0,
+        "current_position_weight": 0.0,
+        "current_position_market_value": 0.0,
+        "current_price": 100.0,
+        "expected_price": 180.0,
+        "frontier_optionality_score": 0.0,
+        "final_scenario_stale": False,
+    }
+    candidate.update(overrides)
+    return candidate
+
+
+def frontier_settings(**overrides):
+    settings = {
+        "linear_allocated_target_total_pct": 10.0,
+        "linear_min_score_threshold": 0.0,
+        "linear_score_allocation_power": 1.0,
+        "linear_max_single_stock_pct": 100.0,
+        "linear_rating_bonus_enabled": False,
+        "hold_rating_penalty_enabled": False,
+        "core_confidence_penalty": 0.0,
+        "upside_penalty": 0.0,
+        "potential_confidence_penalty": 0.0,
+        "action_min_cash_unallocated_target": 0.0,
+        "action_min_executable_trade_amount": 0.0,
+        "linear_frontier_optionality_max_boost_pct": 10.0,
+    }
+    settings.update(overrides)
+    return reserve_settings(**settings)
+
+
+class LinearFrontierOptionalityTests(unittest.TestCase):
+    def _row(self, candidate=None, settings=None):
+        payload = web_server.compute_linear_action_plan(
+            [candidate or linear_candidate()],
+            100_000.0,
+            100_000.0,
+            settings or frontier_settings(),
+        )
+        return payload["rows"][0]
+
+    def test_default_frontier_optionality_score_has_neutral_boost(self):
+        row = self._row(linear_candidate(frontier_optionality_score=0.0))
+        self.assertEqual(row["frontier_optionality_score"], 0.0)
+        self.assertEqual(row["frontier_optionality_boost_factor"], 1.0)
+        self.assertFalse(row["frontier_optionality_applied"])
+        self.assertAlmostEqual(row["linear_score_before_frontier_boost"], row["linear_allocation_score"])
+
+    def test_frontier_optionality_factor_scales_with_score(self):
+        full = self._row(linear_candidate(frontier_optionality_score=5.0, expected_cagr=10.0, upside=40.0))
+        half = self._row(linear_candidate(frontier_optionality_score=2.5, expected_cagr=10.0, upside=40.0))
+        self.assertAlmostEqual(full["frontier_optionality_boost_factor"], 1.10)
+        self.assertAlmostEqual(half["frontier_optionality_boost_factor"], 1.05)
+        self.assertAlmostEqual(full["linear_allocation_score"], full["linear_score_before_frontier_boost"] * 1.10)
+        self.assertAlmostEqual(half["linear_allocation_score"], half["linear_score_before_frontier_boost"] * 1.05)
+        self.assertEqual(full["linear_allocation_score"], full["final_linear_score"])
+
+    def test_frontier_optionality_score_validation(self):
+        self.assertEqual(web_server.normalize_frontier_optionality_score(""), 0.0)
+        self.assertEqual(web_server.normalize_frontier_optionality_score(None), 0.0)
+        with self.assertRaisesRegex(ValueError, "below 0"):
+            web_server.normalize_frontier_optionality_score(-0.1)
+        with self.assertRaisesRegex(ValueError, "exceed 5"):
+            web_server.normalize_frontier_optionality_score(5.1)
+        with self.assertRaisesRegex(ValueError, "numeric"):
+            web_server.normalize_frontier_optionality_score("bad")
+
+    def test_frontier_optionality_clamps_final_linear_score_to_one(self):
+        row = self._row(
+            linear_candidate(frontier_optionality_score=5.0),
+            frontier_settings(linear_frontier_optionality_max_boost_pct=20.0),
+        )
+        self.assertGreater(row["linear_score_before_frontier_boost"], 0.9)
+        self.assertAlmostEqual(row["frontier_optionality_boost_factor"], 1.20)
+        self.assertAlmostEqual(row["linear_allocation_score"], 1.0)
+
+    def test_frontier_optionality_guardrails_block_boost(self):
+        cases = [
+            (linear_candidate(frontier_optionality_score=5.0, rating="Sell"), "Sell rating"),
+            (linear_candidate(frontier_optionality_score=5.0, rating="Strong Sell"), "Strong Sell rating"),
+            (linear_candidate(frontier_optionality_score=5.0, expected_cagr=0.0), "Expected CAGR is not positive"),
+            (linear_candidate(frontier_optionality_score=5.0, upside=0.0), "Upside is not positive"),
+            (linear_candidate(frontier_optionality_score=5.0, final_scenario_stale=True), "Final Scenario overlay is stale"),
+        ]
+        for candidate, reason in cases:
+            with self.subTest(reason=reason):
+                row = self._row(candidate)
+                self.assertEqual(row["frontier_optionality_boost_factor"], 1.0)
+                self.assertFalse(row["frontier_optionality_applied"])
+                self.assertEqual(row["frontier_optionality_applied_reason"], reason)
+                self.assertAlmostEqual(row["linear_allocation_score"], row["linear_score_before_frontier_boost"])
+
+        zero = self._row(
+            linear_candidate(frontier_optionality_score=5.0),
+            frontier_settings(linear_min_score_threshold=2.0),
+        )
+        self.assertEqual(zero["frontier_optionality_applied_reason"], "Linear Score before boost is zero")
+        self.assertEqual(zero["linear_allocation_score"], 0.0)
+
+        disabled = self._row(
+            linear_candidate(frontier_optionality_score=5.0),
+            frontier_settings(linear_frontier_optionality_max_boost_pct=0.0),
+        )
+        self.assertEqual(disabled["frontier_optionality_applied_reason"], "Configured max boost is zero")
+
+    def test_frontier_optionality_does_not_override_hold_or_extension_guardrails(self):
+        hold = self._row(linear_candidate(frontier_optionality_score=5.0, rating="Hold"), frontier_settings())
+        self.assertEqual(hold["action"], "Watch / Rating Guardrail")
+        self.assertTrue(hold["rating_guardrail_applied"])
+        self.assertTrue(hold["frontier_optionality_applied"])
+
+        extended = self._row(
+            linear_candidate(frontier_optionality_score=5.0, extension_risk=4.5),
+            frontier_settings(linear_high_extension_guardrail_enabled=True, linear_high_extension_risk_threshold=4.0),
+        )
+        self.assertEqual(extended["action"], "Watch / Extended")
+        self.assertTrue(extended["extension_guardrail_applied"])
+        self.assertTrue(extended["frontier_optionality_applied"])
+
+    def test_frontier_optionality_does_not_override_caps_or_dynamic_reserve(self):
+        capped = self._row(
+            linear_candidate(frontier_optionality_score=5.0),
+            frontier_settings(linear_max_single_stock_pct=5.0),
+        )
+        self.assertAlmostEqual(capped["target_weight_mid"], 5.0)
+        self.assertGreater(capped["linear_cap_applied"], 0.0)
+
+        reserved = self._row(
+            linear_candidate(frontier_optionality_score=5.0),
+            frontier_settings(
+                linear_allocated_target_total_pct=100.0,
+                action_min_cash_unallocated_target=30.0,
+                linear_max_reserve_pct=30.0,
+            ),
+        )
+        self.assertAlmostEqual(reserved["pre_reserve_target_mid"], 100.0)
+        self.assertAlmostEqual(reserved["reserve_scale_factor"], 0.7)
+        self.assertAlmostEqual(reserved["target_weight_mid"], 70.0)
+
+
 class LinearAbsoluteOpportunityTests(unittest.TestCase):
     def test_absolute_attractiveness_interpolates_and_clamps(self):
         expected = {

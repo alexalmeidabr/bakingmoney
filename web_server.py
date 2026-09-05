@@ -350,6 +350,7 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "linear_rating_bonus_enabled": True,
     "linear_strong_buy_rating_bonus": 0.05,
     "linear_buy_rating_bonus": 0.02,
+    "linear_frontier_optionality_max_boost_pct": 10.0,
     "linear_block_buy_actions_for_hold_rating": True,
     "linear_high_extension_guardrail_enabled": True,
     "linear_high_extension_risk_threshold": 4.0,
@@ -1902,7 +1903,7 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{key} must be numeric")
         if not math.isfinite(value):
             raise ValueError(f"{key} must be finite")
-        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_reserve_benchmark_yield_pct", "linear_min_equity_excess_cagr_pct", "linear_full_attractiveness_equity_excess_cagr_pct", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold", "core_confidence_penalty_threshold", "potential_confidence_penalty_threshold", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus", "linear_score_allocation_power", "linear_add_band_tolerance_pct", "linear_trim_band_tolerance_pct"}:
+        if value < 0 and key not in {"action_core_diff_zero_score", "action_core_diff_full_score", "action_trim_remaining_upside_threshold", "action_sell_remaining_upside_threshold", "linear_reserve_benchmark_yield_pct", "linear_min_equity_excess_cagr_pct", "linear_full_attractiveness_equity_excess_cagr_pct", "linear_min_core_net", "linear_min_potential_net", "linear_low_core_net_threshold", "core_confidence_penalty_threshold", "potential_confidence_penalty_threshold", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus", "linear_frontier_optionality_max_boost_pct", "linear_score_allocation_power", "linear_add_band_tolerance_pct", "linear_trim_band_tolerance_pct"}:
             raise ValueError(f"{key} cannot be negative")
         effective[key] = value
 
@@ -1920,6 +1921,8 @@ def validate_action_plan_settings(settings):
     for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus"):
         if effective[key] < 0 or effective[key] > 1:
             raise ValueError(f"{key} must be between 0 and 1")
+    if effective["linear_frontier_optionality_max_boost_pct"] < 0.0 or effective["linear_frontier_optionality_max_boost_pct"] > 20.0:
+        raise ValueError("linear_frontier_optionality_max_boost_pct must be between 0 and 20")
 
     linear_weight_total = sum(effective[key] for key in (
         "linear_expected_cagr_weight",
@@ -2948,6 +2951,18 @@ def init_db():
               updated_at TEXT NOT NULL,
               FOREIGN KEY (analysis_root_id) REFERENCES analysis_roots(id) ON DELETE CASCADE,
               FOREIGN KEY (based_on_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_frontier_optionality (
+              symbol TEXT PRIMARY KEY,
+              frontier_optionality_score REAL NOT NULL DEFAULT 0,
+              frontier_optionality_notes TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (symbol) REFERENCES analysis_roots(symbol) ON DELETE CASCADE
             )
             """
         )
@@ -4659,10 +4674,13 @@ def list_analysis_symbols(conn):
                m.extension_label,
                m.momentum_status,
                m.updated_at AS momentum_updated_at,
+               f.frontier_optionality_score,
+               f.frontier_optionality_notes,
                v.created_at AS updated_at
         FROM analysis_roots r
         JOIN analysis_versions v ON v.analysis_root_id = r.id
         LEFT JOIN analysis_momentum_snapshots m ON m.symbol = r.symbol
+        LEFT JOIN analysis_frontier_optionality f ON f.symbol = r.symbol
         WHERE v.id = (
             SELECT id FROM analysis_versions latest
             WHERE latest.analysis_root_id = r.id
@@ -4677,6 +4695,8 @@ def list_analysis_symbols(conn):
         item = dict(row)
         if (item.get("scenario_pass_count") or 0) <= 0:
             item["scenario_pass_count"] = 1
+        item["frontier_optionality_score"] = normalize_frontier_optionality_score(item.get("frontier_optionality_score"))
+        item["frontier_optionality_notes"] = item.get("frontier_optionality_notes") or ""
         item["core_confidence_diff"] = _diff_or_none(item.get("core_bullish_confidence"), item.get("core_bearish_confidence"))
         item["potential_confidence_diff"] = _diff_or_none(item.get("potential_bullish_confidence"), item.get("potential_bearish_confidence"))
         item.update(
@@ -6011,6 +6031,11 @@ def get_analysis_detail(conn, symbol, version_id=None):
         "momentum_status": momentum_snapshot.get("momentum_status") if momentum_snapshot else None,
         "momentum_updated_at": momentum_snapshot.get("momentum_updated_at") if momentum_snapshot else None,
     })
+    frontier_optionality = get_frontier_optionality(conn, root["symbol"])
+    version_payload.update({
+        "frontier_optionality_score": frontier_optionality["frontier_optionality_score"],
+        "frontier_optionality_notes": frontier_optionality["frontier_optionality_notes"],
+    })
     detail = {
         "symbol": root["symbol"],
         "root_id": root["id"],
@@ -6025,6 +6050,7 @@ def get_analysis_detail(conn, symbol, version_id=None):
         } if draft else None,
         "saved_business_model_edit": _get_saved_business_model_edit(conn, root["id"]),
         "saved_business_summary_edit": _get_saved_business_summary_edit(conn, root["id"]),
+        "frontier_optionality": frontier_optionality,
         "release_history": get_earnings_calendar_release_history_for_symbol(conn, root["symbol"]),
     }
     detail.update(_external_overlay_summary(conn, selected["id"]))
@@ -6289,6 +6315,80 @@ def save_business_summary_edit(conn, symbol, version_id, business_summary):
     )
     conn.commit()
     return get_analysis_detail(conn, symbol, version_id=version_id)
+
+
+def normalize_frontier_optionality_score(value):
+    if value is None or value == "":
+        return 0.0
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("frontier_optionality_score must be numeric")
+    if not math.isfinite(score):
+        raise ValueError("frontier_optionality_score must be numeric")
+    if score < 0.0:
+        raise ValueError("frontier_optionality_score cannot be below 0")
+    if score > 5.0:
+        raise ValueError("frontier_optionality_score cannot exceed 5")
+    return score
+
+
+def get_frontier_optionality(conn, symbol):
+    normalized = normalize_symbol(symbol)
+    if not normalized:
+        return {
+            "symbol": normalized,
+            "frontier_optionality_score": 0.0,
+            "frontier_optionality_notes": "",
+            "created_at": None,
+            "updated_at": None,
+        }
+    row = conn.execute(
+        """
+        SELECT symbol, frontier_optionality_score, frontier_optionality_notes, created_at, updated_at
+        FROM analysis_frontier_optionality
+        WHERE symbol = ?
+        """,
+        (normalized,),
+    ).fetchone()
+    if row:
+        payload = dict(row)
+        payload["frontier_optionality_score"] = normalize_frontier_optionality_score(payload.get("frontier_optionality_score"))
+        payload["frontier_optionality_notes"] = payload.get("frontier_optionality_notes") or ""
+        return payload
+    return {
+        "symbol": normalized,
+        "frontier_optionality_score": 0.0,
+        "frontier_optionality_notes": "",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def save_frontier_optionality(conn, symbol, score, notes):
+    normalized = normalize_symbol(symbol)
+    if not normalized:
+        raise ValueError("Symbol is required")
+    root = conn.execute("SELECT symbol FROM analysis_roots WHERE symbol = ?", (normalized,)).fetchone()
+    if not root:
+        raise ValueError("Analysis symbol not found")
+    normalized_score = normalize_frontier_optionality_score(score)
+    normalized_notes = str(notes or "").strip()
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO analysis_frontier_optionality (
+            symbol, frontier_optionality_score, frontier_optionality_notes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(symbol) DO UPDATE SET
+          frontier_optionality_score = excluded.frontier_optionality_score,
+          frontier_optionality_notes = excluded.frontier_optionality_notes,
+          updated_at = excluded.updated_at
+        """,
+        (normalized, normalized_score, normalized_notes, now, now),
+    )
+    conn.commit()
+    return get_analysis_detail(conn, normalized)
 
 
 def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
@@ -8412,6 +8512,12 @@ def _linear_detail_diagnostics(row):
             "penalties_applied": row.get("linear_penalties_applied"),
             "rating_bonus_factor": row.get("linear_rating_bonus_factor"),
             "rating_bonus_reason": row.get("linear_rating_bonus_reason"),
+            "linear_score_before_frontier_boost": row.get("linear_score_before_frontier_boost"),
+            "frontier_optionality_score": row.get("frontier_optionality_score"),
+            "frontier_optionality_boost_factor": row.get("frontier_optionality_boost_factor"),
+            "frontier_optionality_applied": row.get("frontier_optionality_applied"),
+            "frontier_optionality_applied_reason": row.get("frontier_optionality_applied_reason"),
+            "final_linear_score": row.get("final_linear_score"),
             "linear_score": row.get("linear_allocation_score"),
         },
         "guardrails": {
@@ -8497,6 +8603,50 @@ def is_linear_buy_action_allowed_for_rating(rating, settings):
     return normalized_rating in {"strong buy", "buy", "speculative buy"}
 
 
+def _linear_frontier_optionality_boost(score_before_boost, item, rating, settings):
+    frontier_score = normalize_frontier_optionality_score(item.get("frontier_optionality_score"))
+    score_before_boost = _clamp(safe_number(score_before_boost) or 0.0, 0.0, 1.0)
+    max_boost_pct = _clamp(safe_number(settings.get("linear_frontier_optionality_max_boost_pct")) or 0.0, 0.0, 20.0)
+    diagnostics = {
+        "linear_score_before_frontier_boost": score_before_boost,
+        "frontier_optionality_score": frontier_score,
+        "frontier_optionality_boost_factor": 1.0,
+        "frontier_optionality_applied": False,
+        "frontier_optionality_applied_reason": "No Frontier Optionality Score",
+    }
+    if frontier_score <= 0.0:
+        return score_before_boost, diagnostics
+    if score_before_boost <= 0.0:
+        diagnostics["frontier_optionality_applied_reason"] = "Linear Score before boost is zero"
+        return score_before_boost, diagnostics
+    if str(rating or "").strip().casefold() in {"sell", "strong sell"}:
+        diagnostics["frontier_optionality_applied_reason"] = f"{rating} rating"
+        return score_before_boost, diagnostics
+    expected_cagr = safe_number(item.get("expected_cagr"))
+    if expected_cagr is None or expected_cagr <= 0.0:
+        diagnostics["frontier_optionality_applied_reason"] = "Expected CAGR is not positive"
+        return score_before_boost, diagnostics
+    upside = safe_number(item.get("upside"))
+    if upside is None or upside <= 0.0:
+        diagnostics["frontier_optionality_applied_reason"] = "Upside is not positive"
+        return score_before_boost, diagnostics
+    if item.get("final_scenario_stale"):
+        diagnostics["frontier_optionality_applied_reason"] = "Final Scenario overlay is stale"
+        return score_before_boost, diagnostics
+    if max_boost_pct <= 0.0:
+        diagnostics["frontier_optionality_applied_reason"] = "Configured max boost is zero"
+        return score_before_boost, diagnostics
+
+    boost_factor = 1.0 + (max_boost_pct / 100.0) * (frontier_score / 5.0)
+    final_score = _clamp(score_before_boost * boost_factor, 0.0, 1.0)
+    diagnostics.update({
+        "frontier_optionality_boost_factor": boost_factor,
+        "frontier_optionality_applied": final_score > score_before_boost,
+        "frontier_optionality_applied_reason": "Applied" if final_score > score_before_boost else "Clamped at maximum Linear Score",
+    })
+    return final_score, diagnostics
+
+
 def _linear_release_date_warning_details(release_date, warning_days, today=None):
     """Return display-only release-date warning metadata using the server's local date."""
     safe_warning_days = safe_number(warning_days)
@@ -8553,6 +8703,13 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             score = 0.0
         if score < (safe_number(settings.get("linear_min_score_threshold")) or 0.0):
             score = 0.0
+        score_before_frontier_boost = _clamp(score, 0.0, 1.0)
+        final_score, frontier_diagnostics = _linear_frontier_optionality_boost(
+            score_before_frontier_boost,
+            item,
+            rating,
+            settings,
+        )
         row = {
             "mode": "linear",
             "symbol": item.get("symbol"),
@@ -8585,7 +8742,9 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "linear_penalties_applied": penalties_applied,
             "linear_rating_bonus_factor": rating_bonus_factor,
             "linear_rating_bonus_reason": rating_bonus_reason,
-            "linear_allocation_score": _clamp(score, 0.0, 1.0),
+            **frontier_diagnostics,
+            "final_linear_score": final_score,
+            "linear_allocation_score": final_score,
             "linear_weights_used": weights,
             "momentum_score": item.get("momentum_score"),
             "momentum_label": item.get("momentum_label"),
@@ -11030,6 +11189,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             if not symbol:
                 return self._send_json({"error": "Invalid symbol"}, status=400)
             return self.handle_analysis_business_summary_save(symbol)
+        if path.startswith("/api/analysis/") and path.endswith("/frontier-optionality"):
+            symbol = normalize_symbol(path[len("/api/analysis/") : -len("/frontier-optionality")])
+            if not symbol:
+                return self._send_json({"error": "Invalid symbol"}, status=400)
+            return self.handle_analysis_frontier_optionality_save(symbol)
         if path.startswith("/api/analysis/") and path.endswith("/rerun-scenarios"):
             symbol = normalize_symbol(path[len("/api/analysis/") : -len("/rerun-scenarios")])
             if not symbol:
@@ -11505,6 +11669,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             try:
                 conn = get_db_connection()
                 conn.execute("SELECT 1").fetchone()
+                conn.close()
+                conn = None
+                init_db()
             except Exception as exc:
                 if safety_backup_db_path and os.path.exists(safety_backup_db_path):
                     shutil.copy2(safety_backup_db_path, DB_PATH)
@@ -12049,6 +12216,27 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             logger.exception("Unable to save business summary edit for symbol %s", symbol)
             self._send_json({"error": "Unable to save business summary.", "details": str(exc)}, status=500)
+        finally:
+            conn.close()
+
+    def handle_analysis_frontier_optionality_save(self, symbol):
+        payload = self._read_json_body() or {}
+        conn = get_db_connection()
+        try:
+            detail = save_frontier_optionality(
+                conn,
+                symbol,
+                payload.get("frontier_optionality_score"),
+                payload.get("frontier_optionality_notes"),
+            )
+            self._send_json({"ok": True, "analysis": detail})
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "not found" in message.lower() else 400
+            self._send_json({"error": message}, status=status)
+        except Exception as exc:
+            logger.exception("Unable to save Frontier Optionality for symbol %s", symbol)
+            self._send_json({"error": "Unable to save Frontier Optionality.", "details": str(exc)}, status=500)
         finally:
             conn.close()
 

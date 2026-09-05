@@ -1705,8 +1705,11 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('data-action-plan-setting="linear_rating_bonus_enabled"', html)
         self.assertIn('data-action-plan-setting="linear_strong_buy_rating_bonus"', html)
         self.assertIn('data-action-plan-setting="linear_buy_rating_bonus"', html)
+        self.assertIn('data-action-plan-setting="linear_frontier_optionality_max_boost_pct"', html)
+        self.assertIn('Maximum Frontier Optionality Boost %', html)
         self.assertIn('data-action-plan-setting="linear_block_buy_actions_for_hold_rating"', html)
         self.assertIn("'core_confidence_penalty', 'upside_penalty', 'potential_confidence_penalty', 'hold_rating_penalty', 'linear_strong_buy_rating_bonus', 'linear_buy_rating_bonus'", js)
+        self.assertIn('linear_frontier_optionality_max_boost_pct', js)
         self.assertIn('function renderLinearAllocationRows()', js)
         self.assertIn('function getLinearReleaseDateWarning(item)', js)
         self.assertIn('function renderLinearReleaseDateWarning(item)', js)
@@ -1849,7 +1852,13 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function renderActionPlanDetail(item)', js)
         self.assertIn('function formatLinearPositionStatus(status)', js)
         self.assertIn('function formatLinearGuardrailState(value)', js)
+        self.assertIn('function formatFrontierOptionalityApplied(score)', js)
         self.assertIn("<h4>Linear Target Calculation</h4>", js)
+        self.assertIn('Frontier Optionality Score', js)
+        self.assertIn('Frontier Optionality Boost Factor', js)
+        self.assertIn('Frontier Optionality Applied', js)
+        self.assertIn('Linear Score Before Frontier Boost', js)
+        self.assertIn('Frontier Optionality Reason', js)
         self.assertIn("<h4>Target Band Calculation</h4>", js)
         self.assertNotIn("<h4>Linear Score Breakdown</h4>", js)
         self.assertNotIn('function formatTriggerDistanceLabel(item)', js)
@@ -2039,6 +2048,19 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("button.addEventListener('click', () => setScenarioOverlayTab(button.dataset.scenarioTab));", js)
         self.assertIn("analysisBakingMoneyScenarioPanelEl.classList.toggle('hidden', hasExternal && activeScenarioOverlayTab !== 'bakingmoney');", js)
         self.assertNotIn("activeScenarioOverlayTab === 'bakingmoney') activeScenarioOverlayTab = 'final'", js)
+
+    def test_company_detail_displays_frontier_optionality_editor(self):
+        from pathlib import Path
+        js = Path('static/app.js').read_text(encoding='utf-8')
+        self.assertIn('function renderFrontierOptionalitySection()', js)
+        self.assertIn('Frontier Optionality Score:', js)
+        self.assertIn('Frontier Optionality Notes:', js)
+        self.assertIn('id="analysis-frontier-optionality-score-input"', js)
+        self.assertIn('id="analysis-frontier-optionality-notes-input"', js)
+        self.assertIn('min="0" max="5" step="0.1"', js)
+        self.assertIn('/frontier-optionality', js)
+        self.assertIn('frontier_optionality_score: score', js)
+        self.assertIn('frontier_optionality_notes: notes', js)
 
     def test_earnings_review_navigation_uses_internal_view_state_without_hash(self):
         from pathlib import Path

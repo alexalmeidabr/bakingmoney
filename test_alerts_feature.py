@@ -2040,12 +2040,16 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("analysisBakingMoneyScenarioPanelEl.classList.toggle('hidden', hasExternal && activeScenarioOverlayTab !== 'bakingmoney');", js)
         self.assertNotIn("activeScenarioOverlayTab === 'bakingmoney') activeScenarioOverlayTab = 'final'", js)
 
-    def test_earnings_review_navigation_uses_view_state_and_hash(self):
+    def test_earnings_review_navigation_uses_internal_view_state_without_hash(self):
         from pathlib import Path
         js = Path('static/app.js').read_text(encoding='utf-8')
         self.assertIn('function showEarningsReviewList()', js)
         self.assertIn('function showEarningsReviewDetail()', js)
-        self.assertIn('function setEarningsReviewHash(symbol, reviewId = null)', js)
+        self.assertNotIn('function setEarningsReviewHash(symbol, reviewId = null)', js)
+        self.assertNotIn('window.location.hash', js)
+        self.assertNotIn("window.addEventListener('hashchange'", js)
+        self.assertNotIn("'#earnings-review'", js)
+        self.assertNotIn('"#earnings-review"', js)
         self.assertIn('function openEarningsReviewSymbolHistory(symbol)', js)
         self.assertIn('function openEarningsReviewRecordDetail(symbol, reviewId)', js)
         self.assertIn('function addEarningsReviewSymbol()', js)
@@ -2068,7 +2072,6 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('earningsReviewTabCalendarBtn.addEventListener(\'click\'', js)
         self.assertIn('function deleteEarningsReviewRecord(', js)
         self.assertIn('earnings-record-delete-btn', js)
-        self.assertIn('window.addEventListener(\'hashchange\'', js)
 
 
 class EarningsReviewTests(unittest.TestCase):

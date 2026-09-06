@@ -2873,6 +2873,7 @@ def init_db():
               rejection_reason TEXT,
               quality_score REAL,
               is_outlier INTEGER NOT NULL DEFAULT 0,
+              telemetry_json TEXT,
               created_at TEXT NOT NULL,
               FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
             )
@@ -3262,6 +3263,7 @@ def init_db():
         ensure_column_exists(conn, "analysis_scenarios", "cagr_mid", "REAL")
         ensure_column_exists(conn, "analysis_version_scenarios", "price_mid", "REAL")
         ensure_column_exists(conn, "analysis_version_scenarios", "cagr_mid", "REAL")
+        ensure_column_exists(conn, "analysis_version_scenario_passes", "telemetry_json", "TEXT")
         ensure_column_exists(conn, "analysis_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
         ensure_column_exists(conn, "analysis_version_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
         ensure_column_exists(conn, "portfolio_summary_cache", "ledger_cash_usd", "REAL")
@@ -3841,10 +3843,110 @@ def get_openai_timeout_seconds_for_step(step_name):
     return get_ai_step_timeout(step_name, attempt=1)
 
 
-def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
+class OpenAITelemetryError(RuntimeError):
+    def __init__(self, message, telemetry=None):
+        super().__init__(message)
+        self.telemetry = telemetry or {}
+
+
+def _finite_number_or_none(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return value
+    return None
+
+
+def _nested_usage_number(data, *paths):
+    if not isinstance(data, dict):
+        return None
+    for path in paths:
+        current = data
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                current = None
+                break
+            current = current[key]
+        value = _finite_number_or_none(current)
+        if value is not None:
+            return value
+    return None
+
+
+def extract_openai_usage_telemetry(raw):
+    usage = raw.get("usage") if isinstance(raw, dict) else {}
+    if not isinstance(usage, dict):
+        usage = {}
+    return {
+        "input_tokens": _nested_usage_number(usage, ("input_tokens",)),
+        "cached_input_tokens": _nested_usage_number(
+            usage,
+            ("input_tokens_details", "cached_tokens"),
+            ("input_tokens_details", "cached_input_tokens"),
+            ("cached_input_tokens",),
+        ),
+        "cache_write_tokens": _nested_usage_number(
+            usage,
+            ("input_tokens_details", "cache_write_tokens"),
+            ("input_tokens_details", "cache_write_input_tokens"),
+            ("cache_write_tokens",),
+        ),
+        "output_tokens": _nested_usage_number(usage, ("output_tokens",)),
+        "reasoning_tokens": _nested_usage_number(
+            usage,
+            ("output_tokens_details", "reasoning_tokens"),
+            ("reasoning_tokens",),
+        ),
+        "total_tokens": _nested_usage_number(usage, ("total_tokens",)),
+    }
+
+
+def count_openai_web_search_calls(raw):
+    if not isinstance(raw, dict):
+        return 0
+
+    def is_web_search_item(item):
+        if not isinstance(item, dict):
+            return False
+        for key in ("type", "name", "tool_name"):
+            value = item.get(key)
+            if isinstance(value, str) and "web_search" in value.lower():
+                return True
+        return False
+
+    def walk(value):
+        if isinstance(value, dict):
+            if is_web_search_item(value):
+                return 1
+            return sum(walk(child) for child in value.values())
+        if isinstance(value, list):
+            return sum(walk(child) for child in value)
+        return 0
+
+    return walk(raw.get("output", []))
+
+
+def build_openai_step_telemetry(step_name, raw=None, status="completed", duration_ms=None, retry_count=0, error=None):
+    telemetry = {
+        "step_name": step_name,
+        "model": OPENAI_MODEL,
+        "reasoning_effort": normalize_reasoning_effort(OPENAI_REASONING_EFFORT),
+        "status": status,
+        "duration_ms": duration_ms,
+        "retry_count": retry_count,
+        "web_search_call_count": count_openai_web_search_calls(raw),
+        **extract_openai_usage_telemetry(raw or {}),
+    }
+    if error:
+        telemetry["error"] = str(error)
+    return telemetry
+
+
+def request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=1):
     temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
     reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
     supports_temperature = model_supports_temperature(OPENAI_MODEL)
+    started_at = time.monotonic()
 
     logger.info(
         "Starting AI step=%s model=%s temp=%s reasoning=%s",
@@ -3895,7 +3997,14 @@ def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
 
             payload = extract_json_payload(output_text)
             logger.info("AI step=%s completed", step_name)
-            return payload
+            telemetry = build_openai_step_telemetry(
+                step_name,
+                raw=raw,
+                status="completed",
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+                retry_count=idx,
+            )
+            return payload, telemetry
         except HTTPError as exc:
             response_text = ""
             try:
@@ -3918,16 +4027,50 @@ def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
 
             if _looks_like_unsupported_web_tool_error(response_text):
                 logger.error("OpenAI web-search tool type appears unsupported: %s", tool_type)
-            raise last_exc from exc
+            telemetry = build_openai_step_telemetry(
+                step_name,
+                status="failed",
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+                retry_count=idx,
+                error=last_exc,
+            )
+            raise OpenAITelemetryError(str(last_exc), telemetry=telemetry) from exc
         except TimeoutError as exc:
             last_exc = RuntimeError(
                 f"OpenAI request timed out on step {step_name} attempt {attempt} after {request_timeout_seconds:.1f}s"
             )
-            raise last_exc from exc
+            telemetry = build_openai_step_telemetry(
+                step_name,
+                status="failed",
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+                retry_count=idx,
+                error=last_exc,
+            )
+            raise OpenAITelemetryError(str(last_exc), telemetry=telemetry) from exc
 
     if last_exc:
-        raise last_exc
-    raise RuntimeError(f"OpenAI request failed on step {step_name} for unknown reasons")
+        telemetry = build_openai_step_telemetry(
+            step_name,
+            status="failed",
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+            retry_count=max(0, len(tool_candidates) - 1),
+            error=last_exc,
+        )
+        raise OpenAITelemetryError(str(last_exc), telemetry=telemetry)
+    message = f"OpenAI request failed on step {step_name} for unknown reasons"
+    telemetry = build_openai_step_telemetry(
+        step_name,
+        status="failed",
+        duration_ms=round((time.monotonic() - started_at) * 1000),
+        retry_count=0,
+        error=message,
+    )
+    raise OpenAITelemetryError(message, telemetry=telemetry)
+
+
+def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
+    payload, _telemetry = request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=attempt)
+    return payload
 
 
 
@@ -4218,6 +4361,7 @@ def request_ai_analysis(symbol, current_price=None):
                     "rejection_reason": run.get("rejection_reason"),
                     "quality_score": run.get("quality_score"),
                     "is_outlier": run.get("is_outlier", False),
+                    "telemetry": run.get("telemetry"),
                     "created_at": run["created_at"],
                 }
                 for run in scenario_runs
@@ -4510,8 +4654,9 @@ def aggregate_scenario_runs(runs, symbol, current_price=None):
 def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count, outlier_filter_enabled, current_price=None):
     runs = []
     for idx in range(pass_count):
+        pass_number = idx + 1
         run = {
-            "pass_index": idx + 1,
+            "pass_index": pass_number,
             "raw_response_text": None,
             "parsed_json": None,
             "validation_status": "rejected",
@@ -4519,9 +4664,15 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
             "created_at": utc_now_iso(),
             "quality_score": 0.0,
             "is_outlier": False,
+            "telemetry": None,
         }
         try:
-            payload = request_ai_step(f"scenarios_pass_{idx + 1}", prompt_text, _build_scenarios_schema())
+            payload, telemetry = request_ai_step_with_telemetry(
+                f"scenarios_pass_{pass_number}",
+                prompt_text,
+                _build_scenarios_schema(),
+            )
+            telemetry["pass_number"] = pass_number
             run["raw_response_text"] = json.dumps(payload, ensure_ascii=False)
             run["parsed_json"] = payload
             validation = validate_scenario_output(payload, symbol, current_price=current_price)
@@ -4532,7 +4683,27 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
                 run["probability_total_pct"] = sum(s["probability"] for s in validation["parsed"]["scenarios"]) * 100.0
             else:
                 run["rejection_reason"] = validation["reason"]
+            telemetry["status"] = run["validation_status"]
+            if run["rejection_reason"]:
+                telemetry["rejection_reason"] = run["rejection_reason"]
+            run["telemetry"] = telemetry
+        except OpenAITelemetryError as exc:
+            telemetry = dict(exc.telemetry or {})
+            telemetry["pass_number"] = pass_number
+            telemetry["status"] = "failed"
+            telemetry["rejection_reason"] = f"request_failed:{exc}"
+            run["telemetry"] = telemetry
+            run["rejection_reason"] = f"request_failed:{exc}"
         except Exception as exc:
+            run["telemetry"] = build_openai_step_telemetry(
+                f"scenarios_pass_{pass_number}",
+                status="failed",
+                duration_ms=None,
+                retry_count=0,
+                error=exc,
+            )
+            run["telemetry"]["pass_number"] = pass_number
+            run["telemetry"]["rejection_reason"] = f"request_failed:{exc}"
             run["rejection_reason"] = f"request_failed:{exc}"
         runs.append(run)
 
@@ -5393,7 +5564,7 @@ def _version_payload(conn, version_row):
     scenario_passes = conn.execute(
         """
         SELECT pass_index, raw_response_text, parsed_json, validation_status,
-               rejection_reason, quality_score, is_outlier, created_at
+               rejection_reason, quality_score, is_outlier, telemetry_json, created_at
         FROM analysis_version_scenario_passes
         WHERE analysis_version_id = ?
         ORDER BY pass_index ASC
@@ -5424,6 +5595,7 @@ def _version_payload(conn, version_row):
                 "rejection_reason": row.get("rejection_reason"),
                 "quality_score": row.get("quality_score"),
                 "is_outlier": 1 if row.get("is_outlier") else 0,
+                "telemetry_json": json.dumps(row.get("telemetry")) if isinstance(row.get("telemetry"), dict) else None,
                 "created_at": row.get("created_at"),
             }
             for row in raw_payload.get("step3_runs", [])
@@ -5446,6 +5618,16 @@ def _version_payload(conn, version_row):
     )
 
     probability_meta = raw_payload.get("probability_meta") if isinstance(raw_payload.get("probability_meta"), dict) else {}
+
+    def parse_scenario_pass_telemetry(row):
+        telemetry_json = row["telemetry_json"] if "telemetry_json" in row.keys() else None
+        if not telemetry_json:
+            return None
+        try:
+            telemetry = json.loads(telemetry_json)
+        except Exception:
+            return None
+        return telemetry if isinstance(telemetry, dict) else None
 
     return {
         "id": version_row["id"],
@@ -5487,6 +5669,7 @@ def _version_payload(conn, version_row):
                 "rejection_reason": row["rejection_reason"],
                 "quality_score": row["quality_score"],
                 "is_outlier": bool(row["is_outlier"]),
+                "telemetry": parse_scenario_pass_telemetry(row),
                 "created_at": row["created_at"],
             }
             for row in scenario_passes
@@ -6158,8 +6341,8 @@ def _insert_analysis_version(
             """
             INSERT INTO analysis_version_scenario_passes (
                 analysis_version_id, pass_index, raw_response_text, parsed_json,
-                validation_status, rejection_reason, quality_score, is_outlier, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                validation_status, rejection_reason, quality_score, is_outlier, telemetry_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 version_id,
@@ -6170,6 +6353,9 @@ def _insert_analysis_version(
                 scenario_pass.get("rejection_reason"),
                 scenario_pass.get("quality_score"),
                 1 if scenario_pass.get("is_outlier") else 0,
+                json.dumps(scenario_pass.get("telemetry"), ensure_ascii=False)
+                if isinstance(scenario_pass.get("telemetry"), dict)
+                else None,
                 scenario_pass.get("created_at", now),
             ),
         )

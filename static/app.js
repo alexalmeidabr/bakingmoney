@@ -3299,6 +3299,90 @@ async function removeExternalScenario(id) {
   }
 }
 
+function isTelemetryNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function formatTelemetryNumber(value) {
+  return isTelemetryNumber(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 0 }) : 'Unavailable';
+}
+
+function formatTelemetryDuration(value) {
+  if (!isTelemetryNumber(value)) return 'Unavailable';
+  if (value < 1000) return `${Math.round(value)} ms`;
+  return `${(value / 1000).toFixed(1)} s`;
+}
+
+function sumTelemetryValues(items, field) {
+  let found = false;
+  const total = items.reduce((acc, telemetry) => {
+    if (!isTelemetryNumber(telemetry?.[field])) return acc;
+    found = true;
+    return acc + telemetry[field];
+  }, 0);
+  return found ? total : null;
+}
+
+function formatTelemetryRatio(cachedTokens, inputTokens) {
+  if (!isTelemetryNumber(cachedTokens) || !isTelemetryNumber(inputTokens) || inputTokens <= 0) return 'Unavailable';
+  return `${((cachedTokens / inputTokens) * 100).toFixed(1)}%`;
+}
+
+function buildScenarioTelemetryInfoText(passes) {
+  const telemetryItems = (passes || []).map((pass, index) => ({
+    pass,
+    passNumber: pass.pass_index || pass.telemetry?.pass_number || index + 1,
+    telemetry: pass.telemetry && typeof pass.telemetry === 'object' ? pass.telemetry : null,
+  }));
+  if (!telemetryItems.length || !telemetryItems.some((item) => item.telemetry)) {
+    return '\n\nAPI Usage / Performance:\n- No API usage telemetry available for this version.';
+  }
+
+  const telemetryValues = telemetryItems.map((item) => item.telemetry || {});
+  const models = [...new Set(telemetryValues.map((telemetry) => telemetry.model).filter(Boolean))];
+  const reasoningEfforts = [...new Set(telemetryValues.map((telemetry) => telemetry.reasoning_effort).filter(Boolean))];
+  const commonModel = models.length === 1 ? models[0] : null;
+  const commonReasoning = reasoningEfforts.length === 1 ? reasoningEfforts[0] : null;
+  const totalInput = sumTelemetryValues(telemetryValues, 'input_tokens');
+  const totalCached = sumTelemetryValues(telemetryValues, 'cached_input_tokens');
+  const lines = ['\n\nAPI Usage / Performance:'];
+
+  if (commonModel) lines.push(`- Model: ${commonModel}`);
+  if (commonReasoning) lines.push(`- Reasoning effort: ${commonReasoning}`);
+  lines.push('- Per pass:');
+  telemetryItems.forEach(({ passNumber, telemetry }) => {
+    lines.push(`  - Pass ${passNumber}:`);
+    if (!telemetry) {
+      lines.push('    - Usage: Unavailable');
+      return;
+    }
+    if (!commonModel) lines.push(`    - Model: ${telemetry.model || 'Unavailable'}`);
+    if (!commonReasoning) lines.push(`    - Reasoning effort: ${telemetry.reasoning_effort || 'Unavailable'}`);
+    lines.push(`    - Status: ${telemetry.status || 'Unavailable'}`);
+    lines.push(`    - Input tokens: ${formatTelemetryNumber(telemetry.input_tokens)}`);
+    lines.push(`    - Cached input tokens: ${formatTelemetryNumber(telemetry.cached_input_tokens)}`);
+    lines.push(`    - Cache write tokens: ${formatTelemetryNumber(telemetry.cache_write_tokens)}`);
+    lines.push(`    - Output tokens: ${formatTelemetryNumber(telemetry.output_tokens)}`);
+    lines.push(`    - Reasoning tokens: ${formatTelemetryNumber(telemetry.reasoning_tokens)}`);
+    lines.push(`    - Total tokens: ${formatTelemetryNumber(telemetry.total_tokens)}`);
+    lines.push(`    - Web searches: ${formatTelemetryNumber(telemetry.web_search_call_count)}`);
+    lines.push(`    - Retries: ${formatTelemetryNumber(telemetry.retry_count)}`);
+    lines.push(`    - Duration: ${formatTelemetryDuration(telemetry.duration_ms)}`);
+  });
+  lines.push('- Totals:');
+  lines.push(`  - Input tokens: ${formatTelemetryNumber(totalInput)}`);
+  lines.push(`  - Cached input tokens: ${formatTelemetryNumber(totalCached)}`);
+  lines.push(`  - Cache hit ratio: ${formatTelemetryRatio(totalCached, totalInput)}`);
+  lines.push(`  - Cache write tokens: ${formatTelemetryNumber(sumTelemetryValues(telemetryValues, 'cache_write_tokens'))}`);
+  lines.push(`  - Output tokens: ${formatTelemetryNumber(sumTelemetryValues(telemetryValues, 'output_tokens'))}`);
+  lines.push(`  - Reasoning tokens: ${formatTelemetryNumber(sumTelemetryValues(telemetryValues, 'reasoning_tokens'))}`);
+  lines.push(`  - Total tokens: ${formatTelemetryNumber(sumTelemetryValues(telemetryValues, 'total_tokens'))}`);
+  lines.push(`  - Web searches: ${formatTelemetryNumber(sumTelemetryValues(telemetryValues, 'web_search_call_count'))}`);
+  lines.push(`  - Retries: ${formatTelemetryNumber(sumTelemetryValues(telemetryValues, 'retry_count'))}`);
+  lines.push(`  - Pass duration sum: ${formatTelemetryDuration(sumTelemetryValues(telemetryValues, 'duration_ms'))}`);
+  return lines.join('\n');
+}
+
 function buildExternalScenarioInfoText() {
   const items = getCurrentExternalScenarios();
   if (!items.length) return '\n\nExternal Scenario Overlay:\n- No external scenarios attached to this version.';
@@ -3324,7 +3408,7 @@ function updateAnalysisScenarioInfoText() {
   if (!item) return;
   const passes = item.scenario_passes || [];
   const passLines = passes.map((p) => `Pass ${p.pass_index}: status=${p.validation_status}${p.is_outlier ? ' outlier=true' : ''}${p.rejection_reason ? ` reason=${p.rejection_reason}` : ''}${typeof p.quality_score === 'number' ? ` score=${p.quality_score.toFixed(2)}` : ''}`);
-  analysisScenarioInfoText.textContent = `Prompt used to build scenarios:\n${item.scenario_prompt || 'N/A'}\n\nScenario build passes:\n${passLines.length ? passLines.join('\n') : 'No pass details available.'}${buildExternalScenarioInfoText()}`;
+  analysisScenarioInfoText.textContent = `Prompt used to build scenarios:\n${item.scenario_prompt || 'Unavailable'}\n\nScenario build passes:\n${passLines.length ? passLines.join('\n') : 'No pass details available.'}${buildScenarioTelemetryInfoText(passes)}${buildExternalScenarioInfoText()}`;
 }
 
 

@@ -8515,10 +8515,16 @@ def _linear_detail_diagnostics(row):
             "potential_net_score": row.get("linear_potential_net_score"),
             "confidence_quality_score": row.get("linear_confidence_quality_score"),
             "weights_used": row.get("linear_weights_used"),
+            "linear_score_before_penalty": row.get("linear_score_before_penalty"),
+            "linear_score_after_penalty": row.get("linear_score_after_penalty"),
             "penalty_factor": row.get("linear_penalty_factor"),
             "penalties_applied": row.get("linear_penalties_applied"),
             "rating_bonus_factor": row.get("linear_rating_bonus_factor"),
             "rating_bonus_reason": row.get("linear_rating_bonus_reason"),
+            "linear_score_before_min_threshold": row.get("linear_score_before_min_threshold"),
+            "linear_min_score_threshold": row.get("linear_min_score_threshold"),
+            "linear_min_score_threshold_applied": row.get("linear_min_score_threshold_applied"),
+            "linear_min_score_threshold_reason": row.get("linear_min_score_threshold_reason"),
             "linear_score_before_frontier_boost": row.get("linear_score_before_frontier_boost"),
             "frontier_optionality_score": row.get("frontier_optionality_score"),
             "frontier_optionality_boost_factor": row.get("frontier_optionality_boost_factor"),
@@ -8699,16 +8705,31 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             + weights["linear_potential_confidence_weight"] * potential_net_score
             + weights["linear_confidence_quality_weight"] * confidence_quality_score
         )
+        score_before_penalty = score
         rating = item.get("rating") or item.get("bucket") or "Hold"
         penalty_factor, penalties_applied = _linear_stock_penalty_factor(item, core_net, potential_net, upside, rating, settings)
         score *= penalty_factor
+        score_after_penalty = score
         rating_bonus_factor, rating_bonus_reason = _linear_rating_bonus_factor(rating, settings)
         score *= rating_bonus_factor
+        score_before_min_threshold = score
+        min_score_threshold = safe_number(settings.get("linear_min_score_threshold")) or 0.0
+        min_score_threshold_applied = False
+        min_score_threshold_reason = None
         if settings.get("linear_zero_target_if_expected_cagr_negative", True) and expected_cagr is not None and expected_cagr < 0:
             score = 0.0
+            min_score_threshold_reason = "Negative expected CAGR guardrail"
         if settings.get("linear_zero_target_if_upside_negative", True) and upside is not None and upside < 0:
             score = 0.0
-        if score < (safe_number(settings.get("linear_min_score_threshold")) or 0.0):
+            min_score_threshold_reason = (
+                "Negative expected CAGR and negative upside guardrails"
+                if min_score_threshold_reason
+                else "Negative upside guardrail"
+            )
+        if score < min_score_threshold:
+            if score > 0.0:
+                min_score_threshold_applied = True
+                min_score_threshold_reason = "Score below configured minimum threshold"
             score = 0.0
         score_before_frontier_boost = _clamp(score, 0.0, 1.0)
         final_score, frontier_diagnostics = _linear_frontier_optionality_boost(
@@ -8745,10 +8766,16 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "linear_core_net_score": core_net_score,
             "linear_potential_net_score": potential_net_score,
             "linear_confidence_quality_score": confidence_quality_score,
+            "linear_score_before_penalty": score_before_penalty,
+            "linear_score_after_penalty": score_after_penalty,
             "linear_penalty_factor": penalty_factor,
             "linear_penalties_applied": penalties_applied,
             "linear_rating_bonus_factor": rating_bonus_factor,
             "linear_rating_bonus_reason": rating_bonus_reason,
+            "linear_score_before_min_threshold": score_before_min_threshold,
+            "linear_min_score_threshold": min_score_threshold,
+            "linear_min_score_threshold_applied": min_score_threshold_applied,
+            "linear_min_score_threshold_reason": min_score_threshold_reason,
             **frontier_diagnostics,
             "final_linear_score": final_score,
             "linear_allocation_score": final_score,

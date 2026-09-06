@@ -7,6 +7,20 @@ from unittest import mock
 import web_server
 
 
+class FakeOpenAIResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
+
+
 def scenario_payload():
     return {
         "assumptions": "Demand expands while execution risk remains manageable.",
@@ -156,6 +170,122 @@ class ScenarioGenerationTelemetryTests(unittest.TestCase):
                     conn.close()
 
         self.assertEqual(detail["version"]["scenario_passes"][0]["telemetry"], telemetry)
+
+    def test_logging_configuration_allows_bakingmoney_info_messages(self):
+        original_level = web_server.logger.level
+        original_propagate = web_server.logger.propagate
+        try:
+            web_server.configure_bakingmoney_logging(force=False)
+            self.assertLessEqual(web_server.logger.getEffectiveLevel(), web_server.logging.INFO)
+            self.assertTrue(web_server.logger.propagate)
+        finally:
+            web_server.logger.setLevel(original_level)
+            web_server.logger.propagate = original_propagate
+
+    def test_request_ai_step_logs_start_completion_and_uses_actual_model_without_secrets(self):
+        captured_request_bodies = []
+        response_payload = {
+            "output": [{"content": [{"type": "output_text", "text": json.dumps({"ok": True})}]}],
+            "usage": {
+                "input_tokens": 12331,
+                "input_tokens_details": {"cached_tokens": 7808},
+                "output_tokens": 881,
+                "output_tokens_details": {"reasoning_tokens": 635},
+                "total_tokens": 13212,
+            },
+        }
+
+        def fake_urlopen(request, timeout):
+            captured_request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeOpenAIResponse(response_payload)
+
+        with mock.patch.object(web_server, "OPENAI_API_KEY", "super-secret-key"), \
+             mock.patch.object(web_server, "OPENAI_MODEL", "gpt-5.6-terra"), \
+             mock.patch.object(web_server, "OPENAI_REASONING_EFFORT", "low"), \
+             mock.patch.object(web_server, "OPENAI_REQUEST_TIMEOUT_SECONDS", 60.0), \
+             mock.patch.object(web_server, "OPENAI_TEMPERATURE_RAW", "0.1"), \
+             mock.patch.object(web_server, "urlopen", side_effect=fake_urlopen), \
+             mock.patch.object(web_server.time, "monotonic", side_effect=[10.0, 16.9]), \
+             self.assertLogs(web_server.logger, level="INFO") as captured_logs:
+            payload, telemetry = web_server.request_ai_step_with_telemetry(
+                "scenarios_pass_1",
+                "prompt",
+                {"name": "test", "schema": {"type": "object", "properties": {}, "required": []}},
+            )
+
+        joined_logs = "\n".join(captured_logs.output)
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(captured_request_bodies[0]["model"], "gpt-5.6-terra")
+        self.assertEqual(telemetry["model"], "gpt-5.6-terra")
+        self.assertEqual(telemetry["reasoning_effort"], "low")
+        self.assertIn("Starting AI step=scenarios_pass_1 model=gpt-5.6-terra temp=omitted reasoning=low", joined_logs)
+        self.assertIn("OpenAI web search tool type: web_search", joined_logs)
+        self.assertIn("OpenAI request timeout seconds for step=scenarios_pass_1 attempt=1: 60.0", joined_logs)
+        self.assertIn("Completed AI step=scenarios_pass_1 model=gpt-5.6-terra duration=6.9s", joined_logs)
+        self.assertIn("input_tokens=12331", joined_logs)
+        self.assertIn("cached_tokens=7808", joined_logs)
+        self.assertIn("output_tokens=881", joined_logs)
+        self.assertIn("reasoning_tokens=635", joined_logs)
+        self.assertIn("retries=0", joined_logs)
+        self.assertNotIn("super-secret-key", joined_logs)
+        self.assertNotIn("Authorization", joined_logs)
+
+    def test_request_ai_step_completion_log_handles_missing_optional_telemetry_fields(self):
+        response_payload = {
+            "output": [{"content": [{"type": "output_text", "text": json.dumps({"ok": True})}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        }
+
+        with mock.patch.object(web_server, "OPENAI_MODEL", "gpt-5.6-terra"), \
+             mock.patch.object(web_server, "OPENAI_REASONING_EFFORT", "low"), \
+             mock.patch.object(web_server, "urlopen", return_value=FakeOpenAIResponse(response_payload)), \
+             mock.patch.object(web_server.time, "monotonic", side_effect=[1.0, 1.5]), \
+             self.assertLogs(web_server.logger, level="INFO") as captured_logs:
+            _payload, telemetry = web_server.request_ai_step_with_telemetry(
+                "scenarios_pass_1",
+                "prompt",
+                {"name": "test", "schema": {"type": "object", "properties": {}, "required": []}},
+            )
+
+        joined_logs = "\n".join(captured_logs.output)
+        self.assertIsNone(telemetry["cached_input_tokens"])
+        self.assertIsNone(telemetry["reasoning_tokens"])
+        self.assertIn("cached_tokens=-", joined_logs)
+        self.assertIn("reasoning_tokens=-", joined_logs)
+
+    def test_request_ai_step_retry_path_logs_retry_and_completion_summary(self):
+        unsupported = web_server.HTTPError(
+            "https://api.openai.com/v1/responses",
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=web_server.BytesIO(b'{"error":{"message":"Invalid unsupported web_search tool"}}'),
+        )
+        response_payload = {
+            "output": [
+                {"type": "web_search_call", "id": "ws_1"},
+                {"content": [{"type": "output_text", "text": json.dumps({"ok": True})}]},
+            ],
+            "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+        }
+
+        with mock.patch.object(web_server, "OPENAI_WEB_SEARCH_TOOL_CANDIDATES", ("web_search", "web_search_preview")), \
+             mock.patch.object(web_server, "urlopen", side_effect=[unsupported, FakeOpenAIResponse(response_payload)]), \
+             mock.patch.object(web_server.time, "monotonic", side_effect=[2.0, 4.0]), \
+             self.assertLogs(web_server.logger, level="INFO") as captured_logs:
+            _payload, telemetry = web_server.request_ai_step_with_telemetry(
+                "scenarios_pass_1",
+                "prompt",
+                {"name": "test", "schema": {"type": "object", "properties": {}, "required": []}},
+            )
+
+        joined_logs = "\n".join(captured_logs.output)
+        self.assertEqual(telemetry["retry_count"], 1)
+        self.assertEqual(telemetry["web_search_call_count"], 1)
+        self.assertIn("Retrying with web_search_preview", joined_logs)
+        self.assertIn("OpenAI web search tool type: web_search_preview", joined_logs)
+        self.assertIn("web_searches=1", joined_logs)
+        self.assertIn("retries=1", joined_logs)
 
 
 class ScenarioTelemetryMigrationTests(unittest.TestCase):

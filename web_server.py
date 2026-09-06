@@ -1117,8 +1117,16 @@ EARNINGS_REVIEW_WORKFLOW_PROMPT_KEYS = (
 
 
 
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
+
 _ib = None
 logger = logging.getLogger(__name__)
+
+
+def configure_bakingmoney_logging(level=logging.INFO, force=False):
+    logging.basicConfig(level=level, format=LOG_FORMAT, force=force)
+    logger.setLevel(level)
+    logger.propagate = True
 
 
 def ensure_event_loop():
@@ -3942,6 +3950,44 @@ def build_openai_step_telemetry(step_name, raw=None, status="completed", duratio
     return telemetry
 
 
+def _format_log_value(value):
+    if value is None:
+        return "-"
+    return value
+
+
+def _format_log_duration(duration_ms):
+    if _finite_number_or_none(duration_ms) is None:
+        return "-"
+    return f"{duration_ms / 1000.0:.1f}s"
+
+
+def log_openai_step_completion(step_name, telemetry):
+    logger.info(
+        "Completed AI step=%s model=%s duration=%s input_tokens=%s cached_tokens=%s output_tokens=%s reasoning_tokens=%s web_searches=%s retries=%s",
+        step_name,
+        telemetry.get("model") or "-",
+        _format_log_duration(telemetry.get("duration_ms")),
+        _format_log_value(telemetry.get("input_tokens")),
+        _format_log_value(telemetry.get("cached_input_tokens")),
+        _format_log_value(telemetry.get("output_tokens")),
+        _format_log_value(telemetry.get("reasoning_tokens")),
+        _format_log_value(telemetry.get("web_search_call_count")),
+        _format_log_value(telemetry.get("retry_count")),
+    )
+
+
+def log_openai_step_failure(step_name, telemetry):
+    logger.warning(
+        "Failed AI step=%s model=%s duration=%s retries=%s error=%s",
+        step_name,
+        telemetry.get("model") or "-",
+        _format_log_duration(telemetry.get("duration_ms")),
+        _format_log_value(telemetry.get("retry_count")),
+        telemetry.get("error") or "-",
+    )
+
+
 def request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=1):
     temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
     reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
@@ -3996,7 +4042,6 @@ def request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=
                 raise RuntimeError(f"AI step {step_name} response did not contain output text")
 
             payload = extract_json_payload(output_text)
-            logger.info("AI step=%s completed", step_name)
             telemetry = build_openai_step_telemetry(
                 step_name,
                 raw=raw,
@@ -4004,6 +4049,7 @@ def request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=
                 duration_ms=round((time.monotonic() - started_at) * 1000),
                 retry_count=idx,
             )
+            log_openai_step_completion(step_name, telemetry)
             return payload, telemetry
         except HTTPError as exc:
             response_text = ""
@@ -4034,6 +4080,7 @@ def request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=
                 retry_count=idx,
                 error=last_exc,
             )
+            log_openai_step_failure(step_name, telemetry)
             raise OpenAITelemetryError(str(last_exc), telemetry=telemetry) from exc
         except TimeoutError as exc:
             last_exc = RuntimeError(
@@ -4046,6 +4093,7 @@ def request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=
                 retry_count=idx,
                 error=last_exc,
             )
+            log_openai_step_failure(step_name, telemetry)
             raise OpenAITelemetryError(str(last_exc), telemetry=telemetry) from exc
 
     if last_exc:
@@ -4056,6 +4104,7 @@ def request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=
             retry_count=max(0, len(tool_candidates) - 1),
             error=last_exc,
         )
+        log_openai_step_failure(step_name, telemetry)
         raise OpenAITelemetryError(str(last_exc), telemetry=telemetry)
     message = f"OpenAI request failed on step {step_name} for unknown reasons"
     telemetry = build_openai_step_telemetry(
@@ -4065,6 +4114,7 @@ def request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=
         retry_count=0,
         error=message,
     )
+    log_openai_step_failure(step_name, telemetry)
     raise OpenAITelemetryError(message, telemetry=telemetry)
 
 
@@ -4666,6 +4716,7 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
             "is_outlier": False,
             "telemetry": None,
         }
+        logger.info("Scenario pass %s/%s starting", pass_number, pass_count)
         try:
             payload, telemetry = request_ai_step_with_telemetry(
                 f"scenarios_pass_{pass_number}",
@@ -4687,6 +4738,13 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
             if run["rejection_reason"]:
                 telemetry["rejection_reason"] = run["rejection_reason"]
             run["telemetry"] = telemetry
+            logger.info(
+                "Scenario pass %s/%s completed in %s status=%s",
+                pass_number,
+                pass_count,
+                _format_log_duration(telemetry.get("duration_ms")),
+                run["validation_status"],
+            )
         except OpenAITelemetryError as exc:
             telemetry = dict(exc.telemetry or {})
             telemetry["pass_number"] = pass_number
@@ -4694,6 +4752,12 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
             telemetry["rejection_reason"] = f"request_failed:{exc}"
             run["telemetry"] = telemetry
             run["rejection_reason"] = f"request_failed:{exc}"
+            logger.warning(
+                "Scenario pass %s/%s failed in %s",
+                pass_number,
+                pass_count,
+                _format_log_duration(telemetry.get("duration_ms")),
+            )
         except Exception as exc:
             run["telemetry"] = build_openai_step_telemetry(
                 f"scenarios_pass_{pass_number}",
@@ -4705,6 +4769,7 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
             run["telemetry"]["pass_number"] = pass_number
             run["telemetry"]["rejection_reason"] = f"request_failed:{exc}"
             run["rejection_reason"] = f"request_failed:{exc}"
+            logger.warning("Scenario pass %s/%s failed: %s", pass_number, pass_count, exc)
         runs.append(run)
 
     valid_runs = [r for r in runs if r["validation_status"] == "valid"]
@@ -12779,10 +12844,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-    )
+    configure_bakingmoney_logging(force=True)
 
     if not STATIC_DIR.exists():
         raise FileNotFoundError("Missing static directory. Expected: ./static")

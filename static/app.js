@@ -2232,7 +2232,7 @@ function renderActionPlanDetail(item) {
       ],
       [
         ['Linear Score Before Frontier Boost', formatActionDetailNumber(score.linear_score_before_frontier_boost)],
-        ['Frontier Boost Reason', escapeHtml(score.frontier_optionality_applied_reason || '—')],
+        ['Linear Score After Boost', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)],
       ],
     ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into component scores using the configured Linear ranges and weights. Penalty Factor and Rating Bonus Factor then adjust the score. If a company has a manually assigned Frontier Score, BakingMoney may apply a small capped boost before target allocation, unless a guardrail blocks it. The resulting Linear Score is then used to calculate target allocation, subject to stock-specific caps, Dynamic Reserve, and target band tolerances.</p></div></section>
     <section class="detail-card"><h4>Target Band Calculation</h4>${renderActionPlanMetricList([

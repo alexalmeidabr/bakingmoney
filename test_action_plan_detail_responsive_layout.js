@@ -394,7 +394,7 @@ test('Linear Target Calculation renders score inputs in order with Linear Score 
     'Frontier Boost Factor',
     'Frontier Boost Applied',
     'Linear Score Before Frontier Boost',
-    'Frontier Boost Reason',
+    'Linear Score After Boost',
   ]);
 });
 
@@ -415,7 +415,7 @@ test('Linear Target Calculation renders score cards in requested logical rows', 
     ['Penalty Factor', 'Penalty Applied'],
     ['Rating Bonus Factor', 'Bonus Applied'],
     ['Frontier Score', 'Frontier Boost Factor', 'Frontier Boost Applied'],
-    ['Linear Score Before Frontier Boost', 'Frontier Boost Reason'],
+    ['Linear Score Before Frontier Boost', 'Linear Score After Boost'],
   ]);
 });
 
@@ -444,7 +444,10 @@ test('Linear Target Calculation sources backend Linear score diagnostics', () =>
   assert.ok(section.includes("['Frontier Boost Factor', formatActionDetailNumber(score.frontier_optionality_boost_factor)]"));
   assert.ok(section.includes("['Frontier Boost Applied', formatFrontierOptionalityApplied(score)]"));
   assert.ok(section.includes("['Linear Score Before Frontier Boost', formatActionDetailNumber(score.linear_score_before_frontier_boost)]"));
-  assert.ok(section.includes("['Frontier Boost Reason', escapeHtml(score.frontier_optionality_applied_reason || '—')]"));
+  assert.ok(section.includes("['Linear Score After Boost', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)]"));
+  assert.ok(!section.includes('Frontier Boost Reason'));
+  assert.ok(!section.includes('Frontier Optionality Reason'));
+  assert.ok(!section.includes('Frontier Optionality Applied Reason'));
 });
 
 test('Action Detail omits Decision Path and Action-Relevant Key Variables sections', () => {

@@ -86,6 +86,8 @@ IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "7"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium").strip().lower() or "medium"
+OPENAI_CORE_EVIDENCE_MODEL = os.getenv("OPENAI_CORE_EVIDENCE_MODEL", "").strip()
+OPENAI_CORE_EVIDENCE_REASONING_EFFORT = os.getenv("OPENAI_CORE_EVIDENCE_REASONING_EFFORT", "").strip().lower()
 OPENAI_TEMPERATURE_RAW = os.getenv("OPENAI_TEMPERATURE", "0.1")
 OPENAI_WEB_SEARCH_TOOL_CANDIDATES = ("web_search", "web_search_preview")
 OPENAI_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "60"))
@@ -97,6 +99,7 @@ NO_PRICE_WARNING = "No live API market data (delayed/unavailable)"
 ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL = "analysis_prompt_business_model"
 ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES = "analysis_prompt_key_variables"
 ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS = "analysis_prompt_scenarios"
+ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK = "analysis_prompt_core_evidence_pack"
 ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE = "analysis_prompt_recent_event_candidate"
 ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CHECK = "analysis_prompt_recent_event_check"
 ANALYSIS_PROMPT_SETTING_KEY_EARNINGS_WATCHPOINTS = "earnings_watchpoints"
@@ -538,7 +541,7 @@ Rules:
 - No markdown.
 - No commentary outside JSON."""
 
-DEFAULT_PROMPT_SCENARIOS = """You are an equity analyst building a disciplined 5-year stock scenario analysis.
+LEGACY_DEFAULT_PROMPT_SCENARIOS = """You are an equity analyst building a disciplined 5-year stock scenario analysis.
 
 Company context:
 - Symbol: $Symbol
@@ -668,6 +671,796 @@ Interpretation rules:
 JSON only.
 No markdown.
 No commentary outside JSON."""
+
+PREVIOUS_DEFAULT_PROMPT_CORE_EVIDENCE_PACK = """You are an equity research analyst gathering the factual evidence needed for a disciplined 5-year stock scenario analysis.
+
+TASK
+
+Research the company using the supplied company information and key variables.
+
+Build a concise Core Evidence Pack containing the most recent and materially relevant factual information that should be known by any analyst constructing 5-year Bear, Base, and Bull scenarios.
+
+The Core Evidence Pack is NOT a scenario analysis.
+
+Do not:
+- produce Bear, Base, or Bull scenarios;
+- estimate future stock prices;
+- assign scenario probabilities;
+- make Buy/Sell recommendations;
+- decide whether the stock is attractive;
+- create a new investment thesis that replaces the supplied key variables.
+
+Its purpose is to establish a common factual baseline while leaving scenario interpretation to a later analysis step.
+
+RESEARCH PRIORITIES
+
+Prioritize authoritative and recent sources in this order when available:
+
+1. latest earnings release or shareholder letter;
+2. latest company guidance or outlook;
+3. SEC/regulatory filings or equivalent official filings;
+4. company investor-relations disclosures;
+5. material company announcements;
+6. recent factual reporting about developments that materially affect the supplied key variables;
+7. industry or analyst research only when it adds material factual context unavailable from primary sources.
+
+Prioritize primary sources over commentary.
+
+Research as much as necessary to establish a reliable factual baseline.
+
+Do not waste research on:
+- routine stock-price movements;
+- generic analyst sentiment;
+- price-target changes;
+- promotional management statements without supporting facts;
+- immaterial quarterly fluctuations;
+- duplicate reporting of facts already established from stronger sources.
+
+KEY-VARIABLE DISCIPLINE
+
+The supplied key variables define the existing BakingMoney thesis framework.
+
+Use them to determine which evidence is material.
+
+For each important key variable, identify recent factual evidence that:
+
+- confirms it;
+- weakens it;
+- contradicts it;
+- materially changes its magnitude;
+- or provides important new context.
+
+Do not rewrite or replace the key variables.
+
+Do not infer that a key variable is correct merely because management describes the business positively.
+
+Give greater weight to:
+- reported financial data;
+- guidance;
+- margins;
+- cash flow;
+- backlog;
+- contracts;
+- customer demand;
+- unit economics;
+- capital requirements;
+- balance-sheet changes;
+- competitive developments;
+- regulatory developments.
+
+CORE VS POTENTIAL DRIVERS
+
+Key variables may be classified as Core Driver or Potential Driver.
+
+For Core Drivers, prioritize evidence relating to the company's existing material revenue, margins, cash flow, demand, competitive position, cost structure, and proven business segments.
+
+For Potential Drivers, distinguish clearly between:
+- demonstrated material progress;
+- early evidence;
+- management expectations;
+- and still-speculative optionality.
+
+Do not treat an emerging opportunity as proven merely because its potential market is large.
+
+FRESHNESS
+
+Prefer the latest available evidence.
+
+When a newer source materially supersedes older information, use the newer information.
+
+Distinguish:
+- current reported facts;
+- current company guidance;
+- announced but not yet realized developments;
+- third-party estimates.
+
+VALUATION CONTEXT
+
+Include factual valuation context when useful for the later scenario analysis.
+
+Examples may include:
+- current market capitalization;
+- enterprise value;
+- relevant current valuation multiples;
+- net cash or debt;
+- share count/dilution;
+- capital requirements.
+
+Do not decide whether the valuation is cheap or expensive unless that conclusion follows directly from factual context. Leave scenario valuation judgments to the scenario-generation step.
+
+MATERIALITY
+
+Be selective.
+
+The evidence pack should contain information capable of materially affecting a 5-year valuation or the supplied key variables.
+
+Do not turn it into an earnings recap or general company profile.
+
+OUTPUT
+
+Return ONLY valid JSON in exactly this structure:
+
+{
+  "symbol": "",
+  "as_of": "",
+  "reporting_context": {
+    "latest_reporting_period": "",
+    "latest_release_date": "",
+    "facts": []
+  },
+  "guidance": {
+    "facts": []
+  },
+  "key_variable_evidence": [
+    {
+      "key_variable": "",
+      "driver_category": "",
+      "evidence_status": "",
+      "facts": []
+    }
+  ],
+  "other_material_facts": [],
+  "valuation_context": [],
+  "sources": [
+    {
+      "title": "",
+      "date": "",
+      "source_type": "",
+      "url": ""
+    }
+  ]
+}
+
+Rules:
+
+- Set symbol to the supplied symbol.
+- as_of should reflect the date of the research.
+- evidence_status should use one of:
+  "Confirms",
+  "Weakens",
+  "Contradicts",
+  "Mixed",
+  "New context",
+  "No material new evidence".
+- Facts should be concise factual statements, not investment conclusions.
+- Avoid duplicating the same fact across multiple sections unless necessary.
+- Include only materially relevant sources.
+- Do not fabricate unavailable dates, values, or URLs.
+- Use empty arrays when no material evidence exists.
+- JSON only.
+- No markdown.
+- No commentary outside JSON.
+
+COMPANY INPUT
+
+Symbol: $Symbol
+Company name: $CompanyName
+Current price: $Price USD
+
+Business model:
+$BusinessModel
+
+Key variables:
+$KeyVariables"""
+
+DEFAULT_PROMPT_CORE_EVIDENCE_PACK = """You are an equity research analyst gathering the factual evidence needed for a disciplined 5-year stock scenario analysis.
+
+TASK
+
+Research the company using the supplied company information.
+
+Build a concise Core Evidence Pack containing the most recent and materially relevant factual information that any analyst should know before constructing 5-year Bear, Base, and Bull scenarios.
+
+The Core Evidence Pack is a minimum common factual baseline, not an exhaustive research dossier.
+
+Research as much as necessary to identify the material facts, but return only the highest-signal evidence that should be shared with every scenario analyst.
+
+The Core Evidence Pack is NOT a scenario analysis.
+
+Do not:
+- produce Bear, Base, or Bull scenarios;
+- estimate future stock prices;
+- assign scenario probabilities;
+- make Buy/Sell recommendations;
+- decide whether the stock is attractive;
+- create or infer BakingMoney Key Variables;
+- organize the evidence around an investment thesis;
+- attempt to document every possible risk or opportunity.
+
+Its purpose is to establish a compact, thesis-neutral factual baseline while leaving interpretation to the later scenario-analysis step.
+
+RESEARCH PRIORITIES
+
+Prioritize authoritative and recent sources in this order when available:
+
+1. latest earnings release or shareholder letter;
+2. latest company guidance or outlook;
+3. SEC/regulatory filings or equivalent official filings;
+4. company investor-relations disclosures;
+5. material company announcements;
+6. recent factual reporting about developments that materially affect the company's 5-year economics;
+7. industry or analyst research only when it adds material factual context unavailable from primary sources.
+
+Prioritize primary sources over commentary.
+
+Research as much as necessary to establish a reliable factual baseline.
+
+Do not waste research on:
+- routine stock-price movements;
+- generic analyst sentiment;
+- price-target changes;
+- promotional management statements without supporting facts;
+- immaterial quarterly fluctuations;
+- duplicate reporting of facts already established from stronger sources.
+
+THESIS NEUTRALITY
+
+Do not organize the evidence around pre-existing bullish or bearish conclusions.
+
+Do not try to prove or disprove an investment thesis.
+
+Include facts because they are economically material, not because they support a particular scenario.
+
+The later scenario-analysis step will receive BakingMoney's Key Variables separately and will determine how the Core Evidence Pack affects Bear, Base, and Bull outcomes.
+
+FRESHNESS
+
+Prefer the latest available evidence.
+
+When a newer source materially supersedes older information, use the newer information.
+
+Distinguish clearly between:
+- current reported facts;
+- current company guidance;
+- announced but not yet realized developments;
+- third-party estimates.
+
+MATERIALITY
+
+Include only facts capable of materially affecting a 5-year business valuation.
+
+Focus on areas such as:
+- revenue trajectory;
+- segment economics;
+- margins;
+- free cash flow;
+- capital expenditures;
+- backlog or contracts;
+- customer concentration;
+- pricing or unit economics;
+- capital intensity;
+- cash and debt;
+- financing requirements;
+- dilution;
+- major acquisitions or divestitures;
+- major product or infrastructure developments;
+- competitive or regulatory developments;
+- material litigation or governance developments;
+- valuation context.
+
+Do not turn the Core Evidence Pack into:
+- an earnings recap;
+- a company profile;
+- a chronology of news;
+- a comprehensive risk register;
+- an exhaustive list of every operating metric.
+
+COMPRESSION DISCIPLINE
+
+Prefer one concise factual statement that captures the relevant economic information over several overlapping facts.
+
+Do not repeat the same fact across multiple sections unless necessary for understanding.
+
+Do not include immaterial facts simply because they were discovered during research.
+
+If several facts convey the same conclusion, retain only the strongest or most informative ones.
+
+The Core Evidence Pack should normally be much shorter than a full company research report.
+
+The later scenario passes retain independent web research and are responsible for investigating anything they consider insufficiently covered.
+
+VALUATION CONTEXT
+
+Include factual valuation context when useful for later scenario analysis.
+
+Examples may include:
+- current market capitalization;
+- enterprise value;
+- relevant current valuation multiples;
+- net cash or debt;
+- share count and dilution;
+- major capital requirements.
+
+Do not decide whether valuation is cheap or expensive.
+
+Leave valuation judgments to the scenario-analysis step.
+
+OUTPUT
+
+Return ONLY valid JSON in exactly this structure:
+
+{
+  "symbol": "",
+  "as_of": "",
+  "reporting_context": {
+    "latest_reporting_period": "",
+    "latest_release_date": "",
+    "material_facts": []
+  },
+  "guidance_and_outlook": [],
+  "segment_and_operating_facts": [],
+  "cash_flow_and_balance_sheet": [],
+  "capital_structure_and_dilution": [],
+  "material_recent_developments": [],
+  "valuation_context": [],
+  "sources": [
+    {
+      "title": "",
+      "date": "",
+      "source_type": "",
+      "url": ""
+    }
+  ]
+}
+
+Rules:
+
+- Set symbol to the supplied symbol.
+- as_of should reflect the date of the research.
+- Include only materially relevant facts.
+- Facts must be concise and factual, not scenario conclusions.
+- Avoid duplicate facts across sections.
+- Include only materially relevant sources.
+- Do not fabricate unavailable dates, values, or URLs.
+- Use empty arrays when no material fact exists for a section.
+- JSON only.
+- No markdown.
+- No commentary outside JSON.
+
+COMPANY INPUT
+
+Symbol: $Symbol
+Company name: $CompanyName
+Current price: $Price USD
+
+Business model:
+$BusinessModel"""
+
+PREVIOUS_DEFAULT_PROMPT_SCENARIOS_HYBRID = """You are an equity analyst building a disciplined 5-year stock scenario analysis.
+
+TASK
+
+Build exactly three stock-price scenarios over a 5-year horizon:
+
+- Bear = pessimistic but plausible outcome
+- Base = most likely central outcome
+- Bull = optimistic but plausible outcome
+
+The purpose is to estimate realistic 5-year stock-value ranges and probabilities based primarily on the supplied business model, key variables, current valuation, Core Evidence Pack, and any additional material information you determine is necessary.
+
+OUTPUT
+
+Return ONLY valid JSON in exactly this structure:
+
+{
+  "symbol": "",
+  "assumptions": "concise 5-year thesis summary",
+  "scenarios": [
+    {"name": "Bear", "price_low": 0, "price_high": 0, "probability": 0},
+    {"name": "Base", "price_low": 0, "price_high": 0, "probability": 0},
+    {"name": "Bull", "price_low": 0, "price_high": 0, "probability": 0}
+  ]
+}
+
+Rules:
+- Set "symbol" to the supplied company symbol.
+- Return exactly 3 scenarios in this order: Bear, Base, Bull.
+- Probabilities must sum to 100.
+- price_low must be less than or equal to price_high for every scenario.
+- Return JSON only. No markdown or commentary outside the JSON.
+
+KEY-VARIABLE DISCIPLINE
+
+The supplied key variables are the primary foundation of the analysis.
+
+- Give the greatest influence to variables with the highest importance and confidence.
+- High-importance bullish and bearish variables must materially affect scenario prices, ranges, and probabilities, not merely the assumptions text.
+- Bear should reflect stronger materialization of the most important bearish variables.
+- Bull should reflect stronger materialization of the most important bullish variables.
+- Base should represent normal execution and the currently visible central trajectory. It must not assume that most bullish variables succeed.
+
+CORE VS POTENTIAL DRIVERS
+
+Key variables may be classified as Core Driver or Potential Driver.
+
+Core Drivers:
+- Represent the existing material business, revenue, margins, cash flow, demand, cost structure, competitive position, or proven segments.
+- Must dominate the Base case and normal execution assumptions.
+
+Potential Drivers:
+- Represent emerging optionality, new products, new initiatives, future markets, speculative technologies, new business lines, or not-yet-material drivers.
+- Should primarily affect Bull/Bear optionality and scenario range.
+- Low-confidence Potential Drivers should not materially influence Base.
+- A Potential Driver may materially influence Base only when confidence is high and current evidence indicates it is becoming economically material.
+- High-importance Potential Drivers may widen scenario ranges without necessarily increasing their probability.
+- If a Potential Driver becomes sufficiently credible and material to dominate Base, that is evidence that it may no longer be merely optionality.
+
+BASE-CASE DISCIPLINE
+
+Base is the central expected business trajectory, not an optimistic execution case.
+
+- Base should primarily reflect Core Drivers, current guidance, visible demand, margins, backlog/contracts, competitive position, and normal execution.
+- A strong business does not automatically imply large stock upside.
+- Do not assume valuation multiple expansion in Base unless valuation is clearly undemanding or future earnings/free-cash-flow growth strongly justifies it.
+- If current valuation already discounts strong execution, Base may be near or below the current stock price.
+- If the stock is depressed but durable fundamentals support recovery, Base may be materially above the current price.
+- A quarterly earnings beat with unchanged guidance is normally confirmation, not a reason to materially raise Base.
+
+VALUATION DISCIPLINE
+
+Stock-price scenarios must reflect both business outcomes and valuation.
+
+When practical, mentally anchor the scenarios to plausible 5-year outcomes for one or more of:
+- revenue
+- earnings
+- EBITDA
+- free cash flow
+- book value
+- margins
+- capital intensity
+
+Then apply a reasonable terminal valuation consistent with:
+- company maturity
+- growth
+- business quality
+- cyclicality
+- competitive position
+- leverage
+- financing needs
+- industry characteristics
+- risk
+
+Do not produce price ranges that require unrealistic revenue growth, margin expansion, market share, capital efficiency, or valuation multiples.
+
+Use the current stock price only to judge what optimism or pessimism is already priced in. Do not mechanically center scenarios around the current price.
+
+If the stock already reflects optimistic assumptions:
+- constrain Base upside;
+- reduce Bull probability when appropriate;
+- or require stronger operating outcomes to justify Bull.
+
+If the company is speculative, loss-making, capital-intensive, highly leveraged, or dependent on external financing, require stronger evidence before assigning high Bull probability.
+
+SCENARIO REALISM
+
+- Bull must be optimistic but plausible, not aspirational.
+- Bear must be pessimistic but plausible, not automatically catastrophic.
+- Do not let speculative optionality or long-shot TAM expansion dominate unless supported by strong current evidence.
+- Outcomes requiring near-perfect execution across several variables should receive low probability.
+- Greater uncertainty should generally produce wider ranges and/or lower probability for extreme outcomes.
+- Distinguish business quality from stock attractiveness.
+
+CORE EVIDENCE PACK AND FRESH INFORMATION
+
+A Core Evidence Pack is supplied with the company input.
+
+It contains recent factual research gathered once for this analysis and should be treated as the common factual baseline for all scenario passes.
+
+Use the Core Evidence Pack to avoid unnecessarily rediscovering information that has already been established.
+
+However, the Core Evidence Pack is not guaranteed to be exhaustive.
+
+You may perform as much additional independent research as you determine is necessary when:
+- important information is missing;
+- a fact needs verification;
+- more recent evidence may exist;
+- conflicting evidence exists;
+- a material competitive, regulatory, financial, operational, or valuation consideration is not adequately represented;
+- or additional evidence is needed to properly evaluate one of the supplied key variables.
+
+Each scenario analysis must independently judge the relevance and implications of the evidence.
+
+Do not assume that conclusions implied by the Core Evidence Pack are correct merely because the information is shared. The pack should primarily contain facts; scenario interpretation remains your responsibility.
+
+Prioritize:
+1. primary company disclosures;
+2. regulatory filings;
+3. factual recent developments materially relevant to the key variables;
+4. industry or analyst commentary only when it contributes material evidence or valuation context.
+
+Do not turn the analysis into an earnings recap.
+
+Focus on information that materially affects durable 5-year drivers such as:
+- revenue trajectory
+- margins
+- free cash flow
+- backlog or contracts
+- pricing power
+- unit economics
+- customer concentration
+- competitive position
+- capital intensity
+- leverage or financing risk
+- regulatory risk
+- valuation
+
+Treat management commentary cautiously. Give greater weight to hard financial data, guidance, margins, cash flow, demand, backlog, and operating metrics than to promotional language.
+
+Guidance matters more than backward-looking quarterly results when it changes the durable trajectory.
+
+Examples:
+- Beat + unchanged guidance = usually confirmation.
+- Beat + reduced guidance = reason for caution.
+- Miss + raised guidance may still support the thesis if durable forward drivers improve.
+
+ASSUMPTIONS FIELD
+
+The assumptions field must be a concise 5-year thesis summary, ideally 2 to 4 sentences.
+
+It should explain:
+1. the main durable drivers likely to determine 5-year value;
+2. the main constraints or risks that limit upside or increase downside.
+
+The assumptions field must:
+- be driven primarily by the most important Core Drivers;
+- mention important Potential Drivers only when they materially shape Bull/Bear optionality;
+- avoid becoming a quarterly earnings summary;
+- avoid listing many short-term metrics;
+- explain causally why the Bear, Base, and Bull outcomes differ.
+
+ETF RULE
+
+If the supplied symbol represents an ETF, center the analysis on the performance drivers, risks, and concentration of its major holdings rather than treating it like an operating company.
+
+COMPANY INPUT
+
+Symbol: $Symbol
+Company name: $CompanyName
+Current price: $Price USD
+
+Business model:
+$BusinessModel
+
+Key variables:
+$KeyVariables
+
+Core Evidence Pack:
+$CoreEvidencePack"""
+
+DEFAULT_PROMPT_SCENARIOS = """You are an equity analyst building a disciplined 5-year stock scenario analysis.
+
+TASK
+
+Build exactly three stock-price scenarios over a 5-year horizon:
+
+- Bear = pessimistic but plausible outcome
+- Base = most likely central outcome
+- Bull = optimistic but plausible outcome
+
+The purpose is to estimate realistic 5-year stock-value ranges and probabilities based primarily on the supplied business model, key variables, current valuation, Core Evidence Pack, and any additional material information you determine is necessary.
+
+OUTPUT
+
+Return ONLY valid JSON in exactly this structure:
+
+{
+  "symbol": "",
+  "assumptions": "concise 5-year thesis summary",
+  "scenarios": [
+    {"name": "Bear", "price_low": 0, "price_high": 0, "probability": 0},
+    {"name": "Base", "price_low": 0, "price_high": 0, "probability": 0},
+    {"name": "Bull", "price_low": 0, "price_high": 0, "probability": 0}
+  ]
+}
+
+Rules:
+- Set "symbol" to the supplied company symbol.
+- Return exactly 3 scenarios in this order: Bear, Base, Bull.
+- Probabilities must sum to 100.
+- price_low must be less than or equal to price_high for every scenario.
+- Return JSON only. No markdown or commentary outside the JSON.
+
+KEY-VARIABLE DISCIPLINE
+
+The supplied key variables are the primary foundation of the analysis.
+
+- Give the greatest influence to variables with the highest importance and confidence.
+- High-importance bullish and bearish variables must materially affect scenario prices, ranges, and probabilities, not merely the assumptions text.
+- Bear should reflect stronger materialization of the most important bearish variables.
+- Bull should reflect stronger materialization of the most important bullish variables.
+- Base should represent normal execution and the currently visible central trajectory. It must not assume that most bullish variables succeed.
+
+CORE VS POTENTIAL DRIVERS
+
+Key variables may be classified as Core Driver or Potential Driver.
+
+Core Drivers:
+- Represent the existing material business, revenue, margins, cash flow, demand, cost structure, competitive position, or proven segments.
+- Must dominate the Base case and normal execution assumptions.
+
+Potential Drivers:
+- Represent emerging optionality, new products, new initiatives, future markets, speculative technologies, new business lines, or not-yet-material drivers.
+- Should primarily affect Bull/Bear optionality and scenario range.
+- Low-confidence Potential Drivers should not materially influence Base.
+- A Potential Driver may materially influence Base only when confidence is high and current evidence indicates it is becoming economically material.
+- High-importance Potential Drivers may widen scenario ranges without necessarily increasing their probability.
+- If a Potential Driver becomes sufficiently credible and material to dominate Base, that is evidence that it may no longer be merely optionality.
+
+BASE-CASE DISCIPLINE
+
+Base is the central expected business trajectory, not an optimistic execution case.
+
+- Base should primarily reflect Core Drivers, current guidance, visible demand, margins, backlog/contracts, competitive position, and normal execution.
+- A strong business does not automatically imply large stock upside.
+- Do not assume valuation multiple expansion in Base unless valuation is clearly undemanding or future earnings/free-cash-flow growth strongly justifies it.
+- If current valuation already discounts strong execution, Base may be near or below the current stock price.
+- If the stock is depressed but durable fundamentals support recovery, Base may be materially above the current price.
+- A quarterly earnings beat with unchanged guidance is normally confirmation, not a reason to materially raise Base.
+
+VALUATION DISCIPLINE
+
+Stock-price scenarios must reflect both business outcomes and valuation.
+
+When practical, mentally anchor the scenarios to plausible 5-year outcomes for one or more of:
+- revenue
+- earnings
+- EBITDA
+- free cash flow
+- book value
+- margins
+- capital intensity
+
+Then apply a reasonable terminal valuation consistent with:
+- company maturity
+- growth
+- business quality
+- cyclicality
+- competitive position
+- leverage
+- financing needs
+- industry characteristics
+- risk
+
+Do not produce price ranges that require unrealistic revenue growth, margin expansion, market share, capital efficiency, or valuation multiples.
+
+Use the current stock price only to judge what optimism or pessimism is already priced in. Do not mechanically center scenarios around the current price.
+
+If the stock already reflects optimistic assumptions:
+- constrain Base upside;
+- reduce Bull probability when appropriate;
+- or require stronger operating outcomes to justify Bull.
+
+If the company is speculative, loss-making, capital-intensive, highly leveraged, or dependent on external financing, require stronger evidence before assigning high Bull probability.
+
+SCENARIO REALISM
+
+- Bull must be optimistic but plausible, not aspirational.
+- Bear must be pessimistic but plausible, not automatically catastrophic.
+- Do not let speculative optionality or long-shot TAM expansion dominate unless supported by strong current evidence.
+- Outcomes requiring near-perfect execution across several variables should receive low probability.
+- Greater uncertainty should generally produce wider ranges and/or lower probability for extreme outcomes.
+- Distinguish business quality from stock attractiveness.
+
+CORE EVIDENCE PACK AND FRESH INFORMATION
+
+A Core Evidence Pack is supplied with the company input.
+
+It contains recent factual research gathered once for this analysis and should be treated as the common factual baseline for all scenario passes.
+
+Use the Core Evidence Pack to avoid unnecessarily rediscovering information that has already been established.
+
+However, the Core Evidence Pack is not guaranteed to be exhaustive.
+
+You may perform as much additional independent research as you determine is necessary when:
+- important information is missing;
+- a fact needs verification;
+- more recent evidence may exist;
+- conflicting evidence exists;
+- a material competitive, regulatory, financial, operational, or valuation consideration is not adequately represented;
+- or additional evidence is needed to properly evaluate one of the supplied key variables.
+
+Each scenario analysis must independently judge the relevance and implications of the evidence.
+
+Do not assume that conclusions implied by the Core Evidence Pack are correct merely because the information is shared. The pack should primarily contain facts; scenario interpretation remains your responsibility.
+
+Prioritize:
+1. primary company disclosures;
+2. regulatory filings;
+3. factual recent developments materially relevant to the key variables;
+4. industry or analyst commentary only when it contributes material evidence or valuation context.
+
+Do not turn the analysis into an earnings recap.
+
+Focus on information that materially affects durable 5-year drivers such as:
+- revenue trajectory
+- margins
+- free cash flow
+- backlog or contracts
+- pricing power
+- unit economics
+- customer concentration
+- competitive position
+- capital intensity
+- leverage or financing risk
+- regulatory risk
+- valuation
+
+Treat management commentary cautiously. Give greater weight to hard financial data, guidance, margins, cash flow, demand, backlog, and operating metrics than to promotional language.
+
+Guidance matters more than backward-looking quarterly results when it changes the durable trajectory.
+
+Examples:
+- Beat + unchanged guidance = usually confirmation.
+- Beat + reduced guidance = reason for caution.
+- Miss + raised guidance may still support the thesis if durable forward drivers improve.
+
+EVIDENCE WEIGHTING
+
+The amount of text or number of facts in the Core Evidence Pack does not determine the importance of a Key Variable.
+
+Weight Key Variables primarily according to their supplied importance, confidence, driver category, economic impact, and the quality of current evidence.
+
+Use the Core Evidence Pack to establish factual context, not as a vote-counting mechanism.
+
+Do not give a Key Variable greater scenario influence merely because more evidence items are available for it.
+
+Absence of a fact from the Core Evidence Pack does not mean a Key Variable is unimportant or invalid. The Core Evidence Pack is intentionally selective rather than exhaustive.
+
+If needed, perform additional independent research to evaluate a Key Variable that is not adequately covered by the Core Evidence Pack.
+
+ASSUMPTIONS FIELD
+
+The assumptions field must be a concise 5-year thesis summary, ideally 2 to 4 sentences.
+
+It should explain:
+1. the main durable drivers likely to determine 5-year value;
+2. the main constraints or risks that limit upside or increase downside.
+
+The assumptions field must:
+- be driven primarily by the most important Core Drivers;
+- mention important Potential Drivers only when they materially shape Bull/Bear optionality;
+- avoid becoming a quarterly earnings summary;
+- avoid listing many short-term metrics;
+- explain causally why the Bear, Base, and Bull outcomes differ.
+
+ETF RULE
+
+If the supplied symbol represents an ETF, center the analysis on the performance drivers, risks, and concentration of its major holdings rather than treating it like an operating company.
+
+COMPANY INPUT
+
+Symbol: $Symbol
+Company name: $CompanyName
+Current price: $Price USD
+
+Business model:
+$BusinessModel
+
+Key variables:
+$KeyVariables
+
+Core Evidence Pack:
+$CoreEvidencePack"""
 
 DEFAULT_PROMPT_RECENT_EVENT_CANDIDATE = """You are an equity analyst assistant preparing candidate recent events for later thesis-review analysis.
 
@@ -1072,7 +1865,11 @@ PROMPT_TEMPLATE_CONFIG = {
     },
     ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS: {
         "default": DEFAULT_PROMPT_SCENARIOS,
-        "required_vars": ["$Symbol", "$CompanyName", "$BusinessModel", "$KeyVariables"],
+        "required_vars": ["$Symbol", "$CompanyName", "$BusinessModel", "$KeyVariables", "$CoreEvidencePack"],
+    },
+    ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK: {
+        "default": DEFAULT_PROMPT_CORE_EVIDENCE_PACK,
+        "required_vars": ["$Symbol", "$CompanyName", "$Price", "$BusinessModel"],
     },
     ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE: {
         "default": DEFAULT_PROMPT_RECENT_EVENT_CANDIDATE,
@@ -1102,6 +1899,7 @@ PROMPT_TEMPLATE_CONFIG = {
 ANALYSIS_WORKFLOW_PROMPT_KEYS = (
     ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL,
     ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES,
+    ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK,
     ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,
 )
 
@@ -1117,8 +1915,16 @@ EARNINGS_REVIEW_WORKFLOW_PROMPT_KEYS = (
 
 
 
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
+
 _ib = None
 logger = logging.getLogger(__name__)
+
+
+def configure_bakingmoney_logging(level=logging.INFO, force=False):
+    logging.basicConfig(level=level, format=LOG_FORMAT, force=force)
+    logger.setLevel(level)
+    logger.propagate = True
 
 
 def ensure_event_loop():
@@ -2609,6 +3415,32 @@ def reset_prompt_template(conn, key):
     conn.commit()
 
 
+def migrate_legacy_default_prompt_templates(conn):
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,)).fetchone()
+    if row and row["value"] in {LEGACY_DEFAULT_PROMPT_SCENARIOS, PREVIOUS_DEFAULT_PROMPT_SCENARIOS_HYBRID}:
+        conn.execute(
+            """
+            UPDATE app_settings
+            SET value = ?, updated_at = ?
+            WHERE key = ?
+            """,
+            (DEFAULT_PROMPT_SCENARIOS, utc_now_iso(), ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS),
+        )
+        conn.commit()
+
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK,)).fetchone()
+    if row and row["value"] == PREVIOUS_DEFAULT_PROMPT_CORE_EVIDENCE_PACK:
+        conn.execute(
+            """
+            UPDATE app_settings
+            SET value = ?, updated_at = ?
+            WHERE key = ?
+            """,
+            (DEFAULT_PROMPT_CORE_EVIDENCE_PACK, utc_now_iso(), ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK),
+        )
+        conn.commit()
+
+
 def render_prompt_template(template, context):
     rendered = template
     for placeholder, value in context.items():
@@ -2630,7 +3462,7 @@ def render_scenario_prompt(template, values):
     template plus replacement of the supported placeholders below. Do not inject
     implicit fields (for example Summary/context blocks/instructions) here.
     """
-    supported_placeholders = ("$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables")
+    supported_placeholders = ("$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables", "$CoreEvidencePack")
     substitution_context = {
         placeholder: str(values.get(placeholder, ""))
         for placeholder in supported_placeholders
@@ -2683,6 +3515,12 @@ def format_key_variables_for_prompt(key_variables):
     return json.dumps(normalize_key_variables_for_payload(key_variables), separators=(",", ":"), ensure_ascii=False)
 
 
+def serialize_core_evidence_pack_for_prompt(core_evidence_pack):
+    if not isinstance(core_evidence_pack, dict):
+        raise AnalysisValidationError("Core Evidence Pack is required before scenario generation")
+    return json.dumps(core_evidence_pack, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def build_business_model_prompt_value(business_model="", business_summary=""):
     model_text = (business_model or "").strip()
     summary_text = (business_summary or "").strip()
@@ -2706,6 +3544,7 @@ def build_prompt_context(
     event_candidates="",
     earnings_watchpoints="",
     earnings_documents="",
+    core_evidence_pack=None,
 ):
 
     symbol_value = symbol or "unknown"
@@ -2716,6 +3555,9 @@ def build_prompt_context(
     event_candidates_value = event_candidates
     if not isinstance(event_candidates_value, str):
         event_candidates_value = json.dumps(event_candidates_value or [], separators=(",", ":"), ensure_ascii=False)
+    core_evidence_value = ""
+    if core_evidence_pack is not None:
+        core_evidence_value = serialize_core_evidence_pack_for_prompt(core_evidence_pack)
     return {
         "$Symbol": symbol_value,
         "$Price": price_value,
@@ -2726,6 +3568,7 @@ def build_prompt_context(
         "$EventCandidates": event_candidates_value,
         "$EarningsWatchpoints": str(earnings_watchpoints or ""),
         "$EarningsDocuments": str(earnings_documents or ""),
+        "$CoreEvidencePack": core_evidence_value,
     }
 
 
@@ -2820,6 +3663,12 @@ def init_db():
               business_model_text TEXT,
               business_summary_text TEXT,
               raw_ai_response TEXT,
+              core_evidence_pack_json TEXT,
+              core_evidence_generated_at TEXT,
+              core_evidence_model TEXT,
+              core_evidence_reasoning_effort TEXT,
+              core_evidence_telemetry_json TEXT,
+              scenario_generation_wall_duration_ms REAL,
               source_trigger TEXT,
               created_at TEXT NOT NULL,
               FOREIGN KEY (analysis_root_id) REFERENCES analysis_roots(id) ON DELETE CASCADE,
@@ -2873,6 +3722,7 @@ def init_db():
               rejection_reason TEXT,
               quality_score REAL,
               is_outlier INTEGER NOT NULL DEFAULT 0,
+              telemetry_json TEXT,
               created_at TEXT NOT NULL,
               FOREIGN KEY (analysis_version_id) REFERENCES analysis_versions(id) ON DELETE CASCADE
             )
@@ -3258,14 +4108,22 @@ def init_db():
         ensure_column_exists(conn, "analysis_symbols", "business_summary_text", "TEXT")
         ensure_column_exists(conn, "analysis_symbols", "expected_cagr", "REAL")
         ensure_column_exists(conn, "analysis_versions", "expected_cagr", "REAL")
+        ensure_column_exists(conn, "analysis_versions", "core_evidence_pack_json", "TEXT")
+        ensure_column_exists(conn, "analysis_versions", "core_evidence_generated_at", "TEXT")
+        ensure_column_exists(conn, "analysis_versions", "core_evidence_model", "TEXT")
+        ensure_column_exists(conn, "analysis_versions", "core_evidence_reasoning_effort", "TEXT")
+        ensure_column_exists(conn, "analysis_versions", "core_evidence_telemetry_json", "TEXT")
+        ensure_column_exists(conn, "analysis_versions", "scenario_generation_wall_duration_ms", "REAL")
         ensure_column_exists(conn, "analysis_scenarios", "price_mid", "REAL")
         ensure_column_exists(conn, "analysis_scenarios", "cagr_mid", "REAL")
         ensure_column_exists(conn, "analysis_version_scenarios", "price_mid", "REAL")
         ensure_column_exists(conn, "analysis_version_scenarios", "cagr_mid", "REAL")
+        ensure_column_exists(conn, "analysis_version_scenario_passes", "telemetry_json", "TEXT")
         ensure_column_exists(conn, "analysis_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
         ensure_column_exists(conn, "analysis_version_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
         ensure_column_exists(conn, "portfolio_summary_cache", "ledger_cash_usd", "REAL")
         ensure_column_exists(conn, "portfolio_summary_cache", "actual_cash", "REAL")
+        migrate_legacy_default_prompt_templates(conn)
 
         has_roots = conn.execute("SELECT 1 FROM analysis_roots LIMIT 1").fetchone()
         if not has_roots:
@@ -3763,7 +4621,7 @@ def build_analysis_prompt(symbol, current_price=None, template=None, company_nam
     return render_prompt_template(base_template, context)
 
 
-def build_scenario_generation_prompt(symbol, current_price=None, template=None, company_name="", business_model="", business_summary="", key_variables=None):
+def build_scenario_generation_prompt(symbol, current_price=None, template=None, company_name="", business_model="", business_summary="", key_variables=None, core_evidence_pack=None):
     base_template = template if template is not None else DEFAULT_PROMPT_SCENARIOS
     context = build_prompt_context(
         symbol=symbol,
@@ -3772,6 +4630,7 @@ def build_scenario_generation_prompt(symbol, current_price=None, template=None, 
         business_model=business_model,
         business_summary=business_summary,
         key_variables=key_variables,
+        core_evidence_pack=core_evidence_pack,
     )
     return render_scenario_prompt(base_template, context)
 
@@ -3793,9 +4652,10 @@ def build_openai_tools(tool_type=None):
     return [{"type": selected_tool_type}]
 
 
-def build_openai_request_body(prompt_text, json_schema, reasoning_effort, supports_temperature, temperature, tool_type=None):
+def build_openai_request_body(prompt_text, json_schema, reasoning_effort, supports_temperature, temperature, tool_type=None, model=None):
+    request_model = model or OPENAI_MODEL
     body = {
-        "model": OPENAI_MODEL,
+        "model": request_model,
         "input": [
             {
                 "role": "system",
@@ -3841,17 +4701,158 @@ def get_openai_timeout_seconds_for_step(step_name):
     return get_ai_step_timeout(step_name, attempt=1)
 
 
-def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
+class OpenAITelemetryError(RuntimeError):
+    def __init__(self, message, telemetry=None):
+        super().__init__(message)
+        self.telemetry = telemetry or {}
+
+
+def _finite_number_or_none(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return value
+    return None
+
+
+def _nested_usage_number(data, *paths):
+    if not isinstance(data, dict):
+        return None
+    for path in paths:
+        current = data
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                current = None
+                break
+            current = current[key]
+        value = _finite_number_or_none(current)
+        if value is not None:
+            return value
+    return None
+
+
+def extract_openai_usage_telemetry(raw):
+    usage = raw.get("usage") if isinstance(raw, dict) else {}
+    if not isinstance(usage, dict):
+        usage = {}
+    return {
+        "input_tokens": _nested_usage_number(usage, ("input_tokens",)),
+        "cached_input_tokens": _nested_usage_number(
+            usage,
+            ("input_tokens_details", "cached_tokens"),
+            ("input_tokens_details", "cached_input_tokens"),
+            ("cached_input_tokens",),
+        ),
+        "cache_write_tokens": _nested_usage_number(
+            usage,
+            ("input_tokens_details", "cache_write_tokens"),
+            ("input_tokens_details", "cache_write_input_tokens"),
+            ("cache_write_tokens",),
+        ),
+        "output_tokens": _nested_usage_number(usage, ("output_tokens",)),
+        "reasoning_tokens": _nested_usage_number(
+            usage,
+            ("output_tokens_details", "reasoning_tokens"),
+            ("reasoning_tokens",),
+        ),
+        "total_tokens": _nested_usage_number(usage, ("total_tokens",)),
+    }
+
+
+def count_openai_web_search_calls(raw):
+    if not isinstance(raw, dict):
+        return 0
+
+    def is_web_search_item(item):
+        if not isinstance(item, dict):
+            return False
+        for key in ("type", "name", "tool_name"):
+            value = item.get(key)
+            if isinstance(value, str) and "web_search" in value.lower():
+                return True
+        return False
+
+    def walk(value):
+        if isinstance(value, dict):
+            if is_web_search_item(value):
+                return 1
+            return sum(walk(child) for child in value.values())
+        if isinstance(value, list):
+            return sum(walk(child) for child in value)
+        return 0
+
+    return walk(raw.get("output", []))
+
+
+def build_openai_step_telemetry(step_name, raw=None, status="completed", duration_ms=None, retry_count=0, error=None, model=None, reasoning_effort=None):
+    request_model = model or OPENAI_MODEL
+    request_reasoning_effort = normalize_reasoning_effort(reasoning_effort or OPENAI_REASONING_EFFORT)
+    telemetry = {
+        "step_name": step_name,
+        "model": request_model,
+        "reasoning_effort": request_reasoning_effort,
+        "status": status,
+        "duration_ms": duration_ms,
+        "retry_count": retry_count,
+        "web_search_call_count": count_openai_web_search_calls(raw),
+        **extract_openai_usage_telemetry(raw or {}),
+    }
+    if error:
+        telemetry["error"] = str(error)
+    return telemetry
+
+
+def _format_log_value(value):
+    if value is None:
+        return "-"
+    return value
+
+
+def _format_log_duration(duration_ms):
+    if _finite_number_or_none(duration_ms) is None:
+        return "-"
+    return f"{duration_ms / 1000.0:.1f}s"
+
+
+def log_openai_step_completion(step_name, telemetry):
+    logger.info(
+        "Completed AI step=%s model=%s duration=%s input_tokens=%s cached_tokens=%s output_tokens=%s reasoning_tokens=%s web_searches=%s retries=%s",
+        step_name,
+        telemetry.get("model") or "-",
+        _format_log_duration(telemetry.get("duration_ms")),
+        _format_log_value(telemetry.get("input_tokens")),
+        _format_log_value(telemetry.get("cached_input_tokens")),
+        _format_log_value(telemetry.get("output_tokens")),
+        _format_log_value(telemetry.get("reasoning_tokens")),
+        _format_log_value(telemetry.get("web_search_call_count")),
+        _format_log_value(telemetry.get("retry_count")),
+    )
+
+
+def log_openai_step_failure(step_name, telemetry):
+    logger.warning(
+        "Failed AI step=%s model=%s duration=%s retries=%s error=%s",
+        step_name,
+        telemetry.get("model") or "-",
+        _format_log_duration(telemetry.get("duration_ms")),
+        _format_log_value(telemetry.get("retry_count")),
+        telemetry.get("error") or "-",
+    )
+
+
+def request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=1, model=None, reasoning_effort=None):
+    request_model = model or OPENAI_MODEL
     temperature = parse_temperature(OPENAI_TEMPERATURE_RAW)
-    reasoning_effort = normalize_reasoning_effort(OPENAI_REASONING_EFFORT)
-    supports_temperature = model_supports_temperature(OPENAI_MODEL)
+    request_reasoning_effort = normalize_reasoning_effort(reasoning_effort or OPENAI_REASONING_EFFORT)
+    supports_temperature = model_supports_temperature(request_model)
+    started_at = time.monotonic()
 
     logger.info(
         "Starting AI step=%s model=%s temp=%s reasoning=%s",
         step_name,
-        OPENAI_MODEL,
+        request_model,
         f"{temperature:.2f}" if supports_temperature else "omitted",
-        reasoning_effort,
+        request_reasoning_effort,
     )
 
     tool_candidates = list(OPENAI_WEB_SEARCH_TOOL_CANDIDATES)
@@ -3862,10 +4863,11 @@ def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
         body = build_openai_request_body(
             prompt_text,
             json_schema,
-            reasoning_effort,
+            request_reasoning_effort,
             supports_temperature,
             temperature,
             tool_type=tool_type,
+            model=request_model,
         )
         logger.info("OpenAI Analysis request includes web search tool")
         logger.info("OpenAI web search tool type: %s", tool_type)
@@ -3894,8 +4896,17 @@ def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
                 raise RuntimeError(f"AI step {step_name} response did not contain output text")
 
             payload = extract_json_payload(output_text)
-            logger.info("AI step=%s completed", step_name)
-            return payload
+            telemetry = build_openai_step_telemetry(
+                step_name,
+                raw=raw,
+                status="completed",
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+                retry_count=idx,
+                model=request_model,
+                reasoning_effort=request_reasoning_effort,
+            )
+            log_openai_step_completion(step_name, telemetry)
+            return payload, telemetry
         except HTTPError as exc:
             response_text = ""
             try:
@@ -3918,17 +4929,252 @@ def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
 
             if _looks_like_unsupported_web_tool_error(response_text):
                 logger.error("OpenAI web-search tool type appears unsupported: %s", tool_type)
-            raise last_exc from exc
+            telemetry = build_openai_step_telemetry(
+                step_name,
+                status="failed",
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+                retry_count=idx,
+                error=last_exc,
+                model=request_model,
+                reasoning_effort=request_reasoning_effort,
+            )
+            log_openai_step_failure(step_name, telemetry)
+            raise OpenAITelemetryError(str(last_exc), telemetry=telemetry) from exc
         except TimeoutError as exc:
             last_exc = RuntimeError(
                 f"OpenAI request timed out on step {step_name} attempt {attempt} after {request_timeout_seconds:.1f}s"
             )
-            raise last_exc from exc
+            telemetry = build_openai_step_telemetry(
+                step_name,
+                status="failed",
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+                retry_count=idx,
+                error=last_exc,
+                model=request_model,
+                reasoning_effort=request_reasoning_effort,
+            )
+            log_openai_step_failure(step_name, telemetry)
+            raise OpenAITelemetryError(str(last_exc), telemetry=telemetry) from exc
 
     if last_exc:
-        raise last_exc
-    raise RuntimeError(f"OpenAI request failed on step {step_name} for unknown reasons")
+        telemetry = build_openai_step_telemetry(
+            step_name,
+            status="failed",
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+            retry_count=max(0, len(tool_candidates) - 1),
+            error=last_exc,
+            model=request_model,
+            reasoning_effort=request_reasoning_effort,
+        )
+        log_openai_step_failure(step_name, telemetry)
+        raise OpenAITelemetryError(str(last_exc), telemetry=telemetry)
+    message = f"OpenAI request failed on step {step_name} for unknown reasons"
+    telemetry = build_openai_step_telemetry(
+        step_name,
+        status="failed",
+        duration_ms=round((time.monotonic() - started_at) * 1000),
+        retry_count=0,
+        error=message,
+        model=request_model,
+        reasoning_effort=request_reasoning_effort,
+    )
+    log_openai_step_failure(step_name, telemetry)
+    raise OpenAITelemetryError(message, telemetry=telemetry)
 
+
+def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
+    payload, _telemetry = request_ai_step_with_telemetry(step_name, prompt_text, json_schema, attempt=attempt)
+    return payload
+
+
+def resolve_core_evidence_model():
+    return OPENAI_CORE_EVIDENCE_MODEL or OPENAI_MODEL
+
+
+def resolve_core_evidence_reasoning_effort():
+    return normalize_reasoning_effort(OPENAI_CORE_EVIDENCE_REASONING_EFFORT or OPENAI_REASONING_EFFORT)
+
+
+def _string_array_schema():
+    return {"type": "array", "items": {"type": "string"}}
+
+
+def build_core_evidence_schema():
+    return {
+        "name": "core_evidence_pack",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "symbol": {"type": "string"},
+                "as_of": {"type": "string"},
+                "reporting_context": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "latest_reporting_period": {"type": "string"},
+                        "latest_release_date": {"type": "string"},
+                        "material_facts": _string_array_schema(),
+                    },
+                    "required": ["latest_reporting_period", "latest_release_date", "material_facts"],
+                },
+                "guidance_and_outlook": _string_array_schema(),
+                "segment_and_operating_facts": _string_array_schema(),
+                "cash_flow_and_balance_sheet": _string_array_schema(),
+                "capital_structure_and_dilution": _string_array_schema(),
+                "material_recent_developments": _string_array_schema(),
+                "valuation_context": _string_array_schema(),
+                "sources": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "title": {"type": "string"},
+                            "date": {"type": "string"},
+                            "source_type": {"type": "string"},
+                            "url": {"type": "string"},
+                        },
+                        "required": ["title", "date", "source_type", "url"],
+                    },
+                },
+            },
+            "required": [
+                "symbol",
+                "as_of",
+                "reporting_context",
+                "guidance_and_outlook",
+                "segment_and_operating_facts",
+                "cash_flow_and_balance_sheet",
+                "capital_structure_and_dilution",
+                "material_recent_developments",
+                "valuation_context",
+                "sources",
+            ],
+        },
+    }
+
+
+def _require_string(value, field_name):
+    if not isinstance(value, str):
+        raise AnalysisValidationError(f"Core Evidence Pack field {field_name} must be a string")
+    return value
+
+
+def _require_string_list(value, field_name):
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise AnalysisValidationError(f"Core Evidence Pack field {field_name} must be an array of strings")
+    return list(value)
+
+
+def _reject_unexpected_keys(value, allowed_keys, field_name):
+    extras = sorted(set(value.keys()) - set(allowed_keys))
+    if extras:
+        raise AnalysisValidationError(f"Core Evidence Pack field {field_name} has unexpected key(s): {', '.join(extras)}")
+
+
+def validate_core_evidence_pack(payload, symbol):
+    if not isinstance(payload, dict):
+        raise AnalysisValidationError("Core Evidence Pack must be a JSON object")
+    _reject_unexpected_keys(
+        payload,
+        {
+            "symbol",
+            "as_of",
+            "reporting_context",
+            "guidance_and_outlook",
+            "segment_and_operating_facts",
+            "cash_flow_and_balance_sheet",
+            "capital_structure_and_dilution",
+            "material_recent_developments",
+            "valuation_context",
+            "sources",
+        },
+        "root",
+    )
+    normalized = {
+        "symbol": _require_string(payload.get("symbol"), "symbol"),
+        "as_of": _require_string(payload.get("as_of"), "as_of"),
+    }
+    if normalize_symbol(normalized["symbol"]) != normalize_symbol(symbol):
+        raise AnalysisValidationError("Core Evidence Pack symbol does not match requested symbol")
+    reporting = payload.get("reporting_context")
+    if not isinstance(reporting, dict):
+        raise AnalysisValidationError("Core Evidence Pack reporting_context must be an object")
+    _reject_unexpected_keys(
+        reporting,
+        {"latest_reporting_period", "latest_release_date", "material_facts"},
+        "reporting_context",
+    )
+    normalized["reporting_context"] = {
+        "latest_reporting_period": _require_string(reporting.get("latest_reporting_period"), "reporting_context.latest_reporting_period"),
+        "latest_release_date": _require_string(reporting.get("latest_release_date"), "reporting_context.latest_release_date"),
+        "material_facts": _require_string_list(reporting.get("material_facts"), "reporting_context.material_facts"),
+    }
+    normalized["guidance_and_outlook"] = _require_string_list(payload.get("guidance_and_outlook"), "guidance_and_outlook")
+    normalized["segment_and_operating_facts"] = _require_string_list(payload.get("segment_and_operating_facts"), "segment_and_operating_facts")
+    normalized["cash_flow_and_balance_sheet"] = _require_string_list(payload.get("cash_flow_and_balance_sheet"), "cash_flow_and_balance_sheet")
+    normalized["capital_structure_and_dilution"] = _require_string_list(payload.get("capital_structure_and_dilution"), "capital_structure_and_dilution")
+    normalized["material_recent_developments"] = _require_string_list(payload.get("material_recent_developments"), "material_recent_developments")
+    normalized["valuation_context"] = _require_string_list(payload.get("valuation_context"), "valuation_context")
+    sources = payload.get("sources")
+    if not isinstance(sources, list):
+        raise AnalysisValidationError("Core Evidence Pack sources must be an array")
+    normalized_sources = []
+    for idx, source in enumerate(sources):
+        if not isinstance(source, dict):
+            raise AnalysisValidationError(f"Core Evidence Pack sources[{idx}] must be an object")
+        _reject_unexpected_keys(source, {"title", "date", "source_type", "url"}, f"sources[{idx}]")
+        normalized_sources.append(
+            {
+                "title": _require_string(source.get("title"), f"sources[{idx}].title"),
+                "date": _require_string(source.get("date"), f"sources[{idx}].date"),
+                "source_type": _require_string(source.get("source_type"), f"sources[{idx}].source_type"),
+                "url": _require_string(source.get("url"), f"sources[{idx}].url"),
+            }
+        )
+    normalized["sources"] = normalized_sources
+    return normalized
+
+
+def build_core_evidence_prompt(symbol, current_price=None, template=None, company_name="", business_model="", business_summary=""):
+    base_template = template if template is not None else DEFAULT_PROMPT_CORE_EVIDENCE_PACK
+    context = build_prompt_context(
+        symbol=symbol,
+        price=current_price,
+        company_name=company_name,
+        business_model=business_model,
+        business_summary=business_summary,
+    )
+    return render_prompt_template(base_template, context)
+
+
+def generate_core_evidence_pack(symbol, current_price, company_name, business_model, business_summary, template):
+    prompt_text = build_core_evidence_prompt(
+        symbol,
+        current_price,
+        template=template,
+        company_name=company_name,
+        business_model=business_model,
+        business_summary=business_summary,
+    )
+    payload, telemetry = request_ai_step_with_telemetry(
+        "core_evidence_pack",
+        prompt_text,
+        build_core_evidence_schema(),
+        model=resolve_core_evidence_model(),
+        reasoning_effort=resolve_core_evidence_reasoning_effort(),
+    )
+    evidence_pack = validate_core_evidence_pack(payload, symbol)
+    telemetry["status"] = "valid"
+    return {
+        "prompt": prompt_text,
+        "pack": evidence_pack,
+        "generated_at": utc_now_iso(),
+        "model": telemetry.get("model"),
+        "reasoning_effort": telemetry.get("reasoning_effort"),
+        "telemetry": telemetry,
+    }
 
 
 
@@ -4040,9 +5286,10 @@ def request_ai_analysis(symbol, current_price=None):
         conn.close()
 
     logger.info(
-        "Prompt sources business_model=%s key_variables=%s scenarios=%s",
+        "Prompt sources business_model=%s key_variables=%s core_evidence=%s scenarios=%s",
         sources[ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL],
         sources[ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES],
+        sources[ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK],
         sources[ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS],
     )
 
@@ -4138,6 +5385,17 @@ def request_ai_analysis(symbol, current_price=None):
     step2_raw = request_ai_step("key_variables", prompt2, schema_step2)
     step2 = validate_step2_key_variables(step2_raw)
 
+    logger.info("Starting AI step=core_evidence_pack symbol=%s", symbol)
+    scenario_wall_started_at = time.monotonic()
+    core_evidence = generate_core_evidence_pack(
+        symbol=symbol,
+        current_price=effective_price,
+        company_name=company_name,
+        business_model=step1["business_model"],
+        business_summary=step1["business_summary"],
+        template=templates[ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK],
+    )
+
     logger.info("Starting AI step=scenarios symbol=%s", symbol)
     # Scenario prompt must be sourced strictly from saved scenario template +
     # placeholder substitution only. Do not append implicit summary/context text.
@@ -4149,6 +5407,7 @@ def request_ai_analysis(symbol, current_price=None):
         business_model=step1["business_model"],
         business_summary=step1["business_summary"],
         key_variables=step2["key_variables"],
+        core_evidence_pack=core_evidence["pack"],
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
     scenario_parsed, scenario_runs = generate_scenarios_multi_pass(
@@ -4159,6 +5418,7 @@ def request_ai_analysis(symbol, current_price=None):
         outlier_filter_enabled=scenario_settings["scenario_outlier_filter_enabled"],
         current_price=effective_price,
     )
+    scenario_generation_wall_duration_ms = round((time.monotonic() - scenario_wall_started_at) * 1000)
     parsed = validate_step3_scenarios(
         {
             "symbol": symbol,
@@ -4207,6 +5467,13 @@ def request_ai_analysis(symbol, current_price=None):
         "raw": {
             "step1": step1_raw,
             "step2": step2_raw,
+            "core_evidence_prompt": core_evidence["prompt"],
+            "core_evidence_pack": core_evidence["pack"],
+            "core_evidence_generated_at": core_evidence["generated_at"],
+            "core_evidence_model": core_evidence["model"],
+            "core_evidence_reasoning_effort": core_evidence["reasoning_effort"],
+            "core_evidence_telemetry": core_evidence["telemetry"],
+            "scenario_generation_wall_duration_ms": scenario_generation_wall_duration_ms,
             "step3_prompt": prompt3,
             "probability_meta": probability_meta,
             "step3_runs": [
@@ -4218,6 +5485,7 @@ def request_ai_analysis(symbol, current_price=None):
                     "rejection_reason": run.get("rejection_reason"),
                     "quality_score": run.get("quality_score"),
                     "is_outlier": run.get("is_outlier", False),
+                    "telemetry": run.get("telemetry"),
                     "created_at": run["created_at"],
                 }
                 for run in scenario_runs
@@ -4510,8 +5778,9 @@ def aggregate_scenario_runs(runs, symbol, current_price=None):
 def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count, outlier_filter_enabled, current_price=None):
     runs = []
     for idx in range(pass_count):
+        pass_number = idx + 1
         run = {
-            "pass_index": idx + 1,
+            "pass_index": pass_number,
             "raw_response_text": None,
             "parsed_json": None,
             "validation_status": "rejected",
@@ -4519,9 +5788,16 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
             "created_at": utc_now_iso(),
             "quality_score": 0.0,
             "is_outlier": False,
+            "telemetry": None,
         }
+        logger.info("Scenario pass %s/%s starting", pass_number, pass_count)
         try:
-            payload = request_ai_step(f"scenarios_pass_{idx + 1}", prompt_text, _build_scenarios_schema())
+            payload, telemetry = request_ai_step_with_telemetry(
+                f"scenarios_pass_{pass_number}",
+                prompt_text,
+                _build_scenarios_schema(),
+            )
+            telemetry["pass_number"] = pass_number
             run["raw_response_text"] = json.dumps(payload, ensure_ascii=False)
             run["parsed_json"] = payload
             validation = validate_scenario_output(payload, symbol, current_price=current_price)
@@ -4532,8 +5808,42 @@ def generate_scenarios_multi_pass(symbol, key_variables, prompt_text, pass_count
                 run["probability_total_pct"] = sum(s["probability"] for s in validation["parsed"]["scenarios"]) * 100.0
             else:
                 run["rejection_reason"] = validation["reason"]
-        except Exception as exc:
+            telemetry["status"] = run["validation_status"]
+            if run["rejection_reason"]:
+                telemetry["rejection_reason"] = run["rejection_reason"]
+            run["telemetry"] = telemetry
+            logger.info(
+                "Scenario pass %s/%s completed in %s status=%s",
+                pass_number,
+                pass_count,
+                _format_log_duration(telemetry.get("duration_ms")),
+                run["validation_status"],
+            )
+        except OpenAITelemetryError as exc:
+            telemetry = dict(exc.telemetry or {})
+            telemetry["pass_number"] = pass_number
+            telemetry["status"] = "failed"
+            telemetry["rejection_reason"] = f"request_failed:{exc}"
+            run["telemetry"] = telemetry
             run["rejection_reason"] = f"request_failed:{exc}"
+            logger.warning(
+                "Scenario pass %s/%s failed in %s",
+                pass_number,
+                pass_count,
+                _format_log_duration(telemetry.get("duration_ms")),
+            )
+        except Exception as exc:
+            run["telemetry"] = build_openai_step_telemetry(
+                f"scenarios_pass_{pass_number}",
+                status="failed",
+                duration_ms=None,
+                retry_count=0,
+                error=exc,
+            )
+            run["telemetry"]["pass_number"] = pass_number
+            run["telemetry"]["rejection_reason"] = f"request_failed:{exc}"
+            run["rejection_reason"] = f"request_failed:{exc}"
+            logger.warning("Scenario pass %s/%s failed: %s", pass_number, pass_count, exc)
         runs.append(run)
 
     valid_runs = [r for r in runs if r["validation_status"] == "valid"]
@@ -5393,7 +6703,7 @@ def _version_payload(conn, version_row):
     scenario_passes = conn.execute(
         """
         SELECT pass_index, raw_response_text, parsed_json, validation_status,
-               rejection_reason, quality_score, is_outlier, created_at
+               rejection_reason, quality_score, is_outlier, telemetry_json, created_at
         FROM analysis_version_scenario_passes
         WHERE analysis_version_id = ?
         ORDER BY pass_index ASC
@@ -5424,6 +6734,7 @@ def _version_payload(conn, version_row):
                 "rejection_reason": row.get("rejection_reason"),
                 "quality_score": row.get("quality_score"),
                 "is_outlier": 1 if row.get("is_outlier") else 0,
+                "telemetry_json": json.dumps(row.get("telemetry")) if isinstance(row.get("telemetry"), dict) else None,
                 "created_at": row.get("created_at"),
             }
             for row in raw_payload.get("step3_runs", [])
@@ -5446,6 +6757,34 @@ def _version_payload(conn, version_row):
     )
 
     probability_meta = raw_payload.get("probability_meta") if isinstance(raw_payload.get("probability_meta"), dict) else {}
+
+    def parse_json_object_or_none(value):
+        if isinstance(value, dict):
+            return value
+        if not value:
+            return None
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def parse_scenario_pass_telemetry(row):
+        telemetry_json = row["telemetry_json"] if "telemetry_json" in row.keys() else None
+        if not telemetry_json:
+            return None
+        try:
+            telemetry = json.loads(telemetry_json)
+        except Exception:
+            return None
+        return telemetry if isinstance(telemetry, dict) else None
+
+    core_evidence_pack = parse_json_object_or_none(version_row["core_evidence_pack_json"]) or parse_json_object_or_none(raw_payload.get("core_evidence_pack"))
+    core_evidence_telemetry = parse_json_object_or_none(version_row["core_evidence_telemetry_json"]) or parse_json_object_or_none(raw_payload.get("core_evidence_telemetry"))
+    core_evidence_generated_at = version_row["core_evidence_generated_at"] or raw_payload.get("core_evidence_generated_at")
+    core_evidence_model = version_row["core_evidence_model"] or raw_payload.get("core_evidence_model")
+    core_evidence_reasoning_effort = version_row["core_evidence_reasoning_effort"] or raw_payload.get("core_evidence_reasoning_effort")
+    scenario_generation_wall_duration_ms = version_row["scenario_generation_wall_duration_ms"] or raw_payload.get("scenario_generation_wall_duration_ms")
 
     return {
         "id": version_row["id"],
@@ -5471,6 +6810,12 @@ def _version_payload(conn, version_row):
         "created_at": version_row["created_at"],
         "source_trigger": version_row["source_trigger"],
         "scenario_prompt": prompt_text,
+        "core_evidence_pack": core_evidence_pack,
+        "core_evidence_generated_at": core_evidence_generated_at,
+        "core_evidence_model": core_evidence_model,
+        "core_evidence_reasoning_effort": core_evidence_reasoning_effort,
+        "core_evidence_telemetry": core_evidence_telemetry,
+        "scenario_generation_wall_duration_ms": scenario_generation_wall_duration_ms,
         "ai_scenario_probabilities": probability_meta.get("ai_scenario_probabilities"),
         "backend_scenario_probabilities": probability_meta.get("backend_scenario_probabilities"),
         "final_scenario_probabilities": probability_meta.get("final_scenario_probabilities"),
@@ -5487,6 +6832,7 @@ def _version_payload(conn, version_row):
                 "rejection_reason": row["rejection_reason"],
                 "quality_score": row["quality_score"],
                 "is_outlier": bool(row["is_outlier"]),
+                "telemetry": parse_scenario_pass_telemetry(row),
                 "created_at": row["created_at"],
             }
             for row in scenario_passes
@@ -6071,6 +7417,12 @@ def _insert_analysis_version(
     raw_ai_response,
     source_trigger,
     scenario_passes=None,
+    core_evidence_pack=None,
+    core_evidence_generated_at=None,
+    core_evidence_model=None,
+    core_evidence_reasoning_effort=None,
+    core_evidence_telemetry=None,
+    scenario_generation_wall_duration_ms=None,
 ):
     latest = conn.execute(
         "SELECT COALESCE(MAX(version_number), 0) AS latest FROM analysis_versions WHERE analysis_root_id = ?",
@@ -6090,8 +7442,10 @@ def _insert_analysis_version(
         INSERT INTO analysis_versions (
             analysis_root_id, version_number, symbol, company_name, current_price, expected_price,
             expected_cagr, upside, confidence_level, assumptions_text, business_model_text, business_summary_text,
-            raw_ai_response, source_trigger, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            raw_ai_response, core_evidence_pack_json, core_evidence_generated_at, core_evidence_model,
+            core_evidence_reasoning_effort, core_evidence_telemetry_json, scenario_generation_wall_duration_ms,
+            source_trigger, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             root_id,
@@ -6107,6 +7461,12 @@ def _insert_analysis_version(
             business_model,
             business_summary,
             raw_ai_response,
+            json.dumps(core_evidence_pack, ensure_ascii=False) if isinstance(core_evidence_pack, dict) else None,
+            core_evidence_generated_at,
+            core_evidence_model,
+            core_evidence_reasoning_effort,
+            json.dumps(core_evidence_telemetry, ensure_ascii=False) if isinstance(core_evidence_telemetry, dict) else None,
+            scenario_generation_wall_duration_ms,
             source_trigger,
             now,
         ),
@@ -6158,8 +7518,8 @@ def _insert_analysis_version(
             """
             INSERT INTO analysis_version_scenario_passes (
                 analysis_version_id, pass_index, raw_response_text, parsed_json,
-                validation_status, rejection_reason, quality_score, is_outlier, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                validation_status, rejection_reason, quality_score, is_outlier, telemetry_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 version_id,
@@ -6170,6 +7530,9 @@ def _insert_analysis_version(
                 scenario_pass.get("rejection_reason"),
                 scenario_pass.get("quality_score"),
                 1 if scenario_pass.get("is_outlier") else 0,
+                json.dumps(scenario_pass.get("telemetry"), ensure_ascii=False)
+                if isinstance(scenario_pass.get("telemetry"), dict)
+                else None,
                 scenario_pass.get("created_at", now),
             ),
         )
@@ -6215,6 +7578,12 @@ def upsert_analysis(conn, symbol, current_price=None):
             raw_ai_response=json.dumps(ai_result["raw"]),
             source_trigger="initial_generation",
             scenario_passes=ai_result["raw"].get("step3_runs", []),
+            core_evidence_pack=ai_result["raw"].get("core_evidence_pack"),
+            core_evidence_generated_at=ai_result["raw"].get("core_evidence_generated_at"),
+            core_evidence_model=ai_result["raw"].get("core_evidence_model"),
+            core_evidence_reasoning_effort=ai_result["raw"].get("core_evidence_reasoning_effort"),
+            core_evidence_telemetry=ai_result["raw"].get("core_evidence_telemetry"),
+            scenario_generation_wall_duration_ms=ai_result["raw"].get("scenario_generation_wall_duration_ms"),
         )
 
         conn.execute("DELETE FROM analysis_key_variable_edits WHERE analysis_root_id = ?", (root_id,))
@@ -6423,7 +7792,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
 
     templates, _sources = get_prompt_templates_for_keys(
         conn,
-        (ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,),
+        (ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK, ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS),
         purpose="analysis_scenario_rerun_from_saved_edits",
     )
     scenario_settings = get_scenario_generation_config(conn)
@@ -6435,6 +7804,15 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
         effective_business_model = business_model_draft["business_model"]
     if business_summary_draft and int(business_summary_draft["based_on_version_id"]) == int(base_version_id):
         effective_business_summary = business_summary_draft["business_summary"]
+    scenario_wall_started_at = time.monotonic()
+    core_evidence = generate_core_evidence_pack(
+        symbol=symbol,
+        current_price=base_version["current_price"],
+        company_name=base_version["company_name"] or "",
+        business_model=effective_business_model or "",
+        business_summary=effective_business_summary or "",
+        template=templates[ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK],
+    )
     prompt = build_scenario_generation_prompt(
         symbol,
         base_version["current_price"],
@@ -6443,6 +7821,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
         business_model=effective_business_model or "",
         business_summary=effective_business_summary or "",
         key_variables=key_variables,
+        core_evidence_pack=core_evidence["pack"],
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
     scenario_parsed, scenario_runs = generate_scenarios_multi_pass(
@@ -6453,6 +7832,7 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
         outlier_filter_enabled=scenario_settings["scenario_outlier_filter_enabled"],
         current_price=base_version["current_price"],
     )
+    scenario_generation_wall_duration_ms = round((time.monotonic() - scenario_wall_started_at) * 1000)
     parsed = validate_step3_scenarios(
         {
             "symbol": symbol,
@@ -6500,9 +7880,26 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
-            raw_ai_response=json.dumps({"step3_prompt": prompt, "probability_meta": probability_meta, "step3_runs": scenario_runs}),
+            raw_ai_response=json.dumps({
+                "core_evidence_prompt": core_evidence["prompt"],
+                "core_evidence_pack": core_evidence["pack"],
+                "core_evidence_generated_at": core_evidence["generated_at"],
+                "core_evidence_model": core_evidence["model"],
+                "core_evidence_reasoning_effort": core_evidence["reasoning_effort"],
+                "core_evidence_telemetry": core_evidence["telemetry"],
+                "scenario_generation_wall_duration_ms": scenario_generation_wall_duration_ms,
+                "step3_prompt": prompt,
+                "probability_meta": probability_meta,
+                "step3_runs": scenario_runs,
+            }),
             source_trigger="rerun_from_key_variable_edit",
             scenario_passes=scenario_runs,
+            core_evidence_pack=core_evidence["pack"],
+            core_evidence_generated_at=core_evidence["generated_at"],
+            core_evidence_model=core_evidence["model"],
+            core_evidence_reasoning_effort=core_evidence["reasoning_effort"],
+            core_evidence_telemetry=core_evidence["telemetry"],
+            scenario_generation_wall_duration_ms=scenario_generation_wall_duration_ms,
         )
         conn.execute("DELETE FROM analysis_key_variable_edits WHERE analysis_root_id = ?", (root["id"],))
         conn.commit()
@@ -6542,7 +7939,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
 
     templates, _sources = get_prompt_templates_for_keys(
         conn,
-        (ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,),
+        (ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK, ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS),
         purpose="analysis_scenario_rerun_from_existing_version",
     )
     scenario_settings = get_scenario_generation_config(conn)
@@ -6554,6 +7951,15 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
         effective_business_model = business_model_draft["business_model"]
     if business_summary_draft and int(business_summary_draft["based_on_version_id"]) == int(base_version_id):
         effective_business_summary = business_summary_draft["business_summary"]
+    scenario_wall_started_at = time.monotonic()
+    core_evidence = generate_core_evidence_pack(
+        symbol=symbol,
+        current_price=base_version["current_price"],
+        company_name=base_version["company_name"] or "",
+        business_model=effective_business_model or "",
+        business_summary=effective_business_summary or "",
+        template=templates[ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK],
+    )
     prompt = build_scenario_generation_prompt(
         symbol,
         base_version["current_price"],
@@ -6562,6 +7968,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
         business_model=effective_business_model or "",
         business_summary=effective_business_summary or "",
         key_variables=key_variables,
+        core_evidence_pack=core_evidence["pack"],
     )
     pass_count = scenario_settings["scenario_pass_count"] if scenario_settings["scenario_multi_pass_enabled"] else 1
     scenario_parsed, scenario_runs = generate_scenarios_multi_pass(
@@ -6572,6 +7979,7 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
         outlier_filter_enabled=scenario_settings["scenario_outlier_filter_enabled"],
         current_price=base_version["current_price"],
     )
+    scenario_generation_wall_duration_ms = round((time.monotonic() - scenario_wall_started_at) * 1000)
     parsed = validate_step3_scenarios(
         {
             "symbol": symbol,
@@ -6619,9 +8027,26 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
             assumptions=parsed["assumptions"],
             scenarios=parsed["scenarios"],
             key_variables=key_variables,
-            raw_ai_response=json.dumps({"step3_prompt": prompt, "probability_meta": probability_meta, "step3_runs": scenario_runs}),
+            raw_ai_response=json.dumps({
+                "core_evidence_prompt": core_evidence["prompt"],
+                "core_evidence_pack": core_evidence["pack"],
+                "core_evidence_generated_at": core_evidence["generated_at"],
+                "core_evidence_model": core_evidence["model"],
+                "core_evidence_reasoning_effort": core_evidence["reasoning_effort"],
+                "core_evidence_telemetry": core_evidence["telemetry"],
+                "scenario_generation_wall_duration_ms": scenario_generation_wall_duration_ms,
+                "step3_prompt": prompt,
+                "probability_meta": probability_meta,
+                "step3_runs": scenario_runs,
+            }),
             source_trigger="rerun_from_analysis_list",
             scenario_passes=scenario_runs,
+            core_evidence_pack=core_evidence["pack"],
+            core_evidence_generated_at=core_evidence["generated_at"],
+            core_evidence_model=core_evidence["model"],
+            core_evidence_reasoning_effort=core_evidence["reasoning_effort"],
+            core_evidence_telemetry=core_evidence["telemetry"],
+            scenario_generation_wall_duration_ms=scenario_generation_wall_duration_ms,
         )
         conn.commit()
     except Exception:
@@ -12593,10 +14018,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-    )
+    configure_bakingmoney_logging(force=True)
 
     if not STATIC_DIR.exists():
         raise FileNotFoundError("Missing static directory. Expected: ./static")

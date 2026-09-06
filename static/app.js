@@ -113,6 +113,7 @@ const analysisCancelVariablesBtn = document.getElementById('analysis-cancel-vari
 const analysisRerunBtn = document.getElementById('analysis-rerun-btn');
 const analysisScenarioInfoBtn = document.getElementById('analysis-scenario-info-btn');
 const analysisScenarioInfoModal = document.getElementById('analysis-scenario-info-modal');
+const analysisScenarioInfoContent = document.getElementById('analysis-scenario-info-content');
 const analysisScenarioInfoText = document.getElementById('analysis-scenario-info-text');
 const analysisScenarioInfoCloseBtn = document.getElementById('analysis-scenario-info-close-btn');
 
@@ -120,6 +121,7 @@ const promptStatusEl = document.getElementById('prompt-status');
 const promptBusinessModelEl = document.getElementById('prompt-business-model');
 const promptKeyVariablesEl = document.getElementById('prompt-key-variables');
 const promptScenariosEl = document.getElementById('prompt-scenarios');
+const promptCoreEvidencePackEl = document.getElementById('prompt-core-evidence-pack');
 const promptRecentEventCandidatesEl = document.getElementById('prompt-recent-event-candidates');
 const promptRecentEventsEl = document.getElementById('prompt-recent-events');
 const promptEarningsWatchpointsEl = document.getElementById('prompt-earnings-watchpoints');
@@ -3299,6 +3301,162 @@ async function removeExternalScenario(id) {
   }
 }
 
+function isTelemetryNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function formatTelemetryNumber(value) {
+  return isTelemetryNumber(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 0 }) : 'Unavailable';
+}
+
+function formatTelemetryDuration(value) {
+  if (!isTelemetryNumber(value)) return 'Unavailable';
+  if (value < 1000) return `${Math.round(value)} ms`;
+  return `${(value / 1000).toFixed(1)} s`;
+}
+
+function sumTelemetryValues(items, field) {
+  let found = false;
+  const total = items.reduce((acc, telemetry) => {
+    if (!isTelemetryNumber(telemetry?.[field])) return acc;
+    found = true;
+    return acc + telemetry[field];
+  }, 0);
+  return found ? total : null;
+}
+
+function formatTelemetryRatio(cachedTokens, inputTokens) {
+  if (!isTelemetryNumber(cachedTokens) || !isTelemetryNumber(inputTokens) || inputTokens <= 0) return 'Unavailable';
+  return `${((cachedTokens / inputTokens) * 100).toFixed(1)}%`;
+}
+
+function telemetryLinesForItem(telemetry, indent = '- ') {
+  return [
+    `${indent}Model: ${telemetry?.model || 'Unavailable'}`,
+    `${indent}Reasoning effort: ${telemetry?.reasoning_effort || 'Unavailable'}`,
+    `${indent}Status: ${telemetry?.status || 'Unavailable'}`,
+    `${indent}Input tokens: ${formatTelemetryNumber(telemetry?.input_tokens)}`,
+    `${indent}Cached input tokens: ${formatTelemetryNumber(telemetry?.cached_input_tokens)}`,
+    `${indent}Cache write tokens: ${formatTelemetryNumber(telemetry?.cache_write_tokens)}`,
+    `${indent}Output tokens: ${formatTelemetryNumber(telemetry?.output_tokens)}`,
+    `${indent}Reasoning tokens: ${formatTelemetryNumber(telemetry?.reasoning_tokens)}`,
+    `${indent}Total tokens: ${formatTelemetryNumber(telemetry?.total_tokens)}`,
+    `${indent}Web searches: ${formatTelemetryNumber(telemetry?.web_search_call_count)}`,
+    `${indent}Retries: ${formatTelemetryNumber(telemetry?.retry_count)}`,
+    `${indent}Duration: ${formatTelemetryDuration(telemetry?.duration_ms)}`,
+  ];
+}
+
+function buildScenarioTelemetryInfoText(version, passes) {
+  const coreTelemetry = version?.core_evidence_telemetry && typeof version.core_evidence_telemetry === 'object' ? version.core_evidence_telemetry : null;
+  const telemetryItems = (passes || []).map((pass, index) => ({
+    pass,
+    passNumber: pass.pass_index || pass.telemetry?.pass_number || index + 1,
+    telemetry: pass.telemetry && typeof pass.telemetry === 'object' ? pass.telemetry : null,
+  }));
+  if (!coreTelemetry && (!telemetryItems.length || !telemetryItems.some((item) => item.telemetry))) {
+    return '\n\nAPI Usage / Performance:\n- No API usage telemetry available for this version.';
+  }
+
+  const passTelemetryValues = telemetryItems.map((item) => item.telemetry || {});
+  const combinedTelemetryValues = [coreTelemetry, ...passTelemetryValues].filter(Boolean);
+  const models = [...new Set(passTelemetryValues.map((telemetry) => telemetry.model).filter(Boolean))];
+  const reasoningEfforts = [...new Set(passTelemetryValues.map((telemetry) => telemetry.reasoning_effort).filter(Boolean))];
+  const commonModel = models.length === 1 ? models[0] : null;
+  const commonReasoning = reasoningEfforts.length === 1 ? reasoningEfforts[0] : null;
+  const combinedInput = sumTelemetryValues(combinedTelemetryValues, 'input_tokens');
+  const combinedCached = sumTelemetryValues(combinedTelemetryValues, 'cached_input_tokens');
+  const passDurationTotal = sumTelemetryValues(passTelemetryValues, 'duration_ms');
+  const lines = ['\n\nAPI Usage / Performance:', '', 'Core Evidence Research:'];
+
+  if (coreTelemetry) {
+    lines.push(...telemetryLinesForItem(coreTelemetry));
+  } else {
+    lines.push('- Not available for this historical scenario generation');
+  }
+
+  lines.push('', 'Scenario Passes:');
+  if (commonModel) lines.push(`- Model: ${commonModel}`);
+  if (commonReasoning) lines.push(`- Reasoning effort: ${commonReasoning}`);
+  telemetryItems.forEach(({ passNumber, telemetry }) => {
+    lines.push(`  - Pass ${passNumber}:`);
+    if (!telemetry) {
+      lines.push('    - Usage: Unavailable');
+      return;
+    }
+    if (!commonModel) lines.push(`    - Model: ${telemetry.model || 'Unavailable'}`);
+    if (!commonReasoning) lines.push(`    - Reasoning effort: ${telemetry.reasoning_effort || 'Unavailable'}`);
+    lines.push(...telemetryLinesForItem(telemetry, '    - ').filter((line) => !line.includes('Model:') && !line.includes('Reasoning effort:')));
+  });
+  lines.push('', 'Combined Totals:');
+  lines.push(`- Input tokens: ${formatTelemetryNumber(combinedInput)}`);
+  lines.push(`- Cached input tokens: ${formatTelemetryNumber(combinedCached)}`);
+  lines.push(`- Cache hit ratio: ${formatTelemetryRatio(combinedCached, combinedInput)}`);
+  lines.push(`- Cache write tokens: ${formatTelemetryNumber(sumTelemetryValues(combinedTelemetryValues, 'cache_write_tokens'))}`);
+  lines.push(`- Output tokens: ${formatTelemetryNumber(sumTelemetryValues(combinedTelemetryValues, 'output_tokens'))}`);
+  lines.push(`- Reasoning tokens: ${formatTelemetryNumber(sumTelemetryValues(combinedTelemetryValues, 'reasoning_tokens'))}`);
+  lines.push(`- Total tokens: ${formatTelemetryNumber(sumTelemetryValues(combinedTelemetryValues, 'total_tokens'))}`);
+  lines.push(`- Web searches: ${formatTelemetryNumber(sumTelemetryValues(combinedTelemetryValues, 'web_search_call_count'))}`);
+  lines.push(`- Retries: ${formatTelemetryNumber(sumTelemetryValues(combinedTelemetryValues, 'retry_count'))}`);
+  lines.push(`- Core Evidence duration: ${formatTelemetryDuration(coreTelemetry?.duration_ms)}`);
+  lines.push(`- Scenario pass duration sum: ${formatTelemetryDuration(passDurationTotal)}`);
+  lines.push(`- Total scenario-generation wall duration: ${formatTelemetryDuration(version?.scenario_generation_wall_duration_ms)}`);
+  return lines.join('\n');
+}
+
+function buildCoreEvidenceMetadataText(version) {
+  const telemetry = version?.core_evidence_telemetry;
+  if (!version?.core_evidence_pack) {
+    return 'Core Evidence Pack:\n- Not available for this historical scenario generation';
+  }
+  return [
+    'Core Evidence Pack:',
+    `- Generated: ${version.core_evidence_generated_at ? formatDateTime(version.core_evidence_generated_at) : 'Unavailable'}`,
+    `- Model: ${version.core_evidence_model || telemetry?.model || 'Unavailable'}`,
+    `- Reasoning effort: ${version.core_evidence_reasoning_effort || telemetry?.reasoning_effort || 'Unavailable'}`,
+    ...telemetryLinesForItem(telemetry).slice(2),
+  ].join('\n');
+}
+
+function renderStringList(items) {
+  if (!Array.isArray(items) || !items.length) return '<p class="status">No material evidence listed.</p>';
+  return `<ul>${items.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul>`;
+}
+
+function renderCoreEvidenceDetails(version) {
+  const pack = version?.core_evidence_pack;
+  if (!pack || typeof pack !== 'object') return '';
+  const sources = Array.isArray(pack.sources) && pack.sources.length
+    ? `<ul>${pack.sources.map((source) => `<li>${escapeHtml(source.title || 'Source')}${source.date ? ` (${escapeHtml(source.date)})` : ''}${source.source_type ? ` - ${escapeHtml(source.source_type)}` : ''}${source.url ? ` - ${escapeHtml(source.url)}` : ''}</li>`).join('')}</ul>`
+    : '<p class="status">No sources listed.</p>';
+  const reportingFacts = pack.reporting_context?.material_facts || pack.reporting_context?.facts;
+  const legacyGuidanceFacts = pack.guidance?.facts;
+  const legacyFacts = Array.isArray(pack.key_variable_evidence) && pack.key_variable_evidence.length
+    ? `<h4>Legacy evidence</h4>${pack.key_variable_evidence.map((item) => `<h5>${escapeHtml(item.key_variable || 'Key variable')}</h5>${renderStringList(item.facts)}`).join('')}`
+    : '';
+  return `<details class="core-evidence-details"><summary>Show Core Evidence Pack</summary>
+    <h4>Reporting context</h4>
+    <p class="status">Latest reporting period: ${escapeHtml(pack.reporting_context?.latest_reporting_period || 'Unavailable')} | Latest release date: ${escapeHtml(pack.reporting_context?.latest_release_date || 'Unavailable')}</p>
+    ${renderStringList(reportingFacts)}
+    <h4>Guidance and outlook</h4>
+    ${renderStringList(pack.guidance_and_outlook || legacyGuidanceFacts)}
+    <h4>Segment and operating facts</h4>
+    ${renderStringList(pack.segment_and_operating_facts)}
+    <h4>Cash flow and balance sheet</h4>
+    ${renderStringList(pack.cash_flow_and_balance_sheet)}
+    <h4>Capital structure and dilution</h4>
+    ${renderStringList(pack.capital_structure_and_dilution)}
+    <h4>Material recent developments</h4>
+    ${renderStringList(pack.material_recent_developments || pack.other_material_facts)}
+    <h4>Valuation context</h4>
+    ${renderStringList(pack.valuation_context)}
+    <h4>Sources</h4>
+    ${sources}
+    ${legacyFacts}
+    <details><summary>Raw JSON</summary><pre class="config-preview">${escapeHtml(JSON.stringify(pack, null, 2))}</pre></details>
+  </details>`;
+}
+
 function buildExternalScenarioInfoText() {
   const items = getCurrentExternalScenarios();
   if (!items.length) return '\n\nExternal Scenario Overlay:\n- No external scenarios attached to this version.';
@@ -3324,7 +3482,12 @@ function updateAnalysisScenarioInfoText() {
   if (!item) return;
   const passes = item.scenario_passes || [];
   const passLines = passes.map((p) => `Pass ${p.pass_index}: status=${p.validation_status}${p.is_outlier ? ' outlier=true' : ''}${p.rejection_reason ? ` reason=${p.rejection_reason}` : ''}${typeof p.quality_score === 'number' ? ` score=${p.quality_score.toFixed(2)}` : ''}`);
-  analysisScenarioInfoText.textContent = `Prompt used to build scenarios:\n${item.scenario_prompt || 'N/A'}\n\nScenario build passes:\n${passLines.length ? passLines.join('\n') : 'No pass details available.'}${buildExternalScenarioInfoText()}`;
+  const infoText = `Prompt used to build scenarios:\n${item.scenario_prompt || 'Unavailable'}\n\n${buildCoreEvidenceMetadataText(item)}\n\nScenario build passes:\n${passLines.length ? passLines.join('\n') : 'No pass details available.'}${buildScenarioTelemetryInfoText(item, passes)}${buildExternalScenarioInfoText()}`;
+  if (analysisScenarioInfoContent) {
+    analysisScenarioInfoContent.innerHTML = `<pre id="analysis-scenario-info-text" class="config-preview">${escapeHtml(infoText)}</pre>${renderCoreEvidenceDetails(item)}`;
+    return;
+  }
+  analysisScenarioInfoText.textContent = infoText;
 }
 
 
@@ -5462,18 +5625,19 @@ async function loadPromptConfiguration() {
     const templates = payload.templates || {}; const sources = payload.sources || {};
     promptBusinessModelEl.value = templates.analysis_prompt_business_model || '';
     promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || '';
+    promptCoreEvidencePackEl.value = templates.analysis_prompt_core_evidence_pack || '';
     promptScenariosEl.value = templates.analysis_prompt_scenarios || '';
     promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || '';
     promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || '';
     promptEarningsWatchpointsEl.value = templates.earnings_watchpoints || '';
     promptEarningsWatchpointAnalysisEl.value = templates.earnings_watchpoint_analysis || '';
-    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}, recent-event-candidates=${sources.analysis_prompt_recent_event_candidate || 'default'}, recent-events=${sources.analysis_prompt_recent_event_check || 'default'}, earnings-watchpoints=${sources.earnings_watchpoints || 'default'}, earnings-watchpoint-analysis=${sources.earnings_watchpoint_analysis || 'default'}).`;
+    promptStatusEl.textContent = `Loaded prompt templates (business=${sources.analysis_prompt_business_model || 'default'}, key=${sources.analysis_prompt_key_variables || 'default'}, core-evidence=${sources.analysis_prompt_core_evidence_pack || 'default'}, scenarios=${sources.analysis_prompt_scenarios || 'default'}, recent-event-candidates=${sources.analysis_prompt_recent_event_candidate || 'default'}, recent-events=${sources.analysis_prompt_recent_event_check || 'default'}, earnings-watchpoints=${sources.earnings_watchpoints || 'default'}, earnings-watchpoint-analysis=${sources.earnings_watchpoint_analysis || 'default'}).`;
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
 
 async function savePromptConfiguration() {
   promptStatusEl.textContent = 'Saving prompts…'; promptStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_scenarios: promptScenariosEl.value, analysis_prompt_recent_event_candidate: promptRecentEventCandidatesEl.value.trim(), analysis_prompt_recent_event_check: promptRecentEventsEl.value.trim(), earnings_watchpoints: promptEarningsWatchpointsEl.value.trim(), earnings_watchpoint_analysis: promptEarningsWatchpointAnalysisEl.value.trim() } }) });
+  try { const response = await fetch('/api/configuration/prompts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates: { analysis_prompt_business_model: promptBusinessModelEl.value, analysis_prompt_key_variables: promptKeyVariablesEl.value, analysis_prompt_core_evidence_pack: promptCoreEvidencePackEl.value, analysis_prompt_scenarios: promptScenariosEl.value, analysis_prompt_recent_event_candidate: promptRecentEventCandidatesEl.value.trim(), analysis_prompt_recent_event_check: promptRecentEventsEl.value.trim(), earnings_watchpoints: promptEarningsWatchpointsEl.value.trim(), earnings_watchpoint_analysis: promptEarningsWatchpointAnalysisEl.value.trim() } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save prompts')); promptStatusEl.textContent = 'Prompts saved.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -5481,7 +5645,7 @@ async function savePromptConfiguration() {
 async function resetPromptConfiguration() {
   promptStatusEl.textContent = 'Restoring default prompts…'; promptStatusEl.className = 'status';
   try { const response = await fetch('/api/configuration/prompts/reset', { method: 'POST' }); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to reset prompts'));
-    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || ''; promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || ''; promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || ''; promptEarningsWatchpointsEl.value = templates.earnings_watchpoints || ''; promptEarningsWatchpointAnalysisEl.value = templates.earnings_watchpoint_analysis || '';
+    const templates = payload.templates || {}; promptBusinessModelEl.value = templates.analysis_prompt_business_model || ''; promptKeyVariablesEl.value = templates.analysis_prompt_key_variables || ''; promptCoreEvidencePackEl.value = templates.analysis_prompt_core_evidence_pack || ''; promptScenariosEl.value = templates.analysis_prompt_scenarios || ''; promptRecentEventCandidatesEl.value = templates.analysis_prompt_recent_event_candidate || ''; promptRecentEventsEl.value = templates.analysis_prompt_recent_event_check || ''; promptEarningsWatchpointsEl.value = templates.earnings_watchpoints || ''; promptEarningsWatchpointAnalysisEl.value = templates.earnings_watchpoint_analysis || '';
     promptStatusEl.textContent = 'Default prompts restored.';
   } catch (error) { promptStatusEl.textContent = `Error: ${error.message}`; promptStatusEl.className = 'status error'; }
 }
@@ -5499,6 +5663,9 @@ ${rendered.analysis_prompt_business_model || ''}
 
 [Key Variables Prompt]
 ${rendered.analysis_prompt_key_variables || ''}
+
+[Core Evidence Pack Prompt]
+${rendered.analysis_prompt_core_evidence_pack || ''}
 
 [Scenarios Prompt]
 ${rendered.analysis_prompt_scenarios || ''}

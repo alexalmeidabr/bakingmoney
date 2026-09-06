@@ -177,6 +177,7 @@ class LinearActionPlanDetailTests(unittest.TestCase):
         self.assertFalse(target["cap_applied"])
         self.assertEqual(target["cap_reason"], "—")
         self.assertEqual(score["linear_score"], row["linear_allocation_score"])
+        self.assertEqual(score["final_linear_score"], row["linear_allocation_score"])
         self.assertEqual(score["upside_score"], row["linear_upside_score"])
         self.assertEqual(score["weights_used"], row["linear_weights_used"])
         self.assertIn("whole_share_minimum", detail["guardrails"])

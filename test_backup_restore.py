@@ -68,6 +68,45 @@ class BackupRestoreValidationTests(unittest.TestCase):
         self.assertTrue(manifest["includes_env"])
         self.assertIn("schema_version", manifest)
 
+    def test_initialized_database_includes_frontier_optionality_for_backup_export(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "frontier.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+            conn = web_server.sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='analysis_frontier_optionality'"
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(row)
+
+    def test_older_backup_without_frontier_optionality_table_can_be_migrated(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "older-backup.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+            conn = web_server.sqlite3.connect(db_path)
+            try:
+                conn.execute("DROP TABLE analysis_frontier_optionality")
+                conn.commit()
+            finally:
+                conn.close()
+
+            web_server._validate_backup_db_file(db_path)
+
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+            conn = web_server.sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='analysis_frontier_optionality'"
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(row)
+
 
 if __name__ == "__main__":
     unittest.main()

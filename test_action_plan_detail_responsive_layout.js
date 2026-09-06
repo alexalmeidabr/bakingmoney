@@ -3,8 +3,8 @@ const fs = require('node:fs');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const stylesCss = fs.readFileSync('static/styles.css', 'utf8');
-const appJs = fs.readFileSync('static/app.js', 'utf8');
+const stylesCss = fs.readFileSync('static/styles.css', 'utf8').replace(/\r\n/g, '\n');
+const appJs = fs.readFileSync('static/app.js', 'utf8').replace(/\r\n/g, '\n');
 
 function cssBlock(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -35,10 +35,22 @@ function renderedFullDetailSection(title) {
 function renderedMetricRows(title) {
   const section = renderedDetailSection(title);
   const rows = [];
-  const rowPattern = /\n\s*(\[\[[\s\S]*?\]\]|\[\n[\s\S]*?\n\s*\])/g;
-  let match;
-  while ((match = rowPattern.exec(section)) !== null) {
-    const labels = [...match[1].matchAll(/\['([^']+)'/g)].map((labelMatch) => labelMatch[1]);
+  let current = '';
+  let depth = 0;
+  for (const line of section.split('\n')) {
+    if (!current && !/^\s*\[/.test(line)) continue;
+    current += `${line}\n`;
+    depth += (line.match(/\[/g) || []).length;
+    depth -= (line.match(/\]/g) || []).length;
+    if (current && depth <= 0) {
+      const labels = [...current.matchAll(/\['([^']+)'/g)].map((labelMatch) => labelMatch[1]);
+      if (labels.length) rows.push(labels);
+      current = '';
+      depth = 0;
+    }
+  }
+  if (current) {
+    const labels = [...current.matchAll(/\['([^']+)'/g)].map((labelMatch) => labelMatch[1]);
     if (labels.length) rows.push(labels);
   }
   return rows;
@@ -71,8 +83,9 @@ function linearAdjustmentFormatters() {
   return vm.runInNewContext(`
     ${appFunctionSource('formatLinearPenaltyApplied')}
     ${appFunctionSource('formatLinearBonusApplied')}
+    ${appFunctionSource('formatFrontierOptionalityApplied')}
     ${appFunctionSource('formatActionDetailWeight')}
-    ({ formatLinearPenaltyApplied, formatLinearBonusApplied, formatActionDetailWeight });
+    ({ formatLinearPenaltyApplied, formatLinearBonusApplied, formatFrontierOptionalityApplied, formatActionDetailWeight });
   `, context);
 }
 
@@ -110,6 +123,39 @@ test('Action Plan Detail containers can shrink inside the app shell', () => {
   assert.match(cssBlock('#action-plan-detail-view .detail-card'), /min-width:\s*0/);
   assert.match(cssBlock('#action-plan'), /overflow-x:\s*hidden/);
   assert.match(cssBlock('#action-plan-detail-view,\n#action-plan-detail-content'), /min-width:\s*0/);
+});
+
+test('Company Detail renders Frontier Score as autosaving select only', () => {
+  const optionsMatch = appJs.match(/const FRONTIER_SCORE_OPTIONS = \[([^\]]+)\];/);
+  assert.ok(optionsMatch, 'Expected Frontier Score options constant');
+  assert.deepEqual(
+    optionsMatch[1].split(',').map((value) => value.trim()),
+    ['0', '0.5', '1', '1.5', '2', '2.5', '3', '3.5', '4', '4.5', '5'],
+  );
+
+  const renderer = appFunctionSource('renderFrontierOptionalitySection');
+  assert.ok(renderer.includes('Frontier Score'));
+  assert.ok(renderer.includes('frontier-score-field'));
+  assert.ok(renderer.includes('<select id="analysis-frontier-score-select" class="earnings-calendar-select">'));
+  assert.ok(renderer.includes('renderFrontierScoreOptions(frontier.score)'));
+  assert.ok(!renderer.includes('Frontier Optionality Score'));
+  assert.ok(!renderer.includes('Frontier Optionality Notes'));
+  assert.ok(!renderer.includes('Edit Frontier Optionality'));
+  assert.ok(!renderer.includes('textarea'));
+  assert.ok(!renderer.includes('type="number"'));
+
+  const save = appFunctionSource('saveFrontierScore');
+  assert.ok(save.includes('JSON.stringify({ frontier_optionality_score: score })'));
+  assert.ok(!save.includes('frontier_optionality_notes'));
+  assert.ok(appJs.includes("analysisSummary.addEventListener('change'"));
+  assert.ok(appJs.includes("target.id === 'analysis-frontier-score-select'"));
+  assert.ok(appJs.includes('saveFrontierScore(target.value)'));
+
+  const field = cssBlock('.frontier-score-field');
+  assert.match(field, /align-items:\s*start/);
+  assert.match(field, /max-width:\s*220px/);
+  const compactSelect = cssBlock('.earnings-calendar-date-input,\n.earnings-calendar-select');
+  assert.match(compactSelect, /height:\s*36px/);
 });
 
 test('modern Linear Action Plan Detail sections keep responsive metric cards', () => {
@@ -344,6 +390,11 @@ test('Linear Target Calculation renders score inputs in order with Linear Score 
     'Penalty Applied',
     'Rating Bonus Factor',
     'Bonus Applied',
+    'Frontier Score',
+    'Frontier Boost Factor',
+    'Frontier Boost Applied',
+    'Linear Score Before Frontier Boost',
+    'Linear Score After Boost',
   ]);
 });
 
@@ -363,6 +414,8 @@ test('Linear Target Calculation renders score cards in requested logical rows', 
     ['Confidence Quality Weight', 'Confidence Quality Score'],
     ['Penalty Factor', 'Penalty Applied'],
     ['Rating Bonus Factor', 'Bonus Applied'],
+    ['Frontier Score', 'Frontier Boost Factor', 'Frontier Boost Applied'],
+    ['Linear Score Before Frontier Boost', 'Linear Score After Boost'],
   ]);
 });
 
@@ -387,6 +440,14 @@ test('Linear Target Calculation sources backend Linear score diagnostics', () =>
   assert.ok(section.includes("['Penalty Applied', formatLinearPenaltyApplied(score)]"));
   assert.ok(section.includes("['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)]"));
   assert.ok(section.includes("['Bonus Applied', formatLinearBonusApplied(score)]"));
+  assert.ok(section.includes("['Frontier Score', `${formatActionDetailNumber(score.frontier_optionality_score)} / 5`]"));
+  assert.ok(section.includes("['Frontier Boost Factor', formatActionDetailNumber(score.frontier_optionality_boost_factor)]"));
+  assert.ok(section.includes("['Frontier Boost Applied', formatFrontierOptionalityApplied(score)]"));
+  assert.ok(section.includes("['Linear Score Before Frontier Boost', formatActionDetailNumber(score.linear_score_before_frontier_boost)]"));
+  assert.ok(section.includes("['Linear Score After Boost', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)]"));
+  assert.ok(!section.includes('Frontier Boost Reason'));
+  assert.ok(!section.includes('Frontier Optionality Reason'));
+  assert.ok(!section.includes('Frontier Optionality Applied Reason'));
 });
 
 test('Action Detail omits Decision Path and Action-Relevant Key Variables sections', () => {
@@ -411,6 +472,7 @@ test('Linear Target Calculation places adjustment reason cards after their facto
   const labels = renderedDetailSectionLabels('Linear Target Calculation');
   assert.equal(labels[labels.indexOf('Penalty Factor') + 1], 'Penalty Applied');
   assert.equal(labels[labels.indexOf('Rating Bonus Factor') + 1], 'Bonus Applied');
+  assert.equal(labels[labels.indexOf('Rating Bonus Factor') + 2], 'Frontier Score');
 });
 
 test('Linear Target Calculation groups each score component as weight input score', () => {
@@ -428,7 +490,7 @@ test('Linear Target Calculation groups each score component as weight input scor
 });
 
 test('Linear adjustment reason formatters render readable penalty and bonus text', () => {
-  const { formatLinearPenaltyApplied, formatLinearBonusApplied, formatActionDetailWeight } = linearAdjustmentFormatters();
+  const { formatLinearPenaltyApplied, formatLinearBonusApplied, formatFrontierOptionalityApplied, formatActionDetailWeight } = linearAdjustmentFormatters();
   assert.equal(formatLinearPenaltyApplied({ penalties_applied: [], penalty_factor: 1 }), 'None');
   assert.equal(
     formatLinearPenaltyApplied({
@@ -451,6 +513,9 @@ test('Linear adjustment reason formatters render readable penalty and bonus text
   assert.equal(formatLinearBonusApplied({ rating_bonus_reason: 'Buy rating bonus', rating_bonus_factor: 1.01 }), 'Buy rating bonus');
   assert.equal(formatLinearBonusApplied({ rating_bonus_reason: 'Strong Buy rating bonus', rating_bonus_factor: 1.02 }), 'Strong Buy rating bonus');
   assert.equal(formatLinearBonusApplied({ rating_bonus_factor: 1 }), 'No rating bonus');
+  assert.equal(formatFrontierOptionalityApplied({ frontier_optionality_applied: true }), 'Yes');
+  assert.equal(formatFrontierOptionalityApplied({ frontier_optionality_applied: false, frontier_optionality_applied_reason: 'Sell rating' }), 'No — Sell rating');
+  assert.equal(formatFrontierOptionalityApplied({ frontier_optionality_applied: false }), 'No');
   assert.equal(formatActionDetailWeight(0.25), '25.00%');
   assert.equal(formatActionDetailWeight(0.2), '20.00%');
   assert.equal(formatActionDetailWeight(null), '—');
@@ -470,6 +535,7 @@ test('Linear Target Calculation explanation appears below cards and describes cu
     'Confidence Quality',
     'Penalty Factor',
     'Rating Bonus Factor',
+    'Frontier Score',
     'stock-specific caps',
     'Dynamic Reserve',
     'band tolerances',

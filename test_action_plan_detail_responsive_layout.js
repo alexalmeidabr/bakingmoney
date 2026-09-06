@@ -135,7 +135,8 @@ test('Company Detail renders Frontier Score as autosaving select only', () => {
 
   const renderer = appFunctionSource('renderFrontierOptionalitySection');
   assert.ok(renderer.includes('Frontier Score'));
-  assert.ok(renderer.includes('<select id="analysis-frontier-score-select">'));
+  assert.ok(renderer.includes('frontier-score-field'));
+  assert.ok(renderer.includes('<select id="analysis-frontier-score-select" class="earnings-calendar-select">'));
   assert.ok(renderer.includes('renderFrontierScoreOptions(frontier.score)'));
   assert.ok(!renderer.includes('Frontier Optionality Score'));
   assert.ok(!renderer.includes('Frontier Optionality Notes'));
@@ -149,6 +150,12 @@ test('Company Detail renders Frontier Score as autosaving select only', () => {
   assert.ok(appJs.includes("analysisSummary.addEventListener('change'"));
   assert.ok(appJs.includes("target.id === 'analysis-frontier-score-select'"));
   assert.ok(appJs.includes('saveFrontierScore(target.value)'));
+
+  const field = cssBlock('.frontier-score-field');
+  assert.match(field, /align-items:\s*start/);
+  assert.match(field, /max-width:\s*220px/);
+  const compactSelect = cssBlock('.earnings-calendar-date-input,\n.earnings-calendar-select');
+  assert.match(compactSelect, /height:\s*36px/);
 });
 
 test('modern Linear Action Plan Detail sections keep responsive metric cards', () => {

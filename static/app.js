@@ -3803,7 +3803,7 @@ function renderFrontierScoreOptions(selectedScore) {
 
 function renderFrontierOptionalitySection() {
   const frontier = getCurrentFrontierOptionality();
-  return `<div class="business-model-editor"><label for="analysis-frontier-score-select"><strong>Frontier Score</strong></label><select id="analysis-frontier-score-select">${renderFrontierScoreOptions(frontier.score)}</select></div>`;
+  return `<div class="business-model-editor frontier-score-field"><label for="analysis-frontier-score-select"><strong>Frontier Score</strong></label><select id="analysis-frontier-score-select" class="earnings-calendar-select">${renderFrontierScoreOptions(frontier.score)}</select></div>`;
 }
 
 async function saveFrontierScore(rawScore) {

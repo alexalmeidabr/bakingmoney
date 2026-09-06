@@ -553,6 +553,15 @@ th.sortable[data-sort-direction='desc']::after {
   min-width: 170px;
 }
 
+.frontier-score-field {
+  align-items: start;
+  max-width: 220px;
+}
+
+.frontier-score-field label {
+  color: var(--muted);
+}
+
 .analysis-business-model-input {
   width: 100%;
   border: 1px solid var(--border);

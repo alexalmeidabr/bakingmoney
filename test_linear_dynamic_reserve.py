@@ -220,6 +220,44 @@ class LinearFrontierOptionalityTests(unittest.TestCase):
         self.assertFalse(row["frontier_optionality_applied"])
         self.assertAlmostEqual(row["linear_score_before_frontier_boost"], row["linear_allocation_score"])
 
+    def test_linear_score_diagnostics_track_penalty_bonus_and_threshold_sequence(self):
+        row = self._row(
+            linear_candidate(frontier_optionality_score=0.0),
+            frontier_settings(
+                core_confidence_penalty_threshold=3.0,
+                core_confidence_penalty=0.20,
+                upside_penalty_threshold=0.0,
+                potential_confidence_penalty_threshold=-10.0,
+                linear_rating_bonus_enabled=True,
+                linear_buy_rating_bonus=0.05,
+                linear_min_score_threshold=0.0,
+            ),
+        )
+
+        self.assertEqual(row["linear_penalty_factor"], 0.80)
+        self.assertEqual(row["linear_rating_bonus_factor"], 1.05)
+        self.assertAlmostEqual(row["linear_score_after_penalty"], row["linear_score_before_penalty"] * 0.80)
+        self.assertAlmostEqual(row["linear_score_before_min_threshold"], row["linear_score_after_penalty"] * 1.05)
+        self.assertEqual(row["linear_min_score_threshold"], 0.0)
+        self.assertFalse(row["linear_min_score_threshold_applied"])
+        self.assertIsNone(row["linear_min_score_threshold_reason"])
+        self.assertAlmostEqual(row["linear_score_before_frontier_boost"], row["linear_score_before_min_threshold"])
+        self.assertAlmostEqual(row["linear_allocation_score"], row["linear_score_before_min_threshold"])
+
+    def test_minimum_score_threshold_diagnostics_explain_zeroed_score(self):
+        row = self._row(
+            linear_candidate(frontier_optionality_score=5.0),
+            frontier_settings(linear_min_score_threshold=2.0),
+        )
+
+        self.assertGreater(row["linear_score_before_min_threshold"], 0.0)
+        self.assertLess(row["linear_score_before_min_threshold"], row["linear_min_score_threshold"])
+        self.assertTrue(row["linear_min_score_threshold_applied"])
+        self.assertEqual(row["linear_min_score_threshold_reason"], "Score below configured minimum threshold")
+        self.assertEqual(row["linear_score_before_frontier_boost"], 0.0)
+        self.assertEqual(row["linear_allocation_score"], 0.0)
+        self.assertFalse(row["frontier_optionality_applied"])
+
     def test_frontier_optionality_factor_scales_with_score(self):
         full = self._row(linear_candidate(frontier_optionality_score=5.0, expected_cagr=10.0, upside=40.0))
         half = self._row(linear_candidate(frontier_optionality_score=2.5, expected_cagr=10.0, upside=40.0))

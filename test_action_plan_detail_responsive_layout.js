@@ -84,8 +84,9 @@ function linearAdjustmentFormatters() {
     ${appFunctionSource('formatLinearPenaltyApplied')}
     ${appFunctionSource('formatLinearBonusApplied')}
     ${appFunctionSource('formatFrontierOptionalityApplied')}
+    ${appFunctionSource('formatLinearThresholdApplied')}
     ${appFunctionSource('formatActionDetailWeight')}
-    ({ formatLinearPenaltyApplied, formatLinearBonusApplied, formatFrontierOptionalityApplied, formatActionDetailWeight });
+    ({ formatLinearPenaltyApplied, formatLinearBonusApplied, formatFrontierOptionalityApplied, formatLinearThresholdApplied, formatActionDetailWeight });
   `, context);
 }
 
@@ -388,8 +389,13 @@ test('Linear Target Calculation renders score inputs in order with Linear Score 
     'Confidence Quality Score',
     'Penalty Factor',
     'Penalty Applied',
+    'Linear Score Before Penalty',
+    'Linear Score After Penalty',
     'Rating Bonus Factor',
     'Bonus Applied',
+    'Linear Score Before Min Threshold',
+    'Minimum Score Threshold',
+    'Minimum Threshold Applied',
     'Frontier Score',
     'Frontier Boost Factor',
     'Frontier Boost Applied',
@@ -413,7 +419,9 @@ test('Linear Target Calculation renders score cards in requested logical rows', 
     ['Potential Confidence Weight', 'Potential Confidence Net', 'Potential Confidence Score'],
     ['Confidence Quality Weight', 'Confidence Quality Score'],
     ['Penalty Factor', 'Penalty Applied'],
+    ['Linear Score Before Penalty', 'Linear Score After Penalty'],
     ['Rating Bonus Factor', 'Bonus Applied'],
+    ['Linear Score Before Min Threshold', 'Minimum Score Threshold', 'Minimum Threshold Applied'],
     ['Frontier Score', 'Frontier Boost Factor', 'Frontier Boost Applied'],
     ['Linear Score Before Frontier Boost', 'Linear Score After Boost'],
   ]);
@@ -438,8 +446,13 @@ test('Linear Target Calculation sources backend Linear score diagnostics', () =>
   assert.ok(section.includes("['Confidence Quality Score', formatActionDetailNumber(score.confidence_quality_score)]"));
   assert.ok(section.includes("['Penalty Factor', formatActionDetailNumber(score.penalty_factor)]"));
   assert.ok(section.includes("['Penalty Applied', formatLinearPenaltyApplied(score)]"));
+  assert.ok(section.includes("['Linear Score Before Penalty', formatActionDetailNumber(score.linear_score_before_penalty)]"));
+  assert.ok(section.includes("['Linear Score After Penalty', formatActionDetailNumber(score.linear_score_after_penalty)]"));
   assert.ok(section.includes("['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)]"));
   assert.ok(section.includes("['Bonus Applied', formatLinearBonusApplied(score)]"));
+  assert.ok(section.includes("['Linear Score Before Min Threshold', formatActionDetailNumber(score.linear_score_before_min_threshold)]"));
+  assert.ok(section.includes("['Minimum Score Threshold', formatActionDetailNumber(score.linear_min_score_threshold)]"));
+  assert.ok(section.includes("['Minimum Threshold Applied', formatLinearThresholdApplied(score)]"));
   assert.ok(section.includes("['Frontier Score', `${formatActionDetailNumber(score.frontier_optionality_score)} / 5`]"));
   assert.ok(section.includes("['Frontier Boost Factor', formatActionDetailNumber(score.frontier_optionality_boost_factor)]"));
   assert.ok(section.includes("['Frontier Boost Applied', formatFrontierOptionalityApplied(score)]"));
@@ -471,8 +484,10 @@ test('Action Detail omits Decision Path and Action-Relevant Key Variables sectio
 test('Linear Target Calculation places adjustment reason cards after their factors', () => {
   const labels = renderedDetailSectionLabels('Linear Target Calculation');
   assert.equal(labels[labels.indexOf('Penalty Factor') + 1], 'Penalty Applied');
+  assert.equal(labels[labels.indexOf('Penalty Applied') + 1], 'Linear Score Before Penalty');
   assert.equal(labels[labels.indexOf('Rating Bonus Factor') + 1], 'Bonus Applied');
-  assert.equal(labels[labels.indexOf('Rating Bonus Factor') + 2], 'Frontier Score');
+  assert.equal(labels[labels.indexOf('Bonus Applied') + 1], 'Linear Score Before Min Threshold');
+  assert.equal(labels[labels.indexOf('Minimum Threshold Applied') + 1], 'Frontier Score');
 });
 
 test('Linear Target Calculation groups each score component as weight input score', () => {
@@ -489,8 +504,8 @@ test('Linear Target Calculation groups each score component as weight input scor
   before('Confidence Quality Weight', 'Confidence Quality Score');
 });
 
-test('Linear adjustment reason formatters render readable penalty and bonus text', () => {
-  const { formatLinearPenaltyApplied, formatLinearBonusApplied, formatFrontierOptionalityApplied, formatActionDetailWeight } = linearAdjustmentFormatters();
+test('Linear adjustment reason formatters render readable penalty, bonus, and threshold text', () => {
+  const { formatLinearPenaltyApplied, formatLinearBonusApplied, formatFrontierOptionalityApplied, formatLinearThresholdApplied, formatActionDetailWeight } = linearAdjustmentFormatters();
   assert.equal(formatLinearPenaltyApplied({ penalties_applied: [], penalty_factor: 1 }), 'None');
   assert.equal(
     formatLinearPenaltyApplied({
@@ -516,6 +531,9 @@ test('Linear adjustment reason formatters render readable penalty and bonus text
   assert.equal(formatFrontierOptionalityApplied({ frontier_optionality_applied: true }), 'Yes');
   assert.equal(formatFrontierOptionalityApplied({ frontier_optionality_applied: false, frontier_optionality_applied_reason: 'Sell rating' }), 'No — Sell rating');
   assert.equal(formatFrontierOptionalityApplied({ frontier_optionality_applied: false }), 'No');
+  assert.equal(formatLinearThresholdApplied({ linear_min_score_threshold_applied: true }), 'Yes');
+  assert.equal(formatLinearThresholdApplied({ linear_min_score_threshold_applied: false }), 'No');
+  assert.equal(formatLinearThresholdApplied({}), '—');
   assert.equal(formatActionDetailWeight(0.25), '25.00%');
   assert.equal(formatActionDetailWeight(0.2), '20.00%');
   assert.equal(formatActionDetailWeight(null), '—');
@@ -535,10 +553,12 @@ test('Linear Target Calculation explanation appears below cards and describes cu
     'Confidence Quality',
     'Penalty Factor',
     'Rating Bonus Factor',
+    'Minimum Score Threshold',
+    'zero-target guardrails',
     'Frontier Score',
-    'stock-specific caps',
+    'caps',
     'Dynamic Reserve',
-    'band tolerances',
+    'target-band tolerances',
   ]) {
     assert.ok(section.includes(text), `Expected Linear Target explanation to mention ${text}`);
   }

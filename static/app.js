@@ -2128,6 +2128,12 @@ function formatFrontierOptionalityApplied(score) {
   return reason ? `No — ${escapeHtml(reason)}` : 'No';
 }
 
+function formatLinearThresholdApplied(score) {
+  if (score?.linear_min_score_threshold_applied === true) return 'Yes';
+  if (score?.linear_min_score_threshold_applied === false) return 'No';
+  return '—';
+}
+
 function getLinearTargetMarketValue(item) {
   const total = item?.portfolio_value_used ?? item?.total_portfolio_value;
   const targetMid = item?.target_weight_mid;
@@ -2222,8 +2228,17 @@ function renderActionPlanDetail(item) {
         ['Penalty Applied', formatLinearPenaltyApplied(score)],
       ],
       [
+        ['Linear Score Before Penalty', formatActionDetailNumber(score.linear_score_before_penalty)],
+        ['Linear Score After Penalty', formatActionDetailNumber(score.linear_score_after_penalty)],
+      ],
+      [
         ['Rating Bonus Factor', formatActionDetailNumber(score.rating_bonus_factor)],
         ['Bonus Applied', formatLinearBonusApplied(score)],
+      ],
+      [
+        ['Linear Score Before Min Threshold', formatActionDetailNumber(score.linear_score_before_min_threshold)],
+        ['Minimum Score Threshold', formatActionDetailNumber(score.linear_min_score_threshold)],
+        ['Minimum Threshold Applied', formatLinearThresholdApplied(score)],
       ],
       [
         ['Frontier Score', `${formatActionDetailNumber(score.frontier_optionality_score)} / 5`],
@@ -2234,7 +2249,7 @@ function renderActionPlanDetail(item) {
         ['Linear Score Before Frontier Boost', formatActionDetailNumber(score.linear_score_before_frontier_boost)],
         ['Linear Score After Boost', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)],
       ],
-    ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into component scores using the configured Linear ranges and weights. Penalty Factor and Rating Bonus Factor then adjust the score. If a company has a manually assigned Frontier Score, BakingMoney may apply a small capped boost before target allocation, unless a guardrail blocks it. The resulting Linear Score is then used to calculate target allocation, subject to stock-specific caps, Dynamic Reserve, and target band tolerances.</p></div></section>
+    ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into component scores using the configured Linear ranges and weights. The weighted score is then adjusted by Penalty Factor and Rating Bonus Factor. Before Frontier Boost is applied, the score is checked against the configured Minimum Score Threshold and may be set to zero if it is too low, or if zero-target guardrails such as negative expected CAGR or negative upside apply. If a company has a manually assigned Frontier Score, BakingMoney may then apply a small capped boost unless a guardrail blocks it. The resulting Linear Score is used for target allocation, subject to caps, Dynamic Reserve, and target-band tolerances.</p></div></section>
     <section class="detail-card"><h4>Target Band Calculation</h4>${renderActionPlanMetricList([
       ['Current Position Weight', formatActionDetailPercent(item.current_position_weight)],
       ['Target Low', formatActionDetailPercent(item.target_weight_low)],

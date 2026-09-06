@@ -402,6 +402,24 @@ th.sortable[data-sort-direction='desc']::after {
   background: #fff;
 }
 
+.scenario-info-content details {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 12px;
+  background: #fcfcfd;
+}
+
+.scenario-info-content summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.scenario-info-content h4,
+.scenario-info-content h5 {
+  margin-bottom: 6px;
+}
+
 .config-actions {
   margin-top: 10px;
 }

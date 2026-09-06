@@ -73,7 +73,8 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
         templates = {
             web_server.ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL: "BM prompt for $Symbol",
             web_server.ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES: "KV prompt $BusinessModel",
-            web_server.ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS: "Scenario prompt\nSymbol:$Symbol\nBusiness:$BusinessModel\nVars:$KeyVariables",
+            web_server.ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK: "Evidence prompt $Symbol $BusinessModel $KeyVariables",
+            web_server.ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS: "Scenario prompt\nSymbol:$Symbol\nBusiness:$BusinessModel\nVars:$KeyVariables\nEvidence:$CoreEvidencePack",
         }
         sources = {k: "saved" for k in templates.keys()}
         key_variables = [
@@ -125,6 +126,16 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
                 ],
             )
 
+        def fake_generate_core_evidence_pack(**_kwargs):
+            return {
+                "prompt": "Evidence prompt rendered",
+                "pack": {"symbol": "NBIS", "as_of": "2026-01-01", "reporting_context": {"latest_reporting_period": "", "latest_release_date": "", "facts": []}, "guidance": {"facts": []}, "key_variable_evidence": [], "other_material_facts": [], "valuation_context": [], "sources": []},
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "model": "gpt-5-mini",
+                "reasoning_effort": "medium",
+                "telemetry": {"model": "gpt-5-mini", "reasoning_effort": "medium", "status": "valid"},
+            }
+
         class DummyConn:
             def close(self):
                 return None
@@ -134,6 +145,7 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
              mock.patch.object(web_server, "get_prompt_templates_for_keys", return_value=(templates, sources)), \
              mock.patch.object(web_server, "get_scenario_generation_config", return_value={"scenario_multi_pass_enabled": False, "scenario_pass_count": 1, "scenario_outlier_filter_enabled": True}), \
              mock.patch.object(web_server, "request_ai_step", side_effect=fake_request_ai_step), \
+             mock.patch.object(web_server, "generate_core_evidence_pack", side_effect=fake_generate_core_evidence_pack), \
              mock.patch.object(web_server, "generate_scenarios_multi_pass", side_effect=fake_generate_scenarios_multi_pass), \
              mock.patch.object(web_server, "validate_step3_scenarios", side_effect=lambda payload, symbol, kv: {
                  "symbol": symbol,
@@ -161,6 +173,7 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
             business_model="Core business model",
             business_summary="This summary must not be auto-injected",
             key_variables=result["key_variables"],
+            core_evidence_pack=result["raw"]["core_evidence_pack"],
         )
 
         self.assertEqual(expected_prompt, captured["prompt_text"])
@@ -222,8 +235,19 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
                         [],
                     )
 
+                def fake_generate_core_evidence_pack(**_kwargs):
+                    return {
+                        "prompt": "Evidence prompt rendered",
+                        "pack": {"symbol": "NBIS", "as_of": "2026-01-01", "reporting_context": {"latest_reporting_period": "", "latest_release_date": "", "facts": []}, "guidance": {"facts": []}, "key_variable_evidence": [], "other_material_facts": [], "valuation_context": [], "sources": []},
+                        "generated_at": "2026-01-01T00:00:00+00:00",
+                        "model": "gpt-5-mini",
+                        "reasoning_effort": "medium",
+                        "telemetry": {"model": "gpt-5-mini", "reasoning_effort": "medium", "status": "valid"},
+                    }
+
                 with mock.patch.object(web_server, "resolve_company_profile_from_tws", return_value={"company_name": "Nebius"}), \
                      mock.patch.object(web_server, "request_ai_step", side_effect=fake_request_ai_step), \
+                     mock.patch.object(web_server, "generate_core_evidence_pack", side_effect=fake_generate_core_evidence_pack), \
                      mock.patch.object(web_server, "generate_scenarios_multi_pass", side_effect=fake_generate_scenarios_multi_pass), \
                      mock.patch.object(web_server, "validate_step3_scenarios", side_effect=lambda payload, symbol, kv: {
                          "symbol": symbol,

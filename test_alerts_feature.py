@@ -998,10 +998,14 @@ class ScenarioProbabilityDriverWeightTests(unittest.TestCase):
 
     def test_default_build_scenarios_prompt_contains_phase3_guidance(self):
         prompt = web_server.DEFAULT_PROMPT_SCENARIOS
-        self.assertIn("Core vs Potential Driver scenario treatment:", prompt)
-        self.assertIn("Core Drivers should dominate the Base case, normal execution assumptions, and the central business trajectory.", prompt)
-        self.assertIn("Potential Drivers should mainly affect Bull/Bear optionality and scenario range.", prompt)
-        self.assertIn("assumptions should be concise and reflect the 5-year business thesis behind the scenarios", prompt)
+        self.assertIn("CORE VS POTENTIAL DRIVERS", prompt)
+        self.assertIn("Core Drivers:", prompt)
+        self.assertIn("- Must dominate the Base case and normal execution assumptions.", prompt)
+        self.assertIn("Potential Drivers:", prompt)
+        self.assertIn("- Should primarily affect Bull/Bear optionality and scenario range.", prompt)
+        self.assertIn("CORE EVIDENCE PACK AND FRESH INFORMATION", prompt)
+        self.assertIn("Core Evidence Pack:\n$CoreEvidencePack", prompt)
+        self.assertIn("The assumptions field must be a concise 5-year thesis summary", prompt)
 
 
 class KeyVariableDriverCategoryTests(unittest.TestCase):

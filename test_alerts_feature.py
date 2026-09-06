@@ -1854,11 +1854,12 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('function formatLinearGuardrailState(value)', js)
         self.assertIn('function formatFrontierOptionalityApplied(score)', js)
         self.assertIn("<h4>Linear Target Calculation</h4>", js)
-        self.assertIn('Frontier Optionality Score', js)
-        self.assertIn('Frontier Optionality Boost Factor', js)
-        self.assertIn('Frontier Optionality Applied', js)
+        self.assertIn('Frontier Score', js)
+        self.assertIn('Frontier Boost Factor', js)
+        self.assertIn('Frontier Boost Applied', js)
         self.assertIn('Linear Score Before Frontier Boost', js)
-        self.assertIn('Frontier Optionality Reason', js)
+        self.assertIn('Frontier Boost Reason', js)
+        self.assertNotIn('Frontier Optionality Score', js)
         self.assertIn("<h4>Target Band Calculation</h4>", js)
         self.assertNotIn("<h4>Linear Score Breakdown</h4>", js)
         self.assertNotIn('function formatTriggerDistanceLabel(item)', js)
@@ -2049,18 +2050,24 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("analysisBakingMoneyScenarioPanelEl.classList.toggle('hidden', hasExternal && activeScenarioOverlayTab !== 'bakingmoney');", js)
         self.assertNotIn("activeScenarioOverlayTab === 'bakingmoney') activeScenarioOverlayTab = 'final'", js)
 
-    def test_company_detail_displays_frontier_optionality_editor(self):
+    def test_company_detail_displays_frontier_score_dropdown(self):
         from pathlib import Path
         js = Path('static/app.js').read_text(encoding='utf-8')
         self.assertIn('function renderFrontierOptionalitySection()', js)
-        self.assertIn('Frontier Optionality Score:', js)
-        self.assertIn('Frontier Optionality Notes:', js)
-        self.assertIn('id="analysis-frontier-optionality-score-input"', js)
-        self.assertIn('id="analysis-frontier-optionality-notes-input"', js)
-        self.assertIn('min="0" max="5" step="0.1"', js)
+        self.assertIn('Frontier Score', js)
+        self.assertIn('const FRONTIER_SCORE_OPTIONS = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];', js)
+        self.assertIn('id="analysis-frontier-score-select"', js)
+        self.assertIn('<select id="analysis-frontier-score-select"', js)
+        self.assertIn("analysisSummary.addEventListener('change'", js)
+        self.assertIn('saveFrontierScore(target.value)', js)
         self.assertIn('/frontier-optionality', js)
         self.assertIn('frontier_optionality_score: score', js)
-        self.assertIn('frontier_optionality_notes: notes', js)
+        self.assertNotIn('Frontier Optionality Score', js)
+        self.assertNotIn('Frontier Optionality Notes', js)
+        self.assertNotIn('Edit Frontier Optionality', js)
+        self.assertNotIn('id="analysis-frontier-optionality-score-input"', js)
+        self.assertNotIn('id="analysis-frontier-optionality-notes-input"', js)
+        self.assertNotIn('frontier_optionality_notes: notes', js)
 
     def test_earnings_review_navigation_uses_internal_view_state_without_hash(self):
         from pathlib import Path

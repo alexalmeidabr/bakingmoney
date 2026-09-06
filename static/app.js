@@ -294,7 +294,6 @@ let activeScenarioOverlayTab = 'bakingmoney';
 let editingExternalScenarioId = null;
 let isEditingBusinessModel = false;
 let isEditingBusinessSummary = false;
-let isEditingFrontierOptionality = false;
 let currentAlertDetailId = null;
 let latestAlerts = [];
 let alertsStatusFilter = 'New';
@@ -502,6 +501,8 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   linear_high_extension_risk_threshold: 4.0,
   linear_release_date_warning_days: 30,
 };
+
+const FRONTIER_SCORE_OPTIONS = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
 
 const CONFIG_HELP = {};
 let lastConfigHelpTrigger = null;
@@ -2225,15 +2226,15 @@ function renderActionPlanDetail(item) {
         ['Bonus Applied', formatLinearBonusApplied(score)],
       ],
       [
-        ['Frontier Optionality Score', `${formatActionDetailNumber(score.frontier_optionality_score)} / 5`],
-        ['Frontier Optionality Boost Factor', formatActionDetailNumber(score.frontier_optionality_boost_factor)],
-        ['Frontier Optionality Applied', formatFrontierOptionalityApplied(score)],
+        ['Frontier Score', `${formatActionDetailNumber(score.frontier_optionality_score)} / 5`],
+        ['Frontier Boost Factor', formatActionDetailNumber(score.frontier_optionality_boost_factor)],
+        ['Frontier Boost Applied', formatFrontierOptionalityApplied(score)],
       ],
       [
         ['Linear Score Before Frontier Boost', formatActionDetailNumber(score.linear_score_before_frontier_boost)],
-        ['Frontier Optionality Reason', escapeHtml(score.frontier_optionality_applied_reason || '—')],
+        ['Frontier Boost Reason', escapeHtml(score.frontier_optionality_applied_reason || '—')],
       ],
-    ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into component scores using the configured Linear ranges and weights. Penalty Factor and Rating Bonus Factor then adjust the score. If a company has a manually assigned Frontier Optionality Score, BakingMoney may apply a small capped boost before target allocation, unless a guardrail blocks it. The resulting Linear Score is then used to calculate target allocation, subject to stock-specific caps, Dynamic Reserve, and target band tolerances.</p></div></section>
+    ])}<div class="action-detail-explanation"><h5>How this target is calculated</h5><p>BakingMoney first converts Expected CAGR, Upside, Core Confidence Net, Potential Confidence Net, and Confidence Quality into component scores using the configured Linear ranges and weights. Penalty Factor and Rating Bonus Factor then adjust the score. If a company has a manually assigned Frontier Score, BakingMoney may apply a small capped boost before target allocation, unless a guardrail blocks it. The resulting Linear Score is then used to calculate target allocation, subject to stock-specific caps, Dynamic Reserve, and target band tolerances.</p></div></section>
     <section class="detail-card"><h4>Target Band Calculation</h4>${renderActionPlanMetricList([
       ['Current Position Weight', formatActionDetailPercent(item.current_position_weight)],
       ['Target Low', formatActionDetailPercent(item.target_weight_low)],
@@ -3685,7 +3686,6 @@ async function loadAnalysisDetail(symbol, versionId = null) {
   editableAnalysisVariables = null;
   isEditingBusinessModel = false;
   isEditingBusinessSummary = false;
-  isEditingFrontierOptionality = false;
 
   try {
     const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : '';
@@ -3779,61 +3779,59 @@ function getCurrentFrontierOptionality() {
   const score = Number(payload.frontier_optionality_score ?? analysisDetailState?.version?.frontier_optionality_score ?? 0);
   return {
     score: Number.isFinite(score) ? score : 0,
-    notes: payload.frontier_optionality_notes ?? analysisDetailState?.version?.frontier_optionality_notes ?? '',
   };
 }
 
-function formatFrontierOptionalityScore(value) {
+function normalizeFrontierScoreForSelect(value) {
   const number = Number(value);
-  if (!Number.isFinite(number)) return '0 / 5';
-  return `${formatNumber(number, 2)} / 5`;
+  if (!Number.isFinite(number)) return 0;
+  const bounded = Math.min(5, Math.max(0, number));
+  return Math.round(bounded * 2) / 2;
+}
+
+function formatFrontierScoreOption(value) {
+  return Number.isInteger(value) ? String(value) : String(value);
+}
+
+function renderFrontierScoreOptions(selectedScore) {
+  const selected = normalizeFrontierScoreForSelect(selectedScore);
+  return FRONTIER_SCORE_OPTIONS.map((value) => {
+    const text = formatFrontierScoreOption(value);
+    return `<option value="${text}"${value === selected ? ' selected' : ''}>${text}</option>`;
+  }).join('');
 }
 
 function renderFrontierOptionalitySection() {
   const frontier = getCurrentFrontierOptionality();
-  const safeNotes = escapeHtml(frontier.notes || '');
-  if (isEditingFrontierOptionality) {
-    return `<div class="business-model-editor"><label><strong>Frontier Optionality Score:</strong></label><input id="analysis-frontier-optionality-score-input" type="number" min="0" max="5" step="0.1" value="${escapeHtml(String(frontier.score))}"><label><strong>Frontier Optionality Notes:</strong></label><textarea id="analysis-frontier-optionality-notes-input" class="analysis-business-model-input" rows="3">${safeNotes}</textarea><div class="table-actions"><button id="analysis-frontier-optionality-save-btn">Save</button><button id="analysis-frontier-optionality-cancel-btn">Cancel</button></div></div>`;
-  }
-  return `<div class="business-model-editor"><p><strong>Frontier Optionality Score:</strong> ${formatFrontierOptionalityScore(frontier.score)}</p><p><strong>Frontier Optionality Notes:</strong> ${safeNotes || '—'}</p><div class="table-actions"><button id="analysis-frontier-optionality-edit-btn">Edit Frontier Optionality</button></div></div>`;
+  return `<div class="business-model-editor"><label for="analysis-frontier-score-select"><strong>Frontier Score</strong></label><select id="analysis-frontier-score-select">${renderFrontierScoreOptions(frontier.score)}</select></div>`;
 }
 
-async function saveEditedFrontierOptionality() {
+async function saveFrontierScore(rawScore) {
   const symbol = analysisDetailState.symbol;
-  const rawScore = document.getElementById('analysis-frontier-optionality-score-input')?.value;
-  const notes = document.getElementById('analysis-frontier-optionality-notes-input')?.value || '';
   const score = rawScore === '' ? 0 : Number(rawScore);
   if (!Number.isFinite(score) || score < 0 || score > 5) {
-    analysisDetailStatus.textContent = 'Frontier Optionality Score must be between 0 and 5.';
+    analysisDetailStatus.textContent = 'Frontier Score must be between 0 and 5.';
     analysisDetailStatus.className = 'status error';
     return;
   }
 
-  analysisDetailStatus.textContent = 'Saving Frontier Optionality…';
+  analysisDetailStatus.textContent = 'Saving Frontier Score...';
   analysisDetailStatus.className = 'status';
   try {
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}/frontier-optionality`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ frontier_optionality_score: score, frontier_optionality_notes: notes }),
+      body: JSON.stringify({ frontier_optionality_score: score }),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save Frontier Optionality'));
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save Frontier Score'));
     analysisDetailState = payload.analysis;
-    isEditingFrontierOptionality = false;
     renderAnalysisDetail();
-    analysisDetailStatus.textContent = 'Frontier Optionality saved.';
+    analysisDetailStatus.textContent = 'Frontier Score saved.';
   } catch (error) {
     analysisDetailStatus.textContent = `Error: ${error.message}`;
     analysisDetailStatus.className = 'status error';
   }
-}
-
-function cancelEditedFrontierOptionality() {
-  isEditingFrontierOptionality = false;
-  renderAnalysisDetail();
-  analysisDetailStatus.textContent = 'Frontier Optionality editing canceled.';
-  analysisDetailStatus.className = 'status';
 }
 
 function getKeyVariableImportTemplate() {
@@ -6179,17 +6177,11 @@ analysisSummary.addEventListener('click', (event) => {
     cancelEditedBusinessSummary();
     return;
   }
-  if (target.id === 'analysis-frontier-optionality-edit-btn') {
-    isEditingFrontierOptionality = true;
-    renderAnalysisDetail();
-    return;
-  }
-  if (target.id === 'analysis-frontier-optionality-save-btn') {
-    saveEditedFrontierOptionality();
-    return;
-  }
-  if (target.id === 'analysis-frontier-optionality-cancel-btn') {
-    cancelEditedFrontierOptionality();
+});
+analysisSummary.addEventListener('change', (event) => {
+  const target = event.target;
+  if (target.id === 'analysis-frontier-score-select') {
+    saveFrontierScore(target.value);
   }
 });
 analysisVariableTabButtons.forEach((button) => {

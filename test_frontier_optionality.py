@@ -84,6 +84,26 @@ class FrontierOptionalityStorageTests(unittest.TestCase):
         self.assertEqual(stored["frontier_optionality_score"], 2.5)
         self.assertEqual(stored["frontier_optionality_notes"], notes)
 
+    def test_save_frontier_optionality_score_without_notes_preserves_existing_notes(self):
+        notes = "Existing compatibility note."
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "frontier.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    seed_analysis(conn)
+                    web_server.save_frontier_optionality(conn, "NU", "1.5", notes)
+                    saved = web_server.save_frontier_optionality(conn, "NU", "2.5")
+                    reloaded = web_server.get_analysis_detail(conn, "NU")
+                finally:
+                    conn.close()
+
+        self.assertEqual(saved["frontier_optionality"]["frontier_optionality_score"], 2.5)
+        self.assertEqual(saved["frontier_optionality"]["frontier_optionality_notes"], notes)
+        self.assertEqual(reloaded["frontier_optionality"]["frontier_optionality_score"], 2.5)
+        self.assertEqual(reloaded["frontier_optionality"]["frontier_optionality_notes"], notes)
+
     def test_blank_frontier_optionality_score_saves_as_zero(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "frontier.db")

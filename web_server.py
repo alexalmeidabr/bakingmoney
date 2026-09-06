@@ -6365,7 +6365,7 @@ def get_frontier_optionality(conn, symbol):
     }
 
 
-def save_frontier_optionality(conn, symbol, score, notes):
+def save_frontier_optionality(conn, symbol, score, notes=None):
     normalized = normalize_symbol(symbol)
     if not normalized:
         raise ValueError("Symbol is required")
@@ -6373,7 +6373,14 @@ def save_frontier_optionality(conn, symbol, score, notes):
     if not root:
         raise ValueError("Analysis symbol not found")
     normalized_score = normalize_frontier_optionality_score(score)
-    normalized_notes = str(notes or "").strip()
+    if notes is None:
+        existing = conn.execute(
+            "SELECT frontier_optionality_notes FROM analysis_frontier_optionality WHERE symbol = ?",
+            (normalized,),
+        ).fetchone()
+        normalized_notes = existing["frontier_optionality_notes"] if existing else ""
+    else:
+        normalized_notes = str(notes or "").strip()
     now = utc_now_iso()
     conn.execute(
         """
@@ -8612,7 +8619,7 @@ def _linear_frontier_optionality_boost(score_before_boost, item, rating, setting
         "frontier_optionality_score": frontier_score,
         "frontier_optionality_boost_factor": 1.0,
         "frontier_optionality_applied": False,
-        "frontier_optionality_applied_reason": "No Frontier Optionality Score",
+        "frontier_optionality_applied_reason": "No Frontier Score",
     }
     if frontier_score <= 0.0:
         return score_before_boost, diagnostics
@@ -12227,7 +12234,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 conn,
                 symbol,
                 payload.get("frontier_optionality_score"),
-                payload.get("frontier_optionality_notes"),
+                payload.get("frontier_optionality_notes") if "frontier_optionality_notes" in payload else None,
             )
             self._send_json({"ok": True, "analysis": detail})
         except ValueError as exc:

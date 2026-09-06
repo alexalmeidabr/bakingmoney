@@ -672,7 +672,7 @@ JSON only.
 No markdown.
 No commentary outside JSON."""
 
-DEFAULT_PROMPT_CORE_EVIDENCE_PACK = """You are an equity research analyst gathering the factual evidence needed for a disciplined 5-year stock scenario analysis.
+PREVIOUS_DEFAULT_PROMPT_CORE_EVIDENCE_PACK = """You are an equity research analyst gathering the factual evidence needed for a disciplined 5-year stock scenario analysis.
 
 TASK
 
@@ -863,6 +863,390 @@ $BusinessModel
 Key variables:
 $KeyVariables"""
 
+DEFAULT_PROMPT_CORE_EVIDENCE_PACK = """You are an equity research analyst gathering the factual evidence needed for a disciplined 5-year stock scenario analysis.
+
+TASK
+
+Research the company using the supplied company information.
+
+Build a concise Core Evidence Pack containing the most recent and materially relevant factual information that any analyst should know before constructing 5-year Bear, Base, and Bull scenarios.
+
+The Core Evidence Pack is a minimum common factual baseline, not an exhaustive research dossier.
+
+Research as much as necessary to identify the material facts, but return only the highest-signal evidence that should be shared with every scenario analyst.
+
+The Core Evidence Pack is NOT a scenario analysis.
+
+Do not:
+- produce Bear, Base, or Bull scenarios;
+- estimate future stock prices;
+- assign scenario probabilities;
+- make Buy/Sell recommendations;
+- decide whether the stock is attractive;
+- create or infer BakingMoney Key Variables;
+- organize the evidence around an investment thesis;
+- attempt to document every possible risk or opportunity.
+
+Its purpose is to establish a compact, thesis-neutral factual baseline while leaving interpretation to the later scenario-analysis step.
+
+RESEARCH PRIORITIES
+
+Prioritize authoritative and recent sources in this order when available:
+
+1. latest earnings release or shareholder letter;
+2. latest company guidance or outlook;
+3. SEC/regulatory filings or equivalent official filings;
+4. company investor-relations disclosures;
+5. material company announcements;
+6. recent factual reporting about developments that materially affect the company's 5-year economics;
+7. industry or analyst research only when it adds material factual context unavailable from primary sources.
+
+Prioritize primary sources over commentary.
+
+Research as much as necessary to establish a reliable factual baseline.
+
+Do not waste research on:
+- routine stock-price movements;
+- generic analyst sentiment;
+- price-target changes;
+- promotional management statements without supporting facts;
+- immaterial quarterly fluctuations;
+- duplicate reporting of facts already established from stronger sources.
+
+THESIS NEUTRALITY
+
+Do not organize the evidence around pre-existing bullish or bearish conclusions.
+
+Do not try to prove or disprove an investment thesis.
+
+Include facts because they are economically material, not because they support a particular scenario.
+
+The later scenario-analysis step will receive BakingMoney's Key Variables separately and will determine how the Core Evidence Pack affects Bear, Base, and Bull outcomes.
+
+FRESHNESS
+
+Prefer the latest available evidence.
+
+When a newer source materially supersedes older information, use the newer information.
+
+Distinguish clearly between:
+- current reported facts;
+- current company guidance;
+- announced but not yet realized developments;
+- third-party estimates.
+
+MATERIALITY
+
+Include only facts capable of materially affecting a 5-year business valuation.
+
+Focus on areas such as:
+- revenue trajectory;
+- segment economics;
+- margins;
+- free cash flow;
+- capital expenditures;
+- backlog or contracts;
+- customer concentration;
+- pricing or unit economics;
+- capital intensity;
+- cash and debt;
+- financing requirements;
+- dilution;
+- major acquisitions or divestitures;
+- major product or infrastructure developments;
+- competitive or regulatory developments;
+- material litigation or governance developments;
+- valuation context.
+
+Do not turn the Core Evidence Pack into:
+- an earnings recap;
+- a company profile;
+- a chronology of news;
+- a comprehensive risk register;
+- an exhaustive list of every operating metric.
+
+COMPRESSION DISCIPLINE
+
+Prefer one concise factual statement that captures the relevant economic information over several overlapping facts.
+
+Do not repeat the same fact across multiple sections unless necessary for understanding.
+
+Do not include immaterial facts simply because they were discovered during research.
+
+If several facts convey the same conclusion, retain only the strongest or most informative ones.
+
+The Core Evidence Pack should normally be much shorter than a full company research report.
+
+The later scenario passes retain independent web research and are responsible for investigating anything they consider insufficiently covered.
+
+VALUATION CONTEXT
+
+Include factual valuation context when useful for later scenario analysis.
+
+Examples may include:
+- current market capitalization;
+- enterprise value;
+- relevant current valuation multiples;
+- net cash or debt;
+- share count and dilution;
+- major capital requirements.
+
+Do not decide whether valuation is cheap or expensive.
+
+Leave valuation judgments to the scenario-analysis step.
+
+OUTPUT
+
+Return ONLY valid JSON in exactly this structure:
+
+{
+  "symbol": "",
+  "as_of": "",
+  "reporting_context": {
+    "latest_reporting_period": "",
+    "latest_release_date": "",
+    "material_facts": []
+  },
+  "guidance_and_outlook": [],
+  "segment_and_operating_facts": [],
+  "cash_flow_and_balance_sheet": [],
+  "capital_structure_and_dilution": [],
+  "material_recent_developments": [],
+  "valuation_context": [],
+  "sources": [
+    {
+      "title": "",
+      "date": "",
+      "source_type": "",
+      "url": ""
+    }
+  ]
+}
+
+Rules:
+
+- Set symbol to the supplied symbol.
+- as_of should reflect the date of the research.
+- Include only materially relevant facts.
+- Facts must be concise and factual, not scenario conclusions.
+- Avoid duplicate facts across sections.
+- Include only materially relevant sources.
+- Do not fabricate unavailable dates, values, or URLs.
+- Use empty arrays when no material fact exists for a section.
+- JSON only.
+- No markdown.
+- No commentary outside JSON.
+
+COMPANY INPUT
+
+Symbol: $Symbol
+Company name: $CompanyName
+Current price: $Price USD
+
+Business model:
+$BusinessModel"""
+
+PREVIOUS_DEFAULT_PROMPT_SCENARIOS_HYBRID = """You are an equity analyst building a disciplined 5-year stock scenario analysis.
+
+TASK
+
+Build exactly three stock-price scenarios over a 5-year horizon:
+
+- Bear = pessimistic but plausible outcome
+- Base = most likely central outcome
+- Bull = optimistic but plausible outcome
+
+The purpose is to estimate realistic 5-year stock-value ranges and probabilities based primarily on the supplied business model, key variables, current valuation, Core Evidence Pack, and any additional material information you determine is necessary.
+
+OUTPUT
+
+Return ONLY valid JSON in exactly this structure:
+
+{
+  "symbol": "",
+  "assumptions": "concise 5-year thesis summary",
+  "scenarios": [
+    {"name": "Bear", "price_low": 0, "price_high": 0, "probability": 0},
+    {"name": "Base", "price_low": 0, "price_high": 0, "probability": 0},
+    {"name": "Bull", "price_low": 0, "price_high": 0, "probability": 0}
+  ]
+}
+
+Rules:
+- Set "symbol" to the supplied company symbol.
+- Return exactly 3 scenarios in this order: Bear, Base, Bull.
+- Probabilities must sum to 100.
+- price_low must be less than or equal to price_high for every scenario.
+- Return JSON only. No markdown or commentary outside the JSON.
+
+KEY-VARIABLE DISCIPLINE
+
+The supplied key variables are the primary foundation of the analysis.
+
+- Give the greatest influence to variables with the highest importance and confidence.
+- High-importance bullish and bearish variables must materially affect scenario prices, ranges, and probabilities, not merely the assumptions text.
+- Bear should reflect stronger materialization of the most important bearish variables.
+- Bull should reflect stronger materialization of the most important bullish variables.
+- Base should represent normal execution and the currently visible central trajectory. It must not assume that most bullish variables succeed.
+
+CORE VS POTENTIAL DRIVERS
+
+Key variables may be classified as Core Driver or Potential Driver.
+
+Core Drivers:
+- Represent the existing material business, revenue, margins, cash flow, demand, cost structure, competitive position, or proven segments.
+- Must dominate the Base case and normal execution assumptions.
+
+Potential Drivers:
+- Represent emerging optionality, new products, new initiatives, future markets, speculative technologies, new business lines, or not-yet-material drivers.
+- Should primarily affect Bull/Bear optionality and scenario range.
+- Low-confidence Potential Drivers should not materially influence Base.
+- A Potential Driver may materially influence Base only when confidence is high and current evidence indicates it is becoming economically material.
+- High-importance Potential Drivers may widen scenario ranges without necessarily increasing their probability.
+- If a Potential Driver becomes sufficiently credible and material to dominate Base, that is evidence that it may no longer be merely optionality.
+
+BASE-CASE DISCIPLINE
+
+Base is the central expected business trajectory, not an optimistic execution case.
+
+- Base should primarily reflect Core Drivers, current guidance, visible demand, margins, backlog/contracts, competitive position, and normal execution.
+- A strong business does not automatically imply large stock upside.
+- Do not assume valuation multiple expansion in Base unless valuation is clearly undemanding or future earnings/free-cash-flow growth strongly justifies it.
+- If current valuation already discounts strong execution, Base may be near or below the current stock price.
+- If the stock is depressed but durable fundamentals support recovery, Base may be materially above the current price.
+- A quarterly earnings beat with unchanged guidance is normally confirmation, not a reason to materially raise Base.
+
+VALUATION DISCIPLINE
+
+Stock-price scenarios must reflect both business outcomes and valuation.
+
+When practical, mentally anchor the scenarios to plausible 5-year outcomes for one or more of:
+- revenue
+- earnings
+- EBITDA
+- free cash flow
+- book value
+- margins
+- capital intensity
+
+Then apply a reasonable terminal valuation consistent with:
+- company maturity
+- growth
+- business quality
+- cyclicality
+- competitive position
+- leverage
+- financing needs
+- industry characteristics
+- risk
+
+Do not produce price ranges that require unrealistic revenue growth, margin expansion, market share, capital efficiency, or valuation multiples.
+
+Use the current stock price only to judge what optimism or pessimism is already priced in. Do not mechanically center scenarios around the current price.
+
+If the stock already reflects optimistic assumptions:
+- constrain Base upside;
+- reduce Bull probability when appropriate;
+- or require stronger operating outcomes to justify Bull.
+
+If the company is speculative, loss-making, capital-intensive, highly leveraged, or dependent on external financing, require stronger evidence before assigning high Bull probability.
+
+SCENARIO REALISM
+
+- Bull must be optimistic but plausible, not aspirational.
+- Bear must be pessimistic but plausible, not automatically catastrophic.
+- Do not let speculative optionality or long-shot TAM expansion dominate unless supported by strong current evidence.
+- Outcomes requiring near-perfect execution across several variables should receive low probability.
+- Greater uncertainty should generally produce wider ranges and/or lower probability for extreme outcomes.
+- Distinguish business quality from stock attractiveness.
+
+CORE EVIDENCE PACK AND FRESH INFORMATION
+
+A Core Evidence Pack is supplied with the company input.
+
+It contains recent factual research gathered once for this analysis and should be treated as the common factual baseline for all scenario passes.
+
+Use the Core Evidence Pack to avoid unnecessarily rediscovering information that has already been established.
+
+However, the Core Evidence Pack is not guaranteed to be exhaustive.
+
+You may perform as much additional independent research as you determine is necessary when:
+- important information is missing;
+- a fact needs verification;
+- more recent evidence may exist;
+- conflicting evidence exists;
+- a material competitive, regulatory, financial, operational, or valuation consideration is not adequately represented;
+- or additional evidence is needed to properly evaluate one of the supplied key variables.
+
+Each scenario analysis must independently judge the relevance and implications of the evidence.
+
+Do not assume that conclusions implied by the Core Evidence Pack are correct merely because the information is shared. The pack should primarily contain facts; scenario interpretation remains your responsibility.
+
+Prioritize:
+1. primary company disclosures;
+2. regulatory filings;
+3. factual recent developments materially relevant to the key variables;
+4. industry or analyst commentary only when it contributes material evidence or valuation context.
+
+Do not turn the analysis into an earnings recap.
+
+Focus on information that materially affects durable 5-year drivers such as:
+- revenue trajectory
+- margins
+- free cash flow
+- backlog or contracts
+- pricing power
+- unit economics
+- customer concentration
+- competitive position
+- capital intensity
+- leverage or financing risk
+- regulatory risk
+- valuation
+
+Treat management commentary cautiously. Give greater weight to hard financial data, guidance, margins, cash flow, demand, backlog, and operating metrics than to promotional language.
+
+Guidance matters more than backward-looking quarterly results when it changes the durable trajectory.
+
+Examples:
+- Beat + unchanged guidance = usually confirmation.
+- Beat + reduced guidance = reason for caution.
+- Miss + raised guidance may still support the thesis if durable forward drivers improve.
+
+ASSUMPTIONS FIELD
+
+The assumptions field must be a concise 5-year thesis summary, ideally 2 to 4 sentences.
+
+It should explain:
+1. the main durable drivers likely to determine 5-year value;
+2. the main constraints or risks that limit upside or increase downside.
+
+The assumptions field must:
+- be driven primarily by the most important Core Drivers;
+- mention important Potential Drivers only when they materially shape Bull/Bear optionality;
+- avoid becoming a quarterly earnings summary;
+- avoid listing many short-term metrics;
+- explain causally why the Bear, Base, and Bull outcomes differ.
+
+ETF RULE
+
+If the supplied symbol represents an ETF, center the analysis on the performance drivers, risks, and concentration of its major holdings rather than treating it like an operating company.
+
+COMPANY INPUT
+
+Symbol: $Symbol
+Company name: $CompanyName
+Current price: $Price USD
+
+Business model:
+$BusinessModel
+
+Key variables:
+$KeyVariables
+
+Core Evidence Pack:
+$CoreEvidencePack"""
+
 DEFAULT_PROMPT_SCENARIOS = """You are an equity analyst building a disciplined 5-year stock scenario analysis.
 
 TASK
@@ -1029,6 +1413,20 @@ Examples:
 - Beat + unchanged guidance = usually confirmation.
 - Beat + reduced guidance = reason for caution.
 - Miss + raised guidance may still support the thesis if durable forward drivers improve.
+
+EVIDENCE WEIGHTING
+
+The amount of text or number of facts in the Core Evidence Pack does not determine the importance of a Key Variable.
+
+Weight Key Variables primarily according to their supplied importance, confidence, driver category, economic impact, and the quality of current evidence.
+
+Use the Core Evidence Pack to establish factual context, not as a vote-counting mechanism.
+
+Do not give a Key Variable greater scenario influence merely because more evidence items are available for it.
+
+Absence of a fact from the Core Evidence Pack does not mean a Key Variable is unimportant or invalid. The Core Evidence Pack is intentionally selective rather than exhaustive.
+
+If needed, perform additional independent research to evaluate a Key Variable that is not adequately covered by the Core Evidence Pack.
 
 ASSUMPTIONS FIELD
 
@@ -1471,7 +1869,7 @@ PROMPT_TEMPLATE_CONFIG = {
     },
     ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK: {
         "default": DEFAULT_PROMPT_CORE_EVIDENCE_PACK,
-        "required_vars": ["$Symbol", "$CompanyName", "$Price", "$BusinessModel", "$KeyVariables"],
+        "required_vars": ["$Symbol", "$CompanyName", "$Price", "$BusinessModel"],
     },
     ANALYSIS_PROMPT_SETTING_KEY_RECENT_EVENT_CANDIDATE: {
         "default": DEFAULT_PROMPT_RECENT_EVENT_CANDIDATE,
@@ -3019,7 +3417,7 @@ def reset_prompt_template(conn, key):
 
 def migrate_legacy_default_prompt_templates(conn):
     row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,)).fetchone()
-    if row and row["value"] == LEGACY_DEFAULT_PROMPT_SCENARIOS:
+    if row and row["value"] in {LEGACY_DEFAULT_PROMPT_SCENARIOS, PREVIOUS_DEFAULT_PROMPT_SCENARIOS_HYBRID}:
         conn.execute(
             """
             UPDATE app_settings
@@ -3027,6 +3425,18 @@ def migrate_legacy_default_prompt_templates(conn):
             WHERE key = ?
             """,
             (DEFAULT_PROMPT_SCENARIOS, utc_now_iso(), ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS),
+        )
+        conn.commit()
+
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK,)).fetchone()
+    if row and row["value"] == PREVIOUS_DEFAULT_PROMPT_CORE_EVIDENCE_PACK:
+        conn.execute(
+            """
+            UPDATE app_settings
+            SET value = ?, updated_at = ?
+            WHERE key = ?
+            """,
+            (DEFAULT_PROMPT_CORE_EVIDENCE_PACK, utc_now_iso(), ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK),
         )
         conn.commit()
 
@@ -4577,16 +4987,6 @@ def request_ai_step(step_name, prompt_text, json_schema, attempt=1):
     return payload
 
 
-CORE_EVIDENCE_STATUSES = (
-    "Confirms",
-    "Weakens",
-    "Contradicts",
-    "Mixed",
-    "New context",
-    "No material new evidence",
-)
-
-
 def resolve_core_evidence_model():
     return OPENAI_CORE_EVIDENCE_MODEL or OPENAI_MODEL
 
@@ -4614,31 +5014,15 @@ def build_core_evidence_schema():
                     "properties": {
                         "latest_reporting_period": {"type": "string"},
                         "latest_release_date": {"type": "string"},
-                        "facts": _string_array_schema(),
+                        "material_facts": _string_array_schema(),
                     },
-                    "required": ["latest_reporting_period", "latest_release_date", "facts"],
+                    "required": ["latest_reporting_period", "latest_release_date", "material_facts"],
                 },
-                "guidance": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {"facts": _string_array_schema()},
-                    "required": ["facts"],
-                },
-                "key_variable_evidence": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "key_variable": {"type": "string"},
-                            "driver_category": {"type": "string"},
-                            "evidence_status": {"type": "string", "enum": list(CORE_EVIDENCE_STATUSES)},
-                            "facts": _string_array_schema(),
-                        },
-                        "required": ["key_variable", "driver_category", "evidence_status", "facts"],
-                    },
-                },
-                "other_material_facts": _string_array_schema(),
+                "guidance_and_outlook": _string_array_schema(),
+                "segment_and_operating_facts": _string_array_schema(),
+                "cash_flow_and_balance_sheet": _string_array_schema(),
+                "capital_structure_and_dilution": _string_array_schema(),
+                "material_recent_developments": _string_array_schema(),
                 "valuation_context": _string_array_schema(),
                 "sources": {
                     "type": "array",
@@ -4659,9 +5043,11 @@ def build_core_evidence_schema():
                 "symbol",
                 "as_of",
                 "reporting_context",
-                "guidance",
-                "key_variable_evidence",
-                "other_material_facts",
+                "guidance_and_outlook",
+                "segment_and_operating_facts",
+                "cash_flow_and_balance_sheet",
+                "capital_structure_and_dilution",
+                "material_recent_developments",
                 "valuation_context",
                 "sources",
             ],
@@ -4681,9 +5067,31 @@ def _require_string_list(value, field_name):
     return list(value)
 
 
+def _reject_unexpected_keys(value, allowed_keys, field_name):
+    extras = sorted(set(value.keys()) - set(allowed_keys))
+    if extras:
+        raise AnalysisValidationError(f"Core Evidence Pack field {field_name} has unexpected key(s): {', '.join(extras)}")
+
+
 def validate_core_evidence_pack(payload, symbol):
     if not isinstance(payload, dict):
         raise AnalysisValidationError("Core Evidence Pack must be a JSON object")
+    _reject_unexpected_keys(
+        payload,
+        {
+            "symbol",
+            "as_of",
+            "reporting_context",
+            "guidance_and_outlook",
+            "segment_and_operating_facts",
+            "cash_flow_and_balance_sheet",
+            "capital_structure_and_dilution",
+            "material_recent_developments",
+            "valuation_context",
+            "sources",
+        },
+        "root",
+    )
     normalized = {
         "symbol": _require_string(payload.get("symbol"), "symbol"),
         "as_of": _require_string(payload.get("as_of"), "as_of"),
@@ -4693,35 +5101,21 @@ def validate_core_evidence_pack(payload, symbol):
     reporting = payload.get("reporting_context")
     if not isinstance(reporting, dict):
         raise AnalysisValidationError("Core Evidence Pack reporting_context must be an object")
+    _reject_unexpected_keys(
+        reporting,
+        {"latest_reporting_period", "latest_release_date", "material_facts"},
+        "reporting_context",
+    )
     normalized["reporting_context"] = {
         "latest_reporting_period": _require_string(reporting.get("latest_reporting_period"), "reporting_context.latest_reporting_period"),
         "latest_release_date": _require_string(reporting.get("latest_release_date"), "reporting_context.latest_release_date"),
-        "facts": _require_string_list(reporting.get("facts"), "reporting_context.facts"),
+        "material_facts": _require_string_list(reporting.get("material_facts"), "reporting_context.material_facts"),
     }
-    guidance = payload.get("guidance")
-    if not isinstance(guidance, dict):
-        raise AnalysisValidationError("Core Evidence Pack guidance must be an object")
-    normalized["guidance"] = {"facts": _require_string_list(guidance.get("facts"), "guidance.facts")}
-    key_variable_evidence = payload.get("key_variable_evidence")
-    if not isinstance(key_variable_evidence, list):
-        raise AnalysisValidationError("Core Evidence Pack key_variable_evidence must be an array")
-    normalized_items = []
-    for idx, item in enumerate(key_variable_evidence):
-        if not isinstance(item, dict):
-            raise AnalysisValidationError(f"Core Evidence Pack key_variable_evidence[{idx}] must be an object")
-        evidence_status = _require_string(item.get("evidence_status"), f"key_variable_evidence[{idx}].evidence_status")
-        if evidence_status not in CORE_EVIDENCE_STATUSES:
-            raise AnalysisValidationError(f"Invalid Core Evidence Pack evidence_status: {evidence_status}")
-        normalized_items.append(
-            {
-                "key_variable": _require_string(item.get("key_variable"), f"key_variable_evidence[{idx}].key_variable"),
-                "driver_category": _require_string(item.get("driver_category"), f"key_variable_evidence[{idx}].driver_category"),
-                "evidence_status": evidence_status,
-                "facts": _require_string_list(item.get("facts"), f"key_variable_evidence[{idx}].facts"),
-            }
-        )
-    normalized["key_variable_evidence"] = normalized_items
-    normalized["other_material_facts"] = _require_string_list(payload.get("other_material_facts"), "other_material_facts")
+    normalized["guidance_and_outlook"] = _require_string_list(payload.get("guidance_and_outlook"), "guidance_and_outlook")
+    normalized["segment_and_operating_facts"] = _require_string_list(payload.get("segment_and_operating_facts"), "segment_and_operating_facts")
+    normalized["cash_flow_and_balance_sheet"] = _require_string_list(payload.get("cash_flow_and_balance_sheet"), "cash_flow_and_balance_sheet")
+    normalized["capital_structure_and_dilution"] = _require_string_list(payload.get("capital_structure_and_dilution"), "capital_structure_and_dilution")
+    normalized["material_recent_developments"] = _require_string_list(payload.get("material_recent_developments"), "material_recent_developments")
     normalized["valuation_context"] = _require_string_list(payload.get("valuation_context"), "valuation_context")
     sources = payload.get("sources")
     if not isinstance(sources, list):
@@ -4730,6 +5124,7 @@ def validate_core_evidence_pack(payload, symbol):
     for idx, source in enumerate(sources):
         if not isinstance(source, dict):
             raise AnalysisValidationError(f"Core Evidence Pack sources[{idx}] must be an object")
+        _reject_unexpected_keys(source, {"title", "date", "source_type", "url"}, f"sources[{idx}]")
         normalized_sources.append(
             {
                 "title": _require_string(source.get("title"), f"sources[{idx}].title"),
@@ -4742,7 +5137,7 @@ def validate_core_evidence_pack(payload, symbol):
     return normalized
 
 
-def build_core_evidence_prompt(symbol, current_price=None, template=None, company_name="", business_model="", business_summary="", key_variables=None):
+def build_core_evidence_prompt(symbol, current_price=None, template=None, company_name="", business_model="", business_summary=""):
     base_template = template if template is not None else DEFAULT_PROMPT_CORE_EVIDENCE_PACK
     context = build_prompt_context(
         symbol=symbol,
@@ -4750,12 +5145,11 @@ def build_core_evidence_prompt(symbol, current_price=None, template=None, compan
         company_name=company_name,
         business_model=business_model,
         business_summary=business_summary,
-        key_variables=key_variables,
     )
     return render_prompt_template(base_template, context)
 
 
-def generate_core_evidence_pack(symbol, current_price, company_name, business_model, business_summary, key_variables, template):
+def generate_core_evidence_pack(symbol, current_price, company_name, business_model, business_summary, template):
     prompt_text = build_core_evidence_prompt(
         symbol,
         current_price,
@@ -4763,7 +5157,6 @@ def generate_core_evidence_pack(symbol, current_price, company_name, business_mo
         company_name=company_name,
         business_model=business_model,
         business_summary=business_summary,
-        key_variables=key_variables,
     )
     payload, telemetry = request_ai_step_with_telemetry(
         "core_evidence_pack",
@@ -5000,7 +5393,6 @@ def request_ai_analysis(symbol, current_price=None):
         company_name=company_name,
         business_model=step1["business_model"],
         business_summary=step1["business_summary"],
-        key_variables=step2["key_variables"],
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK],
     )
 
@@ -7419,7 +7811,6 @@ def rerun_scenarios_from_saved_edits(conn, symbol, base_version_id):
         company_name=base_version["company_name"] or "",
         business_model=effective_business_model or "",
         business_summary=effective_business_summary or "",
-        key_variables=key_variables,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK],
     )
     prompt = build_scenario_generation_prompt(
@@ -7567,7 +7958,6 @@ def rerun_scenarios_from_existing_version(conn, symbol, base_version_id):
         company_name=base_version["company_name"] or "",
         business_model=effective_business_model or "",
         business_summary=effective_business_summary or "",
-        key_variables=key_variables,
         template=templates[ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK],
     )
     prompt = build_scenario_generation_prompt(

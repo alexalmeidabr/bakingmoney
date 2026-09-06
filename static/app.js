@@ -3426,26 +3426,33 @@ function renderStringList(items) {
 function renderCoreEvidenceDetails(version) {
   const pack = version?.core_evidence_pack;
   if (!pack || typeof pack !== 'object') return '';
-  const keyVariableEvidence = Array.isArray(pack.key_variable_evidence) && pack.key_variable_evidence.length
-    ? pack.key_variable_evidence.map((item) => `<h5>${escapeHtml(item.key_variable || 'Key variable')}</h5><p class="status">${escapeHtml(item.driver_category || 'Unavailable')} / ${escapeHtml(item.evidence_status || 'Unavailable')}</p>${renderStringList(item.facts)}`).join('')
-    : '<p class="status">No key-variable evidence listed.</p>';
   const sources = Array.isArray(pack.sources) && pack.sources.length
     ? `<ul>${pack.sources.map((source) => `<li>${escapeHtml(source.title || 'Source')}${source.date ? ` (${escapeHtml(source.date)})` : ''}${source.source_type ? ` - ${escapeHtml(source.source_type)}` : ''}${source.url ? ` - ${escapeHtml(source.url)}` : ''}</li>`).join('')}</ul>`
     : '<p class="status">No sources listed.</p>';
+  const reportingFacts = pack.reporting_context?.material_facts || pack.reporting_context?.facts;
+  const legacyGuidanceFacts = pack.guidance?.facts;
+  const legacyFacts = Array.isArray(pack.key_variable_evidence) && pack.key_variable_evidence.length
+    ? `<h4>Legacy evidence</h4>${pack.key_variable_evidence.map((item) => `<h5>${escapeHtml(item.key_variable || 'Key variable')}</h5>${renderStringList(item.facts)}`).join('')}`
+    : '';
   return `<details class="core-evidence-details"><summary>Show Core Evidence Pack</summary>
     <h4>Reporting context</h4>
     <p class="status">Latest reporting period: ${escapeHtml(pack.reporting_context?.latest_reporting_period || 'Unavailable')} | Latest release date: ${escapeHtml(pack.reporting_context?.latest_release_date || 'Unavailable')}</p>
-    ${renderStringList(pack.reporting_context?.facts)}
-    <h4>Guidance</h4>
-    ${renderStringList(pack.guidance?.facts)}
-    <h4>Key-variable evidence</h4>
-    ${keyVariableEvidence}
-    <h4>Other material facts</h4>
-    ${renderStringList(pack.other_material_facts)}
+    ${renderStringList(reportingFacts)}
+    <h4>Guidance and outlook</h4>
+    ${renderStringList(pack.guidance_and_outlook || legacyGuidanceFacts)}
+    <h4>Segment and operating facts</h4>
+    ${renderStringList(pack.segment_and_operating_facts)}
+    <h4>Cash flow and balance sheet</h4>
+    ${renderStringList(pack.cash_flow_and_balance_sheet)}
+    <h4>Capital structure and dilution</h4>
+    ${renderStringList(pack.capital_structure_and_dilution)}
+    <h4>Material recent developments</h4>
+    ${renderStringList(pack.material_recent_developments || pack.other_material_facts)}
     <h4>Valuation context</h4>
     ${renderStringList(pack.valuation_context)}
     <h4>Sources</h4>
     ${sources}
+    ${legacyFacts}
     <details><summary>Raw JSON</summary><pre class="config-preview">${escapeHtml(JSON.stringify(pack, null, 2))}</pre></details>
   </details>`;
 }

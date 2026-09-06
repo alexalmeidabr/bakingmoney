@@ -47,6 +47,32 @@ def core_evidence_pack():
         "reporting_context": {
             "latest_reporting_period": "Q2 2026",
             "latest_release_date": "2026-08-01",
+            "material_facts": ["Revenue increased year over year."],
+        },
+        "guidance_and_outlook": ["Management reiterated full-year guidance."],
+        "segment_and_operating_facts": ["Software revenue grew faster than hardware revenue."],
+        "cash_flow_and_balance_sheet": ["Net cash remained positive."],
+        "capital_structure_and_dilution": ["Diluted share count increased slightly."],
+        "material_recent_developments": ["The company announced a material customer expansion."],
+        "valuation_context": ["Net cash remained positive."],
+        "sources": [
+            {
+                "title": "Q2 2026 earnings release",
+                "date": "2026-08-01",
+                "source_type": "Company IR",
+                "url": "https://example.com/release",
+            }
+        ],
+    }
+
+
+def legacy_core_evidence_pack():
+    return {
+        "symbol": "TEST",
+        "as_of": "2026-09-06",
+        "reporting_context": {
+            "latest_reporting_period": "Q2 2026",
+            "latest_release_date": "2026-08-01",
             "facts": ["Revenue increased year over year."],
         },
         "guidance": {"facts": ["Management reiterated full-year guidance."]},
@@ -60,20 +86,13 @@ def core_evidence_pack():
         ],
         "other_material_facts": ["The company announced a material customer expansion."],
         "valuation_context": ["Net cash remained positive."],
-        "sources": [
-            {
-                "title": "Q2 2026 earnings release",
-                "date": "2026-08-01",
-                "source_type": "Company IR",
-                "url": "https://example.com/release",
-            }
-        ],
+        "sources": [],
     }
 
 
 def key_variables():
     return [
-        {"variable_text": "Demand", "variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8.0, "importance": 9.0},
+        {"variable_text": "DISTINCTIVE_KEY_VARIABLE_TEXT", "variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 8.0, "importance": 9.0},
         {"variable_text": "Competition", "variable_type": "Bearish", "driver_category": "Core Driver", "confidence": 4.0, "importance": 7.0},
     ]
 
@@ -87,22 +106,44 @@ class ScenarioGenerationTelemetryTests(unittest.TestCase):
         self.assertIn("$Price", config["default"])
         self.assertIn("$Price", config["required_vars"])
         self.assertIn("$BusinessModel", config["required_vars"])
-        self.assertIn("$KeyVariables", config["required_vars"])
+        self.assertNotIn("$KeyVariables", config["required_vars"])
+        self.assertNotIn("$KeyVariables", config["default"])
         self.assertIn("$CoreEvidencePack", web_server.PROMPT_TEMPLATE_CONFIG[web_server.ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS]["required_vars"])
 
-    def test_core_evidence_schema_is_strict_and_restricts_status_enum(self):
-        schema = web_server.build_core_evidence_schema()["schema"]
-        self.assertFalse(schema["additionalProperties"])
-        evidence_schema = schema["properties"]["key_variable_evidence"]["items"]
-        self.assertFalse(evidence_schema["additionalProperties"])
-        self.assertEqual(
-            evidence_schema["properties"]["evidence_status"]["enum"],
-            list(web_server.CORE_EVIDENCE_STATUSES),
+    def test_core_evidence_prompt_does_not_receive_key_variable_text(self):
+        prompt = web_server.build_core_evidence_prompt(
+            "TEST",
+            20,
+            template=web_server.DEFAULT_PROMPT_CORE_EVIDENCE_PACK,
+            company_name="Test Co",
+            business_model="Business model",
         )
 
-    def test_validate_core_evidence_pack_rejects_invalid_status(self):
+        self.assertIn("Symbol: TEST", prompt)
+        self.assertIn("Company name: Test Co", prompt)
+        self.assertIn("Current price: 20.00 USD", prompt)
+        self.assertIn("Business model:\nBusiness model", prompt)
+        self.assertNotIn("DISTINCTIVE_KEY_VARIABLE_TEXT", prompt)
+        self.assertNotIn("Key variables:", prompt)
+
+    def test_core_evidence_schema_is_strict_and_thesis_neutral(self):
+        schema = web_server.build_core_evidence_schema()["schema"]
+        self.assertFalse(schema["additionalProperties"])
+        self.assertIn("material_facts", schema["properties"]["reporting_context"]["properties"])
+        self.assertIn("guidance_and_outlook", schema["properties"])
+        self.assertIn("segment_and_operating_facts", schema["properties"])
+        self.assertIn("cash_flow_and_balance_sheet", schema["properties"])
+        self.assertIn("capital_structure_and_dilution", schema["properties"])
+        self.assertIn("material_recent_developments", schema["properties"])
+        self.assertNotIn("key_variable_evidence", schema["properties"])
+        self.assertNotIn("driver_category", json.dumps(schema))
+        self.assertNotIn("evidence_status", json.dumps(schema))
+        self.assertFalse(schema["properties"]["sources"]["items"]["additionalProperties"])
+
+    def test_validate_core_evidence_pack_accepts_new_schema_and_rejects_old_fields(self):
+        self.assertEqual(web_server.validate_core_evidence_pack(core_evidence_pack(), "TEST"), core_evidence_pack())
         payload = core_evidence_pack()
-        payload["key_variable_evidence"][0]["evidence_status"] = "Bullish interpretation"
+        payload["key_variable_evidence"] = []
         with self.assertRaises(web_server.AnalysisValidationError):
             web_server.validate_core_evidence_pack(payload, "TEST")
 
@@ -110,7 +151,7 @@ class ScenarioGenerationTelemetryTests(unittest.TestCase):
         prompt = web_server.build_scenario_generation_prompt(
             "TEST",
             20,
-            template="Symbol $Symbol\nEvidence:\n$CoreEvidencePack",
+            template="Symbol $Symbol\nKey variables:\n$KeyVariables\nEvidence:\n$CoreEvidencePack",
             company_name="Test Co",
             business_model="Business",
             key_variables=key_variables(),
@@ -118,7 +159,8 @@ class ScenarioGenerationTelemetryTests(unittest.TestCase):
         )
 
         self.assertIn('"as_of": "2026-09-06"', prompt)
-        self.assertIn('"driver_category": "Core Driver"', prompt)
+        self.assertIn('"material_recent_developments": [', prompt)
+        self.assertIn("DISTINCTIVE_KEY_VARIABLE_TEXT", prompt)
         self.assertNotIn("None", prompt)
         self.assertNotIn("undefined", prompt)
 
@@ -197,7 +239,6 @@ class ScenarioGenerationTelemetryTests(unittest.TestCase):
                 "Test Co",
                 "Business",
                 "Summary",
-                key_variables(),
                 web_server.DEFAULT_PROMPT_CORE_EVIDENCE_PACK,
             )
 
@@ -398,6 +439,55 @@ class ScenarioGenerationTelemetryTests(unittest.TestCase):
 
         self.assertEqual(stored["value"], custom_prompt)
 
+    def test_prompt_migration_preserves_custom_core_evidence_prompt(self):
+        custom_prompt = "Custom $Symbol $CompanyName $Price $BusinessModel"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "custom-core-prompt.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.save_prompt_template(conn, web_server.ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK, custom_prompt)
+                    web_server.migrate_legacy_default_prompt_templates(conn)
+                    stored = conn.execute(
+                        "SELECT value FROM app_settings WHERE key = ?",
+                        (web_server.ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(stored["value"], custom_prompt)
+
+    def test_prompt_migration_updates_previous_core_evidence_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "legacy-core-prompt.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO app_settings (key, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                        """,
+                        (
+                            web_server.ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK,
+                            web_server.PREVIOUS_DEFAULT_PROMPT_CORE_EVIDENCE_PACK,
+                            web_server.utc_now_iso(),
+                        ),
+                    )
+                    conn.commit()
+                    web_server.migrate_legacy_default_prompt_templates(conn)
+                    stored = conn.execute(
+                        "SELECT value FROM app_settings WHERE key = ?",
+                        (web_server.ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(stored["value"], web_server.DEFAULT_PROMPT_CORE_EVIDENCE_PACK)
+
     def test_prompt_migration_updates_only_exact_legacy_scenario_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "legacy-prompt.db")
@@ -427,6 +517,56 @@ class ScenarioGenerationTelemetryTests(unittest.TestCase):
                     conn.close()
 
         self.assertEqual(stored["value"], web_server.DEFAULT_PROMPT_SCENARIOS)
+
+    def test_prompt_migration_updates_previous_hybrid_scenario_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "hybrid-prompt.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO app_settings (key, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                        """,
+                        (
+                            web_server.ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,
+                            web_server.PREVIOUS_DEFAULT_PROMPT_SCENARIOS_HYBRID,
+                            web_server.utc_now_iso(),
+                        ),
+                    )
+                    conn.commit()
+                    web_server.migrate_legacy_default_prompt_templates(conn)
+                    stored = conn.execute(
+                        "SELECT value FROM app_settings WHERE key = ?",
+                        (web_server.ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertEqual(stored["value"], web_server.DEFAULT_PROMPT_SCENARIOS)
+
+    def test_core_evidence_prompt_help_and_ui_use_new_sections(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(base_dir, "static", "index.html"), encoding="utf-8") as handle:
+            index_html = handle.read()
+        with open(os.path.join(base_dir, "static", "app.js"), encoding="utf-8") as handle:
+            app_js = handle.read()
+
+        core_section = index_html.split('<h3>Core Evidence Pack Prompt</h3>', 1)[1].split('<textarea id="prompt-core-evidence-pack"', 1)[0]
+        self.assertIn("$Symbol", core_section)
+        self.assertIn("$CompanyName", core_section)
+        self.assertIn("$Price", core_section)
+        self.assertIn("$BusinessModel", core_section)
+        self.assertNotIn("$KeyVariables", core_section)
+        self.assertIn("Guidance and outlook", app_js)
+        self.assertIn("Segment and operating facts", app_js)
+        self.assertIn("Cash flow and balance sheet", app_js)
+        self.assertIn("Capital structure and dilution", app_js)
+        self.assertIn("Material recent developments", app_js)
+        self.assertNotIn("<h4>Key-variable evidence</h4>", app_js)
 
     def test_logging_configuration_allows_bakingmoney_info_messages(self):
         original_level = web_server.logger.level

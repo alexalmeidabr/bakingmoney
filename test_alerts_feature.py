@@ -1004,6 +1004,8 @@ class ScenarioProbabilityDriverWeightTests(unittest.TestCase):
         self.assertIn("Potential Drivers:", prompt)
         self.assertIn("- Should primarily affect Bull/Bear optionality and scenario range.", prompt)
         self.assertIn("CORE EVIDENCE PACK AND FRESH INFORMATION", prompt)
+        self.assertIn("EVIDENCE WEIGHTING", prompt)
+        self.assertIn("Use the Core Evidence Pack to establish factual context, not as a vote-counting mechanism.", prompt)
         self.assertIn("Core Evidence Pack:\n$CoreEvidencePack", prompt)
         self.assertIn("The assumptions field must be a concise 5-year thesis summary", prompt)
 

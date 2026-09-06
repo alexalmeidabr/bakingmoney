@@ -73,7 +73,7 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
         templates = {
             web_server.ANALYSIS_PROMPT_SETTING_KEY_BUSINESS_MODEL: "BM prompt for $Symbol",
             web_server.ANALYSIS_PROMPT_SETTING_KEY_KEY_VARIABLES: "KV prompt $BusinessModel",
-            web_server.ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK: "Evidence prompt $Symbol $BusinessModel $KeyVariables",
+            web_server.ANALYSIS_PROMPT_SETTING_KEY_CORE_EVIDENCE_PACK: "Evidence prompt $Symbol $BusinessModel",
             web_server.ANALYSIS_PROMPT_SETTING_KEY_SCENARIOS: "Scenario prompt\nSymbol:$Symbol\nBusiness:$BusinessModel\nVars:$KeyVariables\nEvidence:$CoreEvidencePack",
         }
         sources = {k: "saved" for k in templates.keys()}
@@ -126,10 +126,11 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
                 ],
             )
 
-        def fake_generate_core_evidence_pack(**_kwargs):
+        def fake_generate_core_evidence_pack(**kwargs):
+            captured["core_evidence_kwargs"] = kwargs
             return {
                 "prompt": "Evidence prompt rendered",
-                "pack": {"symbol": "NBIS", "as_of": "2026-01-01", "reporting_context": {"latest_reporting_period": "", "latest_release_date": "", "facts": []}, "guidance": {"facts": []}, "key_variable_evidence": [], "other_material_facts": [], "valuation_context": [], "sources": []},
+                "pack": {"symbol": "NBIS", "as_of": "2026-01-01", "reporting_context": {"latest_reporting_period": "", "latest_release_date": "", "material_facts": []}, "guidance_and_outlook": [], "segment_and_operating_facts": [], "cash_flow_and_balance_sheet": [], "capital_structure_and_dilution": [], "material_recent_developments": [], "valuation_context": [], "sources": []},
                 "generated_at": "2026-01-01T00:00:00+00:00",
                 "model": "gpt-5-mini",
                 "reasoning_effort": "medium",
@@ -178,6 +179,7 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
 
         self.assertEqual(expected_prompt, captured["prompt_text"])
         self.assertEqual(expected_prompt, result["raw"]["step3_prompt"])
+        self.assertNotIn("key_variables", captured["core_evidence_kwargs"])
         self.assertIn("Summary: This summary must not be auto-injected", captured["key_variables_prompt"])
         self.assertIn("Summary: This summary must not be auto-injected", captured["prompt_text"])
 
@@ -238,7 +240,7 @@ class ScenarioPromptRenderingTests(unittest.TestCase):
                 def fake_generate_core_evidence_pack(**_kwargs):
                     return {
                         "prompt": "Evidence prompt rendered",
-                        "pack": {"symbol": "NBIS", "as_of": "2026-01-01", "reporting_context": {"latest_reporting_period": "", "latest_release_date": "", "facts": []}, "guidance": {"facts": []}, "key_variable_evidence": [], "other_material_facts": [], "valuation_context": [], "sources": []},
+                        "pack": {"symbol": "NBIS", "as_of": "2026-01-01", "reporting_context": {"latest_reporting_period": "", "latest_release_date": "", "material_facts": []}, "guidance_and_outlook": [], "segment_and_operating_facts": [], "cash_flow_and_balance_sheet": [], "capital_structure_and_dilution": [], "material_recent_developments": [], "valuation_context": [], "sources": []},
                         "generated_at": "2026-01-01T00:00:00+00:00",
                         "model": "gpt-5-mini",
                         "reasoning_effort": "medium",

@@ -243,7 +243,9 @@
                 <h3>Scenario Generation Info</h3>
                 <button id="analysis-scenario-info-close-btn">Close</button>
               </div>
-              <pre id="analysis-scenario-info-text" class="config-preview"></pre>
+              <div id="analysis-scenario-info-content" class="scenario-info-content">
+                <pre id="analysis-scenario-info-text" class="config-preview"></pre>
+              </div>
             </div>
           </div>
         </section>
@@ -545,8 +547,14 @@
 
           <section class="detail-card">
             <h3>Build Scenarios Prompt</h3>
-            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong></p>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (optional), <strong>$BusinessModel</strong>, <strong>$KeyVariables</strong>, <strong>$CoreEvidencePack</strong></p>
             <textarea id="prompt-scenarios" class="config-textarea" rows="14"></textarea>
+          </section>
+
+          <section class="detail-card">
+            <h3>Core Evidence Pack Prompt</h3>
+            <p class="status">Supported variables: <strong>$Symbol</strong> (required), <strong>$CompanyName</strong> (required), <strong>$Price</strong> (required), <strong>$BusinessModel</strong></p>
+            <textarea id="prompt-core-evidence-pack" class="config-textarea" rows="14"></textarea>
           </section>
 
           <section class="detail-card">

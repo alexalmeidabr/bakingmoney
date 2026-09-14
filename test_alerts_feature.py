@@ -284,7 +284,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                 conn = web_server.get_db_connection()
                 try:
                     rows = [{"symbol": "msft", "position": 10, "price": 100, "avgCost": 80, "changePercent": 1.2, "marketValue": 1000, "unrealizedPnL": 200, "dailyPnL": 10, "currency": "USD"}]
-                    web_server.save_positions_cache(conn, rows)
+                    web_server.save_positions_cache(conn, rows, account_id="U1111111")
                     loaded = web_server.load_positions_cache(conn)
                     self.assertEqual(len(loaded), 1)
                     self.assertEqual(loaded[0]["symbol"], "MSFT")
@@ -2313,16 +2313,21 @@ class EarningsReviewTests(unittest.TestCase):
                 conn = web_server.get_db_connection()
                 try:
                     self._seed_analysis(conn, symbol="MSFT")
-                    conn.execute(
-                        """
-                        INSERT INTO positions_cache (
-                          symbol, position, price, avg_cost, change_percent, market_value,
-                          unrealized_pnl, daily_pnl, currency, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        ("MSFT", 5, 110, 100, 1.0, 550, 50, 5, "USD", web_server.utc_now_iso()),
+                    web_server.save_positions_cache(
+                        conn,
+                        [{
+                            "symbol": "MSFT",
+                            "position": 5,
+                            "price": 110,
+                            "avgCost": 100,
+                            "changePercent": 1.0,
+                            "marketValue": 550,
+                            "unrealizedPnL": 50,
+                            "dailyPnL": 5,
+                            "currency": "USD",
+                        }],
+                        account_id="U1111111",
                     )
-                    conn.commit()
                     self.assertEqual(web_server.list_earnings_release_calendar(conn), [])
 
                     first = web_server.create_earnings_calendar_entry(

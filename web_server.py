@@ -51,6 +51,11 @@ BACKUP_EXPORT_FILENAME_PREFIX = "bakingmoney-backup"
 BACKUP_PACKAGE_DB_FILENAME = "bakingmoney.db"
 BACKUP_PACKAGE_ENV_FILENAME = ".env"
 BACKUP_PACKAGE_MANIFEST_FILENAME = "manifest.json"
+LEGACY_IB_ACCOUNT_ID = "__legacy__"
+MULTIPLE_IB_ACCOUNTS_REFRESH_ERROR = (
+    "Multiple Interactive Brokers accounts were detected. Multi-account live refresh is not enabled yet. "
+    "No portfolio data was changed."
+)
 BACKUP_REQUIRED_TABLES = (
     "analysis_symbols",
     "analysis_scenarios",
@@ -3580,6 +3585,367 @@ def ensure_column_exists(conn, table_name, column_name, column_definition):
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
 
 
+class MultipleIBAccountsDetectedError(RuntimeError):
+    pass
+
+
+def _table_exists(conn, table_name):
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _table_columns(conn, table_name):
+    return {
+        row["name"]: row
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+
+
+def _primary_key_columns(conn, table_name):
+    pk_rows = [
+        row
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        if row["pk"]
+    ]
+    return [row["name"] for row in sorted(pk_rows, key=lambda item: item["pk"])]
+
+
+def _is_multi_account_positions_schema(conn):
+    return _primary_key_columns(conn, "positions_cache") == ["account_id", "symbol"]
+
+
+def _is_multi_account_portfolio_summary_schema(conn):
+    return _primary_key_columns(conn, "portfolio_summary_cache") == ["account_id"]
+
+
+def _normalize_ib_account_id(account_id):
+    if account_id is None:
+        return None
+    normalized = str(account_id).strip()
+    return normalized or None
+
+
+def mask_ib_account_id(account_id):
+    normalized = _normalize_ib_account_id(account_id)
+    if not normalized:
+        return None
+    if normalized == LEGACY_IB_ACCOUNT_ID:
+        return normalized
+    if len(normalized) <= 4:
+        return "***"
+    return f"{normalized[:1]}***{normalized[-4:]}"
+
+
+def upsert_ib_account(conn, account_id, display_name=None, last_seen_at=None):
+    normalized_account_id = _normalize_ib_account_id(account_id)
+    if not normalized_account_id:
+        raise ValueError("account_id is required")
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO ib_accounts (account_id, display_name, created_at, last_seen_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(account_id) DO UPDATE SET
+          display_name = COALESCE(excluded.display_name, ib_accounts.display_name),
+          last_seen_at = COALESCE(excluded.last_seen_at, ib_accounts.last_seen_at),
+          updated_at = excluded.updated_at
+        """,
+        (normalized_account_id, display_name, now, last_seen_at, now),
+    )
+    return normalized_account_id
+
+
+def list_ib_accounts(conn):
+    rows = conn.execute(
+        """
+        SELECT account_id, display_name, created_at, last_seen_at, updated_at
+        FROM ib_accounts
+        ORDER BY account_id ASC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_ib_account(conn, account_id):
+    normalized_account_id = _normalize_ib_account_id(account_id)
+    if not normalized_account_id:
+        return None
+    row = conn.execute(
+        """
+        SELECT account_id, display_name, created_at, last_seen_at, updated_at
+        FROM ib_accounts
+        WHERE account_id = ?
+        """,
+        (normalized_account_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def reconcile_legacy_account_to_real_account(conn, real_account_id):
+    normalized_real_account_id = _normalize_ib_account_id(real_account_id)
+    if not normalized_real_account_id or normalized_real_account_id == LEGACY_IB_ACCOUNT_ID:
+        return False
+
+    accounts = list_ib_accounts(conn)
+    if len(accounts) != 1 or accounts[0]["account_id"] != LEGACY_IB_ACCOUNT_ID:
+        return False
+
+    target_position = conn.execute(
+        "SELECT 1 FROM positions_cache WHERE account_id = ? LIMIT 1",
+        (normalized_real_account_id,),
+    ).fetchone()
+    target_summary = conn.execute(
+        "SELECT 1 FROM portfolio_summary_cache WHERE account_id = ? LIMIT 1",
+        (normalized_real_account_id,),
+    ).fetchone()
+    target_account = get_ib_account(conn, normalized_real_account_id)
+    if target_position or target_summary or target_account:
+        raise RuntimeError("Cannot reconcile legacy IB account because target account data already exists")
+
+    legacy_account = accounts[0]
+    display_name = legacy_account.get("display_name")
+    if display_name == "Legacy Account":
+        display_name = None
+    created_at = legacy_account.get("created_at") or utc_now_iso()
+    last_seen_at = legacy_account.get("last_seen_at")
+    now = utc_now_iso()
+
+    conn.execute("BEGIN")
+    try:
+        conn.execute(
+            "UPDATE positions_cache SET account_id = ? WHERE account_id = ?",
+            (normalized_real_account_id, LEGACY_IB_ACCOUNT_ID),
+        )
+        conn.execute(
+            "UPDATE portfolio_summary_cache SET account_id = ? WHERE account_id = ?",
+            (normalized_real_account_id, LEGACY_IB_ACCOUNT_ID),
+        )
+        conn.execute("DELETE FROM ib_accounts WHERE account_id = ?", (LEGACY_IB_ACCOUNT_ID,))
+        conn.execute(
+            """
+            INSERT INTO ib_accounts (account_id, display_name, created_at, last_seen_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (normalized_real_account_id, display_name, created_at, last_seen_at, now),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return True
+
+
+def _resolve_cache_account_id(conn, account_id=None, allow_none_when_empty=True):
+    explicit_account_id = _normalize_ib_account_id(account_id)
+    if explicit_account_id:
+        return explicit_account_id
+    accounts = list_ib_accounts(conn)
+    if len(accounts) == 1:
+        return accounts[0]["account_id"]
+    if not accounts and allow_none_when_empty:
+        return None
+    raise ValueError("account_id is required when multiple IB accounts exist")
+
+
+def _create_ib_accounts_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ib_accounts (
+          account_id TEXT PRIMARY KEY,
+          display_name TEXT,
+          created_at TEXT NOT NULL,
+          last_seen_at TEXT,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _create_positions_cache_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS positions_cache (
+          account_id TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          position REAL,
+          price REAL,
+          avg_cost REAL,
+          change_percent REAL,
+          market_value REAL,
+          unrealized_pnl REAL,
+          daily_pnl REAL,
+          currency TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (account_id, symbol)
+        )
+        """
+    )
+
+
+def _create_portfolio_summary_cache_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_summary_cache (
+          account_id TEXT PRIMARY KEY,
+          base_currency TEXT,
+          net_liquidation REAL,
+          total_cash_value REAL,
+          settled_cash REAL,
+          available_funds REAL,
+          buying_power REAL,
+          excess_liquidity REAL,
+          ledger_cash_usd REAL,
+          actual_cash REAL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _legacy_table_has_rows(conn, table_name):
+    if not _table_exists(conn, table_name):
+        return False
+    row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
+    return row is not None
+
+
+def _legacy_portfolio_summary_account_id(conn):
+    if not _table_exists(conn, "portfolio_summary_cache"):
+        return None
+    columns = _table_columns(conn, "portfolio_summary_cache")
+    if "account_id" not in columns:
+        return None
+    order_clause = "id ASC" if "id" in columns else "account_id ASC"
+    row = conn.execute(
+        f"""
+        SELECT account_id
+        FROM portfolio_summary_cache
+        WHERE account_id IS NOT NULL AND TRIM(account_id) <> ''
+        ORDER BY {order_clause}
+        LIMIT 1
+        """
+    ).fetchone()
+    return _normalize_ib_account_id(row["account_id"]) if row else None
+
+
+def _resolve_legacy_account_id(conn):
+    account_id = _legacy_portfolio_summary_account_id(conn)
+    if account_id:
+        return account_id
+    if _legacy_table_has_rows(conn, "positions_cache") or _legacy_table_has_rows(conn, "portfolio_summary_cache"):
+        return LEGACY_IB_ACCOUNT_ID
+    return None
+
+
+def _register_legacy_account_if_needed(conn, legacy_account_id):
+    if not legacy_account_id:
+        return
+    display_name = "Legacy Account" if legacy_account_id == LEGACY_IB_ACCOUNT_ID else None
+    upsert_ib_account(conn, legacy_account_id, display_name=display_name)
+
+
+def _migrate_positions_cache_to_multi_account(conn, legacy_account_id):
+    if _is_multi_account_positions_schema(conn):
+        return
+    if not _table_exists(conn, "positions_cache"):
+        _create_positions_cache_table(conn)
+        return
+
+    legacy_count = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM positions_cache
+        WHERE symbol IS NOT NULL AND TRIM(symbol) <> ''
+        """
+    ).fetchone()[0]
+    if legacy_count and not legacy_account_id:
+        raise RuntimeError("Unable to migrate positions_cache without a legacy account_id")
+
+    conn.execute("ALTER TABLE positions_cache RENAME TO positions_cache_legacy")
+    _create_positions_cache_table(conn)
+    if legacy_account_id:
+        now = utc_now_iso()
+        conn.execute(
+            """
+            INSERT INTO positions_cache (
+              account_id, symbol, position, price, avg_cost, change_percent,
+              market_value, unrealized_pnl, daily_pnl, currency, updated_at
+            )
+            SELECT ?, symbol, position, price, avg_cost, change_percent,
+                   market_value, unrealized_pnl, daily_pnl, currency, COALESCE(updated_at, ?)
+            FROM positions_cache_legacy
+            WHERE symbol IS NOT NULL AND TRIM(symbol) <> ''
+            """,
+            (legacy_account_id, now),
+        )
+        migrated_count = conn.execute(
+            "SELECT COUNT(*) FROM positions_cache WHERE account_id = ?",
+            (legacy_account_id,),
+        ).fetchone()[0]
+        if migrated_count != legacy_count:
+            raise RuntimeError("positions_cache migration row count mismatch")
+    conn.execute("DROP TABLE positions_cache_legacy")
+
+
+def _migrate_portfolio_summary_cache_to_multi_account(conn, legacy_account_id):
+    if _is_multi_account_portfolio_summary_schema(conn):
+        return
+    if not _table_exists(conn, "portfolio_summary_cache"):
+        _create_portfolio_summary_cache_table(conn)
+        return
+
+    legacy_columns = _table_columns(conn, "portfolio_summary_cache")
+    account_expr = "NULLIF(TRIM(account_id), '')" if "account_id" in legacy_columns else "NULL"
+    legacy_count = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM portfolio_summary_cache
+        """
+    ).fetchone()[0]
+    copy_count = legacy_count if legacy_account_id else 0
+
+    conn.execute("ALTER TABLE portfolio_summary_cache RENAME TO portfolio_summary_cache_legacy")
+    _create_portfolio_summary_cache_table(conn)
+    if legacy_account_id:
+        now = utc_now_iso()
+        conn.execute(
+            f"""
+            INSERT INTO portfolio_summary_cache (
+              account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
+              available_funds, buying_power, excess_liquidity, ledger_cash_usd, actual_cash, updated_at
+            )
+            SELECT COALESCE({account_expr}, ?), base_currency, net_liquidation, total_cash_value, settled_cash,
+                   available_funds, buying_power, excess_liquidity, ledger_cash_usd, actual_cash, COALESCE(updated_at, ?)
+            FROM portfolio_summary_cache_legacy
+            """
+            ,
+            (legacy_account_id, now),
+        )
+        migrated_count = conn.execute("SELECT COUNT(*) FROM portfolio_summary_cache").fetchone()[0]
+        if migrated_count != copy_count:
+            raise RuntimeError("portfolio_summary_cache migration row count mismatch")
+    conn.execute("DROP TABLE portfolio_summary_cache_legacy")
+
+
+def migrate_multi_account_portfolio_schema(conn):
+    _create_ib_accounts_table(conn)
+    legacy_account_id = None
+    if (
+        _table_exists(conn, "positions_cache")
+        and not _is_multi_account_positions_schema(conn)
+    ) or (
+        _table_exists(conn, "portfolio_summary_cache")
+        and not _is_multi_account_portfolio_summary_schema(conn)
+    ):
+        legacy_account_id = _resolve_legacy_account_id(conn)
+        _register_legacy_account_if_needed(conn, legacy_account_id)
+    _migrate_positions_cache_to_multi_account(conn, legacy_account_id)
+    _migrate_portfolio_summary_cache_to_multi_account(conn, legacy_account_id)
+
+
 def init_db():
     conn = get_db_connection()
     try:
@@ -4001,40 +4367,9 @@ def init_db():
             )
             """
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS positions_cache (
-              symbol TEXT PRIMARY KEY,
-              position REAL,
-              price REAL,
-              avg_cost REAL,
-              change_percent REAL,
-              market_value REAL,
-              unrealized_pnl REAL,
-              daily_pnl REAL,
-              currency TEXT,
-              updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS portfolio_summary_cache (
-              id INTEGER PRIMARY KEY CHECK (id = 1),
-              account_id TEXT,
-              base_currency TEXT,
-              net_liquidation REAL,
-              total_cash_value REAL,
-              settled_cash REAL,
-              available_funds REAL,
-              buying_power REAL,
-              excess_liquidity REAL,
-              ledger_cash_usd REAL,
-              actual_cash REAL,
-              updated_at TEXT NOT NULL
-            )
-            """
-        )
+        _create_ib_accounts_table(conn)
+        _create_positions_cache_table(conn)
+        _create_portfolio_summary_cache_table(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS thesis_review_alerts (
@@ -4123,6 +4458,7 @@ def init_db():
         ensure_column_exists(conn, "analysis_version_key_variables", "driver_category", "TEXT NOT NULL DEFAULT 'Core Driver'")
         ensure_column_exists(conn, "portfolio_summary_cache", "ledger_cash_usd", "REAL")
         ensure_column_exists(conn, "portfolio_summary_cache", "actual_cash", "REAL")
+        migrate_multi_account_portfolio_schema(conn)
         migrate_legacy_default_prompt_templates(conn)
 
         has_roots = conn.execute("SELECT 1 FROM analysis_roots LIMIT 1").fetchone()
@@ -8116,7 +8452,14 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
     return merged
 
 
-def save_positions_cache(conn, positions):
+def save_positions_cache(conn, positions, account_id=None):
+    resolved_account_id = _resolve_cache_account_id(conn, account_id)
+    if not resolved_account_id:
+        if positions:
+            raise ValueError("account_id is required to save positions when no IB account is registered")
+        return
+    reconcile_legacy_account_to_real_account(conn, resolved_account_id)
+    upsert_ib_account(conn, resolved_account_id, last_seen_at=utc_now_iso())
     now = utc_now_iso()
     active_symbols = set()
     for row in positions or []:
@@ -8125,16 +8468,19 @@ def save_positions_cache(conn, positions):
             continue
         qty = safe_number(row.get("position"))
         if abs(qty or 0.0) <= 0:
-            conn.execute("DELETE FROM positions_cache WHERE symbol = ?", (symbol,))
+            conn.execute(
+                "DELETE FROM positions_cache WHERE account_id = ? AND symbol = ?",
+                (resolved_account_id, symbol),
+            )
             continue
         active_symbols.add(symbol)
         conn.execute(
             """
             INSERT INTO positions_cache (
-              symbol, position, price, avg_cost, change_percent,
+              account_id, symbol, position, price, avg_cost, change_percent,
               market_value, unrealized_pnl, daily_pnl, currency, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(symbol) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, symbol) DO UPDATE SET
               position = excluded.position,
               price = excluded.price,
               avg_cost = excluded.avg_cost,
@@ -8146,6 +8492,7 @@ def save_positions_cache(conn, positions):
               updated_at = excluded.updated_at
             """,
             (
+                resolved_account_id,
                 symbol,
                 row.get("position"),
                 row.get("price"),
@@ -8161,22 +8508,27 @@ def save_positions_cache(conn, positions):
     if active_symbols:
         placeholders = ", ".join(["?"] * len(active_symbols))
         conn.execute(
-            f"DELETE FROM positions_cache WHERE symbol NOT IN ({placeholders})",
-            tuple(sorted(active_symbols)),
+            f"DELETE FROM positions_cache WHERE account_id = ? AND symbol NOT IN ({placeholders})",
+            (resolved_account_id, *tuple(sorted(active_symbols))),
         )
     else:
-        conn.execute("DELETE FROM positions_cache")
+        conn.execute("DELETE FROM positions_cache WHERE account_id = ?", (resolved_account_id,))
     conn.commit()
 
 
-def load_positions_cache(conn):
+def load_positions_cache(conn, account_id=None):
+    resolved_account_id = _resolve_cache_account_id(conn, account_id)
+    if not resolved_account_id:
+        return []
     rows = conn.execute(
         """
         SELECT symbol, position, price, avg_cost, change_percent,
                market_value, unrealized_pnl, daily_pnl, currency
         FROM positions_cache
+        WHERE account_id = ?
         ORDER BY symbol ASC
-        """
+        """,
+        (resolved_account_id,),
     ).fetchall()
     return [
         {
@@ -8260,14 +8612,101 @@ def _choose_account_cash(summary_items, base_currency=None):
     return None, "unknown", None, None
 
 
-def fetch_ib_portfolio_summary(ib):
+def _ib_account_ids_from_items(items):
+    return sorted({
+        account_id
+        for account_id in (_normalize_ib_account_id(getattr(item, "account", None)) for item in items or [])
+        if account_id
+    })
+
+
+def _ib_account_ids_from_positions(positions):
+    return sorted({
+        account_id
+        for account_id in (_normalize_ib_account_id(getattr(position, "account", None)) for position in positions or [])
+        if account_id
+    })
+
+
+def get_managed_ib_account_ids(ib):
+    try:
+        raw_accounts = ib.managedAccounts() or []
+    except AttributeError:
+        raw_accounts = []
+    if isinstance(raw_accounts, str):
+        raw_accounts = raw_accounts.split(",")
+    return sorted({
+        account_id
+        for account_id in (_normalize_ib_account_id(account_id) for account_id in raw_accounts)
+        if account_id
+    })
+
+
+def _select_live_ib_account_id(managed_account_ids, position_account_ids=None, summary_account_ids=None):
+    managed_account_ids = sorted({_normalize_ib_account_id(account_id) for account_id in managed_account_ids or [] if _normalize_ib_account_id(account_id)})
+    position_account_ids = sorted({_normalize_ib_account_id(account_id) for account_id in position_account_ids or [] if _normalize_ib_account_id(account_id)})
+    summary_account_ids = sorted({_normalize_ib_account_id(account_id) for account_id in summary_account_ids or [] if _normalize_ib_account_id(account_id)})
+    if len(managed_account_ids) > 1:
+        raise MultipleIBAccountsDetectedError(
+            "Multiple IB managed accounts detected; multi-account refresh is not enabled yet"
+        )
+    if len(managed_account_ids) == 1:
+        selected_account_id = managed_account_ids[0]
+        conflicting_positions = [account_id for account_id in position_account_ids if account_id != selected_account_id]
+        if conflicting_positions:
+            raise MultipleIBAccountsDetectedError(
+                "IB positions account does not match the selected managed account; no portfolio data was changed"
+            )
+        return selected_account_id
+    candidate_ids = sorted(set(position_account_ids) | set(summary_account_ids))
+    if len(candidate_ids) > 1:
+        raise MultipleIBAccountsDetectedError(
+            "Unable to determine a single IB account because managedAccounts() returned none and live data is ambiguous"
+        )
+    return candidate_ids[0] if candidate_ids else None
+
+
+def _filter_summary_items_for_account(items, account_id):
+    selected_account_id = _normalize_ib_account_id(account_id)
+    if not selected_account_id:
+        return list(items or [])
+    matched_items = [
+        item
+        for item in items or []
+        if _normalize_ib_account_id(getattr(item, "account", None)) == selected_account_id
+    ]
+    blank_items = [
+        item
+        for item in items or []
+        if not _normalize_ib_account_id(getattr(item, "account", None))
+    ]
+    if matched_items:
+        return matched_items + blank_items
+    return list(items or [])
+
+
+def fetch_ib_portfolio_summary(ib, account_id=None, position_account_ids=None):
     items = ib.accountSummary() or []
+    summary_account_ids = _ib_account_ids_from_items(items)
+    managed_account_ids = [] if account_id else get_managed_ib_account_ids(ib)
+    account_id = _normalize_ib_account_id(account_id) or _select_live_ib_account_id(
+        managed_account_ids,
+        position_account_ids=position_account_ids,
+        summary_account_ids=summary_account_ids,
+    )
+    items = _filter_summary_items_for_account(items, account_id)
     tag_currency_pairs = sorted({
         f"{getattr(item, 'tag', '')}:{_account_summary_currency(item) or 'NO_CURRENCY'}"
         for item in items
     })
-    logger.info("IBKR account summary returned %s rows; tags/currencies=%s", len(items), tag_currency_pairs[:80])
-    account_id = next((getattr(item, "account", None) for item in items if getattr(item, "account", None)), None)
+    logger.info(
+        "IBKR account summary returned rows=%s managed_account_count=%s selected_account=%s summary_account_identifier_count=%s tags/currencies=%s",
+        len(items),
+        len(managed_account_ids),
+        mask_ib_account_id(account_id),
+        len(summary_account_ids),
+        tag_currency_pairs[:80],
+    )
     base_currency = next((
         _account_summary_currency(item)
         for item in items
@@ -8300,17 +8739,23 @@ def fetch_ib_portfolio_summary(ib):
     }
 
 
-def save_portfolio_summary_cache(conn, summary):
+def save_portfolio_summary_cache(conn, summary, account_id=None):
     if not isinstance(summary, dict):
         return
+    resolved_account_id = _normalize_ib_account_id(account_id) or _normalize_ib_account_id(summary.get("account_id"))
+    if not resolved_account_id:
+        resolved_account_id = _resolve_cache_account_id(conn, None)
+    if not resolved_account_id:
+        raise ValueError("account_id is required to save portfolio summary when no IB account is registered")
+    reconcile_legacy_account_to_real_account(conn, resolved_account_id)
+    upsert_ib_account(conn, resolved_account_id, last_seen_at=utc_now_iso())
     conn.execute(
         """
         INSERT INTO portfolio_summary_cache (
-          id, account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
+          account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
           available_funds, buying_power, excess_liquidity, ledger_cash_usd, actual_cash, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          account_id = excluded.account_id,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id) DO UPDATE SET
           base_currency = excluded.base_currency,
           net_liquidation = excluded.net_liquidation,
           total_cash_value = excluded.total_cash_value,
@@ -8323,7 +8768,7 @@ def save_portfolio_summary_cache(conn, summary):
           updated_at = excluded.updated_at
         """,
         (
-            summary.get("account_id"),
+            resolved_account_id,
             summary.get("base_currency"),
             summary.get("net_liquidation"),
             summary.get("total_cash_value"),
@@ -8339,14 +8784,18 @@ def save_portfolio_summary_cache(conn, summary):
     conn.commit()
 
 
-def load_portfolio_summary_cache(conn):
+def load_portfolio_summary_cache(conn, account_id=None):
+    resolved_account_id = _resolve_cache_account_id(conn, account_id)
+    if not resolved_account_id:
+        return None
     row = conn.execute(
         """
         SELECT account_id, base_currency, net_liquidation, total_cash_value, settled_cash,
                available_funds, buying_power, excess_liquidity, ledger_cash_usd, actual_cash, updated_at
         FROM portfolio_summary_cache
-        WHERE id = 1
-        """
+        WHERE account_id = ?
+        """,
+        (resolved_account_id,),
     ).fetchone()
     return dict(row) if row else None
 
@@ -12889,15 +13338,45 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         try:
             ensure_event_loop()
             ib = get_ib_connection()
+            managed_account_ids = get_managed_ib_account_ids(ib)
             positions = ib.positions()
+            position_account_ids = _ib_account_ids_from_positions(positions)
             account_summary = None
             account_summary_warning = None
+            if len(managed_account_ids) > 1:
+                raise MultipleIBAccountsDetectedError(
+                    "Multiple IB managed accounts detected; multi-account refresh is not enabled yet"
+                )
+            if len(position_account_ids) > 1:
+                raise MultipleIBAccountsDetectedError(
+                    "Multiple IB position accounts detected; multi-account refresh is not enabled yet"
+                )
+            selected_account_id = managed_account_ids[0] if managed_account_ids else None
+            if selected_account_id and position_account_ids and position_account_ids[0] != selected_account_id:
+                raise MultipleIBAccountsDetectedError(
+                    "IB positions account does not match the selected managed account; no portfolio data was changed"
+                )
             try:
-                account_summary = fetch_ib_portfolio_summary(ib)
+                account_summary = fetch_ib_portfolio_summary(
+                    ib,
+                    account_id=selected_account_id,
+                    position_account_ids=position_account_ids,
+                )
+                selected_account_id = _normalize_ib_account_id((account_summary or {}).get("account_id")) or selected_account_id
+            except MultipleIBAccountsDetectedError:
+                raise
             except Exception as exc:
                 logger.warning("Unable to fetch IBKR account summary during positions refresh: %s", exc)
                 account_summary_warning = "IBKR account summary/cash could not be updated."
-            logger.info("Positions API using live IBKR path positions_count=%s", len(positions))
+                if not selected_account_id and len(position_account_ids) == 1:
+                    selected_account_id = position_account_ids[0]
+            logger.info(
+                "Positions API using live IBKR path positions_count=%s managed_account_count=%s selected_account=%s position_account_count=%s",
+                len(positions),
+                len(managed_account_ids),
+                mask_ib_account_id(selected_account_id),
+                len(position_account_ids),
+            )
             contracts = [p.contract for p in positions if p.contract]
             tickers_by_conid = {}
             tws_data_enabled = is_tws_data_enabled()
@@ -12964,15 +13443,18 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             try:
                 effective_data = data
                 warning_message = None
+                account_id = selected_account_id
                 if tws_data_enabled:
-                    save_positions_cache(conn, effective_data)
                     if account_summary:
-                        save_portfolio_summary_cache(conn, account_summary)
+                        save_portfolio_summary_cache(conn, account_summary, account_id=account_id)
+                    save_positions_cache(conn, effective_data, account_id=account_id)
                 else:
-                    cached_rows = load_positions_cache(conn)
+                    if account_summary and account_id:
+                        save_portfolio_summary_cache(conn, account_summary, account_id=account_id)
+                    cached_rows = load_positions_cache(conn, account_id=account_id)
                     effective_data = overlay_cached_market_fields(data, cached_rows)
                     if cached_rows:
-                        save_positions_cache(conn, effective_data)
+                        save_positions_cache(conn, effective_data, account_id=account_id)
                     warning_message = "Data from TWS is disabled. Showing latest cached market values when available."
                 if account_summary_warning:
                     warning_message = " ".join([part for part in [warning_message, account_summary_warning] if part])
@@ -12990,6 +13472,15 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 self._send_json(payload)
             finally:
                 conn.close()
+        except MultipleIBAccountsDetectedError as exc:
+            logger.warning("Positions API rejected unsafe multi-account live refresh: %s", exc)
+            self._send_json(
+                {
+                    "error": MULTIPLE_IB_ACCOUNTS_REFRESH_ERROR,
+                    "details": str(exc),
+                },
+                status=409,
+            )
         except Exception as exc:
             logger.warning("Positions API live path unavailable; client may use cached fallback (%s)", exc)
             conn = get_db_connection()

@@ -45,6 +45,63 @@ def table_columns(conn, table):
     return [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
 
 
+class FakeSummaryItem:
+    def __init__(self, account, tag, value, currency="USD"):
+        self.account = account
+        self.tag = tag
+        self.value = value
+        self.currency = currency
+
+
+class FakeContract:
+    def __init__(self, symbol, con_id, currency="USD"):
+        self.symbol = symbol
+        self.conId = con_id
+        self.currency = currency
+
+
+class FakePosition:
+    def __init__(self, account, symbol, quantity, avg_cost, con_id):
+        self.account = account
+        self.contract = FakeContract(symbol, con_id)
+        self.position = quantity
+        self.avgCost = avg_cost
+
+
+class FakeTicker:
+    def __init__(self, contract, price=100.0, close=95.0):
+        self.contract = contract
+        self.last = price
+        self.close = close
+        self.prevClose = close
+
+    def marketPrice(self):
+        return self.last
+
+
+class FakeIB:
+    def __init__(self, positions=None, summary_items=None):
+        self._positions = positions or []
+        self._summary_items = summary_items or []
+
+    def positions(self):
+        return self._positions
+
+    def accountSummary(self):
+        return self._summary_items
+
+    def qualifyContracts(self, *contracts):
+        return list(contracts)
+
+
+class CapturingPositionsHandler:
+    def __init__(self):
+        self.response = None
+
+    def _send_json(self, payload, status=200):
+        self.response = {"payload": payload, "status": status}
+
+
 class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
     def init_temp_db(self, db_path):
         with mock.patch.object(web_server, "DB_PATH", db_path):
@@ -89,6 +146,24 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             """,
             (account_id, "USD", 100000.0, 12000.0, 11000.0, 9000.0, 50000.0, 8000.0, 7000.0, 7000.0, "2026-01-01T00:00:00+00:00"),
         )
+
+    def create_modern_portfolio_state(self, conn, account_id, positions=None, summary=None):
+        if positions is not None:
+            web_server.save_positions_cache(conn, positions, account_id=account_id)
+        if summary is not None:
+            web_server.save_portfolio_summary_cache(conn, summary, account_id=account_id)
+
+    def run_fake_positions_refresh(self, db_path, ib, tws_data_enabled=True):
+        handler = CapturingPositionsHandler()
+        tickers = [FakeTicker(position.contract) for position in ib.positions()]
+        with mock.patch.object(web_server, "DB_PATH", db_path), \
+             mock.patch.object(web_server, "ensure_event_loop", return_value=None), \
+             mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
+             mock.patch.object(web_server, "is_tws_data_enabled", return_value=tws_data_enabled), \
+             mock.patch.object(web_server, "request_ib_tickers_batched", return_value=(tickers, {})), \
+             mock.patch.object(web_server, "list_analysis_symbols", return_value=[]):
+            web_server.BakingMoneyHandler.handle_positions_api(handler, refresh=True)
+        return handler.response
 
     def test_legacy_migration_with_real_account_id_preserves_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -352,6 +427,276 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                 self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U2222222")["net_liquidation"], 250000)
             finally:
                 conn.close()
+
+    def test_single_account_summary_filters_rows_to_detected_account(self):
+        items = [
+            FakeSummaryItem("U1111111", "NetLiquidation", "100000", "USD"),
+            FakeSummaryItem("U1111111", "TotalCashValue", "12000", "USD"),
+            FakeSummaryItem("U1111111", "SettledCash", "11000", "USD"),
+            FakeSummaryItem("U1111111", "CashBalance", "9000", "USD"),
+            FakeSummaryItem("", "NetLiquidation", "999999", "USD"),
+        ]
+        summary = web_server.fetch_ib_portfolio_summary(FakeIB(summary_items=items))
+        self.assertEqual(summary["account_id"], "U1111111")
+        self.assertEqual(summary["net_liquidation"], 100000.0)
+        self.assertEqual(summary["total_cash_value"], 12000.0)
+        self.assertEqual(summary["settled_cash"], 11000.0)
+        self.assertEqual(summary["ledger_cash_usd"], 9000.0)
+        self.assertNotIn("999999", str(summary))
+
+    def test_multiple_summary_accounts_are_rejected(self):
+        items = [
+            FakeSummaryItem("U1111111", "NetLiquidation", "100000", "USD"),
+            FakeSummaryItem("U2222222", "NetLiquidation", "250000", "USD"),
+        ]
+        with self.assertRaises(web_server.MultipleIBAccountsDetectedError):
+            web_server.fetch_ib_portfolio_summary(FakeIB(summary_items=items))
+
+    def test_live_refresh_rejects_multiple_position_accounts_without_cache_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "multiple-position-accounts.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self.create_modern_portfolio_state(
+                        conn,
+                        "U1111111",
+                        positions=[{"symbol": "NVDA", "position": 100, "avgCost": 50, "marketValue": 10000}],
+                        summary={"net_liquidation": 100000, "actual_cash": 10000},
+                    )
+                finally:
+                    conn.close()
+
+            ib = FakeIB(
+                positions=[
+                    FakePosition("U1111111", "NVDA", 100, 50, 1),
+                    FakePosition("U2222222", "MSFT", 20, 200, 2),
+                ],
+                summary_items=[FakeSummaryItem("U1111111", "NetLiquidation", "100000")],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib)
+            self.assertEqual(response["status"], 409)
+            self.assertIn("Multiple Interactive Brokers accounts", response["payload"]["error"])
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U1111111"])
+                positions = web_server.load_positions_cache(conn, "U1111111")
+                self.assertEqual(len(positions), 1)
+                self.assertEqual(positions[0]["symbol"], "NVDA")
+                self.assertEqual(positions[0]["position"], 100)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache WHERE account_id = 'U2222222'").fetchone()[0], 0)
+                self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["net_liquidation"], 100000)
+            finally:
+                conn.close()
+
+    def test_live_refresh_rejects_summary_position_account_mismatch_without_cache_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "account-mismatch.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self.create_modern_portfolio_state(
+                        conn,
+                        "U1111111",
+                        positions=[{"symbol": "NVDA", "position": 100, "avgCost": 50, "marketValue": 10000}],
+                        summary={"net_liquidation": 100000, "actual_cash": 10000},
+                    )
+                finally:
+                    conn.close()
+
+            ib = FakeIB(
+                positions=[FakePosition("U1111111", "NVDA", 100, 50, 1)],
+                summary_items=[FakeSummaryItem("U2222222", "NetLiquidation", "250000")],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib)
+            self.assertEqual(response["status"], 409)
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U1111111"])
+                self.assertEqual(web_server.load_positions_cache(conn, "U1111111")[0]["position"], 100)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache WHERE account_id = 'U2222222'").fetchone()[0], 0)
+                self.assertIsNone(web_server.load_portfolio_summary_cache(conn, "U2222222"))
+                self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["net_liquidation"], 100000)
+            finally:
+                conn.close()
+
+    def test_live_refresh_rejects_multiple_summary_accounts_without_cache_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "multiple-summary-accounts.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self.create_modern_portfolio_state(
+                        conn,
+                        "U1111111",
+                        positions=[{"symbol": "NVDA", "position": 100, "avgCost": 50, "marketValue": 10000}],
+                        summary={"net_liquidation": 100000, "actual_cash": 10000},
+                    )
+                finally:
+                    conn.close()
+
+            ib = FakeIB(
+                positions=[FakePosition("U1111111", "NVDA", 100, 50, 1)],
+                summary_items=[
+                    FakeSummaryItem("U1111111", "NetLiquidation", "100000"),
+                    FakeSummaryItem("U2222222", "NetLiquidation", "250000"),
+                ],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib)
+            self.assertEqual(response["status"], 409)
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U1111111"])
+                self.assertEqual(web_server.load_positions_cache(conn, "U1111111")[0]["position"], 100)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache WHERE account_id = 'U2222222'").fetchone()[0], 0)
+                self.assertIsNone(web_server.load_portfolio_summary_cache(conn, "U2222222"))
+                self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["net_liquidation"], 100000)
+            finally:
+                conn.close()
+
+    def test_single_account_live_refresh_still_saves_positions_and_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "single-live-refresh.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+
+            ib = FakeIB(
+                positions=[FakePosition("U1111111", "NVDA", 12, 80, 1)],
+                summary_items=[
+                    FakeSummaryItem("U1111111", "NetLiquidation", "120000"),
+                    FakeSummaryItem("U1111111", "CashBalance", "5000"),
+                ],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib)
+            self.assertEqual(response["status"], 200)
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U1111111"])
+                position = web_server.load_positions_cache(conn, "U1111111")[0]
+                self.assertEqual(position["symbol"], "NVDA")
+                self.assertEqual(position["position"], 12)
+                self.assertEqual(position["marketValue"], 1200.0)
+                summary = web_server.load_portfolio_summary_cache(conn, "U1111111")
+                self.assertEqual(summary["net_liquidation"], 120000.0)
+                self.assertEqual(summary["ledger_cash_usd"], 5000.0)
+            finally:
+                conn.close()
+
+    def test_legacy_account_auto_reconciles_to_first_real_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "legacy-reconcile.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.save_positions_cache(
+                        conn,
+                        [
+                            {"symbol": "NVDA", "position": 100, "avgCost": 50, "marketValue": 10000},
+                            {"symbol": "MSFT", "position": 20, "avgCost": 200, "marketValue": 4000},
+                        ],
+                        account_id=web_server.LEGACY_IB_ACCOUNT_ID,
+                    )
+                    web_server.save_portfolio_summary_cache(
+                        conn,
+                        {"net_liquidation": 100000, "actual_cash": 10000},
+                        account_id=web_server.LEGACY_IB_ACCOUNT_ID,
+                    )
+                    web_server.save_portfolio_summary_cache(
+                        conn,
+                        {"net_liquidation": 100000, "actual_cash": 10000},
+                        account_id="U1111111",
+                    )
+                    self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U1111111"])
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache WHERE account_id = ?", (web_server.LEGACY_IB_ACCOUNT_ID,)).fetchone()[0], 0)
+                    rows = conn.execute("SELECT account_id, symbol, position, avg_cost, market_value FROM positions_cache ORDER BY symbol").fetchall()
+                    self.assertEqual([(row["account_id"], row["symbol"], row["position"]) for row in rows], [("U1111111", "MSFT", 20), ("U1111111", "NVDA", 100)])
+                    self.assertEqual(rows[1]["avg_cost"], 50)
+                    self.assertEqual(rows[1]["market_value"], 10000)
+                    self.assertIsNone(web_server.load_portfolio_summary_cache(conn, web_server.LEGACY_IB_ACCOUNT_ID))
+                    self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["actual_cash"], 10000)
+                finally:
+                    conn.close()
+
+    def test_legacy_reconciliation_is_idempotent_after_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "legacy-reconcile-idempotent.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.save_positions_cache(conn, [{"symbol": "NVDA", "position": 100}], account_id=web_server.LEGACY_IB_ACCOUNT_ID)
+                    web_server.save_portfolio_summary_cache(conn, {"net_liquidation": 100000}, account_id="U1111111")
+                    web_server.save_positions_cache(conn, [{"symbol": "NVDA", "position": 120}], account_id="U1111111")
+                    web_server.save_portfolio_summary_cache(conn, {"net_liquidation": 125000}, account_id="U1111111")
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM ib_accounts").fetchone()[0], 1)
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache").fetchone()[0], 1)
+                    self.assertEqual(web_server.load_positions_cache(conn, "U1111111")[0]["position"], 120)
+                    self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["net_liquidation"], 125000)
+                finally:
+                    conn.close()
+
+    def test_legacy_reconciliation_does_not_merge_conflicting_real_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "legacy-conflict.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.save_positions_cache(conn, [{"symbol": "NVDA", "position": 100}], account_id=web_server.LEGACY_IB_ACCOUNT_ID)
+                    conn.execute(
+                        """
+                        INSERT INTO positions_cache (
+                          account_id, symbol, position, price, avg_cost, change_percent,
+                          market_value, unrealized_pnl, daily_pnl, currency, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        ("U1111111", "MSFT", 20, None, None, None, None, None, None, "USD", web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    with self.assertRaisesRegex(RuntimeError, "target account data already exists"):
+                        web_server.reconcile_legacy_account_to_real_account(conn, "U1111111")
+                    self.assertIsNotNone(web_server.get_ib_account(conn, web_server.LEGACY_IB_ACCOUNT_ID))
+                    self.assertIsNone(web_server.get_ib_account(conn, "U1111111"))
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache WHERE account_id = ?", (web_server.LEGACY_IB_ACCOUNT_ID,)).fetchone()[0], 1)
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache WHERE account_id = 'U1111111'").fetchone()[0], 1)
+                finally:
+                    conn.close()
+
+    def test_multiple_accounts_do_not_trigger_legacy_auto_move(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "legacy-multiple-accounts.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.save_positions_cache(conn, [{"symbol": "NVDA", "position": 100}], account_id=web_server.LEGACY_IB_ACCOUNT_ID)
+                    web_server.upsert_ib_account(conn, "U2222222")
+                    conn.execute(
+                        """
+                        INSERT INTO positions_cache (
+                          account_id, symbol, position, price, avg_cost, change_percent,
+                          market_value, unrealized_pnl, daily_pnl, currency, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        ("U2222222", "AMZN", 5, None, None, None, None, None, None, "USD", web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    web_server.save_positions_cache(conn, [{"symbol": "MSFT", "position": 20}], account_id="U1111111")
+                    accounts = [row["account_id"] for row in web_server.list_ib_accounts(conn)]
+                    self.assertEqual(set(accounts), {web_server.LEGACY_IB_ACCOUNT_ID, "U1111111", "U2222222"})
+                    self.assertEqual(web_server.load_positions_cache(conn, web_server.LEGACY_IB_ACCOUNT_ID)[0]["symbol"], "NVDA")
+                    self.assertEqual(web_server.load_positions_cache(conn, "U1111111")[0]["symbol"], "MSFT")
+                    self.assertEqual(web_server.load_positions_cache(conn, "U2222222")[0]["symbol"], "AMZN")
+                finally:
+                    conn.close()
 
 
 if __name__ == "__main__":

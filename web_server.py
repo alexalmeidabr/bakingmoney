@@ -52,6 +52,10 @@ BACKUP_PACKAGE_DB_FILENAME = "bakingmoney.db"
 BACKUP_PACKAGE_ENV_FILENAME = ".env"
 BACKUP_PACKAGE_MANIFEST_FILENAME = "manifest.json"
 LEGACY_IB_ACCOUNT_ID = "__legacy__"
+MULTIPLE_IB_ACCOUNTS_REFRESH_ERROR = (
+    "Multiple Interactive Brokers accounts were detected. Multi-account live refresh is not enabled yet. "
+    "No portfolio data was changed."
+)
 BACKUP_REQUIRED_TABLES = (
     "analysis_symbols",
     "analysis_scenarios",
@@ -3581,6 +3585,10 @@ def ensure_column_exists(conn, table_name, column_name, column_definition):
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
 
 
+class MultipleIBAccountsDetectedError(RuntimeError):
+    pass
+
+
 def _table_exists(conn, table_name):
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
@@ -3663,6 +3671,60 @@ def get_ib_account(conn, account_id):
         (normalized_account_id,),
     ).fetchone()
     return dict(row) if row else None
+
+
+def reconcile_legacy_account_to_real_account(conn, real_account_id):
+    normalized_real_account_id = _normalize_ib_account_id(real_account_id)
+    if not normalized_real_account_id or normalized_real_account_id == LEGACY_IB_ACCOUNT_ID:
+        return False
+
+    accounts = list_ib_accounts(conn)
+    if len(accounts) != 1 or accounts[0]["account_id"] != LEGACY_IB_ACCOUNT_ID:
+        return False
+
+    target_position = conn.execute(
+        "SELECT 1 FROM positions_cache WHERE account_id = ? LIMIT 1",
+        (normalized_real_account_id,),
+    ).fetchone()
+    target_summary = conn.execute(
+        "SELECT 1 FROM portfolio_summary_cache WHERE account_id = ? LIMIT 1",
+        (normalized_real_account_id,),
+    ).fetchone()
+    target_account = get_ib_account(conn, normalized_real_account_id)
+    if target_position or target_summary or target_account:
+        raise RuntimeError("Cannot reconcile legacy IB account because target account data already exists")
+
+    legacy_account = accounts[0]
+    display_name = legacy_account.get("display_name")
+    if display_name == "Legacy Account":
+        display_name = None
+    created_at = legacy_account.get("created_at") or utc_now_iso()
+    last_seen_at = legacy_account.get("last_seen_at")
+    now = utc_now_iso()
+
+    conn.execute("BEGIN")
+    try:
+        conn.execute(
+            "UPDATE positions_cache SET account_id = ? WHERE account_id = ?",
+            (normalized_real_account_id, LEGACY_IB_ACCOUNT_ID),
+        )
+        conn.execute(
+            "UPDATE portfolio_summary_cache SET account_id = ? WHERE account_id = ?",
+            (normalized_real_account_id, LEGACY_IB_ACCOUNT_ID),
+        )
+        conn.execute("DELETE FROM ib_accounts WHERE account_id = ?", (LEGACY_IB_ACCOUNT_ID,))
+        conn.execute(
+            """
+            INSERT INTO ib_accounts (account_id, display_name, created_at, last_seen_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (normalized_real_account_id, display_name, created_at, last_seen_at, now),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return True
 
 
 def _resolve_cache_account_id(conn, account_id=None, allow_none_when_empty=True):
@@ -8385,6 +8447,7 @@ def save_positions_cache(conn, positions, account_id=None):
         if positions:
             raise ValueError("account_id is required to save positions when no IB account is registered")
         return
+    reconcile_legacy_account_to_real_account(conn, resolved_account_id)
     upsert_ib_account(conn, resolved_account_id, last_seen_at=utc_now_iso())
     now = utc_now_iso()
     active_symbols = set()
@@ -8538,14 +8601,41 @@ def _choose_account_cash(summary_items, base_currency=None):
     return None, "unknown", None, None
 
 
+def _ib_account_ids_from_items(items):
+    return sorted({
+        account_id
+        for account_id in (_normalize_ib_account_id(getattr(item, "account", None)) for item in items or [])
+        if account_id
+    })
+
+
+def _ib_account_ids_from_positions(positions):
+    return sorted({
+        account_id
+        for account_id in (_normalize_ib_account_id(getattr(position, "account", None)) for position in positions or [])
+        if account_id
+    })
+
+
 def fetch_ib_portfolio_summary(ib):
     items = ib.accountSummary() or []
+    account_ids = _ib_account_ids_from_items(items)
+    if len(account_ids) > 1:
+        raise MultipleIBAccountsDetectedError(
+            "Multiple IB account summary accounts detected; multi-account refresh is not enabled yet"
+        )
+    account_id = account_ids[0] if account_ids else None
+    if account_id:
+        items = [
+            item
+            for item in items
+            if _normalize_ib_account_id(getattr(item, "account", None)) == account_id
+        ]
     tag_currency_pairs = sorted({
         f"{getattr(item, 'tag', '')}:{_account_summary_currency(item) or 'NO_CURRENCY'}"
         for item in items
     })
     logger.info("IBKR account summary returned %s rows; tags/currencies=%s", len(items), tag_currency_pairs[:80])
-    account_id = next((getattr(item, "account", None) for item in items if getattr(item, "account", None)), None)
     base_currency = next((
         _account_summary_currency(item)
         for item in items
@@ -8586,6 +8676,7 @@ def save_portfolio_summary_cache(conn, summary, account_id=None):
         resolved_account_id = _resolve_cache_account_id(conn, None)
     if not resolved_account_id:
         raise ValueError("account_id is required to save portfolio summary when no IB account is registered")
+    reconcile_legacy_account_to_real_account(conn, resolved_account_id)
     upsert_ib_account(conn, resolved_account_id, last_seen_at=utc_now_iso())
     conn.execute(
         """
@@ -13177,13 +13268,25 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             ensure_event_loop()
             ib = get_ib_connection()
             positions = ib.positions()
+            position_account_ids = _ib_account_ids_from_positions(positions)
+            if len(position_account_ids) > 1:
+                raise MultipleIBAccountsDetectedError(
+                    "Multiple IB position accounts detected; multi-account refresh is not enabled yet"
+                )
             account_summary = None
             account_summary_warning = None
             try:
                 account_summary = fetch_ib_portfolio_summary(ib)
+            except MultipleIBAccountsDetectedError:
+                raise
             except Exception as exc:
                 logger.warning("Unable to fetch IBKR account summary during positions refresh: %s", exc)
                 account_summary_warning = "IBKR account summary/cash could not be updated."
+            summary_account_id = _normalize_ib_account_id((account_summary or {}).get("account_id"))
+            if position_account_ids and summary_account_id and position_account_ids[0] != summary_account_id:
+                raise MultipleIBAccountsDetectedError(
+                    "IB positions account does not match IB account summary account; no portfolio data was changed"
+                )
             logger.info("Positions API using live IBKR path positions_count=%s", len(positions))
             contracts = [p.contract for p in positions if p.contract]
             tickers_by_conid = {}
@@ -13202,13 +13305,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     }
 
             data = []
-            position_account_ids = set()
             for p in positions:
                 contract = p.contract
                 ticker = tickers_by_conid.get(getattr(contract, "conId", None))
-                position_account_id = _normalize_ib_account_id(getattr(p, "account", None))
-                if position_account_id:
-                    position_account_ids.add(position_account_id)
 
                 qty = safe_number(p.position)
                 avg_cost = safe_number(p.avgCost)
@@ -13255,9 +13354,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             try:
                 effective_data = data
                 warning_message = None
-                account_id = _normalize_ib_account_id((account_summary or {}).get("account_id"))
+                account_id = summary_account_id
                 if not account_id and len(position_account_ids) == 1:
-                    account_id = next(iter(position_account_ids))
+                    account_id = position_account_ids[0]
                 if tws_data_enabled:
                     if account_summary:
                         save_portfolio_summary_cache(conn, account_summary, account_id=account_id)
@@ -13286,6 +13385,15 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 self._send_json(payload)
             finally:
                 conn.close()
+        except MultipleIBAccountsDetectedError as exc:
+            logger.warning("Positions API rejected unsafe multi-account live refresh: %s", exc)
+            self._send_json(
+                {
+                    "error": MULTIPLE_IB_ACCOUNTS_REFRESH_ERROR,
+                    "details": str(exc),
+                },
+                status=409,
+            )
         except Exception as exc:
             logger.warning("Positions API live path unavailable; client may use cached fallback (%s)", exc)
             conn = get_db_connection()

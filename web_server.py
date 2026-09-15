@@ -53,8 +53,11 @@ BACKUP_PACKAGE_ENV_FILENAME = ".env"
 BACKUP_PACKAGE_MANIFEST_FILENAME = "manifest.json"
 LEGACY_IB_ACCOUNT_ID = "__legacy__"
 MULTIPLE_IB_ACCOUNTS_REFRESH_ERROR = (
-    "Multiple Interactive Brokers accounts were detected. Multi-account live refresh is not enabled yet. "
+    "Multiple Interactive Brokers accounts were detected and this API endpoint is not account-selectable yet. "
     "No portfolio data was changed."
+)
+MULTIPLE_IB_ACCOUNTS_API_LIMITATION = (
+    "Multiple Interactive Brokers accounts are cached. Account selection is not available in this API yet."
 )
 BACKUP_REQUIRED_TABLES = (
     "analysis_symbols",
@@ -8452,13 +8455,14 @@ def merge_positions_with_latest_analysis(positions, analysis_items):
     return merged
 
 
-def save_positions_cache(conn, positions, account_id=None):
+def save_positions_cache(conn, positions, account_id=None, commit=True, reconcile_legacy=True):
     resolved_account_id = _resolve_cache_account_id(conn, account_id)
     if not resolved_account_id:
         if positions:
             raise ValueError("account_id is required to save positions when no IB account is registered")
         return
-    reconcile_legacy_account_to_real_account(conn, resolved_account_id)
+    if reconcile_legacy:
+        reconcile_legacy_account_to_real_account(conn, resolved_account_id)
     upsert_ib_account(conn, resolved_account_id, last_seen_at=utc_now_iso())
     now = utc_now_iso()
     active_symbols = set()
@@ -8513,7 +8517,8 @@ def save_positions_cache(conn, positions, account_id=None):
         )
     else:
         conn.execute("DELETE FROM positions_cache WHERE account_id = ?", (resolved_account_id,))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def load_positions_cache(conn, account_id=None):
@@ -8628,6 +8633,54 @@ def _ib_account_ids_from_positions(positions):
     })
 
 
+def _normalize_ib_account_ids(account_ids):
+    return sorted({
+        account_id
+        for account_id in (_normalize_ib_account_id(account_id) for account_id in account_ids or [])
+        if account_id
+    })
+
+
+def _group_ib_positions_by_account(positions, managed_account_ids=None, fallback_account_id=None):
+    managed_account_ids = _normalize_ib_account_ids(managed_account_ids)
+    managed_account_set = set(managed_account_ids)
+    fallback_account_id = _normalize_ib_account_id(fallback_account_id)
+    grouped = {account_id: [] for account_id in managed_account_ids}
+    blank_positions = []
+    unexpected_account_ids = set()
+
+    for position in positions or []:
+        position_account_id = _normalize_ib_account_id(getattr(position, "account", None))
+        if not position_account_id:
+            blank_positions.append(position)
+            continue
+        if managed_account_set and position_account_id not in managed_account_set:
+            unexpected_account_ids.add(position_account_id)
+            continue
+        grouped.setdefault(position_account_id, []).append(position)
+
+    if unexpected_account_ids:
+        raise MultipleIBAccountsDetectedError(
+            "IB positions contained account identifiers outside managedAccounts(); no portfolio data was changed"
+        )
+
+    if blank_positions:
+        if len(managed_account_ids) == 1:
+            grouped.setdefault(managed_account_ids[0], []).extend(blank_positions)
+        elif not managed_account_ids and fallback_account_id:
+            grouped.setdefault(fallback_account_id, []).extend(blank_positions)
+        else:
+            raise MultipleIBAccountsDetectedError(
+                "IB positions omitted account identifiers and could not be assigned safely; no portfolio data was changed"
+            )
+
+    if not managed_account_ids and not fallback_account_id and grouped:
+        raise MultipleIBAccountsDetectedError(
+            "Unable to determine a single IB account because managedAccounts() returned none and live data is ambiguous"
+        )
+    return grouped
+
+
 def get_managed_ib_account_ids(ib):
     try:
         raw_accounts = ib.managedAccounts() or []
@@ -8666,7 +8719,7 @@ def _select_live_ib_account_id(managed_account_ids, position_account_ids=None, s
     return candidate_ids[0] if candidate_ids else None
 
 
-def _filter_summary_items_for_account(items, account_id):
+def _filter_summary_items_for_account(items, account_id, require_account_match=False):
     selected_account_id = _normalize_ib_account_id(account_id)
     if not selected_account_id:
         return list(items or [])
@@ -8681,20 +8734,35 @@ def _filter_summary_items_for_account(items, account_id):
         if not _normalize_ib_account_id(getattr(item, "account", None))
     ]
     if matched_items:
+        if require_account_match:
+            return matched_items
         return matched_items + blank_items
+    if require_account_match:
+        raise MultipleIBAccountsDetectedError(
+            "IB account summary did not include account-specific rows for every managed account; no portfolio data was changed"
+        )
     return list(items or [])
 
 
-def fetch_ib_portfolio_summary(ib, account_id=None, position_account_ids=None):
-    items = ib.accountSummary() or []
+def _build_ib_portfolio_summary_from_items(
+    items,
+    account_id=None,
+    position_account_ids=None,
+    managed_account_ids=None,
+    require_account_match=False,
+):
     summary_account_ids = _ib_account_ids_from_items(items)
-    managed_account_ids = [] if account_id else get_managed_ib_account_ids(ib)
+    managed_account_ids = [] if account_id else _normalize_ib_account_ids(managed_account_ids)
     account_id = _normalize_ib_account_id(account_id) or _select_live_ib_account_id(
         managed_account_ids,
         position_account_ids=position_account_ids,
         summary_account_ids=summary_account_ids,
     )
-    items = _filter_summary_items_for_account(items, account_id)
+    items = _filter_summary_items_for_account(
+        items,
+        account_id,
+        require_account_match=require_account_match,
+    )
     tag_currency_pairs = sorted({
         f"{getattr(item, 'tag', '')}:{_account_summary_currency(item) or 'NO_CURRENCY'}"
         for item in items
@@ -8739,7 +8807,19 @@ def fetch_ib_portfolio_summary(ib, account_id=None, position_account_ids=None):
     }
 
 
-def save_portfolio_summary_cache(conn, summary, account_id=None):
+def fetch_ib_portfolio_summary(ib, account_id=None, position_account_ids=None, require_account_match=False):
+    items = ib.accountSummary() or []
+    managed_account_ids = [] if account_id else get_managed_ib_account_ids(ib)
+    return _build_ib_portfolio_summary_from_items(
+        items,
+        account_id=account_id,
+        position_account_ids=position_account_ids,
+        managed_account_ids=managed_account_ids,
+        require_account_match=require_account_match,
+    )
+
+
+def save_portfolio_summary_cache(conn, summary, account_id=None, commit=True, reconcile_legacy=True):
     if not isinstance(summary, dict):
         return
     resolved_account_id = _normalize_ib_account_id(account_id) or _normalize_ib_account_id(summary.get("account_id"))
@@ -8747,7 +8827,8 @@ def save_portfolio_summary_cache(conn, summary, account_id=None):
         resolved_account_id = _resolve_cache_account_id(conn, None)
     if not resolved_account_id:
         raise ValueError("account_id is required to save portfolio summary when no IB account is registered")
-    reconcile_legacy_account_to_real_account(conn, resolved_account_id)
+    if reconcile_legacy:
+        reconcile_legacy_account_to_real_account(conn, resolved_account_id)
     upsert_ib_account(conn, resolved_account_id, last_seen_at=utc_now_iso())
     conn.execute(
         """
@@ -8781,7 +8862,8 @@ def save_portfolio_summary_cache(conn, summary, account_id=None):
             utc_now_iso(),
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def load_portfolio_summary_cache(conn, account_id=None):
@@ -11299,6 +11381,71 @@ def overlay_cached_market_fields(live_rows, cached_rows):
     return merged
 
 
+def _empty_portfolio_summary_with_warning(warning):
+    return {
+        "total_portfolio_value": 0.0,
+        "portfolio_value_used": 0.0,
+        "portfolio_value_source": "multi_account_unscoped",
+        "portfolio_value_warning": warning,
+        "actual_cash": 0.0,
+        "actual_cash_source": "multi_account_unscoped",
+        "cash_equivalent_symbols": [],
+        "cash_equivalent_value": 0.0,
+        "cash_like_available": 0.0,
+        "cash_like_available_percent": None,
+        "cash_equivalent_positions": [],
+    }
+
+
+def _build_live_position_rows(positions, tickers_by_conid):
+    data = []
+    for p in positions or []:
+        contract = p.contract
+        ticker = tickers_by_conid.get(getattr(contract, "conId", None))
+
+        qty = safe_number(p.position)
+        avg_cost = safe_number(p.avgCost)
+        price = extract_price(ticker)
+        close = extract_close(ticker)
+
+        market_value = qty * price if qty is not None and price is not None else None
+        unrealized_pnl = (
+            (price - avg_cost) * qty
+            if qty is not None and price is not None and avg_cost is not None
+            else None
+        )
+        daily_pnl = (
+            (price - close) * qty
+            if qty is not None and price is not None and close is not None
+            else None
+        )
+        change_percent = (
+            ((price - close) / close) * 100
+            if price is not None and close not in (None, 0)
+            else None
+        )
+
+        data.append(
+            {
+                "symbol": normalize_symbol(contract.symbol),
+                "position": qty,
+                "price": price,
+                "avgCost": avg_cost,
+                "changePercent": change_percent,
+                "marketValue": market_value,
+                "unrealizedPnL": unrealized_pnl,
+                "unrealizedPnLPercent": (
+                    (unrealized_pnl / abs(avg_cost * qty)) * 100
+                    if unrealized_pnl is not None and avg_cost is not None and qty not in (None, 0) and (avg_cost * qty) != 0
+                    else None
+                ),
+                "dailyPnL": daily_pnl,
+                "currency": getattr(contract, "currency", None),
+            }
+        )
+    return data
+
+
 def build_positions_payload(conn, positions, data_source, warning=None):
     normalized_positions = []
     for row in positions or []:
@@ -13318,7 +13465,19 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         if not refresh:
             conn = get_db_connection()
             try:
-                cached_positions = load_positions_cache(conn)
+                try:
+                    cached_positions = load_positions_cache(conn)
+                except ValueError as exc:
+                    logger.info("Positions API cannot return unscoped cached multi-account data: %s", exc)
+                    return self._send_json(
+                        {
+                            "positions": [],
+                            "data_source": "cached",
+                            "portfolio_summary": _empty_portfolio_summary_with_warning(MULTIPLE_IB_ACCOUNTS_API_LIMITATION),
+                            "warning": MULTIPLE_IB_ACCOUNTS_API_LIMITATION,
+                        },
+                        status=409,
+                    )
                 payload = build_positions_payload(
                     conn,
                     cached_positions,
@@ -13341,40 +13500,67 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             managed_account_ids = get_managed_ib_account_ids(ib)
             positions = ib.positions()
             position_account_ids = _ib_account_ids_from_positions(positions)
-            account_summary = None
+            account_summaries_by_account = {}
             account_summary_warning = None
-            if len(managed_account_ids) > 1:
-                raise MultipleIBAccountsDetectedError(
-                    "Multiple IB managed accounts detected; multi-account refresh is not enabled yet"
+            selected_account_id = None
+            summary_items = None
+
+            if managed_account_ids:
+                account_ids_to_refresh = managed_account_ids
+                selected_account_id = managed_account_ids[0] if len(managed_account_ids) == 1 else None
+                positions_by_account = _group_ib_positions_by_account(
+                    positions,
+                    managed_account_ids=managed_account_ids,
                 )
-            if len(position_account_ids) > 1:
-                raise MultipleIBAccountsDetectedError(
-                    "Multiple IB position accounts detected; multi-account refresh is not enabled yet"
-                )
-            selected_account_id = managed_account_ids[0] if managed_account_ids else None
-            if selected_account_id and position_account_ids and position_account_ids[0] != selected_account_id:
-                raise MultipleIBAccountsDetectedError(
-                    "IB positions account does not match the selected managed account; no portfolio data was changed"
-                )
-            try:
-                account_summary = fetch_ib_portfolio_summary(
-                    ib,
-                    account_id=selected_account_id,
+                if len(managed_account_ids) > 1:
+                    summary_items = ib.accountSummary() or []
+                    for account_id in managed_account_ids:
+                        account_summaries_by_account[account_id] = _build_ib_portfolio_summary_from_items(
+                            summary_items,
+                            account_id=account_id,
+                            require_account_match=True,
+                        )
+                else:
+                    try:
+                        account_summary = fetch_ib_portfolio_summary(
+                            ib,
+                            account_id=selected_account_id,
+                            position_account_ids=position_account_ids,
+                        )
+                        account_summary_account_id = _normalize_ib_account_id((account_summary or {}).get("account_id"))
+                        selected_account_id = account_summary_account_id or selected_account_id
+                        account_ids_to_refresh = [selected_account_id]
+                        account_summaries_by_account[selected_account_id] = account_summary
+                    except MultipleIBAccountsDetectedError:
+                        raise
+                    except Exception as exc:
+                        logger.warning("Unable to fetch IBKR account summary during positions refresh: %s", exc)
+                        account_summary_warning = "IBKR account summary/cash could not be updated."
+            else:
+                summary_items = ib.accountSummary() or []
+                summary_account_ids = _ib_account_ids_from_items(summary_items)
+                selected_account_id = _select_live_ib_account_id(
+                    [],
                     position_account_ids=position_account_ids,
+                    summary_account_ids=summary_account_ids,
                 )
-                selected_account_id = _normalize_ib_account_id((account_summary or {}).get("account_id")) or selected_account_id
-            except MultipleIBAccountsDetectedError:
-                raise
-            except Exception as exc:
-                logger.warning("Unable to fetch IBKR account summary during positions refresh: %s", exc)
-                account_summary_warning = "IBKR account summary/cash could not be updated."
-                if not selected_account_id and len(position_account_ids) == 1:
-                    selected_account_id = position_account_ids[0]
+                positions_by_account = _group_ib_positions_by_account(
+                    positions,
+                    fallback_account_id=selected_account_id,
+                )
+                account_ids_to_refresh = [selected_account_id] if selected_account_id else []
+                if selected_account_id:
+                    account_summaries_by_account[selected_account_id] = _build_ib_portfolio_summary_from_items(
+                        summary_items,
+                        account_id=selected_account_id,
+                        position_account_ids=position_account_ids,
+                    )
             logger.info(
-                "Positions API using live IBKR path positions_count=%s managed_account_count=%s selected_account=%s position_account_count=%s",
+                "Positions API using live IBKR path positions_count=%s managed_account_count=%s selected_account=%s account_refresh_count=%s position_account_count=%s",
                 len(positions),
                 len(managed_account_ids),
                 mask_ib_account_id(selected_account_id),
+                len(account_ids_to_refresh),
                 len(position_account_ids),
             )
             contracts = [p.contract for p in positions if p.contract]
@@ -13393,83 +13579,92 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         t.contract.conId: t for t in tickers if getattr(t, "contract", None)
                     }
 
-            data = []
-            for p in positions:
-                contract = p.contract
-                ticker = tickers_by_conid.get(getattr(contract, "conId", None))
-
-                qty = safe_number(p.position)
-                avg_cost = safe_number(p.avgCost)
-                price = extract_price(ticker)
-                close = extract_close(ticker)
-
-                market_value = qty * price if qty is not None and price is not None else None
-                unrealized_pnl = (
-                    (price - avg_cost) * qty
-                    if qty is not None and price is not None and avg_cost is not None
-                    else None
-                )
-                daily_pnl = (
-                    (price - close) * qty
-                    if qty is not None and price is not None and close is not None
-                    else None
-                )
-                change_percent = (
-                    ((price - close) / close) * 100
-                    if price is not None and close not in (None, 0)
-                    else None
-                )
-
-                data.append(
-                    {
-                        "symbol": normalize_symbol(contract.symbol),
-                        "position": qty,
-                        "price": price,
-                        "avgCost": avg_cost,
-                        "changePercent": change_percent,
-                        "marketValue": market_value,
-                        "unrealizedPnL": unrealized_pnl,
-                        "unrealizedPnLPercent": (
-                            (unrealized_pnl / abs(avg_cost * qty)) * 100
-                            if unrealized_pnl is not None and avg_cost is not None and qty not in (None, 0) and (avg_cost * qty) != 0
-                            else None
-                        ),
-                        "dailyPnL": daily_pnl,
-                        "currency": getattr(contract, "currency", None),
-                    }
-                )
+            data_by_account = {
+                account_id: _build_live_position_rows(positions_by_account.get(account_id, []), tickers_by_conid)
+                for account_id in account_ids_to_refresh
+            }
 
             conn = get_db_connection()
             try:
-                effective_data = data
+                if len(account_ids_to_refresh) == 1:
+                    reconcile_legacy_account_to_real_account(conn, account_ids_to_refresh[0])
+                conn.execute("BEGIN")
+                for account_id in account_ids_to_refresh:
+                    upsert_ib_account(conn, account_id, last_seen_at=utc_now_iso())
+                    account_summary = account_summaries_by_account.get(account_id)
+                    account_data = data_by_account.get(account_id, [])
+                    if tws_data_enabled:
+                        if account_summary:
+                            save_portfolio_summary_cache(
+                                conn,
+                                account_summary,
+                                account_id=account_id,
+                                commit=False,
+                                reconcile_legacy=False,
+                            )
+                        save_positions_cache(
+                            conn,
+                            account_data,
+                            account_id=account_id,
+                            commit=False,
+                            reconcile_legacy=False,
+                        )
+                    else:
+                        if account_summary:
+                            save_portfolio_summary_cache(
+                                conn,
+                                account_summary,
+                                account_id=account_id,
+                                commit=False,
+                                reconcile_legacy=False,
+                            )
+                        cached_rows = load_positions_cache(conn, account_id=account_id)
+                        data_by_account[account_id] = overlay_cached_market_fields(account_data, cached_rows)
+                        if cached_rows:
+                            save_positions_cache(
+                                conn,
+                                data_by_account[account_id],
+                                account_id=account_id,
+                                commit=False,
+                                reconcile_legacy=False,
+                            )
+                conn.commit()
+
                 warning_message = None
-                account_id = selected_account_id
-                if tws_data_enabled:
-                    if account_summary:
-                        save_portfolio_summary_cache(conn, account_summary, account_id=account_id)
-                    save_positions_cache(conn, effective_data, account_id=account_id)
-                else:
-                    if account_summary and account_id:
-                        save_portfolio_summary_cache(conn, account_summary, account_id=account_id)
-                    cached_rows = load_positions_cache(conn, account_id=account_id)
-                    effective_data = overlay_cached_market_fields(data, cached_rows)
-                    if cached_rows:
-                        save_positions_cache(conn, effective_data, account_id=account_id)
+                if not tws_data_enabled:
                     warning_message = "Data from TWS is disabled. Showing latest cached market values when available."
                 if account_summary_warning:
                     warning_message = " ".join([part for part in [warning_message, account_summary_warning] if part])
-                payload = build_positions_payload(
-                    conn,
-                    effective_data,
-                    data_source="live",
-                    warning=warning_message,
-                )
+                if len(account_ids_to_refresh) > 1:
+                    warning_message = " ".join([part for part in [warning_message, MULTIPLE_IB_ACCOUNTS_API_LIMITATION] if part])
+                    payload = {
+                        "positions": [],
+                        "data_source": "live",
+                        "portfolio_summary": _empty_portfolio_summary_with_warning(MULTIPLE_IB_ACCOUNTS_API_LIMITATION),
+                        "warning": warning_message,
+                        "multi_account_refresh": {
+                            "account_count": len(account_ids_to_refresh),
+                            "accounts_refreshed": [mask_ib_account_id(account_id) for account_id in account_ids_to_refresh],
+                        },
+                    }
+                else:
+                    effective_data = data_by_account.get(account_ids_to_refresh[0], []) if account_ids_to_refresh else []
+                    payload = build_positions_payload(
+                        conn,
+                        effective_data,
+                        data_source="live",
+                        warning=warning_message,
+                    )
                 logger.info(
-                    "Positions API returning live rows=%s sample_symbols=%s",
+                    "Positions API returning live rows=%s sample_symbols=%s account_refresh_count=%s",
                     len(payload["positions"]),
                     [item.get("symbol") for item in payload["positions"][:5]],
+                    len(account_ids_to_refresh),
                 )
                 self._send_json(payload)
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 conn.close()
         except MultipleIBAccountsDetectedError as exc:
@@ -14353,6 +14548,14 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 self._send_json(build_action_plan(conn))
             finally:
                 conn.close()
+        except ValueError as exc:
+            if "account_id is required when multiple IB accounts exist" in str(exc):
+                return self._send_json(
+                    {"error": MULTIPLE_IB_ACCOUNTS_API_LIMITATION, "details": str(exc)},
+                    status=409,
+                )
+            logger.exception("Unable to build Action Plan")
+            self._send_json({"error": "Unable to build Action Plan.", "details": str(exc)}, status=500)
         except Exception as exc:
             logger.exception("Unable to build Action Plan")
             self._send_json({"error": "Unable to build Action Plan.", "details": str(exc)}, status=500)
@@ -14367,6 +14570,14 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 self._send_json({"action_detail": detail})
             finally:
                 conn.close()
+        except ValueError as exc:
+            if "account_id is required when multiple IB accounts exist" in str(exc):
+                return self._send_json(
+                    {"error": MULTIPLE_IB_ACCOUNTS_API_LIMITATION, "details": str(exc)},
+                    status=409,
+                )
+            logger.exception("Unable to build Action Plan detail")
+            self._send_json({"error": "Unable to build Action Plan detail.", "details": str(exc)}, status=500)
         except Exception as exc:
             logger.exception("Unable to build Action Plan detail")
             self._send_json({"error": "Unable to build Action Plan detail.", "details": str(exc)}, status=500)

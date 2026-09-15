@@ -924,6 +924,7 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                 try:
                     web_server.upsert_ib_account(conn, "U_TEST_B")
                     web_server.upsert_ib_account(conn, "U_TEST_A")
+                    web_server.save_portfolio_summary_cache(conn, {"net_liquidation": 100000}, account_id="U_TEST_A")
                     conn.commit()
                 finally:
                     conn.close()
@@ -937,6 +938,10 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             self.assertEqual(
                 [item["masked_account_id"] for item in response["payload"]["accounts"]],
                 ["U***ST_A", "U***ST_B"],
+            )
+            self.assertEqual(
+                [item["portfolio_data_available"] for item in response["payload"]["accounts"]],
+                [True, False],
             )
 
     def test_positions_api_single_account_without_account_id_preserves_compatibility(self):
@@ -1063,6 +1068,163 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             self.assertEqual(response_b["status"], 200)
             self.assertEqual(response_b["payload"]["positions"][0]["position"], 25)
             self.assertEqual(response_b["payload"]["portfolio_summary"]["portfolio_value_used"], 250000)
+
+    def test_refresh_skips_unready_managed_account_without_blocking_ready_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "refresh-ready-and-unready.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.upsert_ib_account(conn, "U_TEST_A")
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            ib = FakeIB(
+                positions=[
+                    FakePosition("U_TEST_A", "NVDA", 100, 10, 1),
+                    FakePosition("U_TEST_B", "AMZN", 4, 500, 2),
+                ],
+                summary_items=[
+                    FakeSummaryItem("U_TEST_A", "NetLiquidation", "100000"),
+                    FakeSummaryItem("U_TEST_A", "CashBalance", "5000"),
+                ],
+                managed_accounts=["U_TEST_A", "U_TEST_B"],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib, account_id="U_TEST_A")
+            self.assertEqual(response["status"], 200)
+            self.assertEqual(response["payload"]["positions"][0]["symbol"], "NVDA")
+            self.assertEqual(response["payload"]["multi_account_refresh"]["account_count"], 2)
+            self.assertEqual(response["payload"]["multi_account_refresh"]["accounts_refreshed"], ["U***ST_A"])
+            self.assertEqual(response["payload"]["multi_account_refresh"]["accounts_skipped"], ["U***ST_B"])
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U_TEST_A", "U_TEST_B"])
+                self.assertEqual(web_server.load_positions_cache(conn, "U_TEST_A")[0]["symbol"], "NVDA")
+                self.assertIsNone(web_server.load_portfolio_summary_cache(conn, "U_TEST_B"))
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache WHERE account_id = 'U_TEST_B'").fetchone()[0], 0)
+            finally:
+                conn.close()
+
+    def test_refresh_preserves_cached_state_for_unready_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "refresh-preserve-unready-cache.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self.create_modern_portfolio_state(
+                        conn,
+                        "U_TEST_A",
+                        positions=[{"symbol": "NVDA", "position": 10, "marketValue": 1000}],
+                        summary={"net_liquidation": 90000},
+                    )
+                    self.create_modern_portfolio_state(
+                        conn,
+                        "U_TEST_B",
+                        positions=[{"symbol": "AMZN", "position": 4, "marketValue": 2000}],
+                        summary={"net_liquidation": 250000},
+                    )
+                finally:
+                    conn.close()
+
+            ib = FakeIB(
+                positions=[
+                    FakePosition("U_TEST_A", "NVDA", 100, 10, 1),
+                    FakePosition("U_TEST_B", "AMZN", 8, 500, 2),
+                ],
+                summary_items=[
+                    FakeSummaryItem("U_TEST_A", "NetLiquidation", "100000"),
+                    FakeSummaryItem("U_TEST_A", "CashBalance", "5000"),
+                ],
+                managed_accounts=["U_TEST_A", "U_TEST_B"],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib, account_id="U_TEST_A")
+            self.assertEqual(response["status"], 200)
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual(web_server.load_positions_cache(conn, "U_TEST_A")[0]["position"], 100)
+                self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U_TEST_A")["net_liquidation"], 100000)
+                self.assertEqual(web_server.load_positions_cache(conn, "U_TEST_B")[0]["position"], 4)
+                self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U_TEST_B")["net_liquidation"], 250000)
+            finally:
+                conn.close()
+
+    def test_refresh_without_selection_registers_unready_account_and_still_requires_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "refresh-unready-no-selection.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.upsert_ib_account(conn, "U_TEST_A")
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            ib = FakeIB(
+                positions=[FakePosition("U_TEST_A", "NVDA", 100, 10, 1)],
+                summary_items=[
+                    FakeSummaryItem("U_TEST_A", "NetLiquidation", "100000"),
+                    FakeSummaryItem("U_TEST_A", "CashBalance", "5000"),
+                ],
+                managed_accounts=["U_TEST_A", "U_TEST_B"],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib)
+            self.assertEqual(response["status"], 409)
+            self.assertEqual(response["payload"]["code"], "account_selection_required")
+            self.assertEqual(response["payload"]["multi_account_refresh"]["accounts_refreshed"], ["U***ST_A"])
+            self.assertEqual(response["payload"]["multi_account_refresh"]["accounts_skipped"], ["U***ST_B"])
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U_TEST_A", "U_TEST_B"])
+                self.assertEqual(web_server.load_positions_cache(conn, "U_TEST_A")[0]["symbol"], "NVDA")
+                self.assertIsNone(web_server.load_portfolio_summary_cache(conn, "U_TEST_B"))
+            finally:
+                conn.close()
+
+    def test_unready_positions_account_returns_empty_available_response(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "positions-unready-account.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self.create_modern_portfolio_state(conn, "U_TEST_A", positions=[{"symbol": "NVDA", "position": 100}], summary={"net_liquidation": 100000})
+                    web_server.upsert_ib_account(conn, "U_TEST_B")
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            response = self.run_fake_positions_request(db_path, account_id="U_TEST_B")
+            self.assertEqual(response["status"], 200)
+            self.assertEqual(response["payload"]["positions"], [])
+            self.assertFalse(response["payload"]["portfolio_data_available"])
+            self.assertEqual(response["payload"]["warning"], web_server.PORTFOLIO_DATA_UNAVAILABLE_ERROR)
+
+    def test_unready_action_plan_returns_portfolio_data_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "action-plan-unready-account.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self.create_modern_portfolio_state(conn, "U_TEST_A", positions=[{"symbol": "NVDA", "position": 100}], summary={"net_liquidation": 100000})
+                    web_server.upsert_ib_account(conn, "U_TEST_B")
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            response = self.run_fake_action_plan_request(db_path, account_id="U_TEST_B", analysis_items=self.sample_analysis_items())
+            detail = self.run_fake_action_plan_detail_request(db_path, "NVDA", account_id="U_TEST_B", analysis_items=self.sample_analysis_items())
+            self.assertEqual(response["status"], 409)
+            self.assertEqual(response["payload"]["code"], "portfolio_data_unavailable")
+            self.assertEqual(detail["status"], 409)
+            self.assertEqual(detail["payload"]["code"], "portfolio_data_unavailable")
 
     def test_action_plan_is_account_scoped_and_detail_uses_same_context(self):
         with tempfile.TemporaryDirectory() as tmp:

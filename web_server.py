@@ -61,6 +61,7 @@ MULTIPLE_IB_ACCOUNTS_API_LIMITATION = (
 )
 ACCOUNT_SELECTION_REQUIRED_ERROR = "Portfolio account selection is required."
 ACCOUNT_NOT_FOUND_ERROR = "Portfolio account was not found."
+PORTFOLIO_DATA_UNAVAILABLE_ERROR = "Portfolio data is not available for this account yet."
 BACKUP_REQUIRED_TABLES = (
     "analysis_symbols",
     "analysis_scenarios",
@@ -3601,6 +3602,11 @@ class PortfolioAccountResolutionError(ValueError):
         self.status = status
 
 
+class PortfolioDataUnavailableError(ValueError):
+    code = "portfolio_data_unavailable"
+    status = 409
+
+
 def _table_exists(conn, table_name):
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
@@ -3775,9 +3781,21 @@ def serialize_ib_accounts_for_api(conn):
             "account_id": account["account_id"],
             "display_name": account.get("display_name"),
             "masked_account_id": mask_ib_account_id(account.get("account_id")),
+            "portfolio_data_available": is_portfolio_data_available(conn, account.get("account_id")),
         }
         for account in visible_accounts
     ]
+
+
+def is_portfolio_data_available(conn, account_id):
+    normalized_account_id = _normalize_ib_account_id(account_id)
+    if not normalized_account_id:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM portfolio_summary_cache WHERE account_id = ? LIMIT 1",
+        (normalized_account_id,),
+    ).fetchone()
+    return row is not None
 
 
 def resolve_portfolio_account(conn, requested_account_id=None, allow_none_when_empty=True):
@@ -10938,6 +10956,8 @@ def build_action_plan(conn, account_id=None):
     weighted_count_enabled = bool(settings.get("action_use_weighted_eligible_count", True))
     analysis_items = list_analysis_symbols(conn)
     resolved_account_id = resolve_portfolio_account(conn, account_id)
+    if resolved_account_id and not is_portfolio_data_available(conn, resolved_account_id):
+        raise PortfolioDataUnavailableError(PORTFOLIO_DATA_UNAVAILABLE_ERROR)
     positions = load_positions_cache(conn, account_id=resolved_account_id)
     positions_by_symbol = {normalize_symbol(row.get("symbol")): row for row in positions if normalize_symbol(row.get("symbol"))}
     portfolio_cash_summary = build_portfolio_cash_summary(conn, positions, settings, account_id=resolved_account_id)
@@ -11451,6 +11471,13 @@ def _portfolio_account_error_payload(exc):
     return {
         "error": str(exc),
         "code": getattr(exc, "code", "portfolio_account_error"),
+    }
+
+
+def _portfolio_data_unavailable_payload():
+    return {
+        "error": PORTFOLIO_DATA_UNAVAILABLE_ERROR,
+        "code": PortfolioDataUnavailableError.code,
     }
 
 
@@ -13538,12 +13565,25 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         _portfolio_account_error_payload(exc),
                         status=exc.status,
                     )
+                if resolved_account_id and not is_portfolio_data_available(conn, resolved_account_id):
+                    warning = PORTFOLIO_DATA_UNAVAILABLE_ERROR
+                    payload = {
+                        "positions": [],
+                        "data_source": "empty",
+                        "portfolio_summary": _empty_portfolio_summary_with_warning(warning),
+                        "portfolio_data_available": False,
+                        "warning": warning,
+                    }
+                    return self._send_json(payload)
                 payload = build_positions_payload(
                     conn,
                     cached_positions,
                     data_source="cached" if cached_positions else "empty",
                     warning=None if cached_positions else "No saved positions available. Click Refresh to load positions from TWS.",
                     account_id=resolved_account_id,
+                )
+                payload["portfolio_data_available"] = bool(
+                    resolved_account_id and is_portfolio_data_available(conn, resolved_account_id)
                 )
                 logger.info(
                     "Positions API returning stored rows=%s account=%s sample_symbols=%s",
@@ -13575,9 +13615,10 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             account_summary_warning = None
             selected_account_id = None
             summary_items = None
+            account_ids_skipped = []
 
             if managed_account_ids:
-                account_ids_to_refresh = managed_account_ids
+                discovered_account_ids = managed_account_ids
                 selected_account_id = managed_account_ids[0] if len(managed_account_ids) == 1 else None
                 positions_by_account = _group_ib_positions_by_account(
                     positions,
@@ -13586,11 +13627,14 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 if len(managed_account_ids) > 1:
                     summary_items = ib.accountSummary() or []
                     for refresh_account_id in managed_account_ids:
-                        account_summaries_by_account[refresh_account_id] = _build_ib_portfolio_summary_from_items(
-                            summary_items,
-                            account_id=refresh_account_id,
-                            require_account_match=True,
-                        )
+                        try:
+                            account_summaries_by_account[refresh_account_id] = _build_ib_portfolio_summary_from_items(
+                                summary_items,
+                                account_id=refresh_account_id,
+                                require_account_match=True,
+                            )
+                        except MultipleIBAccountsDetectedError:
+                            account_ids_skipped.append(refresh_account_id)
                 else:
                     try:
                         account_summary = fetch_ib_portfolio_summary(
@@ -13600,13 +13644,15 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         )
                         account_summary_account_id = _normalize_ib_account_id((account_summary or {}).get("account_id"))
                         selected_account_id = account_summary_account_id or selected_account_id
-                        account_ids_to_refresh = [selected_account_id]
+                        discovered_account_ids = [selected_account_id]
                         account_summaries_by_account[selected_account_id] = account_summary
                     except MultipleIBAccountsDetectedError:
                         raise
                     except Exception as exc:
                         logger.warning("Unable to fetch IBKR account summary during positions refresh: %s", exc)
                         account_summary_warning = "IBKR account summary/cash could not be updated."
+                        if selected_account_id:
+                            account_ids_skipped.append(selected_account_id)
             else:
                 summary_items = ib.accountSummary() or []
                 summary_account_ids = _ib_account_ids_from_items(summary_items)
@@ -13619,19 +13665,34 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     positions,
                     fallback_account_id=selected_account_id,
                 )
-                account_ids_to_refresh = [selected_account_id] if selected_account_id else []
+                discovered_account_ids = [selected_account_id] if selected_account_id else []
                 if selected_account_id:
                     account_summaries_by_account[selected_account_id] = _build_ib_portfolio_summary_from_items(
                         summary_items,
                         account_id=selected_account_id,
                         position_account_ids=position_account_ids,
                     )
+            account_ids_to_refresh = [
+                account_id_to_refresh
+                for account_id_to_refresh in discovered_account_ids
+                if account_id_to_refresh in account_summaries_by_account
+            ]
+            account_ids_skipped = sorted({
+                account_id_to_skip
+                for account_id_to_skip in list(account_ids_skipped) + [
+                    account_id_to_check
+                    for account_id_to_check in discovered_account_ids
+                    if account_id_to_check not in account_summaries_by_account
+                ]
+                if account_id_to_skip
+            })
             logger.info(
-                "Positions API using live IBKR path positions_count=%s managed_account_count=%s selected_account=%s account_refresh_count=%s position_account_count=%s",
+                "Positions API using live IBKR path positions_count=%s managed_account_count=%s selected_account=%s account_refresh_count=%s account_skip_count=%s position_account_count=%s",
                 len(positions),
                 len(managed_account_ids),
                 mask_ib_account_id(selected_account_id),
                 len(account_ids_to_refresh),
+                len(account_ids_skipped),
                 len(position_account_ids),
             )
             contracts = [p.contract for p in positions if p.contract]
@@ -13660,8 +13721,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 if len(account_ids_to_refresh) == 1:
                     reconcile_legacy_account_to_real_account(conn, account_ids_to_refresh[0])
                 conn.execute("BEGIN")
+                for discovered_account_id in discovered_account_ids:
+                    upsert_ib_account(conn, discovered_account_id, last_seen_at=utc_now_iso())
                 for refresh_account_id in account_ids_to_refresh:
-                    upsert_ib_account(conn, refresh_account_id, last_seen_at=utc_now_iso())
                     account_summary = account_summaries_by_account.get(refresh_account_id)
                     account_data = data_by_account.get(refresh_account_id, [])
                     if tws_data_enabled:
@@ -13711,25 +13773,47 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 except PortfolioAccountResolutionError as exc:
                     payload = _portfolio_account_error_payload(exc)
                     payload["multi_account_refresh"] = {
-                        "account_count": len(account_ids_to_refresh),
+                        "account_count": len(discovered_account_ids),
                         "accounts_refreshed": [mask_ib_account_id(refresh_account_id) for refresh_account_id in account_ids_to_refresh],
+                        "accounts_skipped": [mask_ib_account_id(skipped_account_id) for skipped_account_id in account_ids_skipped],
                     }
                     return self._send_json(payload, status=exc.status)
                 if response_account_id:
+                    portfolio_data_available = is_portfolio_data_available(conn, response_account_id)
+                    if not portfolio_data_available:
+                        warning = PORTFOLIO_DATA_UNAVAILABLE_ERROR
+                        payload = {
+                            "positions": [],
+                            "data_source": "empty",
+                            "portfolio_summary": _empty_portfolio_summary_with_warning(warning),
+                            "portfolio_data_available": False,
+                            "warning": warning,
+                        }
+                        if len(discovered_account_ids) > 1:
+                            payload["multi_account_refresh"] = {
+                                "account_count": len(discovered_account_ids),
+                                "accounts_refreshed": [mask_ib_account_id(refresh_account_id) for refresh_account_id in account_ids_to_refresh],
+                                "accounts_skipped": [mask_ib_account_id(skipped_account_id) for skipped_account_id in account_ids_skipped],
+                            }
+                        return self._send_json(payload)
                     effective_data = data_by_account.get(response_account_id)
+                    response_data_source = "live"
                     if effective_data is None:
                         effective_data = load_positions_cache(conn, account_id=response_account_id)
+                        response_data_source = "cached"
                     payload = build_positions_payload(
                         conn,
                         effective_data,
-                        data_source="live",
+                        data_source=response_data_source,
                         warning=warning_message,
                         account_id=response_account_id,
                     )
-                    if len(account_ids_to_refresh) > 1:
+                    payload["portfolio_data_available"] = True
+                    if len(discovered_account_ids) > 1:
                         payload["multi_account_refresh"] = {
-                            "account_count": len(account_ids_to_refresh),
+                            "account_count": len(discovered_account_ids),
                             "accounts_refreshed": [mask_ib_account_id(refresh_account_id) for refresh_account_id in account_ids_to_refresh],
+                            "accounts_skipped": [mask_ib_account_id(skipped_account_id) for skipped_account_id in account_ids_skipped],
                         }
                 else:
                     payload = {
@@ -13768,6 +13852,17 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     resolved_account_id = resolve_portfolio_account(conn, account_id)
                 except PortfolioAccountResolutionError as account_exc:
                     return self._send_json(_portfolio_account_error_payload(account_exc), status=account_exc.status)
+                if resolved_account_id and not is_portfolio_data_available(conn, resolved_account_id):
+                    warning = PORTFOLIO_DATA_UNAVAILABLE_ERROR
+                    return self._send_json(
+                        {
+                            "positions": [],
+                            "data_source": "empty",
+                            "portfolio_summary": _empty_portfolio_summary_with_warning(warning),
+                            "portfolio_data_available": False,
+                            "warning": warning,
+                        }
+                    )
                 cached_positions = load_positions_cache(conn, account_id=resolved_account_id)
                 if cached_positions:
                     payload = build_positions_payload(
@@ -13777,6 +13872,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         account_id=resolved_account_id,
                         warning="TWS offline - showing saved positions.",
                     )
+                    payload["portfolio_data_available"] = True
                     logger.info(
                         "Positions API returning cached rows=%s account=%s sample_symbols=%s",
                         len(payload["positions"]),
@@ -14648,6 +14744,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 conn.close()
         except PortfolioAccountResolutionError as exc:
             return self._send_json(_portfolio_account_error_payload(exc), status=exc.status)
+        except PortfolioDataUnavailableError:
+            return self._send_json(_portfolio_data_unavailable_payload(), status=PortfolioDataUnavailableError.status)
         except ValueError as exc:
             if "account_id is required when multiple IB accounts exist" in str(exc):
                 return self._send_json(
@@ -14673,6 +14771,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 conn.close()
         except PortfolioAccountResolutionError as exc:
             return self._send_json(_portfolio_account_error_payload(exc), status=exc.status)
+        except PortfolioDataUnavailableError:
+            return self._send_json(_portfolio_data_unavailable_payload(), status=PortfolioDataUnavailableError.status)
         except ValueError as exc:
             if "account_id is required when multiple IB accounts exist" in str(exc):
                 return self._send_json(

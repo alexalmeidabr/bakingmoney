@@ -3628,6 +3628,17 @@ def _normalize_ib_account_id(account_id):
     return normalized or None
 
 
+def mask_ib_account_id(account_id):
+    normalized = _normalize_ib_account_id(account_id)
+    if not normalized:
+        return None
+    if normalized == LEGACY_IB_ACCOUNT_ID:
+        return normalized
+    if len(normalized) <= 4:
+        return "***"
+    return f"{normalized[:1]}***{normalized[-4:]}"
+
+
 def upsert_ib_account(conn, account_id, display_name=None, last_seen_at=None):
     normalized_account_id = _normalize_ib_account_id(account_id)
     if not normalized_account_id:
@@ -8617,25 +8628,85 @@ def _ib_account_ids_from_positions(positions):
     })
 
 
-def fetch_ib_portfolio_summary(ib):
-    items = ib.accountSummary() or []
-    account_ids = _ib_account_ids_from_items(items)
-    if len(account_ids) > 1:
+def get_managed_ib_account_ids(ib):
+    try:
+        raw_accounts = ib.managedAccounts() or []
+    except AttributeError:
+        raw_accounts = []
+    if isinstance(raw_accounts, str):
+        raw_accounts = raw_accounts.split(",")
+    return sorted({
+        account_id
+        for account_id in (_normalize_ib_account_id(account_id) for account_id in raw_accounts)
+        if account_id
+    })
+
+
+def _select_live_ib_account_id(managed_account_ids, position_account_ids=None, summary_account_ids=None):
+    managed_account_ids = sorted({_normalize_ib_account_id(account_id) for account_id in managed_account_ids or [] if _normalize_ib_account_id(account_id)})
+    position_account_ids = sorted({_normalize_ib_account_id(account_id) for account_id in position_account_ids or [] if _normalize_ib_account_id(account_id)})
+    summary_account_ids = sorted({_normalize_ib_account_id(account_id) for account_id in summary_account_ids or [] if _normalize_ib_account_id(account_id)})
+    if len(managed_account_ids) > 1:
         raise MultipleIBAccountsDetectedError(
-            "Multiple IB account summary accounts detected; multi-account refresh is not enabled yet"
+            "Multiple IB managed accounts detected; multi-account refresh is not enabled yet"
         )
-    account_id = account_ids[0] if account_ids else None
-    if account_id:
-        items = [
-            item
-            for item in items
-            if _normalize_ib_account_id(getattr(item, "account", None)) == account_id
-        ]
+    if len(managed_account_ids) == 1:
+        selected_account_id = managed_account_ids[0]
+        conflicting_positions = [account_id for account_id in position_account_ids if account_id != selected_account_id]
+        if conflicting_positions:
+            raise MultipleIBAccountsDetectedError(
+                "IB positions account does not match the selected managed account; no portfolio data was changed"
+            )
+        return selected_account_id
+    candidate_ids = sorted(set(position_account_ids) | set(summary_account_ids))
+    if len(candidate_ids) > 1:
+        raise MultipleIBAccountsDetectedError(
+            "Unable to determine a single IB account because managedAccounts() returned none and live data is ambiguous"
+        )
+    return candidate_ids[0] if candidate_ids else None
+
+
+def _filter_summary_items_for_account(items, account_id):
+    selected_account_id = _normalize_ib_account_id(account_id)
+    if not selected_account_id:
+        return list(items or [])
+    matched_items = [
+        item
+        for item in items or []
+        if _normalize_ib_account_id(getattr(item, "account", None)) == selected_account_id
+    ]
+    blank_items = [
+        item
+        for item in items or []
+        if not _normalize_ib_account_id(getattr(item, "account", None))
+    ]
+    if matched_items:
+        return matched_items + blank_items
+    return list(items or [])
+
+
+def fetch_ib_portfolio_summary(ib, account_id=None, position_account_ids=None):
+    items = ib.accountSummary() or []
+    summary_account_ids = _ib_account_ids_from_items(items)
+    managed_account_ids = [] if account_id else get_managed_ib_account_ids(ib)
+    account_id = _normalize_ib_account_id(account_id) or _select_live_ib_account_id(
+        managed_account_ids,
+        position_account_ids=position_account_ids,
+        summary_account_ids=summary_account_ids,
+    )
+    items = _filter_summary_items_for_account(items, account_id)
     tag_currency_pairs = sorted({
         f"{getattr(item, 'tag', '')}:{_account_summary_currency(item) or 'NO_CURRENCY'}"
         for item in items
     })
-    logger.info("IBKR account summary returned %s rows; tags/currencies=%s", len(items), tag_currency_pairs[:80])
+    logger.info(
+        "IBKR account summary returned rows=%s managed_account_count=%s selected_account=%s summary_account_identifier_count=%s tags/currencies=%s",
+        len(items),
+        len(managed_account_ids),
+        mask_ib_account_id(account_id),
+        len(summary_account_ids),
+        tag_currency_pairs[:80],
+    )
     base_currency = next((
         _account_summary_currency(item)
         for item in items
@@ -13267,27 +13338,45 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         try:
             ensure_event_loop()
             ib = get_ib_connection()
+            managed_account_ids = get_managed_ib_account_ids(ib)
             positions = ib.positions()
             position_account_ids = _ib_account_ids_from_positions(positions)
+            account_summary = None
+            account_summary_warning = None
+            if len(managed_account_ids) > 1:
+                raise MultipleIBAccountsDetectedError(
+                    "Multiple IB managed accounts detected; multi-account refresh is not enabled yet"
+                )
             if len(position_account_ids) > 1:
                 raise MultipleIBAccountsDetectedError(
                     "Multiple IB position accounts detected; multi-account refresh is not enabled yet"
                 )
-            account_summary = None
-            account_summary_warning = None
+            selected_account_id = managed_account_ids[0] if managed_account_ids else None
+            if selected_account_id and position_account_ids and position_account_ids[0] != selected_account_id:
+                raise MultipleIBAccountsDetectedError(
+                    "IB positions account does not match the selected managed account; no portfolio data was changed"
+                )
             try:
-                account_summary = fetch_ib_portfolio_summary(ib)
+                account_summary = fetch_ib_portfolio_summary(
+                    ib,
+                    account_id=selected_account_id,
+                    position_account_ids=position_account_ids,
+                )
+                selected_account_id = _normalize_ib_account_id((account_summary or {}).get("account_id")) or selected_account_id
             except MultipleIBAccountsDetectedError:
                 raise
             except Exception as exc:
                 logger.warning("Unable to fetch IBKR account summary during positions refresh: %s", exc)
                 account_summary_warning = "IBKR account summary/cash could not be updated."
-            summary_account_id = _normalize_ib_account_id((account_summary or {}).get("account_id"))
-            if position_account_ids and summary_account_id and position_account_ids[0] != summary_account_id:
-                raise MultipleIBAccountsDetectedError(
-                    "IB positions account does not match IB account summary account; no portfolio data was changed"
-                )
-            logger.info("Positions API using live IBKR path positions_count=%s", len(positions))
+                if not selected_account_id and len(position_account_ids) == 1:
+                    selected_account_id = position_account_ids[0]
+            logger.info(
+                "Positions API using live IBKR path positions_count=%s managed_account_count=%s selected_account=%s position_account_count=%s",
+                len(positions),
+                len(managed_account_ids),
+                mask_ib_account_id(selected_account_id),
+                len(position_account_ids),
+            )
             contracts = [p.contract for p in positions if p.contract]
             tickers_by_conid = {}
             tws_data_enabled = is_tws_data_enabled()
@@ -13354,9 +13443,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             try:
                 effective_data = data
                 warning_message = None
-                account_id = summary_account_id
-                if not account_id and len(position_account_ids) == 1:
-                    account_id = position_account_ids[0]
+                account_id = selected_account_id
                 if tws_data_enabled:
                     if account_summary:
                         save_portfolio_summary_cache(conn, account_summary, account_id=account_id)

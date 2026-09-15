@@ -80,15 +80,19 @@ class FakeTicker:
 
 
 class FakeIB:
-    def __init__(self, positions=None, summary_items=None):
+    def __init__(self, positions=None, summary_items=None, managed_accounts=None):
         self._positions = positions or []
         self._summary_items = summary_items or []
+        self._managed_accounts = managed_accounts or []
 
     def positions(self):
         return self._positions
 
     def accountSummary(self):
         return self._summary_items
+
+    def managedAccounts(self):
+        return self._managed_accounts
 
     def qualifyContracts(self, *contracts):
         return list(contracts)
@@ -436,7 +440,7 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             FakeSummaryItem("U1111111", "CashBalance", "9000", "USD"),
             FakeSummaryItem("", "NetLiquidation", "999999", "USD"),
         ]
-        summary = web_server.fetch_ib_portfolio_summary(FakeIB(summary_items=items))
+        summary = web_server.fetch_ib_portfolio_summary(FakeIB(summary_items=items, managed_accounts=["U1111111"]))
         self.assertEqual(summary["account_id"], "U1111111")
         self.assertEqual(summary["net_liquidation"], 100000.0)
         self.assertEqual(summary["total_cash_value"], 12000.0)
@@ -444,7 +448,23 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
         self.assertEqual(summary["ledger_cash_usd"], 9000.0)
         self.assertNotIn("999999", str(summary))
 
-    def test_multiple_summary_accounts_are_rejected(self):
+    def test_one_managed_account_allows_multiple_summary_identifiers(self):
+        ib = FakeIB(
+            positions=[FakePosition("U1111111", "NVDA", 12, 80, 1)],
+            summary_items=[
+                FakeSummaryItem("U1111111", "NetLiquidation", "120000", "USD"),
+                FakeSummaryItem("U1111111", "CashBalance", "5000", "USD"),
+                FakeSummaryItem("All", "NetLiquidation", "999999", "USD"),
+                FakeSummaryItem("GROUP_SUMMARY", "CashBalance", "888888", "USD"),
+            ],
+            managed_accounts=["U1111111"],
+        )
+        summary = web_server.fetch_ib_portfolio_summary(ib)
+        self.assertEqual(summary["account_id"], "U1111111")
+        self.assertEqual(summary["net_liquidation"], 120000.0)
+        self.assertEqual(summary["ledger_cash_usd"], 5000.0)
+
+    def test_zero_managed_multiple_summary_accounts_are_rejected(self):
         items = [
             FakeSummaryItem("U1111111", "NetLiquidation", "100000", "USD"),
             FakeSummaryItem("U2222222", "NetLiquidation", "250000", "USD"),
@@ -491,7 +511,7 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_live_refresh_rejects_summary_position_account_mismatch_without_cache_mutation(self):
+    def test_live_refresh_rejects_managed_position_account_mismatch_without_cache_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "account-mismatch.db")
             with mock.patch.object(web_server, "DB_PATH", db_path):
@@ -508,8 +528,9 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                     conn.close()
 
             ib = FakeIB(
-                positions=[FakePosition("U1111111", "NVDA", 100, 50, 1)],
-                summary_items=[FakeSummaryItem("U2222222", "NetLiquidation", "250000")],
+                positions=[FakePosition("U2222222", "NVDA", 100, 50, 1)],
+                summary_items=[FakeSummaryItem("U1111111", "NetLiquidation", "100000")],
+                managed_accounts=["U1111111"],
             )
             response = self.run_fake_positions_refresh(db_path, ib)
             self.assertEqual(response["status"], 409)
@@ -520,6 +541,39 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                 self.assertEqual(web_server.load_positions_cache(conn, "U1111111")[0]["position"], 100)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache WHERE account_id = 'U2222222'").fetchone()[0], 0)
                 self.assertIsNone(web_server.load_portfolio_summary_cache(conn, "U2222222"))
+                self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["net_liquidation"], 100000)
+            finally:
+                conn.close()
+
+    def test_live_refresh_rejects_two_managed_accounts_without_cache_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "two-managed-accounts.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self.create_modern_portfolio_state(
+                        conn,
+                        "U1111111",
+                        positions=[{"symbol": "NVDA", "position": 100, "avgCost": 50, "marketValue": 10000}],
+                        summary={"net_liquidation": 100000, "actual_cash": 10000},
+                    )
+                finally:
+                    conn.close()
+
+            ib = FakeIB(
+                positions=[FakePosition("U1111111", "NVDA", 100, 50, 1)],
+                summary_items=[FakeSummaryItem("U1111111", "NetLiquidation", "100000")],
+                managed_accounts=["U1111111", "U2222222"],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib)
+            self.assertEqual(response["status"], 409)
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U1111111"])
+                self.assertEqual(web_server.load_positions_cache(conn, "U1111111")[0]["position"], 100)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions_cache WHERE account_id = 'U2222222'").fetchone()[0], 0)
                 self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["net_liquidation"], 100000)
             finally:
                 conn.close()
@@ -572,6 +626,7 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                     FakeSummaryItem("U1111111", "NetLiquidation", "120000"),
                     FakeSummaryItem("U1111111", "CashBalance", "5000"),
                 ],
+                managed_accounts=["U1111111"],
             )
             response = self.run_fake_positions_refresh(db_path, ib)
             self.assertEqual(response["status"], 200)
@@ -588,6 +643,84 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                 self.assertEqual(summary["ledger_cash_usd"], 5000.0)
             finally:
                 conn.close()
+
+    def test_single_managed_account_refresh_allows_multiple_summary_identifiers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "single-managed-summary-groups.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+
+            ib = FakeIB(
+                positions=[FakePosition("U1111111", "NVDA", 12, 80, 1)],
+                summary_items=[
+                    FakeSummaryItem("U1111111", "NetLiquidation", "120000"),
+                    FakeSummaryItem("U1111111", "CashBalance", "5000"),
+                    FakeSummaryItem("All", "NetLiquidation", "999999"),
+                    FakeSummaryItem("GROUP_SUMMARY", "CashBalance", "888888"),
+                ],
+                managed_accounts=["U1111111"],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib)
+            self.assertEqual(response["status"], 200)
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U1111111"])
+                self.assertEqual(web_server.load_positions_cache(conn, "U1111111")[0]["position"], 12)
+                summary = web_server.load_portfolio_summary_cache(conn, "U1111111")
+                self.assertEqual(summary["net_liquidation"], 120000.0)
+                self.assertEqual(summary["ledger_cash_usd"], 5000.0)
+            finally:
+                conn.close()
+
+    def test_single_managed_account_refresh_allows_blank_position_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "blank-position-account.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+
+            ib = FakeIB(
+                positions=[FakePosition("", "NVDA", 12, 80, 1)],
+                summary_items=[FakeSummaryItem("U1111111", "NetLiquidation", "120000")],
+                managed_accounts=["U1111111"],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib)
+            self.assertEqual(response["status"], 200)
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U1111111"])
+                self.assertEqual(web_server.load_positions_cache(conn, "U1111111")[0]["symbol"], "NVDA")
+            finally:
+                conn.close()
+
+    def test_zero_managed_accounts_unambiguous_live_data_falls_back_to_single_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "zero-managed-unambiguous.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+
+            ib = FakeIB(
+                positions=[FakePosition("U1111111", "NVDA", 12, 80, 1)],
+                summary_items=[
+                    FakeSummaryItem("U1111111", "NetLiquidation", "120000"),
+                    FakeSummaryItem("U1111111", "CashBalance", "5000"),
+                ],
+                managed_accounts=[],
+            )
+            response = self.run_fake_positions_refresh(db_path, ib)
+            self.assertEqual(response["status"], 200)
+
+            conn = self.open_app_conn(db_path)
+            try:
+                self.assertEqual([row["account_id"] for row in web_server.list_ib_accounts(conn)], ["U1111111"])
+                self.assertEqual(web_server.load_positions_cache(conn, "U1111111")[0]["position"], 12)
+                self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["net_liquidation"], 120000)
+            finally:
+                conn.close()
+
+    def test_zero_managed_accounts_with_no_usable_ids_selects_no_account(self):
+        self.assertIsNone(web_server._select_live_ib_account_id([], [], []))
 
     def test_legacy_account_auto_reconciles_to_first_real_account(self):
         with tempfile.TemporaryDirectory() as tmp:

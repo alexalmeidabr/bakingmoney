@@ -70,6 +70,29 @@ body {
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.portfolio-account-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.portfolio-account-control select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  min-width: 190px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.portfolio-account-control select:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(46, 144, 250, 0.12);
 }
 
 .switch-inline {
@@ -80,6 +103,10 @@ body {
 }
 
 #tws-data-status.status {
+  margin: 0;
+}
+
+#portfolio-account-status.status {
   margin: 0;
 }
 

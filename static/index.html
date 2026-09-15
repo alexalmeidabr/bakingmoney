@@ -24,6 +24,13 @@
 
       <main class="content">
         <div class="global-toolbar">
+          <label class="portfolio-account-control" for="portfolio-account-select">
+            <span>Portfolio Account</span>
+            <select id="portfolio-account-select" disabled>
+              <option value="">Loading accounts</option>
+            </select>
+          </label>
+          <span id="portfolio-account-status" class="status"></span>
           <label class="switch-inline" for="tws-data-toggle">
             <span>Data from TWS</span>
             <input id="tws-data-toggle" type="checkbox" />
@@ -1087,6 +1094,7 @@
 
     <script src="/static/earnings_calendar_date_filters.js"></script>
     <script src="/static/action_plan_sorting.js"></script>
+    <script src="/static/portfolio_account_selector.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

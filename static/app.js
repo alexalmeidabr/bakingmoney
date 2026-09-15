@@ -197,6 +197,8 @@ const configRatingStrongSellMinBearishConfidenceEl = document.getElementById('co
 const configRatingSellMaxUpsideEl = document.getElementById('config-rating-sell-max-upside');
 const configRatingSellMaxDiffEl = document.getElementById('config-rating-sell-max-diff');
 const configRatingSellMinBearishConfidenceEl = document.getElementById('config-rating-sell-min-bearish-confidence');
+const portfolioAccountSelectEl = document.getElementById('portfolio-account-select');
+const portfolioAccountStatusEl = document.getElementById('portfolio-account-status');
 const twsDataToggleEl = document.getElementById('tws-data-toggle');
 const twsDataStatusEl = document.getElementById('tws-data-status');
 const backupStatusEl = document.getElementById('backup-status');
@@ -275,10 +277,15 @@ const earningsCalendarAddBtn = document.getElementById('earnings-calendar-add-bt
 const earningsCalendarReleaseDateHeaderEl = document.getElementById('earnings-calendar-release-date-header');
 
 let latestPositions = [];
+let latestPositionsPortfolioSummary = null;
 let positionSort = { key: 'marketValue', direction: 'desc' };
 let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
 let selectedActionPlanDetail = null;
+let portfolioAccounts = [];
+let selectedPortfolioAccountId = null;
+let portfolioAccountsLoaded = false;
+let isUpdatingPortfolioAccountSelect = false;
 let actionPlanLinearSort = { key: 'linear_allocation_score', direction: 'desc' };
 let analysisSort = { key: 'upside', direction: 'desc' };
 let portfolioFilter = 'all';
@@ -1126,6 +1133,10 @@ registerActionPlanConfigHelp();
 let savedGeneralSettings = null;
 
 const POSITIONS_CACHE_KEY = 'bakingmoney.latestPositions';
+const portfolioAccountSelector = window.PortfolioAccountSelector || {};
+const PORTFOLIO_ACCOUNT_STORAGE_KEY = portfolioAccountSelector.STORAGE_KEY || 'bakingmoney.portfolioAccountId';
+const PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE = 'Select a Portfolio Account to continue.';
+const PORTFOLIO_DATA_UNAVAILABLE_MESSAGE = 'Portfolio data is not available for this account yet.';
 
 const RATING_FILTER_OPTIONS = [
   { key: 'strong_buy', label: 'Strong Buy' },
@@ -1596,6 +1607,190 @@ function saveCachedPositions(positions) {
   }
 }
 
+function normalizePortfolioAccountId(value) {
+  if (typeof portfolioAccountSelector.normalizeAccountId === 'function') {
+    return portfolioAccountSelector.normalizeAccountId(value);
+  }
+  const text = String(value ?? '').trim();
+  return text || null;
+}
+
+function getPortfolioAccountOptionLabel(account) {
+  if (typeof portfolioAccountSelector.getAccountOptionLabel === 'function') {
+    return portfolioAccountSelector.getAccountOptionLabel(account);
+  }
+  return String(account?.display_name || account?.masked_account_id || 'Unknown account');
+}
+
+function withSelectedPortfolioAccount(url) {
+  if (typeof portfolioAccountSelector.withPortfolioAccount !== 'function') return url;
+  return portfolioAccountSelector.withPortfolioAccount(url, selectedPortfolioAccountId);
+}
+
+function createPortfolioApiError(payload, fallback) {
+  const error = new Error(extractErrorMessage(payload, fallback));
+  error.code = payload && typeof payload === 'object' ? payload.code : null;
+  return error;
+}
+
+function isPortfolioAccountBlockingError(error) {
+  return ['account_selection_required', 'account_not_found', 'portfolio_data_unavailable'].includes(error?.code);
+}
+
+function getSelectedPortfolioAccount() {
+  const selected = normalizePortfolioAccountId(selectedPortfolioAccountId);
+  if (!selected) return null;
+  return portfolioAccounts.find((account) => normalizePortfolioAccountId(account?.account_id) === selected) || null;
+}
+
+function isPortfolioAccountSelectionRequired() {
+  return portfolioAccountsLoaded && portfolioAccounts.length > 1 && !selectedPortfolioAccountId;
+}
+
+function isSelectedPortfolioAccountUnavailable() {
+  return getSelectedPortfolioAccount()?.portfolio_data_available === false;
+}
+
+function clearPositionsDisplay(message, className = 'status error') {
+  latestPositions = [];
+  latestPositionsPortfolioSummary = null;
+  saveCachedPositions([]);
+  positionsTableBody.innerHTML = '';
+  renderPositionsPortfolioSummary(null);
+  positionsTable.classList.add('hidden');
+  positionsStatusEl.textContent = message;
+  positionsStatusEl.className = className;
+}
+
+function clearActionPlanDisplay(message, className = 'status error') {
+  latestActionPlanPayload = { action_plan: [], linear_action_plan: [], summary: {} };
+  selectedActionPlanDetail = null;
+  showActionPlanList();
+  if (actionPlanSummaryEl) actionPlanSummaryEl.innerHTML = '';
+  if (actionPlanLinearActionsTableBody) actionPlanLinearActionsTableBody.innerHTML = '';
+  if (actionPlanDetailContentEl) actionPlanDetailContentEl.innerHTML = '';
+  actionPlanStatusEl.textContent = message;
+  actionPlanStatusEl.className = className;
+}
+
+function renderPortfolioAccountSelector() {
+  if (!portfolioAccountSelectEl) return;
+  isUpdatingPortfolioAccountSelect = true;
+  portfolioAccountSelectEl.innerHTML = '';
+
+  const addOption = (value, label, disabled = false) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    option.disabled = disabled;
+    portfolioAccountSelectEl.appendChild(option);
+  };
+
+  if (!portfolioAccountsLoaded) {
+    addOption('', 'Loading accounts', true);
+    portfolioAccountSelectEl.disabled = true;
+  } else if (!portfolioAccounts.length) {
+    addOption('', 'No accounts', true);
+    portfolioAccountSelectEl.disabled = true;
+  } else {
+    if (!selectedPortfolioAccountId) addOption('', 'Select an account');
+    portfolioAccounts.forEach((account) => {
+      const accountId = normalizePortfolioAccountId(account?.account_id);
+      if (!accountId) return;
+      addOption(accountId, getPortfolioAccountOptionLabel(account));
+    });
+    portfolioAccountSelectEl.disabled = false;
+  }
+
+  portfolioAccountSelectEl.value = selectedPortfolioAccountId || '';
+  isUpdatingPortfolioAccountSelect = false;
+
+  if (!portfolioAccountStatusEl) return;
+  if (!portfolioAccountsLoaded) {
+    portfolioAccountStatusEl.textContent = '';
+    portfolioAccountStatusEl.className = 'status';
+  } else if (isPortfolioAccountSelectionRequired()) {
+    portfolioAccountStatusEl.textContent = PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE;
+    portfolioAccountStatusEl.className = 'status warning';
+  } else if (isSelectedPortfolioAccountUnavailable()) {
+    portfolioAccountStatusEl.textContent = PORTFOLIO_DATA_UNAVAILABLE_MESSAGE;
+    portfolioAccountStatusEl.className = 'status warning';
+  } else {
+    portfolioAccountStatusEl.textContent = '';
+    portfolioAccountStatusEl.className = 'status';
+  }
+}
+
+function getActiveViewId() {
+  return document.querySelector('.view.active')?.id || 'analysis';
+}
+
+async function reloadPortfolioScopedViews() {
+  const activeView = getActiveViewId();
+  if (activeView === 'positions') {
+    await loadPositions();
+  } else if (activeView === 'action-plan') {
+    await loadActionPlan();
+  } else if (activeView === 'analysis') {
+    await loadAnalysis();
+  }
+}
+
+async function loadPortfolioAccounts(options = {}) {
+  if (!portfolioAccountSelectEl) return;
+  const preserveCurrent = options.preserveCurrent !== false;
+  try {
+    const response = await fetch('/api/ib-accounts');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load portfolio accounts'));
+    portfolioAccounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+    portfolioAccountsLoaded = true;
+
+    const savedAccountId = localStorage.getItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
+    const candidateAccountId = preserveCurrent && selectedPortfolioAccountId
+      ? selectedPortfolioAccountId
+      : savedAccountId;
+    const resolve = typeof portfolioAccountSelector.resolveInitialPortfolioAccount === 'function'
+      ? portfolioAccountSelector.resolveInitialPortfolioAccount
+      : (() => ({ selectedAccountId: null, shouldClearSaved: Boolean(savedAccountId), shouldSaveSelection: false }));
+    const resolved = resolve(portfolioAccounts, candidateAccountId);
+    selectedPortfolioAccountId = resolved.selectedAccountId;
+
+    if (resolved.shouldClearSaved) localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
+    if (selectedPortfolioAccountId && (resolved.shouldSaveSelection || savedAccountId !== selectedPortfolioAccountId)) {
+      localStorage.setItem(PORTFOLIO_ACCOUNT_STORAGE_KEY, selectedPortfolioAccountId);
+    }
+
+    renderPortfolioAccountSelector();
+  } catch (error) {
+    portfolioAccountsLoaded = true;
+    portfolioAccounts = [];
+    selectedPortfolioAccountId = null;
+    renderPortfolioAccountSelector();
+    if (portfolioAccountStatusEl) {
+      portfolioAccountStatusEl.textContent = `Error: ${error.message}`;
+      portfolioAccountStatusEl.className = 'status error';
+    }
+  }
+}
+
+async function handlePortfolioAccountNotFound() {
+  localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
+  selectedPortfolioAccountId = null;
+  await loadPortfolioAccounts({ preserveCurrent: false });
+}
+
+async function handlePortfolioAccountChange() {
+  if (isUpdatingPortfolioAccountSelect) return;
+  selectedPortfolioAccountId = normalizePortfolioAccountId(portfolioAccountSelectEl?.value);
+  if (selectedPortfolioAccountId) localStorage.setItem(PORTFOLIO_ACCOUNT_STORAGE_KEY, selectedPortfolioAccountId);
+  else localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
+  renderPortfolioAccountSelector();
+  clearPositionsDisplay('', 'status');
+  clearActionPlanDisplay('', 'status');
+  await reloadPortfolioScopedViews();
+}
+
 latestPositions = loadCachedPositions();
 
 async function getScenarioPassCountForStatus() {
@@ -1619,6 +1814,9 @@ function buildScenarioStatusMessage(symbol, passCount) {
 
 function extractErrorMessage(payload, fallback) {
   if (!payload || typeof payload !== 'object') return fallback;
+  if (payload.code === 'account_selection_required') return PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE;
+  if (payload.code === 'account_not_found') return PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE;
+  if (payload.code === 'portfolio_data_unavailable') return PORTFOLIO_DATA_UNAVAILABLE_MESSAGE;
   return [payload.error, payload.details, payload.debugHint].filter(Boolean).join(' ') || fallback;
 }
 
@@ -2296,15 +2494,24 @@ function renderActionPlanDetail(item) {
 }
 
 async function openActionPlanDetail(symbol) {
+  if (isPortfolioAccountSelectionRequired()) {
+    clearActionPlanDisplay(PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE);
+    return;
+  }
   const cached = (latestActionPlanPayload.linear_action_plan || []).find((item) => item.symbol === symbol);
   renderActionPlanDetail(cached || { symbol, action: 'Loading…' });
   actionPlanDetailStatusEl.textContent = `Loading ${symbol} Action Detail…`;
   try {
-    const response = await fetch(`/api/action-plan/${encodeURIComponent(symbol)}`);
+    const response = await fetch(withSelectedPortfolioAccount(`/api/action-plan/${encodeURIComponent(symbol)}`));
     const payload = await response.json();
-    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load Action Detail'));
+    if (!response.ok) throw createPortfolioApiError(payload, 'Unable to load Action Detail');
     renderActionPlanDetail(payload.action_detail);
   } catch (error) {
+    if (error.code === 'account_not_found') await handlePortfolioAccountNotFound();
+    if (isPortfolioAccountBlockingError(error)) {
+      actionPlanDetailContentEl.innerHTML = '';
+      selectedActionPlanDetail = null;
+    }
     actionPlanDetailStatusEl.textContent = `Error: ${error.message}`;
     actionPlanDetailStatusEl.className = 'status error';
   }
@@ -2313,17 +2520,26 @@ async function openActionPlanDetail(symbol) {
 async function loadActionPlan() {
   if (!actionPlanLinearActionsTableBody) return;
   showActionPlanList();
+  if (isPortfolioAccountSelectionRequired()) {
+    clearActionPlanDisplay(PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE);
+    return;
+  }
   actionPlanStatusEl.textContent = 'Loading Action Plan…';
   actionPlanStatusEl.className = 'status';
   try {
-    const response = await fetch('/api/action-plan');
+    const response = await fetch(withSelectedPortfolioAccount('/api/action-plan'));
     const payload = await response.json();
-    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load Action Plan'));
+    if (!response.ok) throw createPortfolioApiError(payload, 'Unable to load Action Plan');
     latestActionPlanPayload = payload || { action_plan: [], summary: {} };
     renderActionPlan();
     actionPlanStatusEl.textContent = `Loaded ${payload.linear_action_plan?.length || 0} Linear Allocation rows.`;
     actionPlanStatusEl.className = 'status';
   } catch (error) {
+    if (error.code === 'account_not_found') await handlePortfolioAccountNotFound();
+    if (isPortfolioAccountBlockingError(error)) {
+      clearActionPlanDisplay(error.message);
+      return;
+    }
     actionPlanStatusEl.textContent = `Error: ${error.message}`;
     actionPlanStatusEl.className = 'status error';
   }
@@ -4183,6 +4399,11 @@ async function loadPositions(options = {}) {
   positionsStatusEl.className = 'status';
   positionsTable.classList.add('hidden');
   if (options.refresh) refreshBtn.disabled = true;
+  if (isPortfolioAccountSelectionRequired()) {
+    clearPositionsDisplay(PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE);
+    if (options.refresh) refreshBtn.disabled = false;
+    return;
+  }
 
   try {
     let positionsPayload = null;
@@ -4191,13 +4412,13 @@ async function loadPositions(options = {}) {
     const maxAttempts = options.refresh ? 2 : 1;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const [positionsResponse, analysisResponse] = await Promise.all([
-        fetch(options.refresh ? '/api/positions?refresh=1' : '/api/positions'),
+        fetch(withSelectedPortfolioAccount(options.refresh ? '/api/positions?refresh=1' : '/api/positions')),
         fetch('/api/analysis'),
       ]);
       positionsPayload = await positionsResponse.json();
       analysisPayload = await analysisResponse.json();
       analysisResponseOk = analysisResponse.ok;
-      if (!positionsResponse.ok) throw new Error(extractErrorMessage(positionsPayload, 'Request failed'));
+      if (!positionsResponse.ok) throw createPortfolioApiError(positionsPayload, 'Request failed');
       if (options.refresh && attempt === 0 && shouldRetryTwsPositionsRefresh(positionsPayload)) {
         positionsStatusEl.textContent = 'Connecting to TWS… retrying refresh once.';
         await delay(750);
@@ -4209,13 +4430,13 @@ async function loadPositions(options = {}) {
 
     console.debug('[positions] raw /api/positions response sample:', {
       count: (positionsPayload.positions || []).length,
-      first: (positionsPayload.positions || [])[0] || null,
+      firstSymbol: (positionsPayload.positions || [])[0]?.symbol || null,
     });
     console.debug('[positions] raw /api/analysis response sample:', {
       ok: analysisResponseOk,
       topLevelKeys: analysisPayload && typeof analysisPayload === 'object' ? Object.keys(analysisPayload) : [],
       count: Array.isArray(analysisPayload?.analysis) ? analysisPayload.analysis.length : 0,
-      first: Array.isArray(analysisPayload?.analysis) ? (analysisPayload.analysis[0] || null) : null,
+      firstSymbol: Array.isArray(analysisPayload?.analysis) ? (analysisPayload.analysis[0]?.symbol || null) : null,
     });
 
     latestPositionsPortfolioSummary = positionsPayload.portfolio_summary || null;
@@ -4227,13 +4448,14 @@ async function loadPositions(options = {}) {
 
     console.debug('[positions] merged rows sample:', {
       count: latestPositions.length,
-      first: latestPositions[0] || null,
+      firstSymbol: latestPositions[0]?.symbol || null,
       withRating: latestPositions.filter((row) => !!row.rating).length,
       withUpside: latestPositions.filter((row) => typeof row.upside === 'number').length,
       withConfidence: latestPositions.filter((row) => typeof row.confidence_diff === 'number').length,
     });
 
     saveCachedPositions(latestPositions);
+    if (options.refresh) await loadPortfolioAccounts({ preserveCurrent: true });
 
     if (!latestPositions.length) {
       positionsTableBody.innerHTML = '';
@@ -4251,6 +4473,11 @@ async function loadPositions(options = {}) {
     positionsStatusEl.className = positionsPayload.warning ? 'status error' : 'status';
     positionsTable.classList.remove('hidden');
   } catch (error) {
+    if (error.code === 'account_not_found') await handlePortfolioAccountNotFound();
+    if (isPortfolioAccountBlockingError(error)) {
+      clearPositionsDisplay(error.message);
+      return;
+    }
     if (latestPositions.length) {
       console.debug('[positions] using cached/fallback positions path', {
         cachedCount: latestPositions.length,
@@ -4276,21 +4503,33 @@ async function loadPositions(options = {}) {
 async function loadAnalysis() {
   analysisStatusEl.textContent = 'Loading analysis…'; analysisStatusEl.className = 'status'; analysisTable.classList.add('hidden');
   try {
+    const positionsRequest = isPortfolioAccountSelectionRequired()
+      ? null
+      : fetch(withSelectedPortfolioAccount('/api/positions'));
     const [analysisResponse, positionsResponse] = await Promise.all([
       fetch('/api/analysis'),
-      fetch('/api/positions'),
+      positionsRequest || Promise.resolve(null),
     ]);
     const analysisPayload = await analysisResponse.json();
-    const positionsPayload = await positionsResponse.json();
+    const positionsPayload = positionsResponse ? await positionsResponse.json() : null;
     if (!analysisResponse.ok) throw new Error(extractErrorMessage(analysisPayload, 'Request failed'));
-    latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
-    if (positionsResponse.ok) {
-      latestPositions = mergePositionsWithAnalysis(positionsPayload.positions || [], latestAnalysis);
-      saveCachedPositions(latestPositions);
+    if (positionsResponse?.ok) {
+      latestPositions = positionsPayload.positions || [];
       console.debug('[analysis] refreshed cached positions with analysis enrichment', {
         positionsCount: latestPositions.length,
-        withRating: latestPositions.filter((row) => !!row.rating).length,
       });
+    } else if (!positionsResponse || positionsPayload?.code === 'account_selection_required' || positionsPayload?.code === 'portfolio_data_unavailable') {
+      latestPositions = [];
+      saveCachedPositions([]);
+    } else if (positionsPayload?.code === 'account_not_found') {
+      await handlePortfolioAccountNotFound();
+      latestPositions = [];
+      saveCachedPositions([]);
+    }
+    latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
+    if (positionsResponse?.ok) {
+      latestPositions = mergePositionsWithAnalysis(latestPositions, latestAnalysis);
+      saveCachedPositions(latestPositions);
     }
 
     analysisTableBody.innerHTML = '';
@@ -6481,6 +6720,7 @@ actionPlanOpenAnalysisBtn.addEventListener('click', () => {
   openAnalysisDetailForSymbol(selectedActionPlanDetail.symbol, { origin: 'action_plan' });
 });
 configActionPlanInputs.forEach((input) => input.addEventListener('input', updateActionPlanBucketTotal));
+portfolioAccountSelectEl?.addEventListener('change', handlePortfolioAccountChange);
 twsDataToggleEl.addEventListener('change', () => updateTwsDataToggle(Boolean(twsDataToggleEl.checked)));
 backupExportBtn.addEventListener('click', exportBackupFile);
 backupImportBtn.addEventListener('click', restoreBackupFile);
@@ -6501,5 +6741,4 @@ setActionPlanActionFilterOpen(false);
 setEarningsCalendarDateFilterOpen(false);
 initializeConfigHelpIcons();
 loadTwsDataToggleState();
-
-setView('analysis');
+loadPortfolioAccounts({ preserveCurrent: false }).finally(() => setView('analysis'));

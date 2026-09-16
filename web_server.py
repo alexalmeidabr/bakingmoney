@@ -11086,7 +11086,7 @@ def build_action_plan(conn, account_id=None):
             "potential_conviction_score": potential_conviction,
             "potential_score_component": potential_score_component,
             "current_position_market_value": market_value,
-            "owned_share_quantity": position.get("position") if position else None,
+            "owned_share_quantity": position.get("position") if position else 0,
             "bucket": rating,
         })
 

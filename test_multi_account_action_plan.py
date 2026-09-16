@@ -317,6 +317,60 @@ class MultiAccountActionPlanIsolationTests(unittest.TestCase):
                         self.assertEqual(detail[key], row[key])
                     self.assertEqual(detail["summary"], plan["summary"]["linear_summary"])
 
+    def test_action_plan_detail_uses_selected_account_cash_funding_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "account-plan-detail-cash.db")
+            self.init_db(db_path)
+            conn = self.open_conn(db_path)
+            try:
+                self.save_settings(
+                    conn,
+                    action_min_cash_unallocated_target=0.0,
+                    linear_max_reserve_pct=0.0,
+                )
+                self.save_state(
+                    conn,
+                    ACCOUNT_A,
+                    positions=[position("NVDA", 100, 10_000), position("SGOV", 100, 10_000)],
+                    portfolio_value=100_000,
+                    actual_cash=5_000,
+                )
+                self.save_state(
+                    conn,
+                    ACCOUNT_B,
+                    positions=[position("NVDA", 25, 2_500)],
+                    portfolio_value=250_000,
+                    actual_cash=50_000,
+                )
+            finally:
+                conn.close()
+
+            plan_a = self.build_plan(db_path, ACCOUNT_A, analysis_items=self.analysis_items(("NVDA",)))
+            plan_b = self.build_plan(db_path, ACCOUNT_B, analysis_items=self.analysis_items(("NVDA",)))
+            detail_a = self.detail(db_path, ACCOUNT_A, "NVDA", analysis_items=self.analysis_items(("NVDA",)))
+            detail_b = self.detail(db_path, ACCOUNT_B, "NVDA", analysis_items=self.analysis_items(("NVDA",)))
+
+            self.assertEqual(plan_a["summary"]["actual_cash"], 5_000)
+            self.assertEqual(plan_b["summary"]["actual_cash"], 50_000)
+            self.assertEqual(plan_a["summary"]["cash_equivalent_value"], 10_000)
+            self.assertEqual(plan_b["summary"]["cash_equivalent_value"], 0)
+            self.assertEqual(plan_a["summary"]["cash_equivalent_positions"], [{"symbol": "SGOV", "market_value": 10_000, "position": 100, "price": 100.0}])
+            self.assertEqual(plan_b["summary"]["cash_equivalent_positions"], [])
+
+            self.assertEqual(detail_a["summary"], plan_a["summary"]["linear_summary"])
+            self.assertEqual(detail_b["summary"], plan_b["summary"]["linear_summary"])
+            self.assertEqual(detail_a["summary"]["cash_like_available"], 15_000)
+            self.assertEqual(detail_b["summary"]["cash_like_available"], 50_000)
+            self.assertEqual(detail_a["summary"]["current_cash_unallocated"], 15_000)
+            self.assertEqual(detail_b["summary"]["current_cash_unallocated"], 50_000)
+            self.assertEqual(detail_a["summary"]["available_buy_budget"], 15_000)
+            self.assertEqual(detail_b["summary"]["available_buy_budget"], 50_000)
+            self.assertEqual(detail_a["summary"]["cash_available_for_linear_buys"], 15_000)
+            self.assertEqual(detail_b["summary"]["cash_available_for_linear_buys"], 50_000)
+            self.assertEqual(detail_a["summary"]["target_reserve_amount"], 0)
+            self.assertEqual(detail_b["summary"]["target_reserve_amount"], 0)
+            self.assertNotEqual(detail_a["summary"]["cash_like_available"], detail_b["summary"]["cash_like_available"])
+
     def test_same_symbol_can_trim_in_one_account_and_add_in_another(self):
         analysis_items = self.analysis_items(("NVDA",))
         with tempfile.TemporaryDirectory() as tmp:
@@ -346,15 +400,77 @@ class MultiAccountActionPlanIsolationTests(unittest.TestCase):
             self.assertGreater(row_b["suggested_share_count"], 0)
             self.assertNotEqual(row_b["suggested_share_count"], row_a["suggested_share_count"])
 
-    def test_action_plan_path_uses_explicit_account_scoped_cache_loads(self):
-        with open("web_server.py", encoding="utf-8") as handle:
-            source = handle.read()
-        build_action_plan_source = source[source.index("def build_action_plan("):source.index("def build_linear_action_plan_detail(")]
-        self.assertIn("resolved_account_id = resolve_portfolio_account(conn, account_id)", build_action_plan_source)
-        self.assertIn("load_positions_cache(conn, account_id=resolved_account_id)", build_action_plan_source)
-        self.assertIn("build_portfolio_cash_summary(conn, positions, settings, account_id=resolved_account_id)", build_action_plan_source)
-        self.assertNotIn("load_positions_cache(conn)", build_action_plan_source)
-        self.assertNotIn("load_portfolio_summary_cache(conn)", build_action_plan_source)
+    def test_whole_share_sizing_uses_selected_account_exact_target_gap(self):
+        analysis_items = self.analysis_items(("NVDA",))
+        analysis_items[0]["current_price"] = 137.0
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "account-plan-whole-share-sizing.db")
+            self.init_db(db_path)
+            conn = self.open_conn(db_path)
+            try:
+                self.save_settings(
+                    conn,
+                    linear_allocated_target_total_pct=20.0,
+                    action_min_cash_unallocated_target=0.0,
+                    linear_max_reserve_pct=0.0,
+                    linear_add_band_tolerance_pct=0.0,
+                    linear_trim_band_tolerance_pct=0.0,
+                )
+                self.save_state(
+                    conn,
+                    ACCOUNT_A,
+                    positions=[position("NVDA", 73, 10_000, price=137.0)],
+                    portfolio_value=100_000,
+                    actual_cash=50_000,
+                )
+            finally:
+                conn.close()
+
+            row = self.row(self.build_plan(db_path, ACCOUNT_A, analysis_items=analysis_items), "NVDA")
+
+            self.assertEqual(row["action"], "Add")
+            self.assertEqual(row["action_amount_direction"], "add")
+            self.assertEqual(row["current_position_market_value"], 10_000)
+            self.assertAlmostEqual(row["current_position_weight"], 10.0)
+            self.assertAlmostEqual(row["target_weight_mid"], 20.0)
+            self.assertAlmostEqual(row["target_gap_amount"], 10_000.0)
+            self.assertEqual(row["suggested_share_count"], 72)
+            self.assertAlmostEqual(row["executable_action_amount"], 9_864.0)
+            self.assertEqual(row["funding_status"], "Fully funded")
+
+    def test_build_action_plan_passes_selected_account_to_portfolio_loaders(self):
+        original_load_positions = web_server.load_positions_cache
+        original_cash_summary = web_server.build_portfolio_cash_summary
+        original_load_summary = web_server.load_portfolio_summary_cache
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "account-plan-loader-account-id.db")
+            self.init_db(db_path)
+            conn = self.open_conn(db_path)
+            try:
+                self.save_settings(conn)
+                self.save_state(conn, ACCOUNT_A, positions=[position("NVDA", 100, 10_000)], portfolio_value=100_000, actual_cash=5_000)
+                self.save_state(conn, ACCOUNT_B, positions=[position("NVDA", 25, 2_500)], portfolio_value=250_000, actual_cash=50_000)
+            finally:
+                conn.close()
+
+            with mock.patch.object(web_server, "load_positions_cache", wraps=original_load_positions) as load_positions_mock, \
+                 mock.patch.object(web_server, "build_portfolio_cash_summary", wraps=original_cash_summary) as cash_summary_mock, \
+                 mock.patch.object(web_server, "load_portfolio_summary_cache", wraps=original_load_summary) as load_summary_mock:
+                for account_id in (ACCOUNT_A, ACCOUNT_B):
+                    with self.subTest(account_id=account_id):
+                        self.build_plan(db_path, account_id, analysis_items=self.analysis_items(("NVDA",)))
+
+                        for helper_mock in (load_positions_mock, cash_summary_mock, load_summary_mock):
+                            self.assertGreaterEqual(helper_mock.call_count, 1)
+                            self.assertTrue(
+                                all(call.kwargs.get("account_id") == account_id for call in helper_mock.call_args_list),
+                                helper_mock.call_args_list,
+                            )
+
+                        load_positions_mock.reset_mock()
+                        cash_summary_mock.reset_mock()
+                        load_summary_mock.reset_mock()
 
 
 if __name__ == "__main__":

@@ -6577,26 +6577,15 @@ def _get_analysis_enrichment_by_symbol(conn):
     }
 
 
-def _get_portfolio_symbols(conn):
-    return {
-        normalize_symbol(item.get("symbol"))
-        for item in load_positions_cache(conn)
-        if normalize_symbol(item.get("symbol")) and abs(safe_number(item.get("position")) or 0.0) > 0
-    }
-
-
-def _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols):
+def _serialize_earnings_calendar_entry(row, analysis_by_symbol):
     entry = dict(row)
     symbol = normalize_symbol(entry.get("symbol")) or ""
     analysis = analysis_by_symbol.get(symbol) or {}
-    in_portfolio = symbol in portfolio_symbols
     return {
         "id": entry.get("id"),
         "symbol": symbol,
         "company_name": analysis.get("company_name"),
         "has_analysis": bool(analysis),
-        "in_portfolio": in_portfolio,
-        "inPortfolio": in_portfolio,
         "upside": analysis.get("upside"),
         "confidence_diff": analysis.get("confidence_diff"),
         "bullish_confidence": analysis.get("bullish_confidence"),
@@ -6617,7 +6606,7 @@ def _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbol
     }
 
 
-def list_earnings_release_calendar(conn):
+def build_earnings_release_calendar_payload(conn):
     rows = conn.execute(
         """
         SELECT id, symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
@@ -6629,8 +6618,13 @@ def list_earnings_release_calendar(conn):
         """
     ).fetchall()
     analysis_by_symbol = _get_analysis_enrichment_by_symbol(conn)
-    portfolio_symbols = _get_portfolio_symbols(conn)
-    return [_serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols) for row in rows]
+    return {
+        "items": [_serialize_earnings_calendar_entry(row, analysis_by_symbol) for row in rows],
+    }
+
+
+def list_earnings_release_calendar(conn):
+    return build_earnings_release_calendar_payload(conn)["items"]
 
 
 def create_earnings_calendar_entry(conn, symbol, fiscal_year, fiscal_quarter, release_date=None, release_timing=None):
@@ -6675,8 +6669,7 @@ def get_earnings_calendar_entry(conn, entry_id):
     if not row:
         raise ValueError("Calendar entry not found")
     analysis_by_symbol = _get_analysis_enrichment_by_symbol(conn)
-    portfolio_symbols = _get_portfolio_symbols(conn)
-    return _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols)
+    return _serialize_earnings_calendar_entry(row, analysis_by_symbol)
 
 
 def update_earnings_calendar_entry(conn, entry_id, fiscal_year, fiscal_quarter, release_date=None, release_timing=None):
@@ -12117,7 +12110,7 @@ def get_earnings_review_document_download(conn, symbol, review_id, document_id):
     return dict(row), file_path
 
 
-def list_earnings_review_symbols(conn):
+def build_earnings_review_symbols_payload(conn):
     rows = conn.execute(
         """
         SELECT symbol
@@ -12126,11 +12119,6 @@ def list_earnings_review_symbols(conn):
         """
     ).fetchall()
     analysis_by_symbol = {row["symbol"]: row for row in list_analysis_symbols(conn)}
-    position_symbols = {
-        normalize_symbol(item.get("symbol"))
-        for item in load_positions_cache(conn)
-        if abs(safe_number(item.get("position")) or 0.0) > 0
-    }
     items = []
     for row in rows:
         symbol = row["symbol"]
@@ -12153,13 +12141,16 @@ def list_earnings_review_symbols(conn):
         items.append(
             {
                 "symbol": symbol,
-                "in_portfolio": symbol in position_symbols,
                 "rating": analysis.get("rating"),
                 "latest_quarter": latest_quarter,
                 "latest_review_status": latest_status_row["status"] if latest_status_row else None,
             }
         )
-    return items
+    return {"items": items}
+
+
+def list_earnings_review_symbols(conn):
+    return build_earnings_review_symbols_payload(conn)["items"]
 
 
 def add_earnings_review_symbol(conn, symbol):
@@ -14052,8 +14043,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def handle_earnings_review_get(self):
         conn = get_db_connection()
         try:
-            items = list_earnings_review_symbols(conn)
-            self._send_json({"items": items})
+            payload = build_earnings_review_symbols_payload(conn)
+            self._send_json(payload)
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to load earnings review symbols.", "details": str(exc)},
@@ -14065,8 +14056,8 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
     def handle_earnings_review_calendar_get(self):
         conn = get_db_connection()
         try:
-            items = list_earnings_release_calendar(conn)
-            self._send_json({"items": items})
+            payload = build_earnings_release_calendar_payload(conn)
+            self._send_json(payload)
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to load earnings calendar.", "details": str(exc)},

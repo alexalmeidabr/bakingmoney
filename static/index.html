@@ -279,7 +279,6 @@
                   <thead>
                     <tr>
                       <th>Symbol</th>
-                      <th>Portfolio</th>
                       <th>Rating</th>
                       <th>Latest Quarter</th>
                       <th>Status</th>
@@ -422,12 +421,6 @@
             <div class="view-header">
               <h2>Earnings Calendar</h2>
               <div class="table-actions">
-                <label for="earnings-calendar-portfolio-filter" class="inline-control-label">Portfolio Filter</label>
-                <select id="earnings-calendar-portfolio-filter">
-                  <option value="all">All</option>
-                  <option value="in_portfolio">In Portfolio</option>
-                  <option value="not_in_portfolio">Not in Portfolio</option>
-                </select>
                 <label for="earnings-calendar-date-filter-toggle" class="inline-control-label">Release Date Filter</label>
                 <div id="earnings-calendar-date-filter" class="rating-filter earnings-calendar-multiselect" data-open="false">
                   <button id="earnings-calendar-date-filter-toggle" class="rating-filter-toggle" type="button" aria-haspopup="true" aria-expanded="false">
@@ -517,7 +510,6 @@
                       <th>Fiscal Quarter</th>
                       <th id="earnings-calendar-release-date-header" class="sortable" data-sort-direction="">Release Date</th>
                       <th>Release Timing</th>
-                      <th>Portfolio</th>
                       <th>Upside</th>
                       <th>Confidence</th>
                       <th>Rating</th>
@@ -1092,6 +1084,7 @@
       </main>
     </div>
 
+    <script src="/static/ownership_status.js"></script>
     <script src="/static/earnings_calendar_date_filters.js"></script>
     <script src="/static/action_plan_sorting.js"></script>
     <script src="/static/portfolio_account_selector.js"></script>

@@ -20,6 +20,15 @@ function functionBody(name) {
   throw new Error(`Unable to parse ${name}`);
 }
 
+function htmlElementSlice(id) {
+  const start = indexHtml.indexOf(`id="${id}"`);
+  assert.notEqual(start, -1, `Expected ${id} to exist`);
+  const tableStart = indexHtml.lastIndexOf('<table', start);
+  const elementStart = tableStart === -1 ? start : tableStart;
+  const end = indexHtml.indexOf('</table>', start);
+  return indexHtml.slice(elementStart, end === -1 ? indexHtml.length : end);
+}
+
 test('Earnings Review navigation has no browser hash behavior', () => {
   assert.doesNotMatch(appJs, /window\.location\.hash|location\.hash/);
   assert.doesNotMatch(appJs, /hashchange/);
@@ -62,4 +71,36 @@ test('Other main navigation and Earnings Review company-detail return paths stil
   assert.match(appJs, /if \(targetView === 'action-plan' && !skipLoad\) loadActionPlan\(\);/);
   assert.match(appJs, /if \(analysisDetailOrigin === 'earnings_review'\) \{\s*setView\('earnings-review', \{ skipLoad: true \}\);/);
   assert.match(appJs, /showAnalysisDetailFromOriginMenu\('earnings-review'\);/);
+});
+
+test('Earnings Review and Calendar remain global when portfolio account changes', () => {
+  const reloadBody = functionBody('reloadPortfolioScopedViews');
+  assert.doesNotMatch(reloadBody, /activeView === 'earnings-review'/);
+  assert.doesNotMatch(reloadBody, /loadEarningsReview\(\)/);
+
+  const calendarBody = functionBody('loadEarningsCalendar');
+  assert.match(calendarBody, /fetch\('\/api\/earnings-review\/calendar'\)/);
+  assert.doesNotMatch(calendarBody, /withSelectedPortfolioAccount/);
+  assert.doesNotMatch(calendarBody, /portfolio_data_available|earningsCalendarOwnershipAvailable|earningsCalendarPortfolioFilter/);
+
+  const reviewListBody = functionBody('refreshEarningsReviewListOnly');
+  assert.match(reviewListBody, /fetch\('\/api\/earnings-review'\)/);
+  assert.doesNotMatch(reviewListBody, /withSelectedPortfolioAccount/);
+});
+
+test('Earnings Calendar and Earnings Review do not render ownership UI', () => {
+  assert.doesNotMatch(indexHtml, /earnings-calendar-portfolio-filter/);
+  assert.doesNotMatch(htmlElementSlice('earnings-calendar-table'), /<th>Portfolio<\/th>/);
+  assert.doesNotMatch(htmlElementSlice('earnings-review-table'), /<th>Portfolio<\/th>/);
+
+  const calendarBody = functionBody('renderEarningsCalendarTable');
+  assert.doesNotMatch(calendarBody, /ownershipStatus|in_portfolio|Portfolio unavailable|badge-portfolio/);
+
+  const reviewBody = functionBody('renderEarningsReviewList');
+  assert.doesNotMatch(reviewBody, /ownershipStatus|in_portfolio|Portfolio unavailable|ownershipText/);
+});
+
+test('Analysis renders unavailable ownership distinctly', () => {
+  assert.match(appJs, /latestPositionsOwnershipAvailable \? portfolioSymbols\.has/);
+  assert.match(appJs, /ownershipStatus\.ownershipBadge\(item\.inPortfolio\)/);
 });

@@ -684,6 +684,12 @@ th.sortable[data-sort-direction='desc']::after {
   border: 1px solid #eaecf0;
 }
 
+.badge-portfolio-unavailable {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
+}
+
 .settings-grid {
   display: grid;
   gap: 10px;

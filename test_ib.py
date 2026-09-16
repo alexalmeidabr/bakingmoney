@@ -13,20 +13,26 @@ except RuntimeError:
 
 from ib_insync import IB
 
-ib = IB()
-ib.connect("127.0.0.1", 7496, clientId=1)
 
-print("Connected:", ib.isConnected())
+def main():
+    ib = IB()
+    ib.connect("127.0.0.1", 7496, clientId=1)
 
-summary = ib.accountSummary()
-for item in summary:
-    if item.tag == "NetLiquidation":
-        print("\nTotal Portfolio Value:", item.value, item.currency)
+    print("Connected:", ib.isConnected())
 
-positions = ib.positions()
-print("\nYour Holdings:")
-for p in positions:
-    c = p.contract
-    print(f"{c.symbol} | Qty: {p.position} | AvgCost: {p.avgCost}")
+    summary = ib.accountSummary()
+    for item in summary:
+        if item.tag == "NetLiquidation":
+            print("\nTotal Portfolio Value:", item.value, item.currency)
 
-ib.disconnect()
+    positions = ib.positions()
+    print("\nYour Holdings:")
+    for p in positions:
+        c = p.contract
+        print(f"{c.symbol} | Qty: {p.position} | AvgCost: {p.avgCost}")
+
+    ib.disconnect()
+
+
+if __name__ == "__main__":
+    main()

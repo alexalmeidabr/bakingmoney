@@ -2225,7 +2225,7 @@ class EarningsReviewTests(unittest.TestCase):
                     self.assertEqual(msft_row["symbol"], "MSFT")
                     self.assertEqual(msft_row["latest_review_status"], web_server.EARNINGS_REVIEW_STATUS_WATCHPOINTS_GENERATED)
                     self.assertEqual(msft_row["latest_quarter"], "FY2026 Q1")
-                    self.assertFalse(msft_row["in_portfolio"])
+                    self.assertNotIn("in_portfolio", msft_row)
                 finally:
                     conn.close()
 
@@ -2358,8 +2358,8 @@ class EarningsReviewTests(unittest.TestCase):
                     self.assertEqual({(item["symbol"], item["fiscal_year"], item["fiscal_quarter"]) for item in after}, {("MSFT", 2026, "Q1"), ("MSFT", 2026, "Q2")})
                     q1 = next(item for item in after if item["fiscal_quarter"] == "Q1")
                     self.assertTrue(q1["has_analysis"])
-                    self.assertTrue(q1["in_portfolio"])
-                    self.assertTrue(q1["inPortfolio"])
+                    self.assertNotIn("in_portfolio", q1)
+                    self.assertNotIn("inPortfolio", q1)
                     self.assertEqual(q1["release_date"], "2026-05-07")
                     self.assertEqual(q1["release_timing"], "After Close")
                     self.assertIsNotNone(q1["rating"])
@@ -2513,7 +2513,7 @@ class EarningsReviewTests(unittest.TestCase):
                     self.assertEqual(item["symbol"], "ABCD")
                     self.assertIsNone(item["company_name"])
                     self.assertFalse(item["has_analysis"])
-                    self.assertFalse(item["in_portfolio"])
+                    self.assertNotIn("in_portfolio", item)
 
                     updated = web_server.update_earnings_calendar_entry(
                         conn,

@@ -6608,18 +6608,15 @@ def _get_portfolio_ownership_context(conn, account_id=None):
     }
 
 
-def _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols):
+def _serialize_earnings_calendar_entry(row, analysis_by_symbol):
     entry = dict(row)
     symbol = normalize_symbol(entry.get("symbol")) or ""
     analysis = analysis_by_symbol.get(symbol) or {}
-    in_portfolio = None if portfolio_symbols is None else symbol in portfolio_symbols
     return {
         "id": entry.get("id"),
         "symbol": symbol,
         "company_name": analysis.get("company_name"),
         "has_analysis": bool(analysis),
-        "in_portfolio": in_portfolio,
-        "inPortfolio": in_portfolio,
         "upside": analysis.get("upside"),
         "confidence_diff": analysis.get("confidence_diff"),
         "bullish_confidence": analysis.get("bullish_confidence"),
@@ -6640,7 +6637,7 @@ def _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbol
     }
 
 
-def build_earnings_release_calendar_payload(conn, account_id=None):
+def build_earnings_release_calendar_payload(conn):
     rows = conn.execute(
         """
         SELECT id, symbol, fiscal_year, fiscal_quarter, release_date, release_timing, created_at, updated_at
@@ -6652,19 +6649,16 @@ def build_earnings_release_calendar_payload(conn, account_id=None):
         """
     ).fetchall()
     analysis_by_symbol = _get_analysis_enrichment_by_symbol(conn)
-    ownership_context = _get_portfolio_ownership_context(conn, account_id=account_id)
-    portfolio_symbols = ownership_context["portfolio_symbols"]
     return {
-        "items": [_serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols) for row in rows],
-        "portfolio_data_available": ownership_context["portfolio_data_available"],
+        "items": [_serialize_earnings_calendar_entry(row, analysis_by_symbol) for row in rows],
     }
 
 
-def list_earnings_release_calendar(conn, account_id=None):
-    return build_earnings_release_calendar_payload(conn, account_id=account_id)["items"]
+def list_earnings_release_calendar(conn):
+    return build_earnings_release_calendar_payload(conn)["items"]
 
 
-def create_earnings_calendar_entry(conn, symbol, fiscal_year, fiscal_quarter, release_date=None, release_timing=None, account_id=None):
+def create_earnings_calendar_entry(conn, symbol, fiscal_year, fiscal_quarter, release_date=None, release_timing=None):
     normalized_symbol = normalize_symbol(symbol)
     if not normalized_symbol:
         raise ValueError("symbol is required")
@@ -6687,10 +6681,10 @@ def create_earnings_calendar_entry(conn, symbol, fiscal_year, fiscal_quarter, re
         if "UNIQUE" in str(exc).upper():
             raise ValueError(f"Calendar entry for {normalized_symbol} {year} {quarter} already exists") from exc
         raise ValueError(str(exc)) from exc
-    return get_earnings_calendar_entry(conn, cursor.lastrowid, account_id=account_id)
+    return get_earnings_calendar_entry(conn, cursor.lastrowid)
 
 
-def get_earnings_calendar_entry(conn, entry_id, account_id=None):
+def get_earnings_calendar_entry(conn, entry_id):
     try:
         normalized_id = int(entry_id)
     except (TypeError, ValueError) as exc:
@@ -6706,11 +6700,10 @@ def get_earnings_calendar_entry(conn, entry_id, account_id=None):
     if not row:
         raise ValueError("Calendar entry not found")
     analysis_by_symbol = _get_analysis_enrichment_by_symbol(conn)
-    portfolio_symbols = _get_portfolio_ownership_context(conn, account_id=account_id)["portfolio_symbols"]
-    return _serialize_earnings_calendar_entry(row, analysis_by_symbol, portfolio_symbols)
+    return _serialize_earnings_calendar_entry(row, analysis_by_symbol)
 
 
-def update_earnings_calendar_entry(conn, entry_id, fiscal_year, fiscal_quarter, release_date=None, release_timing=None, account_id=None):
+def update_earnings_calendar_entry(conn, entry_id, fiscal_year, fiscal_quarter, release_date=None, release_timing=None):
     try:
         normalized_id = int(entry_id)
     except (TypeError, ValueError) as exc:
@@ -6738,7 +6731,7 @@ def update_earnings_calendar_entry(conn, entry_id, fiscal_year, fiscal_quarter, 
             symbol = existing["symbol"]
             raise ValueError(f"Calendar entry for {symbol} {year} {quarter} already exists") from exc
         raise ValueError(str(exc)) from exc
-    return get_earnings_calendar_entry(conn, normalized_id, account_id=account_id)
+    return get_earnings_calendar_entry(conn, normalized_id)
 
 
 def delete_earnings_calendar_entry(conn, entry_id):
@@ -12148,7 +12141,7 @@ def get_earnings_review_document_download(conn, symbol, review_id, document_id):
     return dict(row), file_path
 
 
-def build_earnings_review_symbols_payload(conn, account_id=None):
+def build_earnings_review_symbols_payload(conn):
     rows = conn.execute(
         """
         SELECT symbol
@@ -12157,8 +12150,6 @@ def build_earnings_review_symbols_payload(conn, account_id=None):
         """
     ).fetchall()
     analysis_by_symbol = {row["symbol"]: row for row in list_analysis_symbols(conn)}
-    ownership_context = _get_portfolio_ownership_context(conn, account_id=account_id)
-    position_symbols = ownership_context["portfolio_symbols"]
     items = []
     for row in rows:
         symbol = row["symbol"]
@@ -12181,20 +12172,16 @@ def build_earnings_review_symbols_payload(conn, account_id=None):
         items.append(
             {
                 "symbol": symbol,
-                "in_portfolio": None if position_symbols is None else symbol in position_symbols,
                 "rating": analysis.get("rating"),
                 "latest_quarter": latest_quarter,
                 "latest_review_status": latest_status_row["status"] if latest_status_row else None,
             }
         )
-    return {
-        "items": items,
-        "portfolio_data_available": ownership_context["portfolio_data_available"],
-    }
+    return {"items": items}
 
 
-def list_earnings_review_symbols(conn, account_id=None):
-    return build_earnings_review_symbols_payload(conn, account_id=account_id)["items"]
+def list_earnings_review_symbols(conn):
+    return build_earnings_review_symbols_payload(conn)["items"]
 
 
 def add_earnings_review_symbol(conn, symbol):
@@ -13257,9 +13244,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         if path == "/api/analysis":
             return self.handle_analysis_get()
         if path == "/api/earnings-review":
-            return self.handle_earnings_review_get(account_id=account_id)
+            return self.handle_earnings_review_get()
         if path == "/api/earnings-review/calendar":
-            return self.handle_earnings_review_calendar_get(account_id=account_id)
+            return self.handle_earnings_review_calendar_get()
         if path.startswith("/api/earnings-review/"):
             suffix = path[len("/api/earnings-review/") :]
             parts = [item for item in suffix.split("/") if item]
@@ -14084,13 +14071,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_earnings_review_get(self, account_id=None):
+    def handle_earnings_review_get(self):
         conn = get_db_connection()
         try:
-            payload = build_earnings_review_symbols_payload(conn, account_id=account_id)
+            payload = build_earnings_review_symbols_payload(conn)
             self._send_json(payload)
-        except PortfolioAccountResolutionError as exc:
-            self._send_json(_portfolio_account_error_payload(exc), status=exc.status)
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to load earnings review symbols.", "details": str(exc)},
@@ -14099,13 +14084,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_earnings_review_calendar_get(self, account_id=None):
+    def handle_earnings_review_calendar_get(self):
         conn = get_db_connection()
         try:
-            payload = build_earnings_release_calendar_payload(conn, account_id=account_id)
+            payload = build_earnings_release_calendar_payload(conn)
             self._send_json(payload)
-        except PortfolioAccountResolutionError as exc:
-            self._send_json(_portfolio_account_error_payload(exc), status=exc.status)
         except Exception as exc:
             self._send_json(
                 {"error": "Unable to load earnings calendar.", "details": str(exc)},

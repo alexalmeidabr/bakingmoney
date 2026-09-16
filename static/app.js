@@ -248,7 +248,6 @@ const earningsReviewWorkflowPanelEl = document.getElementById('earnings-review-w
 const earningsReviewCalendarPanelEl = document.getElementById('earnings-review-calendar-panel');
 const earningsCalendarStatusEl = document.getElementById('earnings-calendar-status');
 const earningsCalendarTableBody = document.querySelector('#earnings-calendar-table tbody');
-const earningsCalendarPortfolioFilterEl = document.getElementById('earnings-calendar-portfolio-filter');
 const earningsCalendarDateFilterEl = document.getElementById('earnings-calendar-date-filter');
 const earningsCalendarDateFilterToggleEl = document.getElementById('earnings-calendar-date-filter-toggle');
 const earningsCalendarDateFilterLabelEl = document.getElementById('earnings-calendar-date-filter-label');
@@ -285,6 +284,7 @@ let latestActionPlanPayload = { action_plan: [], summary: {} };
 let selectedActionPlanDetail = null;
 let portfolioAccounts = [];
 let selectedPortfolioAccountId = null;
+let analysisOwnershipRequestId = 0;
 let portfolioAccountsLoaded = false;
 let isUpdatingPortfolioAccountSelect = false;
 let actionPlanLinearSort = { key: 'linear_allocation_score', direction: 'desc' };
@@ -318,8 +318,6 @@ let earningsReviewSelectedRecordId = null;
 let earningsReviewSymbolHistory = null;
 let earningsReviewActiveTab = 'calendar';
 let earningsCalendarItems = [];
-let earningsCalendarPortfolioFilter = 'all';
-let earningsCalendarOwnershipAvailable = false;
 let earningsCalendarDateFilters = new Set();
 let earningsCalendarFiscalYearFilters = new Set();
 let earningsCalendarFiscalQuarterFilters = new Set();
@@ -1681,6 +1679,19 @@ function clearActionPlanDisplay(message, className = 'status error') {
   actionPlanStatusEl.className = className;
 }
 
+function invalidateAnalysisOwnershipState() {
+  latestPositions = [];
+  latestPositionsOwnershipAvailable = false;
+  saveCachedPositions([]);
+  if (portfolioFilter !== 'all') {
+    portfolioFilter = 'all';
+    analysisPortfolioFilterEl.value = 'all';
+  }
+  analysisPortfolioFilterEl.disabled = true;
+  latestAnalysis = enrichAnalysisWithPortfolioStatus(latestAnalysis);
+  if (getActiveViewId() === 'analysis') renderAnalysisList();
+}
+
 function renderPortfolioAccountSelector() {
   if (!portfolioAccountSelectEl) return;
   isUpdatingPortfolioAccountSelect = true;
@@ -1741,8 +1752,6 @@ async function reloadPortfolioScopedViews() {
     await loadActionPlan();
   } else if (activeView === 'analysis') {
     await loadAnalysis();
-  } else if (activeView === 'earnings-review') {
-    await loadEarningsReview();
   }
 }
 
@@ -1796,6 +1805,8 @@ async function handlePortfolioAccountChange() {
   if (selectedPortfolioAccountId) localStorage.setItem(PORTFOLIO_ACCOUNT_STORAGE_KEY, selectedPortfolioAccountId);
   else localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
   renderPortfolioAccountSelector();
+  analysisOwnershipRequestId += 1;
+  invalidateAnalysisOwnershipState();
   clearPositionsDisplay('', 'status');
   clearActionPlanDisplay('', 'status');
   await reloadPortfolioScopedViews();
@@ -4514,32 +4525,55 @@ async function loadPositions(options = {}) {
 
 async function loadAnalysis() {
   analysisStatusEl.textContent = 'Loading analysis…'; analysisStatusEl.className = 'status'; analysisTable.classList.add('hidden');
+  const ownershipRequestId = analysisOwnershipRequestId += 1;
+  const requestAccountId = selectedPortfolioAccountId;
+  const ownershipRequestCurrent = () => ownershipRequestId === analysisOwnershipRequestId && requestAccountId === selectedPortfolioAccountId;
   try {
     const positionsRequest = isPortfolioAccountSelectionRequired()
       ? null
       : fetch(withSelectedPortfolioAccount('/api/positions'));
-    const [analysisResponse, positionsResponse] = await Promise.all([
+    const [analysisResult, positionsResult] = await Promise.allSettled([
       fetch('/api/analysis'),
       positionsRequest || Promise.resolve(null),
     ]);
+    if (analysisResult.status !== 'fulfilled') throw analysisResult.reason;
+    const analysisResponse = analysisResult.value;
     const analysisPayload = await analysisResponse.json();
-    const positionsPayload = positionsResponse ? await positionsResponse.json() : null;
     if (!analysisResponse.ok) throw new Error(extractErrorMessage(analysisPayload, 'Request failed'));
-    if (positionsResponse?.ok) {
+
+    let positionsResponse = null;
+    let positionsPayload = null;
+    let positionsError = null;
+    if (positionsResult.status === 'fulfilled') {
+      positionsResponse = positionsResult.value;
+      if (positionsResponse) {
+        try {
+          positionsPayload = await positionsResponse.json();
+          if (!positionsResponse.ok) {
+            positionsError = createPortfolioApiError(positionsPayload, 'Unable to load portfolio ownership');
+          }
+        } catch (error) {
+          positionsError = error;
+        }
+      }
+    } else {
+      positionsError = positionsResult.reason;
+    }
+
+    if (!ownershipRequestCurrent()) return;
+    if (positionsResponse?.ok && ownershipRequestCurrent()) {
       latestPositions = positionsPayload.positions || [];
       latestPositionsOwnershipAvailable = positionsPayload.portfolio_data_available === true;
       console.debug('[analysis] refreshed cached positions with analysis enrichment', {
         positionsCount: latestPositions.length,
       });
     } else if (!positionsResponse || positionsPayload?.code === 'account_selection_required' || positionsPayload?.code === 'portfolio_data_unavailable') {
-      latestPositions = [];
-      latestPositionsOwnershipAvailable = false;
-      saveCachedPositions([]);
+      invalidateAnalysisOwnershipState();
     } else if (positionsPayload?.code === 'account_not_found') {
       await handlePortfolioAccountNotFound();
-      latestPositions = [];
-      latestPositionsOwnershipAvailable = false;
-      saveCachedPositions([]);
+      invalidateAnalysisOwnershipState();
+    } else {
+      invalidateAnalysisOwnershipState();
     }
     if (!latestPositionsOwnershipAvailable && portfolioFilter !== 'all') {
       portfolioFilter = 'all';
@@ -4547,7 +4581,7 @@ async function loadAnalysis() {
     }
     analysisPortfolioFilterEl.disabled = !latestPositionsOwnershipAvailable;
     latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
-    if (positionsResponse?.ok) {
+    if (positionsResponse?.ok && ownershipRequestCurrent()) {
       latestPositions = mergePositionsWithAnalysis(latestPositions, latestAnalysis);
       saveCachedPositions(latestPositions);
     }
@@ -4557,9 +4591,16 @@ async function loadAnalysis() {
     if (!latestAnalysis.length) { analysisStatusEl.textContent = 'Analysis is empty.'; syncSelectAllCheckbox(); return; }
     updateAnalysisSortHeaderState();
     renderAnalysisList();
-    analysisStatusEl.textContent = `Loaded ${latestAnalysis.length} analysis symbol(s).`;
+    analysisStatusEl.textContent = positionsError
+      ? `Loaded ${latestAnalysis.length} analysis symbol(s). Portfolio ownership unavailable: ${positionsError.message}`
+      : `Loaded ${latestAnalysis.length} analysis symbol(s).`;
+    analysisStatusEl.className = positionsError ? 'status warning' : 'status';
     analysisTable.classList.remove('hidden');
-  } catch (error) { analysisStatusEl.textContent = `Error: ${error.message}`; analysisStatusEl.className = 'status error'; }
+  } catch (error) {
+    invalidateAnalysisOwnershipState();
+    analysisStatusEl.textContent = `Error: ${error.message}`;
+    analysisStatusEl.className = 'status error';
+  }
 }
 
 async function rerunSelectedSymbolsScenarios() {
@@ -5090,10 +5131,8 @@ function renderEarningsReviewList() {
   earningsReviewTableBody.innerHTML = '';
   earningsReviewItems.forEach((item) => {
     const row = document.createElement('tr');
-    const ownership = ownershipStatus.normalizeOwnershipStatus(item.in_portfolio, item.in_portfolio !== null && item.in_portfolio !== undefined);
     row.innerHTML = `
       <td><button class="symbol-link earnings-select-btn" data-symbol="${item.symbol}">${item.symbol}</button></td>
-      <td>${ownershipStatus.ownershipText(ownership)}</td>
       <td>${item.rating || 'N/A'}</td>
       <td>${item.latest_quarter || 'N/A'}</td>
       <td>${item.latest_review_status || 'No review yet'}</td>
@@ -5182,7 +5221,6 @@ function getFilteredAndSortedEarningsCalendarItems() {
   const filtered = earningsCalendarItems.filter((item) => window.EarningsCalendarDateFilters.earningsCalendarItemMatchesFilters(item, {
     today,
     selectedDateFilters,
-    portfolioFilter: earningsCalendarPortfolioFilter,
     selectedFiscalYears,
     availableYearCount,
     selectedFiscalQuarters,
@@ -5233,7 +5271,6 @@ function renderEarningsCalendarTable() {
       : escapeHtml(symbol);
     const quarterOptions = getEarningsCalendarQuarterOptions(item.fiscal_quarter || 'Q1');
     const timingOptions = getEarningsCalendarTimingOptions(item.release_timing || '');
-    const ownership = ownershipStatus.ownershipBadge(item.in_portfolio);
     row.innerHTML = `
       <td>${symbolCell}</td>
       <td>${escapeHtml(item.company_name || 'N/A')}</td>
@@ -5241,7 +5278,6 @@ function renderEarningsCalendarTable() {
       <td class="earnings-calendar-cell"><select class="earnings-calendar-fiscal-quarter earnings-calendar-select" data-entry-id="${escapeHtml(entryId)}">${quarterOptions}</select></td>
       <td class="earnings-calendar-cell"><input type="text" class="earnings-calendar-date earnings-calendar-date-input earnings-calendar-date-text" data-entry-id="${escapeHtml(entryId)}" value="${escapeHtml(formatCalendarDateInputValue(item.release_date))}" placeholder="DD.MM.YYYY" inputmode="numeric" /></td>
       <td class="earnings-calendar-cell"><select class="earnings-calendar-timing earnings-calendar-select" data-entry-id="${escapeHtml(entryId)}">${timingOptions}</select></td>
-      <td><span class="badge ${ownership.className}">${ownership.label}</span></td>
       <td class="${upsideClass}">${formatPercent(item.upside)}</td>
       <td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td>
       <td>${escapeHtml(item.rating || 'N/A')}</td>
@@ -5400,21 +5436,14 @@ async function createEarningsCalendarEntry() {
 
 async function loadEarningsCalendar() {
   applyEarningsCalendarEntryDefaults();
-  earningsCalendarPortfolioFilterEl.value = earningsCalendarPortfolioFilter;
   setSelectedEarningsCalendarDateFilters(earningsCalendarDateFilters);
   earningsCalendarStatusEl.textContent = 'Loading calendar entries…';
   earningsCalendarStatusEl.className = 'status';
   try {
-    const response = await fetch(withSelectedPortfolioAccount('/api/earnings-review/calendar'));
+    const response = await fetch('/api/earnings-review/calendar');
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings calendar.'));
     earningsCalendarItems = Array.isArray(payload.items) ? payload.items : [];
-    earningsCalendarOwnershipAvailable = payload.portfolio_data_available === true;
-    if (!earningsCalendarOwnershipAvailable && earningsCalendarPortfolioFilter !== 'all') {
-      earningsCalendarPortfolioFilter = 'all';
-      earningsCalendarPortfolioFilterEl.value = 'all';
-    }
-    earningsCalendarPortfolioFilterEl.disabled = !earningsCalendarOwnershipAvailable;
     renderEarningsCalendarTable();
   } catch (error) {
     earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
@@ -5671,7 +5700,7 @@ async function openEarningsReviewSymbolHistory(symbol) {
 }
 
 async function refreshEarningsReviewListOnly() {
-  const response = await fetch(withSelectedPortfolioAccount('/api/earnings-review'));
+  const response = await fetch('/api/earnings-review');
   const payload = await response.json();
   if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review list.'));
   earningsReviewItems = Array.isArray(payload.items) ? payload.items : [];
@@ -6710,16 +6739,6 @@ earningsReviewTabWorkflowBtn.addEventListener('click', async () => {
 earningsReviewTabCalendarBtn.addEventListener('click', async () => {
   setEarningsReviewTab('calendar');
   await loadEarningsReview();
-});
-earningsCalendarPortfolioFilterEl.addEventListener('change', () => {
-  if (!earningsCalendarOwnershipAvailable) {
-    earningsCalendarPortfolioFilter = 'all';
-    earningsCalendarPortfolioFilterEl.value = 'all';
-    renderEarningsCalendarTable();
-    return;
-  }
-  earningsCalendarPortfolioFilter = earningsCalendarPortfolioFilterEl.value || 'all';
-  renderEarningsCalendarTable();
 });
 earningsCalendarAddBtn.addEventListener('click', createEarningsCalendarEntry);
 [earningsCalendarAddSymbolEl, earningsCalendarAddFiscalYearEl, earningsCalendarAddReleaseDateEl].forEach((input) => {

@@ -91,34 +91,34 @@ test('existing release date filters retain their behavior', () => {
   assert.equal(matches('2026-08-20', 'future'), true);
 });
 
-test('week filters combine with portfolio, fiscal year, and quarter filters', () => {
+test('week filters combine with fiscal year and quarter filters', () => {
   const filters = {
     today: wednesday,
     selectedDateFilters: new Set(['current_week']),
-    portfolioFilter: 'in_portfolio',
     selectedFiscalYears: new Set(['2026']),
     availableYearCount: 2,
     selectedFiscalQuarters: new Set(['Q3']),
     quarterOptionCount: 4,
   };
-  const target = { release_date: '2026-08-09', in_portfolio: true, fiscal_year: 2026, fiscal_quarter: 'Q3' };
+  const target = { release_date: '2026-08-09', fiscal_year: 2026, fiscal_quarter: 'Q3' };
   assert.equal(earningsCalendarItemMatchesFilters(target, filters), true);
   assert.equal(earningsCalendarItemMatchesFilters({ ...target, release_date: '2026-08-10' }, filters), false);
-  assert.equal(earningsCalendarItemMatchesFilters({ ...target, in_portfolio: false }, filters), false);
   assert.equal(earningsCalendarItemMatchesFilters({ ...target, fiscal_quarter: 'Q2' }, filters), false);
 });
 
-test('portfolio filters use strict tri-state ownership semantics', () => {
+test('calendar filters ignore portfolio ownership fields', () => {
+  const filters = {
+    today: wednesday,
+    selectedDateFilters: new Set(['current_week']),
+    selectedFiscalYears: new Set(['2026']),
+    availableYearCount: 2,
+    selectedFiscalQuarters: new Set(['Q3']),
+    quarterOptionCount: 4,
+  };
   const base = { release_date: '2026-08-09', fiscal_year: 2026, fiscal_quarter: 'Q3' };
-  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: true }, { portfolioFilter: 'in_portfolio' }), true);
-  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: false }, { portfolioFilter: 'in_portfolio' }), false);
-  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: null }, { portfolioFilter: 'in_portfolio' }), false);
-  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: undefined }, { portfolioFilter: 'in_portfolio' }), false);
-
-  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: false }, { portfolioFilter: 'not_in_portfolio' }), true);
-  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: true }, { portfolioFilter: 'not_in_portfolio' }), false);
-  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: null }, { portfolioFilter: 'not_in_portfolio' }), false);
-  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: undefined }, { portfolioFilter: 'not_in_portfolio' }), false);
+  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: true }, filters), true);
+  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: false }, filters), true);
+  assert.equal(earningsCalendarItemMatchesFilters({ ...base, in_portfolio: null }, filters), true);
 });
 
 test('multiple selected date filters preserve existing union behavior', () => {

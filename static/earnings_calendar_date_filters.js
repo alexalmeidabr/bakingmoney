@@ -61,14 +61,11 @@
     const {
       today,
       selectedDateFilters = new Set(),
-      portfolioFilter = 'all',
       selectedFiscalYears = new Set(),
       availableYearCount = 0,
       selectedFiscalQuarters = new Set(),
       quarterOptionCount = 4,
     } = filters;
-    if (portfolioFilter === 'in_portfolio' && item.in_portfolio !== true) return false;
-    if (portfolioFilter === 'not_in_portfolio' && item.in_portfolio !== false) return false;
     if (selectedDateFilters.size > 0 && !releaseDateMatchesEarningsCalendarDateFilters(item.release_date, today, selectedDateFilters)) return false;
     if (selectedFiscalYears.size > 0 && selectedFiscalYears.size < availableYearCount && !selectedFiscalYears.has(String(item.fiscal_year ?? ''))) return false;
     if (selectedFiscalQuarters.size > 0 && selectedFiscalQuarters.size < quarterOptionCount && !selectedFiscalQuarters.has(String(item.fiscal_quarter ?? ''))) return false;

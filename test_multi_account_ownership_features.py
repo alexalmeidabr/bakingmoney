@@ -1,4 +1,5 @@
 import os
+import inspect
 import tempfile
 import unittest
 from unittest import mock
@@ -74,21 +75,24 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
     def run_earnings_review_request(self, db_path, account_id=None):
         handler = CapturingHandler()
         with mock.patch.object(web_server, "DB_PATH", db_path):
-            web_server.BakingMoneyHandler.handle_earnings_review_get(handler, account_id=account_id)
+            web_server.BakingMoneyHandler.handle_earnings_review_get(handler)
         return handler.response
 
     def run_calendar_request(self, db_path, account_id=None):
         handler = CapturingHandler()
         with mock.patch.object(web_server, "DB_PATH", db_path):
-            web_server.BakingMoneyHandler.handle_earnings_review_calendar_get(handler, account_id=account_id)
+            web_server.BakingMoneyHandler.handle_earnings_review_calendar_get(handler)
         return handler.response
 
-    def ownership_by_symbol(self, items):
-        return {item["symbol"]: item["in_portfolio"] for item in items}
+    def assert_no_ownership_fields(self, payload):
+        self.assertNotIn("portfolio_data_available", payload)
+        for item in payload["items"]:
+            self.assertNotIn("in_portfolio", item)
+            self.assertNotIn("inPortfolio", item)
 
-    def test_earnings_calendar_ownership_uses_selected_account_without_aggregation(self):
+    def test_earnings_calendar_is_global_with_multiple_accounts_and_no_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db_path = os.path.join(tmp, "calendar-ownership.db")
+            db_path = os.path.join(tmp, "calendar-global-no-selection.db")
             self.init_db(db_path)
             conn = self.open_conn(db_path)
             try:
@@ -98,19 +102,19 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            response_a = self.run_calendar_request(db_path, account_id=ACCOUNT_A)
-            response_b = self.run_calendar_request(db_path, account_id=ACCOUNT_B)
+            response = self.run_calendar_request(db_path)
 
-            self.assertEqual(response_a["status"], 200)
-            self.assertEqual(response_b["status"], 200)
-            self.assertTrue(response_a["payload"]["portfolio_data_available"])
-            self.assertTrue(response_b["payload"]["portfolio_data_available"])
-            self.assertEqual(self.ownership_by_symbol(response_a["payload"]["items"]), {"AMZN": False, "MSFT": False, "NVDA": True})
-            self.assertEqual(self.ownership_by_symbol(response_b["payload"]["items"]), {"AMZN": False, "MSFT": True, "NVDA": False})
+            self.assertEqual(response["status"], 200)
+            self.assertEqual([item["symbol"] for item in response["payload"]["items"]], ["AMZN", "MSFT", "NVDA"])
+            self.assert_no_ownership_fields(response["payload"])
 
-    def test_earnings_review_ownership_uses_selected_account_without_aggregation(self):
+    def test_earnings_calendar_and_review_handlers_do_not_accept_account_scope(self):
+        self.assertNotIn("account_id", inspect.signature(web_server.BakingMoneyHandler.handle_earnings_review_get).parameters)
+        self.assertNotIn("account_id", inspect.signature(web_server.BakingMoneyHandler.handle_earnings_review_calendar_get).parameters)
+
+    def test_earnings_review_is_global_with_multiple_accounts_and_no_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db_path = os.path.join(tmp, "review-ownership.db")
+            db_path = os.path.join(tmp, "review-global-no-selection.db")
             self.init_db(db_path)
             conn = self.open_conn(db_path)
             try:
@@ -120,19 +124,15 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            response_a = self.run_earnings_review_request(db_path, account_id=ACCOUNT_A)
-            response_b = self.run_earnings_review_request(db_path, account_id=ACCOUNT_B)
+            response = self.run_earnings_review_request(db_path)
 
-            self.assertEqual(response_a["status"], 200)
-            self.assertEqual(response_b["status"], 200)
-            self.assertTrue(response_a["payload"]["portfolio_data_available"])
-            self.assertTrue(response_b["payload"]["portfolio_data_available"])
-            self.assertEqual(self.ownership_by_symbol(response_a["payload"]["items"]), {"AMZN": False, "MSFT": False, "NVDA": True})
-            self.assertEqual(self.ownership_by_symbol(response_b["payload"]["items"]), {"AMZN": False, "MSFT": True, "NVDA": False})
+            self.assertEqual(response["status"], 200)
+            self.assertEqual([item["symbol"] for item in response["payload"]["items"]], ["AMZN", "MSFT", "NVDA"])
+            self.assert_no_ownership_fields(response["payload"])
 
-    def test_cross_account_mutation_does_not_change_selected_account_ownership(self):
+    def test_calendar_and_review_payloads_are_identical_for_different_accounts(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db_path = os.path.join(tmp, "ownership-mutation.db")
+            db_path = os.path.join(tmp, "global-payloads-ignore-account.db")
             self.init_db(db_path)
             conn = self.open_conn(db_path)
             try:
@@ -142,7 +142,34 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            before = self.ownership_by_symbol(self.run_calendar_request(db_path, account_id=ACCOUNT_A)["payload"]["items"])
+            calendar_a = self.run_calendar_request(db_path, account_id=ACCOUNT_A)
+            calendar_b = self.run_calendar_request(db_path, account_id=ACCOUNT_B)
+            review_a = self.run_earnings_review_request(db_path, account_id=ACCOUNT_A)
+            review_b = self.run_earnings_review_request(db_path, account_id=ACCOUNT_B)
+
+            self.assertEqual(calendar_a["status"], 200)
+            self.assertEqual(calendar_b["status"], 200)
+            self.assertEqual(review_a["status"], 200)
+            self.assertEqual(review_b["status"], 200)
+            self.assertEqual(calendar_a["payload"], calendar_b["payload"])
+            self.assertEqual(review_a["payload"], review_b["payload"])
+            self.assert_no_ownership_fields(calendar_a["payload"])
+            self.assert_no_ownership_fields(review_a["payload"])
+
+    def test_changing_positions_does_not_change_calendar_or_review_payloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "global-payloads-ignore-position-changes.db")
+            self.init_db(db_path)
+            conn = self.open_conn(db_path)
+            try:
+                self.seed_earnings_content(conn)
+                self.seed_account(conn, ACCOUNT_A, positions=[{"symbol": "NVDA", "position": 100}], summary={"net_liquidation": 100_000})
+                self.seed_account(conn, ACCOUNT_B, positions=[{"symbol": "MSFT", "position": 25}], summary={"net_liquidation": 250_000})
+            finally:
+                conn.close()
+
+            calendar_before = self.run_calendar_request(db_path, account_id=ACCOUNT_A)["payload"]
+            review_before = self.run_earnings_review_request(db_path, account_id=ACCOUNT_A)["payload"]
             conn = self.open_conn(db_path)
             try:
                 self.seed_account(
@@ -153,13 +180,17 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            after = self.ownership_by_symbol(self.run_calendar_request(db_path, account_id=ACCOUNT_A)["payload"]["items"])
+            calendar_after = self.run_calendar_request(db_path, account_id=ACCOUNT_A)["payload"]
+            review_after = self.run_earnings_review_request(db_path, account_id=ACCOUNT_A)["payload"]
 
-            self.assertEqual(after, before)
+            self.assertEqual(calendar_after, calendar_before)
+            self.assertEqual(review_after, review_before)
+            self.assert_no_ownership_fields(calendar_after)
+            self.assert_no_ownership_fields(review_after)
 
-    def test_unready_account_returns_global_content_with_unknown_ownership(self):
+    def test_unknown_pending_accounts_are_irrelevant_to_global_calendar_and_review(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db_path = os.path.join(tmp, "ownership-unready.db")
+            db_path = os.path.join(tmp, "global-pending-account.db")
             self.init_db(db_path)
             conn = self.open_conn(db_path)
             try:
@@ -174,12 +205,10 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
 
             self.assertEqual(calendar["status"], 200)
             self.assertEqual(review["status"], 200)
-            self.assertFalse(calendar["payload"]["portfolio_data_available"])
-            self.assertFalse(review["payload"]["portfolio_data_available"])
-            self.assertEqual(set(self.ownership_by_symbol(calendar["payload"]["items"]).values()), {None})
-            self.assertEqual(set(self.ownership_by_symbol(review["payload"]["items"]).values()), {None})
+            self.assert_no_ownership_fields(calendar["payload"])
+            self.assert_no_ownership_fields(review["payload"])
 
-    def test_ready_account_with_zero_positions_returns_known_false_ownership(self):
+    def test_analysis_ownership_context_treats_ready_zero_positions_as_known_false(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "ownership-zero-positions.db")
             self.init_db(db_path)
@@ -187,16 +216,14 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
             try:
                 self.seed_earnings_content(conn)
                 self.seed_account(conn, ACCOUNT_A, positions=[], summary={"net_liquidation": 100_000})
+                context = web_server._get_portfolio_ownership_context(conn, account_id=ACCOUNT_A)
             finally:
                 conn.close()
 
-            response = self.run_calendar_request(db_path, account_id=ACCOUNT_A)
+            self.assertTrue(context["portfolio_data_available"])
+            self.assertEqual(context["portfolio_symbols"], set())
 
-            self.assertEqual(response["status"], 200)
-            self.assertTrue(response["payload"]["portfolio_data_available"])
-            self.assertEqual(set(self.ownership_by_symbol(response["payload"]["items"]).values()), {False})
-
-    def test_multiple_accounts_without_selection_returns_global_content_with_unknown_ownership(self):
+    def test_analysis_ownership_context_keeps_missing_selection_unknown(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "ownership-no-selection.db")
             self.init_db(db_path)
@@ -205,16 +232,14 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
                 self.seed_earnings_content(conn)
                 self.seed_account(conn, ACCOUNT_A, positions=[{"symbol": "NVDA", "position": 100}], summary={"net_liquidation": 100_000})
                 self.seed_account(conn, ACCOUNT_B, positions=[{"symbol": "MSFT", "position": 25}], summary={"net_liquidation": 250_000})
+                context = web_server._get_portfolio_ownership_context(conn)
             finally:
                 conn.close()
 
-            response = self.run_calendar_request(db_path)
+            self.assertFalse(context["portfolio_data_available"])
+            self.assertIsNone(context["portfolio_symbols"])
 
-            self.assertEqual(response["status"], 200)
-            self.assertFalse(response["payload"]["portfolio_data_available"])
-            self.assertEqual(set(self.ownership_by_symbol(response["payload"]["items"]).values()), {None})
-
-    def test_unknown_account_returns_404_without_global_fallback(self):
+    def test_analysis_ownership_context_unknown_account_still_returns_404(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "ownership-unknown.db")
             self.init_db(db_path)
@@ -225,13 +250,17 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            response = self.run_calendar_request(db_path, account_id="U_TEST_UNKNOWN")
+            conn = self.open_conn(db_path)
+            try:
+                with self.assertRaises(web_server.PortfolioAccountResolutionError) as raised:
+                    web_server._get_portfolio_ownership_context(conn, account_id="U_TEST_UNKNOWN")
+            finally:
+                conn.close()
 
-            self.assertEqual(response["status"], 404)
-            self.assertEqual(response["payload"]["code"], "account_not_found")
-            self.assertNotIn("U_TEST_UNKNOWN", str(response["payload"]))
+            self.assertEqual(raised.exception.code, "account_not_found")
+            self.assertNotIn("U_TEST_UNKNOWN", str(raised.exception))
 
-    def test_single_account_without_account_id_preserves_known_ownership(self):
+    def test_analysis_ownership_context_single_ready_account_preserves_known_symbols(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "ownership-single-account.db")
             self.init_db(db_path)
@@ -239,14 +268,12 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
             try:
                 self.seed_earnings_content(conn)
                 self.seed_account(conn, ACCOUNT_A, positions=[{"symbol": "NVDA", "position": 100}], summary={"net_liquidation": 100_000})
+                context = web_server._get_portfolio_ownership_context(conn)
             finally:
                 conn.close()
 
-            response = self.run_calendar_request(db_path)
-
-            self.assertEqual(response["status"], 200)
-            self.assertTrue(response["payload"]["portfolio_data_available"])
-            self.assertEqual(self.ownership_by_symbol(response["payload"]["items"]), {"AMZN": False, "MSFT": False, "NVDA": True})
+            self.assertTrue(context["portfolio_data_available"])
+            self.assertEqual(context["portfolio_symbols"], {"NVDA"})
 
 
 if __name__ == "__main__":

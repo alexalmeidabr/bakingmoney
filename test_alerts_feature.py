@@ -2328,6 +2328,11 @@ class EarningsReviewTests(unittest.TestCase):
                         }],
                         account_id="U1111111",
                     )
+                    web_server.save_portfolio_summary_cache(
+                        conn,
+                        {"net_liquidation": 100_000},
+                        account_id="U1111111",
+                    )
                     self.assertEqual(web_server.list_earnings_release_calendar(conn), [])
 
                     first = web_server.create_earnings_calendar_entry(

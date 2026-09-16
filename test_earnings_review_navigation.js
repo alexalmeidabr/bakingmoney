@@ -63,3 +63,23 @@ test('Other main navigation and Earnings Review company-detail return paths stil
   assert.match(appJs, /if \(analysisDetailOrigin === 'earnings_review'\) \{\s*setView\('earnings-review', \{ skipLoad: true \}\);/);
   assert.match(appJs, /showAnalysisDetailFromOriginMenu\('earnings-review'\);/);
 });
+
+test('Earnings Review ownership views reload with selected portfolio account context', () => {
+  const reloadBody = functionBody('reloadPortfolioScopedViews');
+  assert.match(reloadBody, /activeView === 'earnings-review'/);
+  assert.match(reloadBody, /await loadEarningsReview\(\);/);
+
+  const calendarBody = functionBody('loadEarningsCalendar');
+  assert.match(calendarBody, /fetch\(withSelectedPortfolioAccount\('\/api\/earnings-review\/calendar'\)\)/);
+  assert.match(calendarBody, /earningsCalendarOwnershipAvailable = payload\.portfolio_data_available === true;/);
+
+  const reviewListBody = functionBody('refreshEarningsReviewListOnly');
+  assert.match(reviewListBody, /fetch\(withSelectedPortfolioAccount\('\/api\/earnings-review'\)\)/);
+});
+
+test('Analysis and Earnings Review render unavailable ownership distinctly', () => {
+  assert.match(appJs, /latestPositionsOwnershipAvailable \? portfolioSymbols\.has/);
+  assert.match(appJs, /ownershipStatus\.ownershipBadge\(item\.inPortfolio\)/);
+  assert.match(appJs, /ownershipStatus\.ownershipText\(ownership\)/);
+  assert.match(appJs, /ownershipStatus\.ownershipBadge\(item\.in_portfolio\)/);
+});

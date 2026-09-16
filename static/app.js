@@ -278,6 +278,7 @@ const earningsCalendarReleaseDateHeaderEl = document.getElementById('earnings-ca
 
 let latestPositions = [];
 let latestPositionsPortfolioSummary = null;
+let latestPositionsOwnershipAvailable = false;
 let positionSort = { key: 'marketValue', direction: 'desc' };
 let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
@@ -318,6 +319,7 @@ let earningsReviewSymbolHistory = null;
 let earningsReviewActiveTab = 'calendar';
 let earningsCalendarItems = [];
 let earningsCalendarPortfolioFilter = 'all';
+let earningsCalendarOwnershipAvailable = false;
 let earningsCalendarDateFilters = new Set();
 let earningsCalendarFiscalYearFilters = new Set();
 let earningsCalendarFiscalQuarterFilters = new Set();
@@ -1134,6 +1136,11 @@ let savedGeneralSettings = null;
 
 const POSITIONS_CACHE_KEY = 'bakingmoney.latestPositions';
 const portfolioAccountSelector = window.PortfolioAccountSelector || {};
+const ownershipStatus = window.OwnershipStatus || {
+  normalizeOwnershipStatus: (value, available = true) => (available === true && value === true ? true : (available === true && value === false ? false : null)),
+  ownershipBadge: (status) => (status === true ? { className: 'badge-portfolio-in', label: 'In Portfolio' } : (status === false ? { className: 'badge-portfolio-out', label: 'Not in Portfolio' } : { className: 'badge-portfolio-unavailable', label: 'Portfolio unavailable' })),
+  ownershipText: (status) => (status === true ? 'Yes' : (status === false ? 'No' : 'Unavailable')),
+};
 const PORTFOLIO_ACCOUNT_STORAGE_KEY = portfolioAccountSelector.STORAGE_KEY || 'bakingmoney.portfolioAccountId';
 const PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE = 'Select a Portfolio Account to continue.';
 const PORTFOLIO_DATA_UNAVAILABLE_MESSAGE = 'Portfolio data is not available for this account yet.';
@@ -1654,6 +1661,7 @@ function isSelectedPortfolioAccountUnavailable() {
 function clearPositionsDisplay(message, className = 'status error') {
   latestPositions = [];
   latestPositionsPortfolioSummary = null;
+  latestPositionsOwnershipAvailable = false;
   saveCachedPositions([]);
   positionsTableBody.innerHTML = '';
   renderPositionsPortfolioSummary(null);
@@ -1733,6 +1741,8 @@ async function reloadPortfolioScopedViews() {
     await loadActionPlan();
   } else if (activeView === 'analysis') {
     await loadAnalysis();
+  } else if (activeView === 'earnings-review') {
+    await loadEarningsReview();
   }
 }
 
@@ -2186,7 +2196,7 @@ function enrichAnalysisWithPortfolioStatus(items) {
   const portfolioSymbols = getPortfolioSymbols();
   return items.map((item) => ({
     ...item,
-    inPortfolio: portfolioSymbols.has(String(item.symbol || '').toUpperCase()),
+    inPortfolio: latestPositionsOwnershipAvailable ? portfolioSymbols.has(String(item.symbol || '').toUpperCase()) : null,
   }));
 }
 
@@ -2232,7 +2242,8 @@ function renderAnalysisList() {
   analysisTableBody.innerHTML = '';
   sortAnalysis(getFilteredAnalysisItems()).forEach((item) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatMomentumListLabel(item.momentum_score, item.momentum_label, item.momentum_status)}</td><td>${formatMomentumListLabel(item.extension_risk, item.extension_label, item.momentum_status)}</td><td>${formatDateTime(item.momentum_updated_at)}</td><td><span class="badge ${item.inPortfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.inPortfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td><td>${formatCoreConfidenceDisplay(item)}</td><td>${formatPotentialConfidenceDisplay(item)}</td><td>${formatDate(item.latest_release_date)}</td><td>${formatDateTime(item.last_activity_at || item.updated_at)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
+    const ownership = ownershipStatus.ownershipBadge(item.inPortfolio);
+    row.innerHTML = `<td><input type="checkbox" class="analysis-row-select" data-symbol="${item.symbol}" ${selectedAnalysisSymbols.has(item.symbol) ? 'checked' : ''}></td><td><button class="symbol-link" data-symbol="${item.symbol}">${item.symbol}</button></td><td>V${item.analysis_version || 'N/A'} / ${item.scenario_pass_count || 1}</td><td>${item.rating || 'Hold'}</td><td>${formatCurrencyValue(item.current_price, 'USD')}</td><td>${formatCurrencyValue(item.expected_price, 'USD')}</td><td class="${valueClass(item.expected_cagr)}">${formatPercent(item.expected_cagr)}</td><td class="${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td>${formatMomentumListLabel(item.momentum_score, item.momentum_label, item.momentum_status)}</td><td>${formatMomentumListLabel(item.extension_risk, item.extension_label, item.momentum_status)}</td><td>${formatDateTime(item.momentum_updated_at)}</td><td><span class="badge ${ownership.className}">${ownership.label}</span></td><td>${formatCoreConfidenceDisplay(item)}</td><td>${formatPotentialConfidenceDisplay(item)}</td><td>${formatDate(item.latest_release_date)}</td><td>${formatDateTime(item.last_activity_at || item.updated_at)}</td><td><button class="remove-btn" data-symbol="${item.symbol}">Delete</button></td>`;
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
@@ -4440,6 +4451,7 @@ async function loadPositions(options = {}) {
     });
 
     latestPositionsPortfolioSummary = positionsPayload.portfolio_summary || null;
+    latestPositionsOwnershipAvailable = positionsPayload.portfolio_data_available === true;
     renderPositionsPortfolioSummary(latestPositionsPortfolioSummary);
     latestPositions = mergePositionsWithAnalysis(
       positionsPayload.positions || [],
@@ -4515,17 +4527,25 @@ async function loadAnalysis() {
     if (!analysisResponse.ok) throw new Error(extractErrorMessage(analysisPayload, 'Request failed'));
     if (positionsResponse?.ok) {
       latestPositions = positionsPayload.positions || [];
+      latestPositionsOwnershipAvailable = positionsPayload.portfolio_data_available === true;
       console.debug('[analysis] refreshed cached positions with analysis enrichment', {
         positionsCount: latestPositions.length,
       });
     } else if (!positionsResponse || positionsPayload?.code === 'account_selection_required' || positionsPayload?.code === 'portfolio_data_unavailable') {
       latestPositions = [];
+      latestPositionsOwnershipAvailable = false;
       saveCachedPositions([]);
     } else if (positionsPayload?.code === 'account_not_found') {
       await handlePortfolioAccountNotFound();
       latestPositions = [];
+      latestPositionsOwnershipAvailable = false;
       saveCachedPositions([]);
     }
+    if (!latestPositionsOwnershipAvailable && portfolioFilter !== 'all') {
+      portfolioFilter = 'all';
+      analysisPortfolioFilterEl.value = 'all';
+    }
+    analysisPortfolioFilterEl.disabled = !latestPositionsOwnershipAvailable;
     latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
     if (positionsResponse?.ok) {
       latestPositions = mergePositionsWithAnalysis(latestPositions, latestAnalysis);
@@ -5070,9 +5090,10 @@ function renderEarningsReviewList() {
   earningsReviewTableBody.innerHTML = '';
   earningsReviewItems.forEach((item) => {
     const row = document.createElement('tr');
+    const ownership = ownershipStatus.normalizeOwnershipStatus(item.in_portfolio, item.in_portfolio !== null && item.in_portfolio !== undefined);
     row.innerHTML = `
       <td><button class="symbol-link earnings-select-btn" data-symbol="${item.symbol}">${item.symbol}</button></td>
-      <td>${item.in_portfolio ? 'Yes' : 'No'}</td>
+      <td>${ownershipStatus.ownershipText(ownership)}</td>
       <td>${item.rating || 'N/A'}</td>
       <td>${item.latest_quarter || 'N/A'}</td>
       <td>${item.latest_review_status || 'No review yet'}</td>
@@ -5212,6 +5233,7 @@ function renderEarningsCalendarTable() {
       : escapeHtml(symbol);
     const quarterOptions = getEarningsCalendarQuarterOptions(item.fiscal_quarter || 'Q1');
     const timingOptions = getEarningsCalendarTimingOptions(item.release_timing || '');
+    const ownership = ownershipStatus.ownershipBadge(item.in_portfolio);
     row.innerHTML = `
       <td>${symbolCell}</td>
       <td>${escapeHtml(item.company_name || 'N/A')}</td>
@@ -5219,7 +5241,7 @@ function renderEarningsCalendarTable() {
       <td class="earnings-calendar-cell"><select class="earnings-calendar-fiscal-quarter earnings-calendar-select" data-entry-id="${escapeHtml(entryId)}">${quarterOptions}</select></td>
       <td class="earnings-calendar-cell"><input type="text" class="earnings-calendar-date earnings-calendar-date-input earnings-calendar-date-text" data-entry-id="${escapeHtml(entryId)}" value="${escapeHtml(formatCalendarDateInputValue(item.release_date))}" placeholder="DD.MM.YYYY" inputmode="numeric" /></td>
       <td class="earnings-calendar-cell"><select class="earnings-calendar-timing earnings-calendar-select" data-entry-id="${escapeHtml(entryId)}">${timingOptions}</select></td>
-      <td><span class="badge ${item.in_portfolio ? 'badge-portfolio-in' : 'badge-portfolio-out'}">${item.in_portfolio ? 'In Portfolio' : 'Not in Portfolio'}</span></td>
+      <td><span class="badge ${ownership.className}">${ownership.label}</span></td>
       <td class="${upsideClass}">${formatPercent(item.upside)}</td>
       <td>${formatConfidenceDiffDisplay(item.confidence_diff, item.bullish_confidence, item.bearish_confidence)}</td>
       <td>${escapeHtml(item.rating || 'N/A')}</td>
@@ -5275,11 +5297,7 @@ function renderEarningsCalendarTable() {
         if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save earnings calendar entry.'));
         earningsCalendarStatusEl.textContent = `Saved ${symbol} ${yearParse.year} ${fiscalQuarter}.`;
         earningsCalendarStatusEl.className = 'status';
-        if (payload.item) {
-          const index = earningsCalendarItems.findIndex((entry) => String(entry.id) === String(entryId));
-          if (index >= 0) earningsCalendarItems[index] = payload.item;
-        }
-        renderEarningsCalendarTable();
+        await loadEarningsCalendar();
       } catch (error) {
         earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
         earningsCalendarStatusEl.className = 'status error';
@@ -5387,10 +5405,16 @@ async function loadEarningsCalendar() {
   earningsCalendarStatusEl.textContent = 'Loading calendar entries…';
   earningsCalendarStatusEl.className = 'status';
   try {
-    const response = await fetch('/api/earnings-review/calendar');
+    const response = await fetch(withSelectedPortfolioAccount('/api/earnings-review/calendar'));
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings calendar.'));
     earningsCalendarItems = Array.isArray(payload.items) ? payload.items : [];
+    earningsCalendarOwnershipAvailable = payload.portfolio_data_available === true;
+    if (!earningsCalendarOwnershipAvailable && earningsCalendarPortfolioFilter !== 'all') {
+      earningsCalendarPortfolioFilter = 'all';
+      earningsCalendarPortfolioFilterEl.value = 'all';
+    }
+    earningsCalendarPortfolioFilterEl.disabled = !earningsCalendarOwnershipAvailable;
     renderEarningsCalendarTable();
   } catch (error) {
     earningsCalendarStatusEl.textContent = `Error: ${error.message}`;
@@ -5647,7 +5671,7 @@ async function openEarningsReviewSymbolHistory(symbol) {
 }
 
 async function refreshEarningsReviewListOnly() {
-  const response = await fetch('/api/earnings-review');
+  const response = await fetch(withSelectedPortfolioAccount('/api/earnings-review'));
   const payload = await response.json();
   if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review list.'));
   earningsReviewItems = Array.isArray(payload.items) ? payload.items : [];
@@ -6277,6 +6301,12 @@ actionPlanLinearSortHeaders.forEach((header) => header.addEventListener('click',
   updateActionPlanSortHeaderState(); renderActionPlan();
 }));
 analysisPortfolioFilterEl.addEventListener('change', () => {
+  if (!latestPositionsOwnershipAvailable) {
+    portfolioFilter = 'all';
+    analysisPortfolioFilterEl.value = 'all';
+    renderAnalysisList();
+    return;
+  }
   portfolioFilter = analysisPortfolioFilterEl.value || 'all';
   renderAnalysisList();
 });
@@ -6682,6 +6712,12 @@ earningsReviewTabCalendarBtn.addEventListener('click', async () => {
   await loadEarningsReview();
 });
 earningsCalendarPortfolioFilterEl.addEventListener('change', () => {
+  if (!earningsCalendarOwnershipAvailable) {
+    earningsCalendarPortfolioFilter = 'all';
+    earningsCalendarPortfolioFilterEl.value = 'all';
+    renderEarningsCalendarTable();
+    return;
+  }
   earningsCalendarPortfolioFilter = earningsCalendarPortfolioFilterEl.value || 'all';
   renderEarningsCalendarTable();
 });

@@ -4560,8 +4560,12 @@ async function loadAnalysis() {
       positionsError = positionsResult.reason;
     }
 
+    const positionsPayloadUsable = positionsResponse?.ok
+      && positionsPayload
+      && typeof positionsPayload === 'object'
+      && ownershipRequestCurrent();
     if (!ownershipRequestCurrent()) return;
-    if (positionsResponse?.ok && ownershipRequestCurrent()) {
+    if (positionsPayloadUsable) {
       latestPositions = positionsPayload.positions || [];
       latestPositionsOwnershipAvailable = positionsPayload.portfolio_data_available === true;
       console.debug('[analysis] refreshed cached positions with analysis enrichment', {
@@ -4581,7 +4585,7 @@ async function loadAnalysis() {
     }
     analysisPortfolioFilterEl.disabled = !latestPositionsOwnershipAvailable;
     latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
-    if (positionsResponse?.ok && ownershipRequestCurrent()) {
+    if (positionsPayloadUsable) {
       latestPositions = mergePositionsWithAnalysis(latestPositions, latestAnalysis);
       saveCachedPositions(latestPositions);
     }

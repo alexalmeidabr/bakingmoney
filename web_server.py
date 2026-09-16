@@ -6577,37 +6577,6 @@ def _get_analysis_enrichment_by_symbol(conn):
     }
 
 
-def _get_portfolio_ownership_context(conn, account_id=None):
-    try:
-        resolved_account_id = resolve_portfolio_account(conn, account_id)
-    except PortfolioAccountResolutionError as exc:
-        if exc.code == "account_selection_required":
-            return {
-                "account_id": None,
-                "portfolio_data_available": False,
-                "portfolio_symbols": None,
-                "resolution_code": exc.code,
-            }
-        raise
-    if not resolved_account_id or not is_portfolio_data_available(conn, resolved_account_id):
-        return {
-            "account_id": resolved_account_id,
-            "portfolio_data_available": False,
-            "portfolio_symbols": None,
-            "resolution_code": "portfolio_data_unavailable" if resolved_account_id else "no_portfolio_account",
-        }
-    return {
-        "account_id": resolved_account_id,
-        "portfolio_data_available": True,
-        "portfolio_symbols": {
-            normalize_symbol(item.get("symbol"))
-            for item in load_positions_cache(conn, account_id=resolved_account_id)
-            if normalize_symbol(item.get("symbol")) and abs(safe_number(item.get("position")) or 0.0) > 0
-        },
-        "resolution_code": None,
-    }
-
-
 def _serialize_earnings_calendar_entry(row, analysis_by_symbol):
     entry = dict(row)
     symbol = normalize_symbol(entry.get("symbol")) or ""

@@ -56,8 +56,18 @@ test('stale Analysis ownership responses are ignored after account switches', ()
   assert.match(loadBody, /const ownershipRequestId = analysisOwnershipRequestId \+= 1;/);
   assert.match(loadBody, /const requestAccountId = selectedPortfolioAccountId;/);
   assert.match(loadBody, /const ownershipRequestCurrent = \(\) => ownershipRequestId === analysisOwnershipRequestId && requestAccountId === selectedPortfolioAccountId;/);
-  assert.match(loadBody, /if \(positionsResponse\?\.ok && ownershipRequestCurrent\(\)\) \{/);
-  assert.match(loadBody, /if \(positionsResponse\?\.ok && ownershipRequestCurrent\(\)\) \{[\s\S]*latestPositions = mergePositionsWithAnalysis/);
+  assert.match(loadBody, /const positionsPayloadUsable = positionsResponse\?\.ok[\s\S]*ownershipRequestCurrent\(\);/);
+  assert.match(loadBody, /if \(positionsPayloadUsable\) \{/);
+  assert.match(loadBody, /if \(positionsPayloadUsable\) \{[\s\S]*latestPositions = mergePositionsWithAnalysis/);
+});
+
+test('Analysis ownership uses explicit availability instead of positions length', () => {
+  const enrichBody = functionBody('enrichAnalysisWithPortfolioStatus');
+  assert.match(enrichBody, /latestPositionsOwnershipAvailable \? portfolioSymbols\.has/);
+  assert.doesNotMatch(enrichBody, /latestPositions\.length/);
+
+  const loadBody = functionBody('loadAnalysis');
+  assert.match(loadBody, /latestPositionsOwnershipAvailable = positionsPayload\.portfolio_data_available === true;/);
 });
 
 test('Analysis rows render when positions request fails but analysis succeeds', () => {
@@ -68,4 +78,12 @@ test('Analysis rows render when positions request fails but analysis succeeds', 
   assert.match(loadBody, /positionsError/);
   assert.match(loadBody, /analysisStatusEl\.textContent = positionsError\s+\? `Loaded \$\{latestAnalysis\.length\} analysis symbol\(s\)\. Portfolio ownership unavailable: \$\{positionsError\.message\}`/);
   assert.doesNotMatch(loadBody, /Promise\.all\(\[/);
+});
+
+test('Analysis only treats positions ownership as loaded after a valid parsed payload', () => {
+  const loadBody = functionBody('loadAnalysis');
+  const validCondition = /positionsResponse\?\.ok\s+&&\s+positionsPayload\s+&&\s+typeof positionsPayload === 'object'\s+&&\s+ownershipRequestCurrent\(\)/;
+  assert.match(loadBody, validCondition);
+  assert.doesNotMatch(loadBody, /if \(positionsResponse\?\.ok && ownershipRequestCurrent\(\)\) \{/);
+  assert.doesNotMatch(loadBody, /if \(positionsResponse\?\.ok && ownershipRequestCurrent\(\)\) \{[\s\S]*latestPositions = mergePositionsWithAnalysis/);
 });

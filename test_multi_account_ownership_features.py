@@ -112,6 +112,9 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
         self.assertNotIn("account_id", inspect.signature(web_server.BakingMoneyHandler.handle_earnings_review_get).parameters)
         self.assertNotIn("account_id", inspect.signature(web_server.BakingMoneyHandler.handle_earnings_review_calendar_get).parameters)
 
+    def test_step6_dead_portfolio_ownership_context_helper_is_removed(self):
+        self.assertFalse(hasattr(web_server, "_get_portfolio_ownership_context"))
+
     def test_earnings_review_is_global_with_multiple_accounts_and_no_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "review-global-no-selection.db")
@@ -207,73 +210,6 @@ class MultiAccountOwnershipFeatureTests(unittest.TestCase):
             self.assertEqual(review["status"], 200)
             self.assert_no_ownership_fields(calendar["payload"])
             self.assert_no_ownership_fields(review["payload"])
-
-    def test_analysis_ownership_context_treats_ready_zero_positions_as_known_false(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = os.path.join(tmp, "ownership-zero-positions.db")
-            self.init_db(db_path)
-            conn = self.open_conn(db_path)
-            try:
-                self.seed_earnings_content(conn)
-                self.seed_account(conn, ACCOUNT_A, positions=[], summary={"net_liquidation": 100_000})
-                context = web_server._get_portfolio_ownership_context(conn, account_id=ACCOUNT_A)
-            finally:
-                conn.close()
-
-            self.assertTrue(context["portfolio_data_available"])
-            self.assertEqual(context["portfolio_symbols"], set())
-
-    def test_analysis_ownership_context_keeps_missing_selection_unknown(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = os.path.join(tmp, "ownership-no-selection.db")
-            self.init_db(db_path)
-            conn = self.open_conn(db_path)
-            try:
-                self.seed_earnings_content(conn)
-                self.seed_account(conn, ACCOUNT_A, positions=[{"symbol": "NVDA", "position": 100}], summary={"net_liquidation": 100_000})
-                self.seed_account(conn, ACCOUNT_B, positions=[{"symbol": "MSFT", "position": 25}], summary={"net_liquidation": 250_000})
-                context = web_server._get_portfolio_ownership_context(conn)
-            finally:
-                conn.close()
-
-            self.assertFalse(context["portfolio_data_available"])
-            self.assertIsNone(context["portfolio_symbols"])
-
-    def test_analysis_ownership_context_unknown_account_still_returns_404(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = os.path.join(tmp, "ownership-unknown.db")
-            self.init_db(db_path)
-            conn = self.open_conn(db_path)
-            try:
-                self.seed_earnings_content(conn)
-                self.seed_account(conn, ACCOUNT_A, positions=[{"symbol": "NVDA", "position": 100}], summary={"net_liquidation": 100_000})
-            finally:
-                conn.close()
-
-            conn = self.open_conn(db_path)
-            try:
-                with self.assertRaises(web_server.PortfolioAccountResolutionError) as raised:
-                    web_server._get_portfolio_ownership_context(conn, account_id="U_TEST_UNKNOWN")
-            finally:
-                conn.close()
-
-            self.assertEqual(raised.exception.code, "account_not_found")
-            self.assertNotIn("U_TEST_UNKNOWN", str(raised.exception))
-
-    def test_analysis_ownership_context_single_ready_account_preserves_known_symbols(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = os.path.join(tmp, "ownership-single-account.db")
-            self.init_db(db_path)
-            conn = self.open_conn(db_path)
-            try:
-                self.seed_earnings_content(conn)
-                self.seed_account(conn, ACCOUNT_A, positions=[{"symbol": "NVDA", "position": 100}], summary={"net_liquidation": 100_000})
-                context = web_server._get_portfolio_ownership_context(conn)
-            finally:
-                conn.close()
-
-            self.assertTrue(context["portfolio_data_available"])
-            self.assertEqual(context["portfolio_symbols"], {"NVDA"})
 
 
 if __name__ == "__main__":

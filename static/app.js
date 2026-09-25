@@ -2419,6 +2419,17 @@ function renderActionPlanDetail(item) {
       ['Target High', formatActionDetailPercent(item.target_weight_high)],
       ['Gap to Mid', formatActionDetailPercent(item.position_gap_to_mid)],
     ])}</section>
+    <section class="detail-card"><h4>Bootstrap Execution</h4>${renderActionPlanMetricList([
+      ['Capital-Constrained Execution', (item.linear_bootstrap_breakdown?.capital_constrained_execution ?? item.capital_constrained_execution) ? 'Yes' : 'No'],
+      ['Bootstrap Lot Funded', (item.linear_bootstrap_breakdown?.execution_applied ?? item.bootstrap_execution_applied) ? 'Yes' : 'No'],
+      ['Bootstrap Priority', formatActionDetailNumber(item.linear_bootstrap_breakdown?.priority ?? item.bootstrap_priority, 0)],
+      ['Original Target-Mid Gap', formatActionDetailCurrencyValue(item.linear_bootstrap_breakdown?.original_target_gap_amount ?? item.bootstrap_original_target_gap_amount, 'USD')],
+      ['Minimum Bootstrap Shares', formatActionDetailNumber(item.linear_bootstrap_breakdown?.minimum_shares ?? item.bootstrap_minimum_shares, 0)],
+      ['Minimum Bootstrap Amount', formatActionDetailCurrencyValue(item.linear_bootstrap_breakdown?.minimum_amount ?? item.bootstrap_minimum_amount, 'USD')],
+      ['Target High Temporarily Exceeded', (item.linear_bootstrap_breakdown?.target_high_override ?? item.bootstrap_target_high_override) ? 'Yes' : 'No'],
+      ['Actual Funded Amount', formatActionDetailCurrencyValue((item.linear_bootstrap_breakdown?.execution_applied ?? item.bootstrap_execution_applied) ? (item.linear_bootstrap_breakdown?.funded_amount ?? item.executable_action_amount) : null, 'USD')],
+      ['Funding Status', escapeHtml(item.linear_bootstrap_breakdown?.funding_status ?? item.funding_status ?? 'No funding needed')],
+    ])}</section>
     <section class="detail-card"><h4>Linear Target Calculation</h4>${renderActionPlanMetricRows([
       [['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)]],
       [

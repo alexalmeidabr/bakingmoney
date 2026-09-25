@@ -317,6 +317,31 @@ test('Position vs Target Band sources current Linear target-band values', () => 
   assert.ok(position.includes("['Gap to Mid', formatActionDetailPercent(item.position_gap_to_mid)]"));
 });
 
+test('Bootstrap Execution exposes promoted lot diagnostics without replacing target-band values', () => {
+  assert.deepEqual(renderedDetailSectionLabels('Bootstrap Execution'), [
+    'Capital-Constrained Execution',
+    'Bootstrap Lot Funded',
+    'Bootstrap Priority',
+    'Original Target-Mid Gap',
+    'Minimum Bootstrap Shares',
+    'Minimum Bootstrap Amount',
+    'Target High Temporarily Exceeded',
+    'Actual Funded Amount',
+    'Funding Status',
+  ]);
+  const section = renderedDetailSection('Bootstrap Execution');
+  assert.ok(section.includes('linear_bootstrap_breakdown'));
+  assert.ok(section.includes('bootstrap_original_target_gap_amount'));
+  assert.ok(section.includes('bootstrap_minimum_shares'));
+  assert.ok(section.includes('bootstrap_minimum_amount'));
+  assert.ok(section.includes('bootstrap_target_high_override'));
+  assert.ok(section.includes('executable_action_amount'));
+  assert.ok(section.includes("(item.linear_bootstrap_breakdown?.execution_applied ?? item.bootstrap_execution_applied) ? (item.linear_bootstrap_breakdown?.funded_amount ?? item.executable_action_amount) : null"));
+  assert.ok(!section.includes("target_weight_low ="));
+  assert.ok(!section.includes("target_weight_mid ="));
+  assert.ok(!section.includes("target_weight_high ="));
+});
+
 test('Target Market Value is calculated from portfolio value and Linear target midpoint', () => {
   const helper = appJs.slice(
     appJs.indexOf('function getLinearTargetMarketValue(item)'),

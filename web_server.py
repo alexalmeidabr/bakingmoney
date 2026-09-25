@@ -11,7 +11,7 @@ import tempfile
 import time
 import uuid
 import zipfile
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from html import unescape
 from datetime import date, datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -10300,6 +10300,135 @@ def _apply_linear_caps_and_redistribute(rows, target_total, settings):
     return sum(safe_number(row.get("linear_target_mid")) or 0.0 for row in rows)
 
 
+def _reset_linear_bootstrap_diagnostics(row):
+    row.update({
+        "capital_constrained_execution": False,
+        "bootstrap_execution_applied": False,
+        "bootstrap_priority": None,
+        "bootstrap_minimum_shares": None,
+        "bootstrap_minimum_amount": None,
+        "bootstrap_target_high_override": False,
+        "bootstrap_original_target_gap_amount": None,
+    })
+
+
+def _is_linear_bootstrap_intention(row, buy_actions):
+    return (
+        row.get("action") in buy_actions
+        and row.get("action_amount_direction") == "add"
+        and (safe_number(row.get("target_weight_mid")) or 0.0) > 0.0
+        and (safe_number(row.get("current_position_weight")) or 0.0) < (safe_number(row.get("target_weight_low")) or 0.0)
+        and (safe_number(row.get("target_gap_amount")) or 0.0) > 0.0
+        and (safe_number(row.get("linear_allocation_score")) or 0.0) > 0.0
+        and not row.get("rating_guardrail_applied")
+        and not row.get("extension_guardrail_applied")
+        and (safe_number(row.get("current_price")) or 0.0) > 0.0
+    )
+
+
+def _linear_bootstrap_minimum_lot(current_price, minimum_trade_amount):
+    price_decimal = _finite_decimal(current_price)
+    if price_decimal is None or price_decimal <= 0:
+        return None
+    minimum_trade_decimal = _finite_decimal(minimum_trade_amount) or Decimal("0")
+    minimum_shares = 1
+    if minimum_trade_decimal > 0:
+        minimum_shares = max(
+            1,
+            int((minimum_trade_decimal / price_decimal).to_integral_value(rounding=ROUND_CEILING)),
+        )
+    return minimum_shares, _whole_share_amount(minimum_shares, current_price)
+
+
+def _linear_bootstrap_candidates(bootstrap_intentions, minimum_trade_amount):
+    candidates = []
+    minimum_trade_decimal = _finite_decimal(minimum_trade_amount) or Decimal("0")
+    for row in bootstrap_intentions:
+        desired_share_count = int(row.get("desired_share_count") or 0)
+        desired_amount_decimal = _finite_decimal(row.get("desired_whole_share_amount")) or Decimal("0")
+        blocked_by_one_share = desired_share_count < 1
+        blocked_by_configured_minimum = (
+            minimum_trade_decimal > 0
+            and desired_amount_decimal > 0
+            and desired_amount_decimal < minimum_trade_decimal
+        )
+        if not blocked_by_one_share and not blocked_by_configured_minimum:
+            continue
+        minimum_lot = _linear_bootstrap_minimum_lot(row.get("current_price"), minimum_trade_amount)
+        if minimum_lot is None:
+            continue
+        candidates.append((row, *minimum_lot))
+    candidates.sort(key=lambda item: (
+        -(safe_number(item[0].get("target_weight_mid")) or 0.0),
+        -(safe_number(item[0].get("linear_allocation_score")) or 0.0),
+        -(safe_number(item[0].get("expected_cagr")) or 0.0),
+        item[0].get("symbol") or "",
+    ))
+    return candidates
+
+
+def _apply_linear_bootstrap_execution(bootstrap_candidates, total_portfolio_value, available_buy_budget, buy_actions):
+    if not any(amount <= available_buy_budget + 1e-9 for _, _, amount in bootstrap_candidates):
+        return None
+
+    total = safe_number(total_portfolio_value) or 0.0
+    remaining_budget = available_buy_budget
+    positions_funded = 0
+    amount_funded = 0.0
+    unfunded_candidate_count = 0
+    for priority, (row, minimum_shares, minimum_amount) in enumerate(bootstrap_candidates, start=1):
+        row["capital_constrained_execution"] = True
+        row["bootstrap_priority"] = priority
+        row["bootstrap_minimum_shares"] = minimum_shares
+        row["bootstrap_minimum_amount"] = minimum_amount
+        row["bootstrap_original_target_gap_amount"] = safe_number(row.get("target_gap_amount")) or 0.0
+        if minimum_amount <= remaining_budget + 1e-9:
+            action = row.get("desired_action") if row.get("desired_action") in buy_actions else "Add"
+            row["action"] = action
+            row["executable_action"] = action
+            row["action_priority"] = ACTION_PLAN_ACTION_PRIORITY.get(action, 99)
+            row["action_amount_direction"] = "add"
+            row["suggested_share_count"] = minimum_shares
+            row["executable_action_amount"] = minimum_amount
+            row["unfunded_share_count"] = 0
+            row["unfunded_action_amount"] = 0.0
+            row["funding_status"] = "Bootstrap priority funded"
+            row["bootstrap_execution_applied"] = True
+            projected_weight = (
+                ((safe_number(row.get("current_position_market_value")) or 0.0) + minimum_amount)
+                / total * 100.0
+                if total > 0.0 else 0.0
+            )
+            row["bootstrap_target_high_override"] = projected_weight > (safe_number(row.get("target_weight_high")) or 0.0) + 1e-9
+            remaining_budget = max(0.0, remaining_budget - minimum_amount)
+            positions_funded += 1
+            amount_funded += minimum_amount
+        else:
+            row["desired_action"] = row.get("desired_action") or "Add"
+            row["action"] = "Watch"
+            row["executable_action"] = "Watch"
+            row["action_priority"] = ACTION_PLAN_ACTION_PRIORITY.get("Watch", 99)
+            row["action_amount_direction"] = "none"
+            row["suggested_share_count"] = 0
+            row["executable_action_amount"] = 0.0
+            row["unfunded_share_count"] = minimum_shares
+            row["unfunded_action_amount"] = minimum_amount
+            row["funding_status"] = "Bootstrap minimum lot unfunded"
+            unfunded_candidate_count += 1
+
+    total_add_demand = sum(amount for _, _, amount in bootstrap_candidates)
+    return {
+        "bootstrap_execution_active": True,
+        "bootstrap_candidate_count": len(bootstrap_candidates),
+        "bootstrap_positions_funded": positions_funded,
+        "bootstrap_amount_funded": amount_funded,
+        "bootstrap_unfunded_candidate_count": unfunded_candidate_count,
+        "total_add_demand": total_add_demand,
+        "funded_add_amount": amount_funded,
+        "unfunded_add_demand": total_add_demand - amount_funded,
+    }
+
+
 def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings, dynamic_reserve_pct=None):
     total = safe_number(total_portfolio_value) or 0.0
     cash_available = safe_number(cash_like_available) or 0.0
@@ -10313,7 +10442,11 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     sell_trim_actions = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
     min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
     executable_sell_trim_proceeds = 0.0
+    bootstrap_intentions = []
     for row in rows:
+        _reset_linear_bootstrap_diagnostics(row)
+        if _is_linear_bootstrap_intention(row, buy_actions):
+            bootstrap_intentions.append(row)
         _prepare_whole_share_execution(row)
         row["executable_action_amount"] = 0.0
         row["unfunded_action_amount"] = 0.0
@@ -10383,6 +10516,34 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     total_add_demand = sum(row.get("desired_whole_share_amount", 0.0) for row in buy_candidates)
     funded_add_amount = sum(row.get("executable_action_amount", 0.0) for row in buy_candidates)
     unfunded_add_demand = sum(row.get("unfunded_action_amount", 0.0) for row in buy_candidates)
+    bootstrap_execution_active = False
+    bootstrap_candidate_count = 0
+    bootstrap_positions_funded = 0
+    bootstrap_amount_funded = 0.0
+    bootstrap_unfunded_candidate_count = 0
+    if available_buy_budget > 0.0 and funded_add_amount <= 1e-9:
+        bootstrap_candidates = _linear_bootstrap_candidates(bootstrap_intentions, min_trade)
+        bootstrap_candidate_row_ids = {id(row) for row, _, _ in bootstrap_candidates}
+        preserved_normal_unfunded_demand = sum(
+            safe_number(row.get("unfunded_action_amount")) or 0.0
+            for row in buy_candidates
+            if id(row) not in bootstrap_candidate_row_ids
+        )
+        bootstrap_result = _apply_linear_bootstrap_execution(
+            bootstrap_candidates,
+            total,
+            available_buy_budget,
+            buy_actions,
+        )
+        if bootstrap_result is not None:
+            bootstrap_execution_active = bootstrap_result["bootstrap_execution_active"]
+            bootstrap_candidate_count = bootstrap_result["bootstrap_candidate_count"]
+            bootstrap_positions_funded = bootstrap_result["bootstrap_positions_funded"]
+            bootstrap_amount_funded = bootstrap_result["bootstrap_amount_funded"]
+            bootstrap_unfunded_candidate_count = bootstrap_result["bootstrap_unfunded_candidate_count"]
+            total_add_demand = bootstrap_result["total_add_demand"] + preserved_normal_unfunded_demand
+            funded_add_amount = bootstrap_result["funded_add_amount"]
+            unfunded_add_demand = bootstrap_result["unfunded_add_demand"] + preserved_normal_unfunded_demand
     for row in rows:
         executable = safe_number(row.get("executable_action_amount")) or 0.0
         row["action_amount"] = executable
@@ -10413,6 +10574,11 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         "projected_cash_before_buys": projected_cash_before_buys,
         "reserve_shortfall": reserve_shortfall,
         "reserve_excess": reserve_excess,
+        "bootstrap_execution_active": bootstrap_execution_active,
+        "bootstrap_candidate_count": bootstrap_candidate_count,
+        "bootstrap_positions_funded": bootstrap_positions_funded,
+        "bootstrap_amount_funded": bootstrap_amount_funded,
+        "bootstrap_unfunded_candidate_count": bootstrap_unfunded_candidate_count,
     }
 
 
@@ -10480,6 +10646,17 @@ def _linear_position_status(current_weight, target_low, target_high, target_mid)
 def _linear_action_explanation(row):
     action = row.get("action") or "Re-evaluate"
     position_status = row.get("position_status")
+    if row.get("bootstrap_execution_applied"):
+        override_note = " This minimum-lot purchase temporarily exceeds Target High." if row.get("bootstrap_target_high_override") else ""
+        return (
+            "The theoretical Add was below normal executable sizing, so capital-constrained execution funded one minimum executable lot."
+            + override_note
+        )
+    if row.get("capital_constrained_execution"):
+        return (
+            "The theoretical Add was below normal executable sizing, but its ranked minimum executable bootstrap lot was not funded "
+            "from the remaining post-reserve buy budget."
+        )
     if action == "Watch / Rating Guardrail":
         return "The position is below its Linear target band, but the current rating prevents an Add action."
     if action == "Watch / Extended":
@@ -10548,6 +10725,17 @@ def _linear_detail_diagnostics(row):
             "frontier_optionality_applied_reason": row.get("frontier_optionality_applied_reason"),
             "final_linear_score": row.get("final_linear_score"),
             "linear_score": row.get("linear_allocation_score"),
+        },
+        "linear_bootstrap_breakdown": {
+            "capital_constrained_execution": bool(row.get("capital_constrained_execution")),
+            "execution_applied": bool(row.get("bootstrap_execution_applied")),
+            "priority": row.get("bootstrap_priority"),
+            "minimum_shares": row.get("bootstrap_minimum_shares"),
+            "minimum_amount": row.get("bootstrap_minimum_amount"),
+            "target_high_override": bool(row.get("bootstrap_target_high_override")),
+            "original_target_gap_amount": row.get("bootstrap_original_target_gap_amount"),
+            "funded_amount": row.get("executable_action_amount") if row.get("bootstrap_execution_applied") else None,
+            "funding_status": row.get("funding_status"),
         },
         "guardrails": {
             "rating": "Triggered" if row.get("rating_guardrail_applied") else "Not triggered",

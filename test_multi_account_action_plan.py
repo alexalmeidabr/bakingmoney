@@ -224,6 +224,51 @@ class MultiAccountActionPlanIsolationTests(unittest.TestCase):
             self.assertNotEqual(plan_a["summary"]["linear_summary"]["target_reserve_amount"], plan_b["summary"]["linear_summary"]["target_reserve_amount"])
             self.assertNotEqual(plan_a["summary"]["linear_summary"]["total_add_demand"], plan_b["summary"]["linear_summary"]["total_add_demand"])
 
+    def test_small_account_bootstrap_is_isolated_from_large_account_normal_execution(self):
+        analysis_items = self.analysis_items(("ALFA", "BRAV", "CHAR", "DELT"))
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "account-plan-bootstrap-isolation.db")
+            self.init_db(db_path)
+            conn = self.open_conn(db_path)
+            try:
+                self.save_settings(
+                    conn,
+                    linear_allocated_target_total_pct=20.0,
+                    action_min_cash_unallocated_target=0.0,
+                    linear_max_reserve_pct=0.0,
+                    action_min_executable_trade_amount=300.0,
+                )
+                self.save_state(conn, ACCOUNT_A, positions=[], portfolio_value=100_000, actual_cash=50_000)
+                self.save_state(conn, ACCOUNT_B, positions=[], portfolio_value=3_000, actual_cash=1_000)
+            finally:
+                conn.close()
+
+            plan_a = self.build_plan(db_path, ACCOUNT_A, analysis_items=analysis_items)
+            plan_b = self.build_plan(db_path, ACCOUNT_B, analysis_items=analysis_items)
+            repeat_b = self.build_plan(db_path, ACCOUNT_B, analysis_items=analysis_items)
+            summary_a = plan_a["summary"]["linear_summary"]
+            summary_b = plan_b["summary"]["linear_summary"]
+
+            self.assertFalse(summary_a["bootstrap_execution_active"])
+            self.assertEqual(summary_a["bootstrap_positions_funded"], 0)
+            self.assertEqual(summary_a["bootstrap_amount_funded"], 0.0)
+            self.assertEqual(summary_a["available_buy_budget"], 50_000.0)
+            self.assertTrue(all(self.row(plan_a, symbol)["funding_status"] == "Fully funded" for symbol in ("ALFA", "BRAV", "CHAR", "DELT")))
+
+            self.assertTrue(summary_b["bootstrap_execution_active"])
+            self.assertEqual(summary_b["bootstrap_candidate_count"], 4)
+            self.assertEqual(summary_b["bootstrap_positions_funded"], 3)
+            self.assertEqual(summary_b["bootstrap_amount_funded"], 900.0)
+            self.assertEqual(summary_b["available_buy_budget"], 1_000.0)
+            self.assertEqual(
+                [self.row(plan_b, symbol)["bootstrap_priority"] for symbol in ("ALFA", "BRAV", "CHAR", "DELT")],
+                [1, 2, 3, 4],
+            )
+            self.assertEqual(
+                repeat_b["summary"]["linear_summary"]["bootstrap_amount_funded"],
+                summary_b["bootstrap_amount_funded"],
+            )
+
     def test_cross_account_mutation_does_not_change_other_account_action_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "account-plan-mutation.db")

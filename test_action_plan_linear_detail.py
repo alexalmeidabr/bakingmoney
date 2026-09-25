@@ -186,6 +186,8 @@ class LinearActionPlanDetailTests(unittest.TestCase):
         self.assertEqual(score["upside_score"], row["linear_upside_score"])
         self.assertEqual(score["weights_used"], row["linear_weights_used"])
         self.assertIn("whole_share_minimum", detail["guardrails"])
+        self.assertFalse(detail["linear_bootstrap_breakdown"]["execution_applied"])
+        self.assertIsNone(detail["linear_bootstrap_breakdown"]["funded_amount"])
 
     def test_current_linear_cap_diagnostics_flow_into_detail(self):
         self.settings.update({
@@ -202,6 +204,48 @@ class LinearActionPlanDetailTests(unittest.TestCase):
         self.assertEqual(target["cap_reason"], row["linear_cap_reason"])
         self.assertEqual(target["target_after_cap_mid"], row["pre_reserve_target_mid"])
         self.assertEqual(target["final_target_mid"], row["target_weight_mid"])
+
+    def test_detail_explains_bootstrap_minimum_lot_and_target_high_override(self):
+        self.settings["action_min_executable_trade_amount"] = 300.0
+        candidate = dict(self.base_candidate)
+        candidate["current_price"] = 400.0
+        calculated = web_server.compute_linear_action_plan(
+            [candidate], 3_000.0, 400.0, self.settings,
+        )
+        row = calculated["rows"][0]
+        detail = self.detail_for(calculated)
+
+        self.assertTrue(calculated["summary"]["bootstrap_execution_active"])
+        self.assertTrue(row["bootstrap_execution_applied"])
+        self.assertIn("minimum executable lot", detail["linear_explanation"])
+        self.assertEqual(detail["linear_bootstrap_breakdown"], {
+            "capital_constrained_execution": True,
+            "execution_applied": True,
+            "priority": 1,
+            "minimum_shares": 1,
+            "minimum_amount": 400.0,
+            "target_high_override": True,
+            "original_target_gap_amount": 300.0,
+            "funded_amount": 400.0,
+            "funding_status": "Bootstrap priority funded",
+        })
+        self.assertEqual(detail["target_weight_mid"], 10.0)
+        self.assertEqual(detail["target_weight_high"], 13.0)
+
+    def test_detail_explains_when_ranked_bootstrap_candidate_is_not_funded(self):
+        self.settings["action_min_executable_trade_amount"] = 300.0
+        first = dict(self.base_candidate, symbol="FIRST", current_price=100.0)
+        second = dict(self.base_candidate, symbol="SECOND", current_price=100.0, expected_cagr=10.0)
+        calculated = web_server.compute_linear_action_plan(
+            [first, second], 3_000.0, 300.0, self.settings,
+        )
+        unfunded = next(row for row in calculated["rows"] if not row["bootstrap_execution_applied"])
+        detail = self.detail_for(calculated, unfunded["symbol"])
+
+        self.assertTrue(unfunded["capital_constrained_execution"])
+        self.assertEqual(unfunded["funding_status"], "Bootstrap minimum lot unfunded")
+        self.assertIn("minimum executable bootstrap lot was not funded", detail["linear_explanation"])
+        self.assertIsNone(detail["linear_bootstrap_breakdown"]["funded_amount"])
 
 
 if __name__ == "__main__":

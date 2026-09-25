@@ -551,6 +551,30 @@ class LinearReserveFundingTests(unittest.TestCase):
             **extra,
         }
 
+    @classmethod
+    def bootstrap_row(cls, symbol, target_mid, gap, price, **extra):
+        action = extra.pop("action", "Add")
+        direction = extra.pop("action_amount_direction", "add")
+        return cls.row(
+            action,
+            gap,
+            price,
+            direction,
+            symbol=symbol,
+            current_position_market_value=extra.pop("current_position_market_value", 0.0),
+            owned_share_quantity=extra.pop("owned_share_quantity", 0),
+            current_position_weight=extra.pop("current_position_weight", 0.0),
+            target_weight_low=extra.pop("target_weight_low", target_mid * 0.8),
+            target_weight_mid=target_mid,
+            target_weight_high=extra.pop("target_weight_high", target_mid * 1.2),
+            base_linear_action="Add",
+            desired_action="Add",
+            rating_guardrail_applied=extra.pop("rating_guardrail_applied", False),
+            extension_guardrail_applied=extra.pop("extension_guardrail_applied", False),
+            expected_cagr=extra.pop("expected_cagr", 20.0),
+            **extra,
+        )
+
     def test_trim_proceeds_fill_reserve_before_whole_share_add_funding(self):
         trim = self.row("Trim", 15_550.0, 300.0, "trim", symbol="TRIM")
         add = self.row("Add", 20_000.0, 100.0, "add", symbol="ADD")
@@ -567,6 +591,312 @@ class LinearReserveFundingTests(unittest.TestCase):
         self.assertEqual(add["suggested_share_count"], 103)
         self.assertEqual(add["executable_action_amount"], 10_300.0)
         self.assertAlmostEqual(summary["total_add_demand"], summary["funded_add_amount"] + summary["unfunded_add_demand"])
+
+    def test_capital_constrained_bootstrap_seeds_highest_final_target_mids_and_balances_execution_demand(self):
+        target_rows = (
+            ("A", 9.0, 270.0, 350.0),
+            ("B", 7.0, 210.0, 210.0),
+            ("C", 5.0, 150.0, 90.0),
+            ("D", 3.0, 90.0, 50.0),
+        )
+        rows = [
+            self.row(
+                "Add",
+                gap,
+                price,
+                "add",
+                symbol=symbol,
+                current_position_market_value=0.0,
+                owned_share_quantity=0,
+                current_position_weight=0.0,
+                target_weight_low=target_mid * 0.8,
+                target_weight_mid=target_mid,
+                target_weight_high=target_mid * 1.2,
+                base_linear_action="Add",
+                desired_action="Add",
+                rating_guardrail_applied=False,
+                extension_guardrail_applied=False,
+                expected_cagr=20.0,
+            )
+            for symbol, target_mid, gap, price in target_rows
+        ]
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            rows,
+            3_000.0,
+            1_000.0,
+            reserve_settings(
+                action_min_cash_unallocated_target=0.0,
+                action_min_executable_trade_amount=300.0,
+            ),
+            dynamic_reserve_pct=0.0,
+        )
+
+        by_symbol = {row["symbol"]: row for row in rows}
+        self.assertTrue(summary.get("bootstrap_execution_active"))
+        self.assertEqual(summary["bootstrap_candidate_count"], 4)
+        self.assertEqual(summary["bootstrap_positions_funded"], 2)
+        self.assertEqual(summary["bootstrap_amount_funded"], 770.0)
+        self.assertEqual(
+            [(symbol, by_symbol[symbol]["bootstrap_priority"]) for symbol in ("A", "B", "C", "D")],
+            [("A", 1), ("B", 2), ("C", 3), ("D", 4)],
+        )
+        self.assertEqual(by_symbol["A"]["suggested_share_count"], 1)
+        self.assertEqual(by_symbol["A"]["executable_action_amount"], 350.0)
+        self.assertEqual(by_symbol["B"]["suggested_share_count"], 2)
+        self.assertEqual(by_symbol["B"]["executable_action_amount"], 420.0)
+        self.assertEqual(by_symbol["C"]["action"], "Watch")
+        self.assertEqual(by_symbol["D"]["action"], "Watch")
+        self.assertEqual(by_symbol["A"]["target_weight_mid"], 9.0)
+        self.assertEqual(by_symbol["A"]["bootstrap_original_target_gap_amount"], 270.0)
+        self.assertEqual(summary["total_add_demand"], 1_430.0)
+        self.assertEqual(summary["unfunded_add_demand"], 660.0)
+        self.assertAlmostEqual(
+            summary["total_add_demand"],
+            summary["funded_add_amount"] + summary["unfunded_add_demand"],
+        )
+
+    def test_bootstrap_ranking_uses_linear_score_cagr_and_symbol_as_target_mid_tie_breakers(self):
+        rows = [
+            self.bootstrap_row("Z_SCORE", 5.0, 100.0, 100.0, linear_allocation_score=0.9, expected_cagr=10.0),
+            self.bootstrap_row("Z_CAGR", 5.0, 100.0, 100.0, linear_allocation_score=0.8, expected_cagr=30.0),
+            self.bootstrap_row("B_SYMBOL", 5.0, 100.0, 100.0, linear_allocation_score=0.8, expected_cagr=20.0),
+            self.bootstrap_row("A_SYMBOL", 5.0, 100.0, 100.0, linear_allocation_score=0.8, expected_cagr=20.0),
+        ]
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            rows,
+            10_000.0,
+            300.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+
+        by_symbol = {row["symbol"]: row for row in rows}
+        self.assertTrue(summary["bootstrap_execution_active"])
+        self.assertEqual(by_symbol["Z_SCORE"]["bootstrap_priority"], 1)
+        self.assertEqual(by_symbol["Z_CAGR"]["bootstrap_priority"], 2)
+        self.assertEqual(by_symbol["A_SYMBOL"]["bootstrap_priority"], 3)
+        self.assertEqual(by_symbol["B_SYMBOL"]["bootstrap_priority"], 4)
+        self.assertTrue(by_symbol["Z_SCORE"]["bootstrap_execution_applied"])
+        self.assertFalse(by_symbol["Z_CAGR"]["bootstrap_execution_applied"])
+
+    def test_bootstrap_skips_unaffordable_higher_target_and_funds_affordable_lower_target(self):
+        expensive = self.bootstrap_row("EXPENSIVE", 9.0, 270.0, 1_200.0)
+        affordable = self.bootstrap_row("AFFORDABLE", 7.0, 210.0, 100.0)
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [expensive, affordable],
+            3_000.0,
+            400.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+
+        self.assertEqual(expensive["bootstrap_priority"], 1)
+        self.assertEqual(expensive["suggested_share_count"], 0)
+        self.assertEqual(affordable["bootstrap_priority"], 2)
+        self.assertEqual(affordable["suggested_share_count"], 3)
+        self.assertEqual(summary["bootstrap_amount_funded"], 300.0)
+
+    def test_bootstrap_minimum_lot_uses_one_expensive_share_or_enough_lower_priced_shares(self):
+        expensive = self.bootstrap_row("EXPENSIVE", 9.0, 270.0, 400.0)
+        multi_share = self.bootstrap_row("MULTI", 7.0, 210.0, 80.0)
+
+        web_server._apply_linear_cash_constrained_execution_layer(
+            [expensive, multi_share],
+            3_000.0,
+            720.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+
+        self.assertEqual(expensive["bootstrap_minimum_shares"], 1)
+        self.assertEqual(expensive["bootstrap_minimum_amount"], 400.0)
+        self.assertEqual(multi_share["bootstrap_minimum_shares"], 4)
+        self.assertEqual(multi_share["bootstrap_minimum_amount"], 320.0)
+        self.assertGreaterEqual(multi_share["bootstrap_minimum_amount"], 300.0)
+
+    def test_bootstrap_minimum_lot_is_decimal_safe_and_defaults_to_one_share_when_minimum_is_zero(self):
+        ten_share_lot = self.bootstrap_row("TEN", 9.0, 270.0, 31.08)
+        one_share_lot = self.bootstrap_row("ONE", 7.0, 210.0, 250.0)
+
+        web_server._apply_linear_cash_constrained_execution_layer(
+            [ten_share_lot],
+            3_000.0,
+            310.8,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+        web_server._apply_linear_cash_constrained_execution_layer(
+            [one_share_lot],
+            3_000.0,
+            250.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=0.0),
+            dynamic_reserve_pct=0.0,
+        )
+
+        self.assertEqual(ten_share_lot["bootstrap_minimum_shares"], 10)
+        self.assertEqual(ten_share_lot["bootstrap_minimum_amount"], 310.8)
+        self.assertEqual(one_share_lot["bootstrap_minimum_shares"], 1)
+        self.assertEqual(one_share_lot["bootstrap_minimum_amount"], 250.0)
+
+    def test_bootstrap_records_only_actual_target_high_override_without_changing_bands(self):
+        override = self.bootstrap_row("OVERRIDE", 9.0, 270.0, 400.0, target_weight_high=11.7)
+        within_band = self.bootstrap_row("WITHIN", 8.0, 240.0, 150.0, target_weight_high=12.0)
+        original_bands = {
+            row["symbol"]: (row["target_weight_low"], row["target_weight_mid"], row["target_weight_high"])
+            for row in (override, within_band)
+        }
+
+        web_server._apply_linear_cash_constrained_execution_layer(
+            [override, within_band],
+            3_000.0,
+            700.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+
+        self.assertTrue(override["bootstrap_target_high_override"])
+        self.assertFalse(within_band["bootstrap_target_high_override"])
+        for row in (override, within_band):
+            self.assertEqual(
+                (row["target_weight_low"], row["target_weight_mid"], row["target_weight_high"]),
+                original_bands[row["symbol"]],
+            )
+
+    def test_bootstrap_uses_only_budget_remaining_after_dynamic_reserve(self):
+        first = self.bootstrap_row("FIRST", 9.0, 270.0, 350.0)
+        second = self.bootstrap_row("SECOND", 7.0, 210.0, 300.0)
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [first, second],
+            3_000.0,
+            1_000.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=20.0,
+        )
+
+        self.assertEqual(summary["target_reserve_amount"], 600.0)
+        self.assertEqual(summary["available_buy_budget"], 400.0)
+        self.assertEqual(summary["bootstrap_amount_funded"], 350.0)
+        self.assertEqual(first["suggested_share_count"], 1)
+        self.assertEqual(second["suggested_share_count"], 0)
+
+    def test_bootstrap_does_not_activate_without_budget_or_for_guardrail_and_price_failures(self):
+        no_budget = self.bootstrap_row("NO_BUDGET", 9.0, 270.0, 100.0)
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [no_budget],
+            3_000.0,
+            600.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=20.0,
+        )
+        self.assertFalse(summary["bootstrap_execution_active"])
+
+        blocked_rows = [
+            self.bootstrap_row("RATING", 9.0, 270.0, 100.0, action="Watch / Rating Guardrail", action_amount_direction="none", rating_guardrail_applied=True),
+            self.bootstrap_row("EXTENDED", 8.0, 240.0, 100.0, action="Watch / Extended", action_amount_direction="none", extension_guardrail_applied=True),
+            self.bootstrap_row("NO_PRICE", 7.0, 210.0, None),
+        ]
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            blocked_rows,
+            3_000.0,
+            1_000.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+        self.assertFalse(summary["bootstrap_execution_active"])
+        self.assertTrue(all(row["bootstrap_priority"] is None for row in blocked_rows))
+
+    def test_normal_linear_funding_wins_over_bootstrap_candidates(self):
+        normal = self.bootstrap_row("NORMAL", 20.0, 600.0, 100.0)
+        too_small = self.bootstrap_row("TOO_SMALL", 9.0, 270.0, 400.0)
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [normal, too_small],
+            3_000.0,
+            1_000.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+
+        self.assertFalse(summary["bootstrap_execution_active"])
+        self.assertEqual(normal["suggested_share_count"], 6)
+        self.assertEqual(normal["funding_status"], "Fully funded")
+        self.assertEqual(too_small["bootstrap_priority"], None)
+
+    def test_bootstrap_accounting_keeps_unaffordable_normal_demand_and_replaces_only_promoted_demand(self):
+        unaffordable_normal = self.bootstrap_row("NORMAL", 20.0, 1_000.0, 1_000.0)
+        promoted = self.bootstrap_row("PROMOTED", 9.0, 270.0, 100.0)
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [unaffordable_normal, promoted],
+            5_000.0,
+            400.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+
+        self.assertTrue(summary["bootstrap_execution_active"])
+        self.assertEqual(promoted["bootstrap_original_target_gap_amount"], 270.0)
+        self.assertEqual(promoted["bootstrap_minimum_amount"], 300.0)
+        self.assertEqual(summary["total_add_demand"], 1_300.0)
+        self.assertEqual(summary["funded_add_amount"], 300.0)
+        self.assertEqual(summary["unfunded_add_demand"], 1_000.0)
+        self.assertAlmostEqual(
+            summary["total_add_demand"],
+            summary["funded_add_amount"] + summary["unfunded_add_demand"],
+        )
+
+    def test_budget_limited_normal_sizing_is_not_reclassified_as_bootstrap_demand(self):
+        budget_limited_normal = self.bootstrap_row("NORMAL", 20.0, 1_000.0, 210.0)
+        promoted = self.bootstrap_row("PROMOTED", 9.0, 100.0, 100.0)
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [budget_limited_normal, promoted],
+            5_000.0,
+            400.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+
+        self.assertTrue(summary["bootstrap_execution_active"])
+        self.assertIsNone(budget_limited_normal["bootstrap_priority"])
+        self.assertEqual(budget_limited_normal["desired_whole_share_amount"], 840.0)
+        self.assertEqual(promoted["bootstrap_minimum_amount"], 300.0)
+        self.assertEqual(summary["total_add_demand"], 1_140.0)
+        self.assertEqual(summary["funded_add_amount"], 300.0)
+        self.assertEqual(summary["unfunded_add_demand"], 840.0)
+        self.assertAlmostEqual(
+            summary["total_add_demand"],
+            summary["funded_add_amount"] + summary["unfunded_add_demand"],
+        )
+
+    def test_existing_underweight_position_can_receive_only_one_bootstrap_lot(self):
+        existing = self.bootstrap_row(
+            "EXISTING",
+            9.0,
+            170.0,
+            80.0,
+            current_position_market_value=100.0,
+            owned_share_quantity=1,
+            current_position_weight=100.0 / 3_000.0 * 100.0,
+        )
+
+        summary = web_server._apply_linear_cash_constrained_execution_layer(
+            [existing],
+            3_000.0,
+            1_000.0,
+            reserve_settings(action_min_cash_unallocated_target=0.0, action_min_executable_trade_amount=300.0),
+            dynamic_reserve_pct=0.0,
+        )
+
+        self.assertTrue(summary["bootstrap_execution_active"])
+        self.assertEqual(existing["bootstrap_minimum_shares"], 4)
+        self.assertEqual(existing["suggested_share_count"], 4)
+        self.assertEqual(existing["executable_action_amount"], 320.0)
+        self.assertEqual(summary["bootstrap_positions_funded"], 1)
 
     def test_reserve_shortfall_blocks_adds(self):
         trim = self.row("Trim", 15_550.0, 300.0, "trim", symbol="TRIM")

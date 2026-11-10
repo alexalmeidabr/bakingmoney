@@ -4025,7 +4025,8 @@ function updateAnalysisVariableTabs(variables) {
 
 function autoSizeAnalysisVariableTextarea(textarea) {
   textarea.style.height = 'auto';
-  textarea.style.height = `${textarea.scrollHeight}px`;
+  const borderHeight = textarea.offsetHeight - textarea.clientHeight;
+  textarea.style.height = `${textarea.scrollHeight + borderHeight}px`;
 }
 
 function renderVariablesTable() {

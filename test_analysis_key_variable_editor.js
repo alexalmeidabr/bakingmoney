@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const appJs = fs.readFileSync('static/app.js', 'utf8').replace(/\r\n/g, '\n');
 const stylesCss = fs.readFileSync('static/styles.css', 'utf8').replace(/\r\n/g, '\n');
@@ -36,11 +37,29 @@ test('Key Variable editor autosizes existing and edited textareas from content h
   const autosize = functionSource('autoSizeAnalysisVariableTextarea');
   assert.match(autosize, /textarea\.style\.height\s*=\s*['"]auto['"]/);
   assert.match(autosize, /textarea\.scrollHeight/);
-  assert.match(autosize, /textarea\.style\.height\s*=\s*`\$\{textarea\.scrollHeight\}px`/);
+  assert.match(autosize, /textarea\.offsetHeight\s*-\s*textarea\.clientHeight/);
+  assert.match(autosize, /textarea\.style\.height\s*=\s*`\$\{textarea\.scrollHeight\s*\+\s*borderHeight\}px`/);
 
   const renderer = functionSource('renderVariablesTable');
   assert.match(renderer, /querySelectorAll\('\.var-text-input'\)[\s\S]*autoSizeAnalysisVariableTextarea/);
   assert.match(renderer, /textarea\.addEventListener\('input',[\s\S]*autoSizeAnalysisVariableTextarea/);
+});
+
+test('Key Variable autosizing includes textarea borders when using border-box sizing', () => {
+  const autoSize = vm.runInNewContext(`
+    ${functionSource('autoSizeAnalysisVariableTextarea')}
+    autoSizeAnalysisVariableTextarea;
+  `);
+  const textarea = {
+    style: {},
+    scrollHeight: 100,
+    offsetHeight: 106,
+    clientHeight: 100,
+  };
+
+  autoSize(textarea);
+
+  assert.equal(textarea.style.height, '106px');
 });
 
 test('Key Variable textarea styles wrap and shrink within the existing Variable column', () => {

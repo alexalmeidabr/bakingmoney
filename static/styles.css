@@ -571,7 +571,15 @@ th.sortable[data-sort-direction='desc']::after {
 }
 
 #analysis-variables-table .var-text-input {
+  width: 100%;
   min-width: 0;
+  box-sizing: border-box;
+  font: inherit;
+  line-height: 1.35;
+  overflow-y: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  resize: none;
 }
 
 #analysis-scenario-info-btn {

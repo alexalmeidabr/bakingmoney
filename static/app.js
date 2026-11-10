@@ -4023,6 +4023,11 @@ function updateAnalysisVariableTabs(variables) {
   });
 }
 
+function autoSizeAnalysisVariableTextarea(textarea) {
+  textarea.style.height = 'auto';
+  textarea.style.height = `${textarea.scrollHeight}px`;
+}
+
 function renderVariablesTable() {
   const variables = isEditingVariables
     ? getAnalysisVariableEditDraft()
@@ -4041,7 +4046,7 @@ function renderVariablesTable() {
     const variableType = variable.variable_type || 'Bullish';
     const driverCategory = normalizeDriverCategory(variable.driver_category);
     row.innerHTML = isEditingVariables
-      ? `<td><input class="var-text var-text-input" type="text" value="${escapeHtml(variable.variable_text || '')}"></td><td><select class="var-type"><option value="Bullish" ${variableType === 'Bullish' ? 'selected' : ''}>Bullish</option><option value="Bearish" ${variableType === 'Bearish' ? 'selected' : ''}>Bearish</option></select></td><td>${renderDriverCategorySelect('var-driver-category', driverCategory)}</td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="${variable.confidence}"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="${variable.importance}"></td><td><button type="button" class="var-delete-btn remove-btn">Delete</button></td>`
+      ? `<td><textarea class="var-text var-text-input" rows="1">${escapeHtml(variable.variable_text || '')}</textarea></td><td><select class="var-type"><option value="Bullish" ${variableType === 'Bullish' ? 'selected' : ''}>Bullish</option><option value="Bearish" ${variableType === 'Bearish' ? 'selected' : ''}>Bearish</option></select></td><td>${renderDriverCategorySelect('var-driver-category', driverCategory)}</td><td><input class="var-confidence" type="number" min="0" max="10" step="1" value="${variable.confidence}"></td><td><input class="var-importance" type="number" min="0" max="10" step="1" value="${variable.importance}"></td><td><button type="button" class="var-delete-btn remove-btn">Delete</button></td>`
       : `<td>${escapeHtml(variable.variable_text || '')}</td><td>${escapeHtml(variableType)}</td><td>${escapeHtml(driverCategory)}</td><td>${formatNumber(variable.confidence, 2)}</td><td>${formatNumber(variable.importance, 2)}</td><td>—</td>`;
     analysisVariablesBody.appendChild(row);
   });
@@ -4053,6 +4058,10 @@ function renderVariablesTable() {
   }
 
   if (isEditingVariables) {
+    analysisVariablesBody.querySelectorAll('.var-text-input').forEach((textarea) => {
+      autoSizeAnalysisVariableTextarea(textarea);
+      textarea.addEventListener('input', () => autoSizeAnalysisVariableTextarea(textarea));
+    });
     analysisVariablesBody.querySelectorAll('.var-delete-btn').forEach((button) => {
       button.addEventListener('click', () => {
         syncActiveAnalysisVariableRowsFromDom();

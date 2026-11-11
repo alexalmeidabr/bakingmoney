@@ -218,6 +218,140 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             }
         ]
 
+    def test_unpriced_sell_holding_remains_owned_and_blocked_in_account_apis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "unpriced-sell.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self.create_modern_portfolio_state(
+                        conn, "U_TEST_A",
+                        positions=[{"symbol": "NVDA", "position": 10, "avgCost": 90, "price": None,
+                                    "marketValue": None, "price_status": "unavailable", "contract_key": "conid:1"}],
+                        summary={"net_liquidation": 100000, "actual_cash": 5000},
+                    )
+                    self.create_modern_portfolio_state(
+                        conn, "U_TEST_B",
+                        positions=[{"symbol": "NVDA", "position": 4, "avgCost": 90, "price": 100,
+                                    "marketValue": 400, "price_status": "cached_stale", "contract_key": "conid:2"}],
+                        summary={"net_liquidation": 200000, "actual_cash": 10000},
+                    )
+                finally:
+                    conn.close()
+            analysis = [{**self.sample_analysis_items()[0], "rating": "Sell", "current_price": None}]
+            positions = self.run_fake_positions_request(db_path, account_id="U_TEST_A", analysis_items=analysis)
+            plan = self.run_fake_action_plan_request(db_path, account_id="U_TEST_A", analysis_items=analysis)
+            other = self.run_fake_positions_request(db_path, account_id="U_TEST_B", analysis_items=analysis)
+            self.assertEqual(positions["payload"]["positions"][0]["position"], 10)
+            self.assertIsNone(positions["payload"]["positions"][0]["marketValue"])
+            self.assertEqual(other["payload"]["positions"][0]["price"], 100)
+            self.assertEqual(plan["status"], 200)
+            for key in ("action_plan", "linear_action_plan"):
+                row = next(item for item in plan["payload"][key] if item["symbol"] == "NVDA")
+                self.assertEqual(row["owned_share_quantity"], 10)
+                self.assertIsNone(row["current_position_market_value"])
+                self.assertIsNone(row["current_position_weight"])
+                self.assertEqual(row["desired_action"], "Sell")
+                self.assertEqual(row["action"], "Watch / Price Refresh")
+                self.assertEqual(row["executable_action_amount"], 0)
+                self.assertEqual(row["suggested_share_count"], 0)
+                self.assertIn("price", row["price_refresh_diagnostic"].lower())
+
+    def test_stored_tws_quote_is_stale_after_restart_in_positions_and_action_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "previous-session-quote.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    self.create_modern_portfolio_state(
+                        conn, "U_TEST_A",
+                        positions=[{"symbol": "NVDA", "position": 10, "avgCost": 90, "price": 100,
+                                    "marketValue": 1000, "price_status": "tws_received", "price_source": "last",
+                                    "price_last_successful_at": "2026-11-10T10:00:00+00:00", "contract_key": "conid:1"}],
+                        summary={"net_liquidation": 100000, "actual_cash": 5000},
+                    )
+                finally:
+                    conn.close()
+            analysis = [{**self.sample_analysis_items()[0], "rating": "Sell"}]
+            positions = self.run_fake_positions_request(db_path, account_id="U_TEST_A", analysis_items=analysis)
+            plan = self.run_fake_action_plan_request(db_path, account_id="U_TEST_A", analysis_items=analysis)
+            row = positions["payload"]["positions"][0]
+            self.assertEqual(row["price"], 100)
+            self.assertEqual(row["price_status"], "cached_stale")
+            self.assertEqual(row["price_source"], "cached")
+            self.assertEqual(row["price_last_successful_at"], "2026-11-10T10:00:00+00:00")
+            for key in ("action_plan", "linear_action_plan"):
+                action = next(item for item in plan["payload"][key] if item["symbol"] == "NVDA")
+                self.assertEqual(action["desired_action"], "Sell")
+                self.assertEqual(action["executable_action_amount"], 0)
+
+    def test_successful_refresh_is_current_for_followup_account_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "current-session-quote.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.upsert_ib_account(conn, "U_TEST_A")
+                    conn.commit()
+                finally:
+                    conn.close()
+            ib = FakeIB(positions=[FakePosition("U_TEST_A", "NVDA", 10, 90, 1)],
+                        summary_items=[FakeSummaryItem("U_TEST_A", "NetLiquidation", "100000"),
+                                       FakeSummaryItem("U_TEST_A", "CashBalance", "5000")],
+                        managed_accounts=["U_TEST_A"])
+            refreshed = self.run_fake_positions_refresh(db_path, ib, account_id="U_TEST_A")
+            stored = self.run_fake_positions_request(db_path, account_id="U_TEST_A")
+            self.assertEqual(refreshed["payload"]["positions"][0]["price_status"], "tws_received")
+            self.assertEqual(stored["payload"]["positions"][0]["price_status"], "tws_received")
+
+    def test_failed_refresh_stales_selected_account_quote_without_affecting_other_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "failed-after-success.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.upsert_ib_account(conn, "U_TEST_A")
+                    web_server.upsert_ib_account(conn, "U_TEST_B")
+                    conn.commit()
+                finally:
+                    conn.close()
+            ib = FakeIB(
+                positions=[FakePosition("U_TEST_A", "NVDA", 10, 90, 1),
+                           FakePosition("U_TEST_B", "NVDA", 4, 80, 2)],
+                summary_items=[FakeSummaryItem("U_TEST_A", "NetLiquidation", "100000"),
+                               FakeSummaryItem("U_TEST_A", "CashBalance", "5000"),
+                               FakeSummaryItem("U_TEST_B", "NetLiquidation", "200000"),
+                               FakeSummaryItem("U_TEST_B", "CashBalance", "10000")],
+                managed_accounts=["U_TEST_A", "U_TEST_B"],
+            )
+            successful = self.run_fake_positions_refresh(db_path, ib, account_id="U_TEST_A")
+            first = successful["payload"]["positions"][0]
+            self.assertEqual(first["price_status"], "tws_received")
+            handler = CapturingPositionsHandler()
+            with mock.patch.object(web_server, "DB_PATH", db_path), \
+                 mock.patch.object(web_server, "ensure_event_loop", return_value=None), \
+                 mock.patch.object(web_server, "get_ib_connection", side_effect=RuntimeError("TWS disconnected")), \
+                 mock.patch.object(web_server, "list_analysis_symbols", return_value=[]):
+                web_server.BakingMoneyHandler.handle_positions_api(handler, refresh=True, account_id="U_TEST_A")
+            stale = handler.response["payload"]["positions"][0]
+            self.assertEqual(handler.response["status"], 200)
+            self.assertEqual(stale["price"], first["price"])
+            self.assertEqual(stale["price_last_successful_at"], first["price_last_successful_at"])
+            self.assertEqual(stale["price_status"], "cached_stale")
+            analysis = [{**self.sample_analysis_items()[0], "rating": "Sell"}]
+            plan = self.run_fake_action_plan_request(db_path, account_id="U_TEST_A", analysis_items=analysis)
+            for key in ("action_plan", "linear_action_plan"):
+                row = next(item for item in plan["payload"][key] if item["symbol"] == "NVDA")
+                self.assertEqual(row["desired_action"], "Sell")
+                self.assertEqual(row["executable_action_amount"], 0)
+                self.assertEqual(row["suggested_share_count"], 0)
+            other = self.run_fake_positions_request(db_path, account_id="U_TEST_B")
+            self.assertEqual(other["payload"]["positions"][0]["price_status"], "tws_received")
+
     def test_legacy_migration_with_real_account_id_preserves_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "legacy-real.db")

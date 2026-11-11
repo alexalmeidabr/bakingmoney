@@ -2132,6 +2132,16 @@ function renderPositionsPortfolioSummary(summary = latestPositionsPortfolioSumma
   }
 }
 
+function formatPositionPriceCell(position) {
+  const price = formatCurrencyValue(position.price, position.currency);
+  if (position.price_status !== 'cached_stale') return price;
+  const lastSuccessful = position.price_last_successful_at
+    ? ` Last successful quote: ${formatDateTime(position.price_last_successful_at)}.`
+    : '';
+  const warning = position.price_warning || 'Current TWS refresh did not supply a usable price; this value is retained from the local cache.';
+  return `${price} <span class="price-freshness-badge" title="${escapeHtml(`${warning}${lastSuccessful}`)}">Cached</span>`;
+}
+
 function renderPositions() {
   positionsTableBody.innerHTML = '';
   sortPositions(getFilteredPositions()).forEach((position) => {
@@ -2144,7 +2154,7 @@ function renderPositions() {
     const expectedCagrClass = typeof position.expected_cagr === 'number' ? valueClass(position.expected_cagr) : '';
     const confidenceValue = formatCoreConfidenceDisplay(position);
     const potentialConfidenceValue = formatPotentialConfidenceDisplay(position);
-    row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(symbol)}">${escapeHtml(symbol)}</button></td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td class="${expectedCagrClass}">${expectedCagrValue}</td><td>${confidenceValue}</td><td>${potentialConfidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.costBasis, position.currency)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.unrealizedPnLPercent)}">${formatPercent(position.unrealizedPnLPercent)}</td><td>${formatCurrencyValue(position.price, position.currency)}</td><td>${formatNumber(position.avgCost)}</td><td>${formatDate(position.latest_release_date)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>`;
+    row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(symbol)}">${escapeHtml(symbol)}</button></td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td class="${expectedCagrClass}">${expectedCagrValue}</td><td>${confidenceValue}</td><td>${potentialConfidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.costBasis, position.currency)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.unrealizedPnLPercent)}">${formatPercent(position.unrealizedPnLPercent)}</td><td>${formatPositionPriceCell(position)}</td><td>${formatNumber(position.avgCost)}</td><td>${formatDate(position.latest_release_date)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>`;
     positionsTableBody.appendChild(row);
   });
   positionsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailFromPositions(btn.dataset.symbol)));
@@ -2388,8 +2398,8 @@ function renderActionPlanDetail(item) {
   if (!item) return;
   selectedActionPlanDetail = item;
   actionPlanDetailTitleEl.textContent = `Action Detail: ${item.symbol}`;
-  actionPlanDetailStatusEl.textContent = item.linear_explanation || item.reason || '';
-  actionPlanDetailStatusEl.className = item.final_scenario_stale ? 'status warning' : 'status';
+  actionPlanDetailStatusEl.textContent = item.price_refresh_diagnostic || item.linear_explanation || item.reason || '';
+  actionPlanDetailStatusEl.className = item.final_scenario_stale || item.price_refresh_required ? 'status warning' : 'status';
   const target = item.linear_target_breakdown || {};
   const score = item.linear_score_breakdown || {};
   const weights = score.weights_used || {};
@@ -4511,10 +4521,14 @@ async function loadPositions(options = {}) {
     updateSortHeaderState();
     renderPositions();
     const source = positionsPayload.data_source ? ` source=${positionsPayload.data_source}` : '';
-    positionsStatusEl.textContent = positionsPayload.warning
-      ? `${positionsPayload.warning} Loaded ${latestPositions.length} position(s).${source}`
+    const incompleteRefresh = positionsPayload.market_data_refresh?.incomplete;
+    const refreshWarning = incompleteRefresh && !positionsPayload.warning
+      ? 'Refresh completed. Cached prices were used where available.'
+      : positionsPayload.warning;
+    positionsStatusEl.textContent = refreshWarning
+      ? `${refreshWarning} Loaded ${latestPositions.length} position(s).${source}`
       : `Loaded ${latestPositions.length} position(s).${source}`;
-    positionsStatusEl.className = positionsPayload.warning ? 'status error' : 'status';
+    positionsStatusEl.className = refreshWarning ? 'status warning' : 'status';
     positionsTable.classList.remove('hidden');
   } catch (error) {
     if (error.code === 'account_not_found') await handlePortfolioAccountNotFound();

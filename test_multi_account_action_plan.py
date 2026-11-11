@@ -32,7 +32,18 @@ class MultiAccountActionPlanIsolationTests(unittest.TestCase):
             web_server.init_db()
 
     def save_state(self, conn, account_id, *, positions, portfolio_value, actual_cash):
-        web_server.save_positions_cache(conn, positions, account_id=account_id)
+        # These allocation fixtures represent quotes received during this test session.
+        quoted_positions = [
+            {**row, "contract_key": f"test:{row['symbol']}", "price_status": "tws_received",
+             "price_last_successful_at": "2026-11-11T10:00:00+00:00"}
+            for row in positions
+        ]
+        web_server.save_positions_cache(conn, quoted_positions, account_id=account_id)
+        db_path = conn.execute("PRAGMA database_list").fetchone()["file"]
+        web_server._session_received_quotes[(db_path, account_id)] = {
+            row["symbol"]: (row["contract_key"], row["price_last_successful_at"])
+            for row in quoted_positions if web_server.is_valid_market_price(row.get("price"))
+        }
         web_server.save_portfolio_summary_cache(
             conn,
             {

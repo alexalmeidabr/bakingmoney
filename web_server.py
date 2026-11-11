@@ -43,6 +43,7 @@ PORT = 8080
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 DB_PATH = BASE_DIR / "bakingmoney.db"
+_session_received_quotes = {}
 ENV_PATH = BASE_DIR / ".env"
 BACKUP_DIR = BASE_DIR / "backups"
 UPLOADS_DIR = BASE_DIR / "uploads"
@@ -1988,6 +1989,38 @@ def normalize_market_price(value):
     return safe_number(numeric)
 
 
+def market_data_contract_key(contract):
+    """Return a stable quote identity without treating a symbol as globally unique."""
+    if contract is None:
+        return None
+    con_id = safe_number(getattr(contract, "conId", None))
+    if con_id is not None and con_id > 0:
+        return f"conid:{int(con_id)}"
+    parts = [
+        getattr(contract, "secType", None),
+        getattr(contract, "symbol", None),
+        getattr(contract, "localSymbol", None),
+        getattr(contract, "currency", None),
+        getattr(contract, "exchange", None),
+        getattr(contract, "primaryExchange", None),
+        getattr(contract, "tradingClass", None),
+    ]
+    normalized = [str(part or "").strip().upper() for part in parts]
+    return "contract:" + "|".join(normalized) if any(normalized) else None
+
+
+def unique_market_data_contracts(contracts):
+    unique = []
+    seen = set()
+    for contract in contracts or []:
+        key = market_data_contract_key(contract)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(contract)
+    return unique
+
+
 def first_valid_number(*values):
     for value in values:
         numeric = safe_number(value)
@@ -3294,6 +3327,7 @@ def _safe_cancel_market_data(ib, contract, purpose):
 
 
 def request_ib_tickers_batched(ib, qualified_contracts, purpose):
+    qualified_contracts = unique_market_data_contracts(qualified_contracts)
     if not qualified_contracts:
         return [], {}
 
@@ -3365,7 +3399,20 @@ def request_ib_tickers_batched(ib, qualified_contracts, purpose):
             if hasattr(ib, "reqMktData"):
                 batch_tickers = []
                 for contract in batch:
-                    ticker = ib.reqMktData(contract, "", False, False)
+                    try:
+                        ticker = ib.reqMktData(contract, "", False, False)
+                    except Exception as exc:
+                        key = market_data_contract_key(contract)
+                        diagnostics[key] = {
+                            "symbol": normalize_symbol(getattr(contract, "symbol", None)),
+                            "message": str(exc),
+                            "severity": "warning",
+                            "fatal": False,
+                            "reason": "request_exception",
+                            "source": "reqMktData",
+                        }
+                        logger.warning("IBKR market data request failed purpose=%s contract=%s: %s", purpose, key, exc)
+                        continue
                     ticker_contract = getattr(ticker, "contract", None) or contract
                     if getattr(ticker, "contract", None) is None:
                         try:
@@ -3399,9 +3446,77 @@ def request_ib_tickers_batched(ib, qualified_contracts, purpose):
                     ib.errorEvent -= handle_error
                 except Exception:
                     pass
-        for contract in batch:
-            _safe_cancel_market_data(ib, contract, purpose)
+            for contract in batch:
+                _safe_cancel_market_data(ib, contract, purpose)
     return tickers, diagnostics
+
+
+def _tickers_by_market_contract_key(tickers):
+    result = {}
+    for ticker in tickers or []:
+        key = market_data_contract_key(getattr(ticker, "contract", None))
+        if not key:
+            continue
+        previous = result.get(key)
+        if previous is None or (extract_price(previous) is None and extract_price(ticker) is not None):
+            result[key] = ticker
+    return result
+
+
+def request_ib_tickers_with_retry(ib, qualified_contracts, purpose):
+    """Collect unique quotes once, then make one bounded retry for unresolved contracts."""
+    contracts = unique_market_data_contracts(qualified_contracts)
+    if not contracts:
+        return {}, {}, {
+            "unique_contracts_requested": 0,
+            "initial_quotes_received": 0,
+            "retry_contracts": 0,
+            "retry_quotes_recovered": 0,
+        }
+
+    initial_tickers, diagnostics = request_ib_tickers_batched(ib, contracts, purpose)
+    tickers_by_key = _tickers_by_market_contract_key(initial_tickers)
+    initial_received = sum(
+        1 for contract in contracts
+        if extract_price(tickers_by_key.get(market_data_contract_key(contract))) is not None
+    )
+    unresolved = []
+    for contract in contracts:
+        key = market_data_contract_key(contract)
+        symbol = normalize_symbol(getattr(contract, "symbol", None))
+        detail = diagnostics.get(key) or diagnostics.get(symbol) or {}
+        if extract_price(tickers_by_key.get(key)) is None and not detail.get("fatal"):
+            unresolved.append(contract)
+
+    retry_recovered = 0
+    if unresolved:
+        retry_tickers, retry_diagnostics = request_ib_tickers_batched(ib, unresolved, f"{purpose}_retry")
+        for key, detail in retry_diagnostics.items():
+            if key not in diagnostics or detail.get("fatal"):
+                diagnostics[key] = detail
+        retry_by_key = _tickers_by_market_contract_key(retry_tickers)
+        for contract in unresolved:
+            key = market_data_contract_key(contract)
+            retry_ticker = retry_by_key.get(key)
+            if extract_price(retry_ticker) is not None:
+                tickers_by_key[key] = retry_ticker
+                retry_recovered += 1
+
+    refresh = {
+        "unique_contracts_requested": len(contracts),
+        "initial_quotes_received": initial_received,
+        "retry_contracts": len(unresolved),
+        "retry_quotes_recovered": retry_recovered,
+    }
+    logger.info(
+        "IBKR market data collection purpose=%s unique_contracts=%s initial_quotes=%s retry_contracts=%s retry_recovered=%s",
+        purpose,
+        refresh["unique_contracts_requested"],
+        refresh["initial_quotes_received"],
+        refresh["retry_contracts"],
+        refresh["retry_quotes_recovered"],
+    )
+    return tickers_by_key, diagnostics, refresh
 
 
 def save_prompt_template(conn, key, template):
@@ -3848,6 +3963,11 @@ def _create_positions_cache_table(conn):
           unrealized_pnl REAL,
           daily_pnl REAL,
           currency TEXT,
+          contract_key TEXT,
+          price_status TEXT,
+          price_source TEXT,
+          price_last_successful_at TEXT,
+          price_warning TEXT,
           updated_at TEXT NOT NULL,
           PRIMARY KEY (account_id, symbol)
         )
@@ -4440,6 +4560,11 @@ def init_db():
         _create_ib_accounts_table(conn)
         _create_positions_cache_table(conn)
         _create_portfolio_summary_cache_table(conn)
+        ensure_column_exists(conn, "positions_cache", "contract_key", "TEXT")
+        ensure_column_exists(conn, "positions_cache", "price_status", "TEXT")
+        ensure_column_exists(conn, "positions_cache", "price_source", "TEXT")
+        ensure_column_exists(conn, "positions_cache", "price_last_successful_at", "TEXT")
+        ensure_column_exists(conn, "positions_cache", "price_warning", "TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS thesis_review_alerts (
@@ -8542,8 +8667,9 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
             """
             INSERT INTO positions_cache (
               account_id, symbol, position, price, avg_cost, change_percent,
-              market_value, unrealized_pnl, daily_pnl, currency, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              market_value, unrealized_pnl, daily_pnl, currency, contract_key,
+              price_status, price_source, price_last_successful_at, price_warning, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_id, symbol) DO UPDATE SET
               position = excluded.position,
               price = excluded.price,
@@ -8553,6 +8679,11 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
               unrealized_pnl = excluded.unrealized_pnl,
               daily_pnl = excluded.daily_pnl,
               currency = excluded.currency,
+              contract_key = excluded.contract_key,
+              price_status = excluded.price_status,
+              price_source = excluded.price_source,
+              price_last_successful_at = excluded.price_last_successful_at,
+              price_warning = excluded.price_warning,
               updated_at = excluded.updated_at
             """,
             (
@@ -8566,6 +8697,11 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
                 row.get("unrealizedPnL"),
                 row.get("dailyPnL"),
                 row.get("currency"),
+                row.get("contract_key"),
+                row.get("price_status"),
+                row.get("price_source"),
+                row.get("price_last_successful_at"),
+                row.get("price_warning"),
                 now,
             ),
         )
@@ -8588,14 +8724,16 @@ def load_positions_cache(conn, account_id=None):
     rows = conn.execute(
         """
         SELECT symbol, position, price, avg_cost, change_percent,
-               market_value, unrealized_pnl, daily_pnl, currency
+               market_value, unrealized_pnl, daily_pnl, currency, contract_key,
+               price_status, price_source, price_last_successful_at, price_warning
         FROM positions_cache
         WHERE account_id = ?
         ORDER BY symbol ASC
         """,
         (resolved_account_id,),
     ).fetchall()
-    return [
+    session_quotes = _session_received_quotes.get((str(DB_PATH), resolved_account_id), {})
+    result = [
         {
             "symbol": row["symbol"],
             "position": row["position"],
@@ -8606,10 +8744,29 @@ def load_positions_cache(conn, account_id=None):
             "unrealizedPnL": row["unrealized_pnl"],
             "dailyPnL": row["daily_pnl"],
             "currency": row["currency"],
+            "contract_key": row["contract_key"],
+            "price_status": row["price_status"],
+            "price_source": row["price_source"],
+            "price_last_successful_at": row["price_last_successful_at"],
+            "price_warning": row["price_warning"],
         }
         for row in rows
         if abs(safe_number(row["position"]) or 0.0) > 0
     ]
+    for row in result:
+        if not is_valid_market_price(row.get("price")):
+            row["price_status"] = "unavailable"
+            row["price_source"] = None
+            continue
+        quote_identity = (row.get("contract_key"), row.get("price_last_successful_at"))
+        if row.get("price_status") == "tws_received" and session_quotes.get(row["symbol"]) == quote_identity:
+            continue
+        row["price_status"] = "cached_stale"
+        row["price_source"] = "cached"
+        row["price_warning"] = "Current TWS refresh has not supplied this price in this session; showing a saved quote."
+        row["dailyPnL"] = None
+        row["changePercent"] = None
+    return result
 
 
 def _account_summary_item_value(item):
@@ -9327,6 +9484,10 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
     for row in rows:
         row["raw_action_amount"] = max(0.0, safe_number(row.get("raw_action_amount")) or safe_number(row.get("action_amount")) or 0.0)
         row["target_gap_amount"] = row["raw_action_amount"]
+        if row.get("position_price_status") in {"cached_stale", "unavailable"}:
+            row["executable_action_amount"] = 0.0
+            row["funding_status"] = "Price refresh required"
+            continue
         _prepare_whole_share_execution(row)
         direction = row.get("action_amount_direction")
         row["executable_action_amount"] = 0.0
@@ -9353,6 +9514,7 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
         if row.get("action") in buy_actions
         and row.get("action_amount_direction") == "add"
         and row.get("desired_share_count", 0) > 0
+        and row.get("position_price_status") not in {"cached_stale", "unavailable"}
     ]
     total_add_demand = sum(row.get("desired_whole_share_amount", 0.0) for row in buy_candidates)
     min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
@@ -9804,6 +9966,8 @@ def _choose_action_plan_decision(row, settings):
     upside = safe_number(row.get("upside"))
     if row.get("final_scenario_stale"):
         return "Re-evaluate", None, None, None, "Final Scenario overlay is stale; re-evaluate before taking action."
+    if rating in {"Sell", "Strong Sell"} and current_price is None and abs(safe_number(row.get("owned_share_quantity")) or 0.0) > 0:
+        return "Sell", None, None, None, "Sell-rated holding; current price is unavailable."
     if current_price is None or expected_price is None or upside is None:
         return "Re-evaluate", None, None, None, "Missing current price, expected price, or upside."
 
@@ -10445,6 +10609,12 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     bootstrap_intentions = []
     for row in rows:
         _reset_linear_bootstrap_diagnostics(row)
+        if row.get("position_price_status") in {"cached_stale", "unavailable"}:
+            row["executable_action_amount"] = 0.0
+            row["unfunded_action_amount"] = 0.0
+            row["unfunded_share_count"] = 0
+            row["funding_status"] = "Price refresh required"
+            continue
         if _is_linear_bootstrap_intention(row, buy_actions):
             bootstrap_intentions.append(row)
         _prepare_whole_share_execution(row)
@@ -10482,6 +10652,7 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         if row.get("action") in buy_actions
         and row.get("action_amount_direction") == "add"
         and row.get("desired_share_count", 0) > 0
+        and row.get("position_price_status") not in {"cached_stale", "unavailable"}
     ]
     for row in buy_candidates:
         gap_score = min((row["desired_whole_share_amount"] / total / 0.05), 1.0) if total > 0 else 0.0
@@ -10634,6 +10805,8 @@ def _linear_action_compatibility_fields():
 
 
 def _linear_position_status(current_weight, target_low, target_high, target_mid):
+    if current_weight is None:
+        return "UNKNOWN_WEIGHT"
     if target_mid <= 0 and current_weight > 0:
         return "ZERO_TARGET_OWNED"
     if current_weight < target_low:
@@ -10748,12 +10921,16 @@ def _linear_detail_diagnostics(row):
 
 def _linear_action_decision_path(row, action):
     path = [{"status": "pass", "text": f"Rating is {row.get('rating') or 'Hold'}."}]
-    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    current_weight = safe_number(row.get("current_position_weight"))
     target_low = safe_number(row.get("target_weight_low")) or 0.0
     target_high = safe_number(row.get("target_weight_high")) or 0.0
     target_mid = safe_number(row.get("target_weight_mid")) or 0.0
-    if target_mid <= 0 and current_weight > 0:
+    owned_quantity = safe_number(row.get("owned_share_quantity"))
+    has_position = abs(owned_quantity) > 0 if owned_quantity is not None else current_weight is not None and current_weight > 0
+    if target_mid <= 0 and has_position:
         path.append({"status": "pass", "text": "Final target is zero while the position is owned."})
+    elif current_weight is None:
+        path.append({"status": "warning", "text": "Current position weight is unavailable; the target band action cannot be determined."})
     elif current_weight < target_low:
         path.append({"status": "pass", "text": "Current position is below the target band."})
     elif current_weight > target_high:
@@ -10886,6 +11063,39 @@ def _linear_release_date_warning_details(release_date, warning_days, today=None)
     }
 
 
+def block_stale_price_execution(rows):
+    """Keep allocation intent visible while preventing orders sized from cached prices."""
+    for row in rows or []:
+        if row.get("position_price_status") not in {"cached_stale", "unavailable"}:
+            continue
+        if abs(safe_number(row.get("owned_share_quantity")) or 0.0) <= 0:
+            continue
+        desired_action = row.get("desired_action") or row.get("action")
+        if desired_action not in {"Strong Add", "Add", "Starter Buy", "Trim", "Strong Trim", "Sell", "Strong Sell", "Undetermined"}:
+            continue
+        if desired_action == "Undetermined":
+            diagnostic = "Current position weight is unavailable; Add, Hold, or Trim cannot be determined until a current quote is received."
+        elif row.get("position_price_status") == "cached_stale":
+            diagnostic = "Current market price unavailable; cached price requires refresh before execution."
+        else:
+            diagnostic = "Current market price unavailable; refresh the quote before execution."
+        row.update({
+            "desired_action": desired_action,
+            "action": "Watch / Price Refresh",
+            "executable_action": "Watch / Price Refresh",
+            "action_amount_direction": "none",
+            "suggested_share_count": 0,
+            "executable_action_amount": 0.0,
+            "action_amount": 0.0,
+            "action_amount_label": "—",
+            "funding_status": "Price refresh required",
+            "price_refresh_required": True,
+            "price_refresh_diagnostic": diagnostic,
+            "reason": diagnostic,
+            "action_amount_cash_note": diagnostic,
+        })
+
+
 def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings):
     target_total = safe_number(settings.get("linear_allocated_target_total_pct")) or 0.0
     weight_keys = ["linear_expected_cagr_weight", "linear_upside_weight", "linear_core_confidence_weight", "linear_potential_confidence_weight", "linear_confidence_quality_weight"]
@@ -10961,9 +11171,10 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "potential_confidence_diff": potential_net,
             "potential_bullish_confidence": item.get("potential_bullish_confidence"),
             "potential_bearish_confidence": item.get("potential_bearish_confidence"),
-            "current_position_weight": item.get("current_position_weight") or 0.0,
-            "current_position_market_value": item.get("current_position_market_value") or 0.0,
+            "current_position_weight": item.get("current_position_weight"),
+            "current_position_market_value": item.get("current_position_market_value"),
             "owned_share_quantity": item.get("owned_share_quantity"),
+            "position_price_status": item.get("position_price_status"),
             "total_portfolio_value": total_portfolio_value,
             "linear_expected_cagr_score": expected_cagr_score,
             "linear_upside_score": upside_score,
@@ -11029,7 +11240,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "linear_target_weight_mid": target_mid,
             "linear_target_weight_low": target_low,
             "linear_target_weight_high": target_high,
-            "position_gap_to_mid": target_mid - (safe_number(row.get("current_position_weight")) or 0.0),
+            "position_gap_to_mid": target_mid - row["current_position_weight"] if row["current_position_weight"] is not None else None,
             "cap_applied": row.get("linear_cap_applied"),
             "cap_reason": row.get("linear_cap_reason"),
             "uncapped_target_low": uncapped_target_low,
@@ -11041,7 +11252,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "linear_add_band_tolerance_pct": add_tolerance * 100.0,
             "linear_trim_band_tolerance_pct": trim_tolerance * 100.0,
         })
-        current_weight = safe_number(row.get("current_position_weight")) or 0.0
+        current_weight = safe_number(row.get("current_position_weight"))
         rating_label = str(row.get("rating") or "").strip()
         extension_risk = safe_number(row.get("extension_risk"))
         extension_guardrail_applied = False
@@ -11049,8 +11260,13 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         extension_guardrail_diagnostic = None
         extension_guardrail_threshold = safe_number(settings.get("linear_high_extension_risk_threshold"))
         position_status = _linear_position_status(current_weight, target_low, target_high, target_mid)
-        if (rating_label in {"Sell", "Strong Sell"} or target_mid <= 0) and current_weight > 0:
+        owned_quantity = safe_number(row.get("owned_share_quantity"))
+        has_position = abs(owned_quantity) > 0 if owned_quantity is not None else current_weight is not None and current_weight > 0
+        if (rating_label in {"Sell", "Strong Sell"} or target_mid <= 0) and has_position:
             action = "Sell"
+            sizing_action = action
+        elif current_weight is None:
+            action = "Undetermined"
             sizing_action = action
         elif current_weight < target_low:
             action = "Add"
@@ -11113,6 +11329,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         settings,
         dynamic_reserve_pct=reserve_details["dynamic_reserve_pct"],
     )
+    block_stale_price_execution(rows)
     for row in rows:
         row["decision_path"] = _linear_action_decision_path(row, row.get("action") or "Hold")
         row.update(_linear_detail_diagnostics(row))
@@ -11164,9 +11381,13 @@ def build_action_plan(conn, account_id=None):
         if not analysis:
             continue
         position = positions_by_symbol.get(symbol)
-        market_value = abs(safe_number(position.get("marketValue")) or 0.0) if position else 0.0
-        current_position_weight = (market_value / total_portfolio_value * 100.0) if total_portfolio_value > 0 else 0.0
-        owned = market_value > 0
+        owned = bool(position and abs(safe_number(position.get("position")) or 0.0) > 0)
+        saved_market_value = safe_number(position.get("marketValue")) if position else 0.0
+        market_value = abs(saved_market_value) if saved_market_value is not None else None
+        current_position_weight = (
+            market_value / total_portfolio_value * 100.0
+            if market_value is not None and total_portfolio_value > 0 else None
+        )
         if not _is_action_plan_eligible(analysis, owned, settings):
             continue
         rating = analysis.get("rating") or "Hold"
@@ -11268,6 +11489,7 @@ def build_action_plan(conn, account_id=None):
             "potential_score_component": potential_score_component,
             "current_position_market_value": market_value,
             "owned_share_quantity": position.get("position") if position else 0,
+            "position_price_status": position.get("price_status") if position else None,
             "bucket": rating,
         })
 
@@ -11346,6 +11568,7 @@ def build_action_plan(conn, account_id=None):
             "current_position_weight": item["current_position_weight"],
             "current_position_market_value": item.get("current_position_market_value"),
             "owned_share_quantity": item.get("owned_share_quantity"),
+            "position_price_status": item.get("position_price_status"),
             "total_portfolio_value": total_portfolio_value,
             "target_weight_mid": target_mid,
             "target_weight_low": target_low,
@@ -11354,7 +11577,7 @@ def build_action_plan(conn, account_id=None):
             "target_mid_after_caps": target_mid,
             "cap_applied": cap_applied,
             "cap_reason": cap_reason,
-            "position_gap_to_mid": target_mid - item["current_position_weight"],
+            "position_gap_to_mid": target_mid - item["current_position_weight"] if item["current_position_weight"] is not None else None,
             "bucket": rating,
             "bucket_target_percent": bucket_target,
             "bucket_raw_target": bucket_raw_target,
@@ -11480,6 +11703,7 @@ def build_action_plan(conn, account_id=None):
 
     linear_payload = compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings)
     execution_summary = _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings)
+    block_stale_price_execution(rows)
     rows.sort(key=lambda row: (row["action_priority"], -abs(row.get("position_gap_to_mid") or 0.0), row["symbol"]))
     bucket_summary = []
     for bucket, key in ACTION_PLAN_BUCKET_KEYS.items():
@@ -11624,10 +11848,40 @@ def overlay_cached_market_fields(live_rows, cached_rows):
         combined = dict(row)
         symbol = normalize_symbol(combined.get("symbol"))
         cached = cached_by_symbol.get(symbol)
-        if cached:
-            for field in ("price", "changePercent", "marketValue", "unrealizedPnL", "unrealizedPnLPercent", "dailyPnL", "currency"):
-                if combined.get(field) is None and cached.get(field) is not None:
-                    combined[field] = cached.get(field)
+        live_key = combined.get("contract_key")
+        cached_key = cached.get("contract_key") if cached else None
+        cache_matches_contract = cached and live_key and cached_key and live_key == cached_key
+        if is_valid_market_price(combined.get("price")):
+            combined["price_status"] = "tws_received"
+        elif cache_matches_contract and is_valid_market_price(cached.get("price")):
+            price = safe_number(cached.get("price"))
+            qty = safe_number(combined.get("position"))
+            avg_cost = safe_number(combined.get("avgCost"))
+            unrealized_pnl = (price - avg_cost) * qty if qty is not None and avg_cost is not None else None
+            combined.update({
+                "price": price,
+                "marketValue": qty * price if qty is not None else None,
+                "unrealizedPnL": unrealized_pnl,
+                "unrealizedPnLPercent": (
+                    (unrealized_pnl / abs(avg_cost * qty)) * 100
+                    if unrealized_pnl is not None and avg_cost is not None and qty not in (None, 0) and avg_cost * qty != 0
+                    else None
+                ),
+                "dailyPnL": None,
+                "changePercent": None,
+                "currency": combined.get("currency") or cached.get("currency"),
+                "price_status": "cached_stale",
+                "price_source": "cached",
+                "price_last_successful_at": cached.get("price_last_successful_at"),
+                "price_warning": "Current TWS refresh did not supply a usable price; retained local cached price.",
+            })
+        else:
+            combined.update({
+                "price_status": "unavailable",
+                "price_source": None,
+                "dailyPnL": None,
+                "changePercent": None,
+            })
         merged.append(combined)
     return merged
 
@@ -11662,16 +11916,18 @@ def _portfolio_data_unavailable_payload():
     }
 
 
-def _build_live_position_rows(positions, tickers_by_conid):
+def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_at=None):
     data = []
     for p in positions or []:
         contract = p.contract
-        ticker = tickers_by_conid.get(getattr(contract, "conId", None))
+        contract_key = market_data_contract_key(contract)
+        ticker = tickers_by_contract_key.get(contract_key)
 
         qty = safe_number(p.position)
         avg_cost = safe_number(p.avgCost)
         price = extract_price(ticker)
         close = extract_close(ticker)
+        price_source = _ticker_price_source(ticker) if price is not None else None
 
         market_value = qty * price if qty is not None and price is not None else None
         unrealized_pnl = (
@@ -11706,6 +11962,11 @@ def _build_live_position_rows(positions, tickers_by_conid):
                 ),
                 "dailyPnL": daily_pnl,
                 "currency": getattr(contract, "currency", None),
+                "contract_key": contract_key,
+                "price_status": "tws_received" if price is not None else "unavailable",
+                "price_source": price_source,
+                "price_last_successful_at": quote_success_at if price is not None else None,
+                "price_warning": None if price is not None else "Current TWS refresh did not supply a usable price.",
             }
         )
     return data
@@ -13775,6 +14036,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 conn.close()
             return
 
+        account_ids_to_refresh = []
         try:
             requested_account_id = _normalize_ib_account_id(account_id)
             if requested_account_id:
@@ -13874,24 +14136,37 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 len(account_ids_skipped),
                 len(position_account_ids),
             )
-            contracts = [p.contract for p in positions if p.contract]
-            tickers_by_conid = {}
+            contracts = unique_market_data_contracts([p.contract for p in positions if p.contract])
+            tickers_by_contract_key = {}
+            market_data_refresh = {
+                "unique_contracts_requested": len(contracts),
+                "initial_quotes_received": 0,
+                "retry_contracts": 0,
+                "retry_quotes_recovered": 0,
+                "cached_prices_used": 0,
+                "unavailable_prices": 0,
+                "incomplete": False,
+                "affected_symbols": [],
+            }
             tws_data_enabled = is_tws_data_enabled()
 
             if contracts and tws_data_enabled:
-                qualified = ib.qualifyContracts(*contracts)
+                qualified = unique_market_data_contracts(ib.qualifyContracts(*contracts))
                 if qualified:
-                    tickers, _diagnostics = request_ib_tickers_batched(
+                    tickers_by_contract_key, _diagnostics, market_data_refresh = request_ib_tickers_with_retry(
                         ib,
                         qualified,
                         purpose="positions_api",
                     )
-                    tickers_by_conid = {
-                        t.contract.conId: t for t in tickers if getattr(t, "contract", None)
-                    }
+                else:
+                    market_data_refresh["incomplete"] = bool(contracts)
 
             data_by_account = {
-                refresh_account_id: _build_live_position_rows(positions_by_account.get(refresh_account_id, []), tickers_by_conid)
+                refresh_account_id: _build_live_position_rows(
+                    positions_by_account.get(refresh_account_id, []),
+                    tickers_by_contract_key,
+                    quote_success_at=utc_now_iso(),
+                )
                 for refresh_account_id in account_ids_to_refresh
             }
 
@@ -13905,44 +14180,51 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 for refresh_account_id in account_ids_to_refresh:
                     account_summary = account_summaries_by_account.get(refresh_account_id)
                     account_data = data_by_account.get(refresh_account_id, [])
-                    if tws_data_enabled:
-                        if account_summary:
-                            save_portfolio_summary_cache(
-                                conn,
-                                account_summary,
-                                account_id=refresh_account_id,
-                                commit=False,
-                                reconcile_legacy=False,
-                            )
-                        save_positions_cache(
+                    cached_rows = load_positions_cache(conn, account_id=refresh_account_id)
+                    account_data = overlay_cached_market_fields(account_data, cached_rows)
+                    data_by_account[refresh_account_id] = account_data
+                    if account_summary:
+                        save_portfolio_summary_cache(
                             conn,
-                            account_data,
+                            account_summary,
                             account_id=refresh_account_id,
                             commit=False,
                             reconcile_legacy=False,
                         )
-                    else:
-                        if account_summary:
-                            save_portfolio_summary_cache(
-                                conn,
-                                account_summary,
-                                account_id=refresh_account_id,
-                                commit=False,
-                                reconcile_legacy=False,
-                            )
-                        cached_rows = load_positions_cache(conn, account_id=refresh_account_id)
-                        data_by_account[refresh_account_id] = overlay_cached_market_fields(account_data, cached_rows)
-                        if cached_rows:
-                            save_positions_cache(
-                                conn,
-                                data_by_account[refresh_account_id],
-                                account_id=refresh_account_id,
-                                commit=False,
-                                reconcile_legacy=False,
-                            )
+                    save_positions_cache(
+                        conn,
+                        account_data,
+                        account_id=refresh_account_id,
+                        commit=False,
+                        reconcile_legacy=False,
+                    )
                 conn.commit()
+                for refresh_account_id in account_ids_to_refresh:
+                    _session_received_quotes[(str(DB_PATH), refresh_account_id)] = {
+                        row["symbol"]: (row.get("contract_key"), row.get("price_last_successful_at"))
+                        for row in data_by_account.get(refresh_account_id, [])
+                        if row.get("price_status") == "tws_received" and is_valid_market_price(row.get("price"))
+                    }
 
                 warning_message = None
+                selected_rows = data_by_account.get(_normalize_ib_account_id(account_id) or selected_account_id, [])
+                cached_symbols = sorted({row.get("symbol") for row in selected_rows if row.get("price_status") == "cached_stale" and row.get("symbol")})
+                unavailable_symbols = sorted({row.get("symbol") for row in selected_rows if row.get("price_status") == "unavailable" and row.get("symbol")})
+                market_data_refresh.update({
+                    "cached_prices_used": len(cached_symbols),
+                    "unavailable_prices": len(unavailable_symbols),
+                    "incomplete": bool(cached_symbols or unavailable_symbols),
+                    "affected_symbols": [
+                        {"symbol": symbol, "price_status": "cached_stale"} for symbol in cached_symbols
+                    ] + [
+                        {"symbol": symbol, "price_status": "unavailable"} for symbol in unavailable_symbols
+                    ],
+                })
+                if market_data_refresh["incomplete"]:
+                    warning_message = (
+                        "Refresh completed. Positions updated, but current quotes were unavailable for "
+                        f"{len(cached_symbols) + len(unavailable_symbols)} securities. Cached prices were used where available."
+                    )
                 if not tws_data_enabled:
                     warning_message = "Data from TWS is disabled. Showing latest cached market values when available."
                 if account_summary_warning:
@@ -13988,6 +14270,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         account_id=response_account_id,
                     )
                     payload["portfolio_data_available"] = True
+                    payload["market_data_refresh"] = market_data_refresh
                     if len(discovered_account_ids) > 1:
                         payload["multi_account_refresh"] = {
                             "account_count": len(discovered_account_ids),
@@ -14031,6 +14314,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     resolved_account_id = resolve_portfolio_account(conn, account_id)
                 except PortfolioAccountResolutionError as account_exc:
                     return self._send_json(_portfolio_account_error_payload(account_exc), status=account_exc.status)
+                for failed_account_id in account_ids_to_refresh or [resolved_account_id]:
+                    if failed_account_id:
+                        _session_received_quotes.pop((str(DB_PATH), failed_account_id), None)
                 if resolved_account_id and not is_portfolio_data_available(conn, resolved_account_id):
                     warning = PORTFOLIO_DATA_UNAVAILABLE_ERROR
                     return self._send_json(

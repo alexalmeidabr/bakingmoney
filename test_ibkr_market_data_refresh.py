@@ -60,6 +60,15 @@ class ResilientIbkrMarketDataRefreshTests(unittest.TestCase):
         self.assertIsNone(row["price"])
         self.assertEqual(row["price_status"], "unavailable")
 
+    def test_unknown_contract_identity_cannot_reuse_same_symbol_price(self):
+        for live_key, cached_key in (("conid:1", None), (None, "conid:1"), (None, None)):
+            with self.subTest(live_key=live_key, cached_key=cached_key):
+                live = [{"symbol": "ABC", "contract_key": live_key, "position": 10, "avgCost": 10, "price": None}]
+                cached = [{"symbol": "ABC", "contract_key": cached_key, "price": 99}]
+                row = web_server.overlay_cached_market_fields(live, cached)[0]
+                self.assertIsNone(row["price"])
+                self.assertEqual(row["price_status"], "unavailable")
+
     def test_invalid_prices_are_not_market_prices(self):
         for value in (0, -1, float("nan"), float("inf"), -float("inf")):
             with self.subTest(value=value):
@@ -92,6 +101,38 @@ class ResilientIbkrMarketDataRefreshTests(unittest.TestCase):
         self.assertEqual(refresh["retry_contracts"], 1)
         self.assertEqual(refresh["retry_quotes_recovered"], 1)
 
+    def test_request_exception_does_not_discard_other_contract_quotes(self):
+        good = Contract("NVDA", 1)
+        bad = Contract("UBER", 2)
+
+        class IB:
+            def __init__(self):
+                self.requested = []
+                self.cancelled = []
+
+            def reqMktData(self, contract, *_args):
+                self.requested.append(contract.symbol)
+                if contract.symbol == "UBER":
+                    raise RuntimeError("isolated subscription failure")
+                return mock.Mock(contract=contract, marketPrice=lambda: 100, last=100, close=98, prevClose=98)
+
+            def cancelMktData(self, contract):
+                self.cancelled.append(contract.symbol)
+
+            def sleep(self, _seconds):
+                pass
+
+        ib = IB()
+        with mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0):
+            tickers, diagnostics, refresh = web_server.request_ib_tickers_with_retry(ib, [good, bad], "positions_api")
+        self.assertEqual(set(tickers), {web_server.market_data_contract_key(good)})
+        self.assertEqual(web_server.extract_price(tickers[web_server.market_data_contract_key(good)]), 100)
+        self.assertEqual(ib.requested, ["NVDA", "UBER", "UBER"])
+        self.assertIn("NVDA", ib.cancelled)
+        self.assertEqual(ib.cancelled.count("UBER"), 2)
+        self.assertFalse(diagnostics[web_server.market_data_contract_key(bad)]["fatal"])
+        self.assertEqual(refresh["retry_contracts"], 1)
+
     def test_price_freshness_metadata_survives_cache_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "positions.db")
@@ -109,8 +150,8 @@ class ResilientIbkrMarketDataRefreshTests(unittest.TestCase):
                     conn.close()
 
         self.assertEqual(row["contract_key"], "conid:1")
-        self.assertEqual(row["price_status"], "tws_received")
-        self.assertEqual(row["price_source"], "last")
+        self.assertEqual(row["price_status"], "cached_stale")
+        self.assertEqual(row["price_source"], "cached")
         self.assertEqual(row["price_last_successful_at"], "2026-11-11T10:00:00+00:00")
 
     def test_live_rows_record_current_quote_provenance_by_contract_identity(self):

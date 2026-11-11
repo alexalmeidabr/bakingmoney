@@ -762,6 +762,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         live_rows = [
             {
                 "symbol": "AAPL",
+                "contract_key": "conid:42",
                 "position": 10,
                 "avgCost": 120.0,
                 "price": None,
@@ -776,6 +777,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         cached_rows = [
             {
                 "symbol": "AAPL",
+                "contract_key": "conid:42",
                 "position": 10,
                 "avgCost": 120.0,
                 "price": 150.0,

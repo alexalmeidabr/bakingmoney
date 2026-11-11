@@ -43,6 +43,7 @@ PORT = 8080
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 DB_PATH = BASE_DIR / "bakingmoney.db"
+_session_received_quotes = {}
 ENV_PATH = BASE_DIR / ".env"
 BACKUP_DIR = BASE_DIR / "backups"
 UPLOADS_DIR = BASE_DIR / "uploads"
@@ -3398,7 +3399,20 @@ def request_ib_tickers_batched(ib, qualified_contracts, purpose):
             if hasattr(ib, "reqMktData"):
                 batch_tickers = []
                 for contract in batch:
-                    ticker = ib.reqMktData(contract, "", False, False)
+                    try:
+                        ticker = ib.reqMktData(contract, "", False, False)
+                    except Exception as exc:
+                        key = market_data_contract_key(contract)
+                        diagnostics[key] = {
+                            "symbol": normalize_symbol(getattr(contract, "symbol", None)),
+                            "message": str(exc),
+                            "severity": "warning",
+                            "fatal": False,
+                            "reason": "request_exception",
+                            "source": "reqMktData",
+                        }
+                        logger.warning("IBKR market data request failed purpose=%s contract=%s: %s", purpose, key, exc)
+                        continue
                     ticker_contract = getattr(ticker, "contract", None) or contract
                     if getattr(ticker, "contract", None) is None:
                         try:
@@ -8718,7 +8732,8 @@ def load_positions_cache(conn, account_id=None):
         """,
         (resolved_account_id,),
     ).fetchall()
-    return [
+    session_quotes = _session_received_quotes.get((str(DB_PATH), resolved_account_id), {})
+    result = [
         {
             "symbol": row["symbol"],
             "position": row["position"],
@@ -8738,6 +8753,20 @@ def load_positions_cache(conn, account_id=None):
         for row in rows
         if abs(safe_number(row["position"]) or 0.0) > 0
     ]
+    for row in result:
+        if not is_valid_market_price(row.get("price")):
+            row["price_status"] = "unavailable"
+            row["price_source"] = None
+            continue
+        quote_identity = (row.get("contract_key"), row.get("price_last_successful_at"))
+        if row.get("price_status") == "tws_received" and session_quotes.get(row["symbol"]) == quote_identity:
+            continue
+        row["price_status"] = "cached_stale"
+        row["price_source"] = "cached"
+        row["price_warning"] = "Current TWS refresh has not supplied this price in this session; showing a saved quote."
+        row["dailyPnL"] = None
+        row["changePercent"] = None
+    return result
 
 
 def _account_summary_item_value(item):
@@ -9455,7 +9484,7 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
     for row in rows:
         row["raw_action_amount"] = max(0.0, safe_number(row.get("raw_action_amount")) or safe_number(row.get("action_amount")) or 0.0)
         row["target_gap_amount"] = row["raw_action_amount"]
-        if row.get("position_price_status") == "cached_stale":
+        if row.get("position_price_status") in {"cached_stale", "unavailable"}:
             row["executable_action_amount"] = 0.0
             row["funding_status"] = "Price refresh required"
             continue
@@ -9485,7 +9514,7 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
         if row.get("action") in buy_actions
         and row.get("action_amount_direction") == "add"
         and row.get("desired_share_count", 0) > 0
-        and row.get("position_price_status") != "cached_stale"
+        and row.get("position_price_status") not in {"cached_stale", "unavailable"}
     ]
     total_add_demand = sum(row.get("desired_whole_share_amount", 0.0) for row in buy_candidates)
     min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
@@ -9937,6 +9966,8 @@ def _choose_action_plan_decision(row, settings):
     upside = safe_number(row.get("upside"))
     if row.get("final_scenario_stale"):
         return "Re-evaluate", None, None, None, "Final Scenario overlay is stale; re-evaluate before taking action."
+    if rating in {"Sell", "Strong Sell"} and current_price is None and abs(safe_number(row.get("owned_share_quantity")) or 0.0) > 0:
+        return "Sell", None, None, None, "Sell-rated holding; current price is unavailable."
     if current_price is None or expected_price is None or upside is None:
         return "Re-evaluate", None, None, None, "Missing current price, expected price, or upside."
 
@@ -10578,7 +10609,7 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     bootstrap_intentions = []
     for row in rows:
         _reset_linear_bootstrap_diagnostics(row)
-        if row.get("position_price_status") == "cached_stale":
+        if row.get("position_price_status") in {"cached_stale", "unavailable"}:
             row["executable_action_amount"] = 0.0
             row["unfunded_action_amount"] = 0.0
             row["unfunded_share_count"] = 0
@@ -10621,7 +10652,7 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         if row.get("action") in buy_actions
         and row.get("action_amount_direction") == "add"
         and row.get("desired_share_count", 0) > 0
-        and row.get("position_price_status") != "cached_stale"
+        and row.get("position_price_status") not in {"cached_stale", "unavailable"}
     ]
     for row in buy_candidates:
         gap_score = min((row["desired_whole_share_amount"] / total / 0.05), 1.0) if total > 0 else 0.0
@@ -11029,14 +11060,18 @@ def _linear_release_date_warning_details(release_date, warning_days, today=None)
 def block_stale_price_execution(rows):
     """Keep allocation intent visible while preventing orders sized from cached prices."""
     for row in rows or []:
-        if row.get("position_price_status") != "cached_stale":
+        if row.get("position_price_status") not in {"cached_stale", "unavailable"}:
             continue
         if abs(safe_number(row.get("owned_share_quantity")) or 0.0) <= 0:
             continue
         desired_action = row.get("desired_action") or row.get("action")
         if desired_action not in {"Strong Add", "Add", "Starter Buy", "Trim", "Strong Trim", "Sell", "Strong Sell"}:
             continue
-        diagnostic = "Current market price unavailable; cached price requires refresh before execution."
+        diagnostic = (
+            "Current market price unavailable; cached price requires refresh before execution."
+            if row.get("position_price_status") == "cached_stale"
+            else "Current market price unavailable; refresh the quote before execution."
+        )
         row.update({
             "desired_action": desired_action,
             "action": "Watch / Price Refresh",
@@ -11129,8 +11164,8 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "potential_confidence_diff": potential_net,
             "potential_bullish_confidence": item.get("potential_bullish_confidence"),
             "potential_bearish_confidence": item.get("potential_bearish_confidence"),
-            "current_position_weight": item.get("current_position_weight") or 0.0,
-            "current_position_market_value": item.get("current_position_market_value") or 0.0,
+            "current_position_weight": item.get("current_position_weight"),
+            "current_position_market_value": item.get("current_position_market_value"),
             "owned_share_quantity": item.get("owned_share_quantity"),
             "position_price_status": item.get("position_price_status"),
             "total_portfolio_value": total_portfolio_value,
@@ -11198,7 +11233,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "linear_target_weight_mid": target_mid,
             "linear_target_weight_low": target_low,
             "linear_target_weight_high": target_high,
-            "position_gap_to_mid": target_mid - (safe_number(row.get("current_position_weight")) or 0.0),
+            "position_gap_to_mid": target_mid - row["current_position_weight"] if row["current_position_weight"] is not None else None,
             "cap_applied": row.get("linear_cap_applied"),
             "cap_reason": row.get("linear_cap_reason"),
             "uncapped_target_low": uncapped_target_low,
@@ -11218,7 +11253,9 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         extension_guardrail_diagnostic = None
         extension_guardrail_threshold = safe_number(settings.get("linear_high_extension_risk_threshold"))
         position_status = _linear_position_status(current_weight, target_low, target_high, target_mid)
-        if (rating_label in {"Sell", "Strong Sell"} or target_mid <= 0) and current_weight > 0:
+        owned_quantity = safe_number(row.get("owned_share_quantity"))
+        has_position = abs(owned_quantity) > 0 if owned_quantity is not None else current_weight > 0
+        if (rating_label in {"Sell", "Strong Sell"} or target_mid <= 0) and has_position:
             action = "Sell"
             sizing_action = action
         elif current_weight < target_low:
@@ -11334,9 +11371,13 @@ def build_action_plan(conn, account_id=None):
         if not analysis:
             continue
         position = positions_by_symbol.get(symbol)
-        market_value = abs(safe_number(position.get("marketValue")) or 0.0) if position else 0.0
-        current_position_weight = (market_value / total_portfolio_value * 100.0) if total_portfolio_value > 0 else 0.0
-        owned = market_value > 0
+        owned = bool(position and abs(safe_number(position.get("position")) or 0.0) > 0)
+        saved_market_value = safe_number(position.get("marketValue")) if position else 0.0
+        market_value = abs(saved_market_value) if saved_market_value is not None else None
+        current_position_weight = (
+            market_value / total_portfolio_value * 100.0
+            if market_value is not None and total_portfolio_value > 0 else None
+        )
         if not _is_action_plan_eligible(analysis, owned, settings):
             continue
         rating = analysis.get("rating") or "Hold"
@@ -11526,7 +11567,7 @@ def build_action_plan(conn, account_id=None):
             "target_mid_after_caps": target_mid,
             "cap_applied": cap_applied,
             "cap_reason": cap_reason,
-            "position_gap_to_mid": target_mid - item["current_position_weight"],
+            "position_gap_to_mid": target_mid - item["current_position_weight"] if item["current_position_weight"] is not None else None,
             "bucket": rating,
             "bucket_target_percent": bucket_target,
             "bucket_raw_target": bucket_raw_target,
@@ -11799,7 +11840,7 @@ def overlay_cached_market_fields(live_rows, cached_rows):
         cached = cached_by_symbol.get(symbol)
         live_key = combined.get("contract_key")
         cached_key = cached.get("contract_key") if cached else None
-        cache_matches_contract = cached and (not live_key or not cached_key or live_key == cached_key)
+        cache_matches_contract = cached and live_key and cached_key and live_key == cached_key
         if is_valid_market_price(combined.get("price")):
             combined["price_status"] = "tws_received"
         elif cache_matches_contract and is_valid_market_price(cached.get("price")):
@@ -14147,6 +14188,12 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         reconcile_legacy=False,
                     )
                 conn.commit()
+                for refresh_account_id in account_ids_to_refresh:
+                    _session_received_quotes[(str(DB_PATH), refresh_account_id)] = {
+                        row["symbol"]: (row.get("contract_key"), row.get("price_last_successful_at"))
+                        for row in data_by_account.get(refresh_account_id, [])
+                        if row.get("price_status") == "tws_received" and is_valid_market_price(row.get("price"))
+                    }
 
                 warning_message = None
                 selected_rows = data_by_account.get(_normalize_ib_account_id(account_id) or selected_account_id, [])

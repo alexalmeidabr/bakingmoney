@@ -2138,8 +2138,8 @@ function formatPositionPriceCell(position) {
   const lastSuccessful = position.price_last_successful_at
     ? ` Last successful quote: ${formatDateTime(position.price_last_successful_at)}.`
     : '';
-  const warning = position.price_warning || `Current TWS refresh did not supply a usable price; this value is retained from the local cache.${lastSuccessful}`;
-  return `${price} <span class="price-freshness-badge" title="${escapeHtml(warning)}">Cached</span>`;
+  const warning = position.price_warning || 'Current TWS refresh did not supply a usable price; this value is retained from the local cache.';
+  return `${price} <span class="price-freshness-badge" title="${escapeHtml(`${warning}${lastSuccessful}`)}">Cached</span>`;
 }
 
 function renderPositions() {

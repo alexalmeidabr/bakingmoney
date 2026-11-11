@@ -115,6 +115,43 @@ class LinearActionPlanDetailTests(unittest.TestCase):
                 self.assertEqual(detail["action"], expected)
                 self.assertEqual(detail["linear_explanation"], row["linear_explanation"])
 
+    def test_owned_buy_with_unknown_weight_has_no_underweight_action(self):
+        row = self.calculate(
+            rating="Buy", current_position_weight=None, current_position_market_value=None,
+            owned_share_quantity=10, position_price_status="unavailable",
+        )["rows"][0]
+        self.assertIsNone(row["current_position_weight"])
+        self.assertIsNone(row["current_position_market_value"])
+        self.assertIsNone(row["position_gap_to_mid"])
+        self.assertGreater(row["target_weight_low"], 0)
+        self.assertGreater(row["target_weight_mid"], row["target_weight_low"])
+        self.assertGreater(row["target_weight_high"], row["target_weight_mid"])
+        self.assertEqual(row["position_status"], "UNKNOWN_WEIGHT")
+        self.assertEqual(row["desired_action"], "Undetermined")
+        self.assertEqual(row["action"], "Watch / Price Refresh")
+        self.assertEqual(row["executable_action_amount"], 0)
+        self.assertEqual(row["suggested_share_count"], 0)
+        self.assertTrue(row["price_refresh_required"])
+        self.assertIn("weight", row["price_refresh_diagnostic"].lower())
+        self.assertFalse(any("below the target band" in step["text"] for step in row["decision_path"]))
+
+    def test_owned_sell_and_zero_target_keep_exit_intent_with_unknown_weight(self):
+        sell = self.calculate(
+            rating="Sell", current_position_weight=None, current_position_market_value=None,
+            owned_share_quantity=10, position_price_status="unavailable",
+        )["rows"][0]
+        self.assertEqual(sell["desired_action"], "Sell")
+        self.assertEqual(sell["action"], "Watch / Price Refresh")
+        self.assertEqual(sell["executable_action_amount"], 0)
+        self.settings["linear_allocated_target_total_pct"] = 0.0
+        zero_target = self.calculate(
+            rating="Buy", current_position_weight=None, current_position_market_value=None,
+            owned_share_quantity=10, position_price_status="unavailable",
+        )["rows"][0]
+        self.assertEqual(zero_target["target_weight_mid"], 0)
+        self.assertEqual(zero_target["desired_action"], "Sell")
+        self.assertEqual(zero_target["executable_action_amount"], 0)
+
     def test_unfunded_add_is_same_watch_result_in_row_and_detail(self):
         calculated = web_server.compute_linear_action_plan(
             [dict(self.base_candidate)], 100_000.0, 0.0, self.settings,

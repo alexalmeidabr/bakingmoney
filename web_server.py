@@ -10805,6 +10805,8 @@ def _linear_action_compatibility_fields():
 
 
 def _linear_position_status(current_weight, target_low, target_high, target_mid):
+    if current_weight is None:
+        return "UNKNOWN_WEIGHT"
     if target_mid <= 0 and current_weight > 0:
         return "ZERO_TARGET_OWNED"
     if current_weight < target_low:
@@ -10919,12 +10921,16 @@ def _linear_detail_diagnostics(row):
 
 def _linear_action_decision_path(row, action):
     path = [{"status": "pass", "text": f"Rating is {row.get('rating') or 'Hold'}."}]
-    current_weight = safe_number(row.get("current_position_weight")) or 0.0
+    current_weight = safe_number(row.get("current_position_weight"))
     target_low = safe_number(row.get("target_weight_low")) or 0.0
     target_high = safe_number(row.get("target_weight_high")) or 0.0
     target_mid = safe_number(row.get("target_weight_mid")) or 0.0
-    if target_mid <= 0 and current_weight > 0:
+    owned_quantity = safe_number(row.get("owned_share_quantity"))
+    has_position = abs(owned_quantity) > 0 if owned_quantity is not None else current_weight is not None and current_weight > 0
+    if target_mid <= 0 and has_position:
         path.append({"status": "pass", "text": "Final target is zero while the position is owned."})
+    elif current_weight is None:
+        path.append({"status": "warning", "text": "Current position weight is unavailable; the target band action cannot be determined."})
     elif current_weight < target_low:
         path.append({"status": "pass", "text": "Current position is below the target band."})
     elif current_weight > target_high:
@@ -11065,13 +11071,14 @@ def block_stale_price_execution(rows):
         if abs(safe_number(row.get("owned_share_quantity")) or 0.0) <= 0:
             continue
         desired_action = row.get("desired_action") or row.get("action")
-        if desired_action not in {"Strong Add", "Add", "Starter Buy", "Trim", "Strong Trim", "Sell", "Strong Sell"}:
+        if desired_action not in {"Strong Add", "Add", "Starter Buy", "Trim", "Strong Trim", "Sell", "Strong Sell", "Undetermined"}:
             continue
-        diagnostic = (
-            "Current market price unavailable; cached price requires refresh before execution."
-            if row.get("position_price_status") == "cached_stale"
-            else "Current market price unavailable; refresh the quote before execution."
-        )
+        if desired_action == "Undetermined":
+            diagnostic = "Current position weight is unavailable; Add, Hold, or Trim cannot be determined until a current quote is received."
+        elif row.get("position_price_status") == "cached_stale":
+            diagnostic = "Current market price unavailable; cached price requires refresh before execution."
+        else:
+            diagnostic = "Current market price unavailable; refresh the quote before execution."
         row.update({
             "desired_action": desired_action,
             "action": "Watch / Price Refresh",
@@ -11245,7 +11252,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "linear_add_band_tolerance_pct": add_tolerance * 100.0,
             "linear_trim_band_tolerance_pct": trim_tolerance * 100.0,
         })
-        current_weight = safe_number(row.get("current_position_weight")) or 0.0
+        current_weight = safe_number(row.get("current_position_weight"))
         rating_label = str(row.get("rating") or "").strip()
         extension_risk = safe_number(row.get("extension_risk"))
         extension_guardrail_applied = False
@@ -11254,9 +11261,12 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         extension_guardrail_threshold = safe_number(settings.get("linear_high_extension_risk_threshold"))
         position_status = _linear_position_status(current_weight, target_low, target_high, target_mid)
         owned_quantity = safe_number(row.get("owned_share_quantity"))
-        has_position = abs(owned_quantity) > 0 if owned_quantity is not None else current_weight > 0
+        has_position = abs(owned_quantity) > 0 if owned_quantity is not None else current_weight is not None and current_weight > 0
         if (rating_label in {"Sell", "Strong Sell"} or target_mid <= 0) and has_position:
             action = "Sell"
+            sizing_action = action
+        elif current_weight is None:
+            action = "Undetermined"
             sizing_action = action
         elif current_weight < target_low:
             action = "Add"
@@ -14026,6 +14036,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 conn.close()
             return
 
+        account_ids_to_refresh = []
         try:
             requested_account_id = _normalize_ib_account_id(account_id)
             if requested_account_id:
@@ -14303,6 +14314,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     resolved_account_id = resolve_portfolio_account(conn, account_id)
                 except PortfolioAccountResolutionError as account_exc:
                     return self._send_json(_portfolio_account_error_payload(account_exc), status=account_exc.status)
+                for failed_account_id in account_ids_to_refresh or [resolved_account_id]:
+                    if failed_account_id:
+                        _session_received_quotes.pop((str(DB_PATH), failed_account_id), None)
                 if resolved_account_id and not is_portfolio_data_available(conn, resolved_account_id):
                     warning = PORTFOLIO_DATA_UNAVAILABLE_ERROR
                     return self._send_json(

@@ -793,8 +793,10 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertEqual(merged[0]["marketValue"], 1500.0)
         self.assertEqual(merged[0]["unrealizedPnL"], 300.0)
         self.assertEqual(merged[0]["unrealizedPnLPercent"], 25.0)
-        self.assertEqual(merged[0]["dailyPnL"], 10.0)
-        self.assertEqual(merged[0]["changePercent"], 1.5)
+        self.assertIsNone(merged[0]["dailyPnL"])
+        self.assertIsNone(merged[0]["changePercent"])
+        self.assertEqual(merged[0]["price_status"], "cached_stale")
+        self.assertEqual(merged[0]["price_source"], "cached")
         self.assertEqual(merged[0]["currency"], "USD")
 
 

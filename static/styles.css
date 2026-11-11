@@ -493,6 +493,17 @@ th.sortable[data-sort-direction='desc']::after {
   width: 100%;
 }
 
+.price-freshness-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: #92400e;
+  background: #fef3c7;
+  font-size: 0.75em;
+  font-weight: 600;
+}
+
 .alert-var-text {
   min-width: 420px;
   width: 100%;

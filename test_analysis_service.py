@@ -95,6 +95,17 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertAlmostEqual(breakdown["potential_bearish_confidence"], 3.0)
         self.assertAlmostEqual(breakdown["potential_confidence_diff"], 1.0)
 
+    def test_confidence_breakdown_counts_only_bullish_potential_driver_records(self):
+        key_variables = [
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 9, "importance": 9},
+            {"variable_type": "Bullish", "driver_category": "Potential Driver", "confidence": 1, "importance": 1},
+            {"variable_type": "Bullish", "driver_category": "Core Driver", "confidence": 10, "importance": 10},
+            {"variable_type": "Bearish", "driver_category": "Potential Driver", "confidence": 1, "importance": 1},
+        ]
+        breakdown = calculate_confidence_breakdown(key_variables)
+        self.assertEqual(breakdown["bullish_potential_driver_count"], 2)
+        self.assertAlmostEqual(breakdown["potential_bullish_confidence"], 8.2)
+
     def test_confidence_breakdown_defaults_missing_or_invalid_category_to_core(self):
         key_variables = [
             {"variable_type": "Bullish", "confidence": 8, "importance": 2},

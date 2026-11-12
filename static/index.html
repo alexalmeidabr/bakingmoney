@@ -647,6 +647,8 @@
               <label>Speculative Buy min diff <input id="config-rating-speculative-buy-min-diff" type="number" step="0.1" value="0.1" /></label>
               <label>Speculative Buy min bullish confidence <input id="config-rating-speculative-buy-min-bullish-confidence" type="number" min="0" max="10" step="0.1" value="4.5" /></label>
               <label>Speculative Buy min core diff floor <input id="config-rating-speculative-buy-min-core-diff-floor" type="number" step="0.1" value="-0.5" /></label>
+              <label>Speculative Buy — Minimum Potential Bullish Confidence <input id="config-rating-speculative-buy-min-potential-bullish-confidence" type="number" min="0" max="10" step="0.1" value="5.0" /><small>Minimum importance-weighted confidence of bullish Potential Drivers required for Speculative Buy.</small></label>
+              <label>Speculative Buy — Minimum Bullish Potential Drivers <input id="config-rating-speculative-buy-min-bullish-potential-drivers" type="number" min="0" max="20" step="1" value="2" /><small>Minimum number of Bullish Potential Driver Key Variables required for Speculative Buy.</small></label>
               <label>Strong Sell max upside <input id="config-rating-strong-sell-max-upside" type="number" step="0.1" value="0.0" /></label>
               <label>Strong Sell max diff <input id="config-rating-strong-sell-max-diff" type="number" step="0.1" value="-1.5" /></label>
               <label>Strong Sell min bearish confidence <input id="config-rating-strong-sell-min-bearish-confidence" type="number" min="0" max="10" step="0.1" value="7.0" /></label>
@@ -771,6 +773,7 @@
               <label>Potential confidence penalty <input data-action-plan-setting="potential_confidence_penalty" type="number" min="0" max="1" step="0.01" value="0.05" /></label>
               <label><input data-action-plan-setting="hold_rating_penalty_enabled" type="checkbox" /> Enable Hold rating penalty</label>
               <label>Hold rating penalty <input data-action-plan-setting="hold_rating_penalty" type="number" min="0" max="1" step="0.01" value="0.10" /></label>
+              <label>Speculative Buy Rating Penalty <input data-action-plan-setting="speculative_buy_rating_penalty" type="number" min="0" max="1" step="0.01" value="0.15" /><small>Reduces the Linear Allocation Score of stocks rated Speculative Buy.</small></label>
               <label><input data-action-plan-setting="linear_rating_bonus_enabled" type="checkbox" /> Enable linear rating bonus</label>
               <label>Strong Buy rating bonus <input data-action-plan-setting="linear_strong_buy_rating_bonus" type="number" min="0" max="1" step="0.01" value="0.05" /></label>
               <label>Buy rating bonus <input data-action-plan-setting="linear_buy_rating_bonus" type="number" min="0" max="1" step="0.01" value="0.02" /></label>

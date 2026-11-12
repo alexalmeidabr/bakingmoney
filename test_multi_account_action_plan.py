@@ -456,6 +456,34 @@ class MultiAccountActionPlanIsolationTests(unittest.TestCase):
             self.assertGreater(row_b["suggested_share_count"], 0)
             self.assertNotEqual(row_b["suggested_share_count"], row_a["suggested_share_count"])
 
+    def test_restart_uses_cached_position_price_for_market_value_and_add_sizing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "restart-cached-price.db")
+            self.init_db(db_path)
+            conn = self.open_conn(db_path)
+            try:
+                self.save_settings(conn, action_min_cash_unallocated_target=0.0, linear_max_reserve_pct=0.0)
+                self.save_state(
+                    conn,
+                    ACCOUNT_A,
+                    positions=[position("NVDA", 10, 1_000, price=125.0)],
+                    portfolio_value=100_000,
+                    actual_cash=30_000,
+                )
+                db_key = conn.execute("PRAGMA database_list").fetchone()["file"]
+                web_server._session_received_quotes.pop((db_key, ACCOUNT_A), None)
+            finally:
+                conn.close()
+
+            row = self.row(self.build_plan(db_path, ACCOUNT_A, analysis_items=self.analysis_items(("NVDA",))), "NVDA")
+            self.assertEqual(row["position_price_status"], "cached_stale")
+            self.assertEqual(row["current_price"], 125.0)
+            self.assertEqual(row["current_position_market_value"], 1_250.0)
+            self.assertEqual(row["price_source"], "cached")
+            self.assertEqual(row["action"], "Add")
+            self.assertGreater(row["suggested_share_count"], 0)
+            self.assertNotEqual(row["funding_status"], "Price refresh required")
+
     def test_whole_share_sizing_uses_selected_account_exact_target_gap(self):
         analysis_items = self.analysis_items(("NVDA",))
         analysis_items[0]["current_price"] = 137.0
@@ -486,10 +514,10 @@ class MultiAccountActionPlanIsolationTests(unittest.TestCase):
 
             self.assertEqual(row["action"], "Add")
             self.assertEqual(row["action_amount_direction"], "add")
-            self.assertEqual(row["current_position_market_value"], 10_000)
-            self.assertAlmostEqual(row["current_position_weight"], 10.0)
+            self.assertEqual(row["current_position_market_value"], 10_001)
+            self.assertAlmostEqual(row["current_position_weight"], 10.001)
             self.assertAlmostEqual(row["target_weight_mid"], 20.0)
-            self.assertAlmostEqual(row["target_gap_amount"], 10_000.0)
+            self.assertAlmostEqual(row["target_gap_amount"], 9_999.0)
             self.assertEqual(row["suggested_share_count"], 72)
             self.assertAlmostEqual(row["executable_action_amount"], 9_864.0)
             self.assertEqual(row["funding_status"], "Fully funded")

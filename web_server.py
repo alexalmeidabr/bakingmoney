@@ -1987,6 +1987,55 @@ def is_valid_market_price(value):
     return numeric is not None and numeric > 0
 
 
+def resolve_action_plan_price(position, analysis):
+    """Select a usable Action Plan price without changing company-analysis inputs."""
+    position_price = safe_number((position or {}).get("price"))
+    if is_valid_market_price(position_price):
+        return {
+            "price": position_price,
+            "price_source": (position or {}).get("price_source") or "cached",
+            "price_status": (position or {}).get("price_status"),
+            "price_last_successful_at": (position or {}).get("price_last_successful_at"),
+            "price_warning": (position or {}).get("price_warning"),
+            "price_sizing_source": "position_quote",
+        }
+
+    analysis_price = safe_number((analysis or {}).get("current_price"))
+    if is_valid_market_price(analysis_price):
+        return {
+            "price": analysis_price,
+            "price_source": "analysis_fallback",
+            "price_status": (position or {}).get("price_status"),
+            "price_last_successful_at": None,
+            "price_warning": "Using saved analysis price because no usable IBKR position quote is available.",
+            "price_sizing_source": "analysis_price_fallback",
+        }
+
+    return {
+        "price": None,
+        "price_source": None,
+        "price_status": (position or {}).get("price_status") or "unavailable",
+        "price_last_successful_at": None,
+        "price_warning": "No usable market price is available for Action Plan sizing.",
+        "price_sizing_source": "unavailable",
+    }
+
+
+def has_usable_action_plan_price(row):
+    price_source = (row or {}).get("price_sizing_source")
+    # Older callers can omit Action Plan price provenance. Leave their
+    # invalid-price handling to the established whole-share safeguards rather
+    # than treating them as a quote-refresh result. build_action_plan always
+    # supplies a sizing source.
+    if price_source is None:
+        return True
+    if price_source == "unavailable":
+        return False
+    if (row or {}).get("position_price_status") == "unavailable" and price_source != "analysis_price_fallback":
+        return False
+    return is_valid_market_price((row or {}).get("current_price"))
+
+
 def normalize_market_price(value):
     numeric = safe_number(value)
     if not is_valid_market_price(numeric):
@@ -9508,7 +9557,7 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
     for row in rows:
         row["raw_action_amount"] = max(0.0, safe_number(row.get("raw_action_amount")) or safe_number(row.get("action_amount")) or 0.0)
         row["target_gap_amount"] = row["raw_action_amount"]
-        if row.get("position_price_status") in {"cached_stale", "unavailable"}:
+        if not has_usable_action_plan_price(row):
             row["executable_action_amount"] = 0.0
             row["funding_status"] = "Price refresh required"
             continue
@@ -9538,7 +9587,7 @@ def _apply_cash_constrained_execution_layer(rows, total_portfolio_value, cash_li
         if row.get("action") in buy_actions
         and row.get("action_amount_direction") == "add"
         and row.get("desired_share_count", 0) > 0
-        and row.get("position_price_status") not in {"cached_stale", "unavailable"}
+        and has_usable_action_plan_price(row)
     ]
     total_add_demand = sum(row.get("desired_whole_share_amount", 0.0) for row in buy_candidates)
     min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
@@ -10633,7 +10682,7 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     bootstrap_intentions = []
     for row in rows:
         _reset_linear_bootstrap_diagnostics(row)
-        if row.get("position_price_status") in {"cached_stale", "unavailable"}:
+        if not has_usable_action_plan_price(row):
             row["executable_action_amount"] = 0.0
             row["unfunded_action_amount"] = 0.0
             row["unfunded_share_count"] = 0
@@ -10676,7 +10725,7 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         if row.get("action") in buy_actions
         and row.get("action_amount_direction") == "add"
         and row.get("desired_share_count", 0) > 0
-        and row.get("position_price_status") not in {"cached_stale", "unavailable"}
+        and has_usable_action_plan_price(row)
     ]
     for row in buy_candidates:
         gap_score = min((row["desired_whole_share_amount"] / total / 0.05), 1.0) if total > 0 else 0.0
@@ -11091,25 +11140,22 @@ def _linear_release_date_warning_details(release_date, warning_days, today=None)
 
 
 def block_stale_price_execution(rows):
-    """Keep allocation intent visible while preventing orders sized from cached prices."""
+    """Keep allocation intent visible only when no usable sizing price exists."""
     for row in rows or []:
-        if row.get("position_price_status") not in {"cached_stale", "unavailable"}:
-            continue
-        if abs(safe_number(row.get("owned_share_quantity")) or 0.0) <= 0:
+        if has_usable_action_plan_price(row):
             continue
         desired_action = row.get("desired_action") or row.get("action")
         if desired_action not in {"Strong Add", "Add", "Starter Buy", "Trim", "Strong Trim", "Sell", "Strong Sell", "Undetermined"}:
             continue
         if desired_action == "Undetermined":
             diagnostic = "Current position weight is unavailable; Add, Hold, or Trim cannot be determined until a current quote is received."
-        elif row.get("position_price_status") == "cached_stale":
-            diagnostic = "Current market price unavailable; cached price requires refresh before execution."
         else:
-            diagnostic = "Current market price unavailable; refresh the quote before execution."
+            diagnostic = "No usable market price is available; refresh the quote before execution."
         row.update({
             "desired_action": desired_action,
             "action": "Watch / Price Refresh",
             "executable_action": "Watch / Price Refresh",
+            "action_priority": ACTION_PLAN_ACTION_PRIORITY.get("Watch / Price Refresh", 99),
             "action_amount_direction": "none",
             "suggested_share_count": 0,
             "executable_action_amount": 0.0,
@@ -11202,6 +11248,10 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "current_position_market_value": item.get("current_position_market_value"),
             "owned_share_quantity": item.get("owned_share_quantity"),
             "position_price_status": item.get("position_price_status"),
+            "price_source": item.get("price_source"),
+            "price_last_successful_at": item.get("price_last_successful_at"),
+            "price_warning": item.get("price_warning"),
+            "price_sizing_source": item.get("price_sizing_source"),
             "total_portfolio_value": total_portfolio_value,
             "linear_expected_cagr_score": expected_cagr_score,
             "linear_upside_score": upside_score,
@@ -11409,8 +11459,13 @@ def build_action_plan(conn, account_id=None):
             continue
         position = positions_by_symbol.get(symbol)
         owned = bool(position and abs(safe_number(position.get("position")) or 0.0) > 0)
-        saved_market_value = safe_number(position.get("marketValue")) if position else 0.0
-        market_value = abs(saved_market_value) if saved_market_value is not None else None
+        action_plan_price = resolve_action_plan_price(position, analysis)
+        position_quantity = safe_number(position.get("position")) if position else 0.0
+        market_value = (
+            abs(position_quantity * action_plan_price["price"])
+            if owned and action_plan_price["price_sizing_source"] != "unavailable"
+            else None if owned else 0.0
+        )
         current_position_weight = (
             market_value / total_portfolio_value * 100.0
             if market_value is not None and total_portfolio_value > 0 else None
@@ -11516,7 +11571,12 @@ def build_action_plan(conn, account_id=None):
             "potential_score_component": potential_score_component,
             "current_position_market_value": market_value,
             "owned_share_quantity": position.get("position") if position else 0,
-            "position_price_status": position.get("price_status") if position else None,
+            "position_price_status": action_plan_price["price_status"],
+            "current_price": action_plan_price["price"],
+            "price_source": action_plan_price["price_source"],
+            "price_last_successful_at": action_plan_price["price_last_successful_at"],
+            "price_warning": action_plan_price["price_warning"],
+            "price_sizing_source": action_plan_price["price_sizing_source"],
             "bucket": rating,
         })
 
@@ -11596,6 +11656,10 @@ def build_action_plan(conn, account_id=None):
             "current_position_market_value": item.get("current_position_market_value"),
             "owned_share_quantity": item.get("owned_share_quantity"),
             "position_price_status": item.get("position_price_status"),
+            "price_source": item.get("price_source"),
+            "price_last_successful_at": item.get("price_last_successful_at"),
+            "price_warning": item.get("price_warning"),
+            "price_sizing_source": item.get("price_sizing_source"),
             "total_portfolio_value": total_portfolio_value,
             "target_weight_mid": target_mid,
             "target_weight_low": target_low,
@@ -11710,6 +11774,8 @@ def build_action_plan(conn, account_id=None):
         }
         row.update({
             "action": action,
+            "desired_action": action,
+            "executable_action": action,
             "trigger_price": trigger_price,
             "trigger_direction": trigger_direction,
             "distance_to_trigger_percent": distance,

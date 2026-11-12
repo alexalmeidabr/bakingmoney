@@ -118,7 +118,7 @@ class LinearActionPlanDetailTests(unittest.TestCase):
     def test_owned_buy_with_unknown_weight_has_no_underweight_action(self):
         row = self.calculate(
             rating="Buy", current_position_weight=None, current_position_market_value=None,
-            owned_share_quantity=10, position_price_status="unavailable",
+            owned_share_quantity=10, position_price_status="unavailable", price_sizing_source="unavailable",
         )["rows"][0]
         self.assertIsNone(row["current_position_weight"])
         self.assertIsNone(row["current_position_market_value"])
@@ -138,7 +138,7 @@ class LinearActionPlanDetailTests(unittest.TestCase):
     def test_owned_sell_and_zero_target_keep_exit_intent_with_unknown_weight(self):
         sell = self.calculate(
             rating="Sell", current_position_weight=None, current_position_market_value=None,
-            owned_share_quantity=10, position_price_status="unavailable",
+            owned_share_quantity=10, position_price_status="unavailable", price_sizing_source="unavailable",
         )["rows"][0]
         self.assertEqual(sell["desired_action"], "Sell")
         self.assertEqual(sell["action"], "Watch / Price Refresh")
@@ -146,7 +146,7 @@ class LinearActionPlanDetailTests(unittest.TestCase):
         self.settings["linear_allocated_target_total_pct"] = 0.0
         zero_target = self.calculate(
             rating="Buy", current_position_weight=None, current_position_market_value=None,
-            owned_share_quantity=10, position_price_status="unavailable",
+            owned_share_quantity=10, position_price_status="unavailable", price_sizing_source="unavailable",
         )["rows"][0]
         self.assertEqual(zero_target["target_weight_mid"], 0)
         self.assertEqual(zero_target["desired_action"], "Sell")

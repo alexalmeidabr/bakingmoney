@@ -862,7 +862,12 @@ class RatingCorePotentialConfidenceTests(unittest.TestCase):
             bullish_confidence=4.0,
             bearish_confidence=4.0,
             rating_settings=settings,
-            confidence_context={"core_bullish_confidence": 4.8, "core_bearish_confidence": 4.6},
+            confidence_context={
+                "core_bullish_confidence": 4.8,
+                "core_bearish_confidence": 4.6,
+                "potential_bullish_confidence": 5.0,
+                "bullish_potential_driver_count": 2,
+            },
         )
         self.assertEqual(rating, "Speculative Buy")
 
@@ -876,6 +881,7 @@ class RatingCorePotentialConfidenceTests(unittest.TestCase):
                 "core_bearish_confidence": 4.2,
                 "potential_bullish_confidence": 5.5,
                 "potential_bearish_confidence": 4.3,
+                "bullish_potential_driver_count": 2,
             },
         )
         self.assertEqual(rating, "Speculative Buy")
@@ -890,6 +896,7 @@ class RatingCorePotentialConfidenceTests(unittest.TestCase):
                 "core_bearish_confidence": 5.2,
                 "potential_bullish_confidence": 5.5,
                 "potential_bearish_confidence": 4.3,
+                "bullish_potential_driver_count": 2,
             },
         )
         self.assertEqual(rating, "Hold")
@@ -904,8 +911,9 @@ class RatingCorePotentialConfidenceTests(unittest.TestCase):
             confidence_context={
                 "core_bullish_confidence": 1.0,
                 "core_bearish_confidence": 1.0,
-                "potential_bullish_confidence": 4.6,
+                "potential_bullish_confidence": 5.0,
                 "potential_bearish_confidence": 4.4,
+                "bullish_potential_driver_count": 2,
             },
         )
         self.assertEqual(rating, "Speculative Buy")

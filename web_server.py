@@ -162,6 +162,8 @@ RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE = "speculative_buy_min_upside"
 RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF = "speculative_buy_min_diff"
 RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE = "speculative_buy_min_bullish_confidence"
 RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR = "speculative_buy_min_core_diff_floor"
+RATING_SETTING_SPECULATIVE_BUY_MIN_POTENTIAL_BULLISH_CONFIDENCE = "speculative_buy_min_potential_bullish_confidence"
+RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_POTENTIAL_DRIVERS = "speculative_buy_min_bullish_potential_drivers"
 RATING_SETTING_STRONG_SELL_MAX_UPSIDE = "strong_sell_max_upside"
 RATING_SETTING_STRONG_SELL_MAX_DIFF = "strong_sell_max_diff"
 RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE = "strong_sell_min_bearish_confidence"
@@ -199,6 +201,8 @@ DEFAULT_RATING_SETTINGS = {
     RATING_SETTING_SPECULATIVE_BUY_MIN_DIFF: 0.1,
     RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE: 4.5,
     RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR: -0.5,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_POTENTIAL_BULLISH_CONFIDENCE: 5.0,
+    RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_POTENTIAL_DRIVERS: 2,
     RATING_SETTING_STRONG_SELL_MAX_UPSIDE: 0.0,
     RATING_SETTING_STRONG_SELL_MAX_DIFF: -1.5,
     RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE: 7.0,
@@ -362,6 +366,7 @@ ACTION_PLAN_DEFAULT_SETTINGS = {
     "potential_confidence_penalty": 0.05,
     "hold_rating_penalty_enabled": True,
     "hold_rating_penalty": 0.10,
+    "speculative_buy_rating_penalty": 0.15,
     "linear_rating_bonus_enabled": True,
     "linear_strong_buy_rating_bonus": 0.05,
     "linear_buy_rating_bonus": 0.02,
@@ -2401,6 +2406,7 @@ def calculate_rating(upside, bullish_confidence, bearish_confidence, rating_sett
     )
     potential_bullish_value = _score_or_none(confidence_context.get("potential_bullish_confidence"))
     potential_bearish_value = _score_or_none(confidence_context.get("potential_bearish_confidence"))
+    bullish_potential_driver_count = confidence_context.get("bullish_potential_driver_count")
     potential_confidence_diff = None
     if potential_bullish_value is not None and potential_bearish_value is not None:
         potential_confidence_diff = potential_bullish_value - potential_bearish_value
@@ -2447,6 +2453,10 @@ def calculate_rating(upside, bullish_confidence, bearish_confidence, rating_sett
         upside_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_UPSIDE]
         and core_confidence_diff >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_CORE_DIFF_FLOOR]
         and (speculative_core_path or speculative_potential_path)
+        and potential_bullish_value is not None
+        and potential_bullish_value >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_POTENTIAL_BULLISH_CONFIDENCE]
+        and bullish_potential_driver_count is not None
+        and bullish_potential_driver_count >= rating_settings[RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_POTENTIAL_DRIVERS]
     ):
         return "Speculative Buy", combined_confidence_diff
 
@@ -2469,6 +2479,7 @@ def get_rating_settings(conn):
         RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE,
         RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE,
         RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE,
+        RATING_SETTING_SPECULATIVE_BUY_MIN_POTENTIAL_BULLISH_CONFIDENCE,
         RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE,
         RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE,
     ):
@@ -2768,7 +2779,7 @@ def validate_action_plan_settings(settings):
             raise ValueError(f"{full_key} must be greater than {min_key}")
     if effective["action_min_cash_unallocated_target"] < 0.0 or effective["action_min_cash_unallocated_target"] > 100.0:
         raise ValueError("action_min_cash_unallocated_target must be between 0 and 100")
-    for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus"):
+    for key in ("core_confidence_penalty", "upside_penalty", "potential_confidence_penalty", "hold_rating_penalty", "speculative_buy_rating_penalty", "linear_strong_buy_rating_bonus", "linear_buy_rating_bonus"):
         if effective[key] < 0 or effective[key] > 1:
             raise ValueError(f"{key} must be between 0 and 1")
     if effective["linear_frontier_optionality_max_boost_pct"] < 0.0 or effective["linear_frontier_optionality_max_boost_pct"] > 20.0:
@@ -3153,10 +3164,15 @@ def save_general_configuration(conn, settings):
                 RATING_SETTING_STRONG_BUY_MIN_BULLISH_CONFIDENCE,
                 RATING_SETTING_BUY_MIN_BULLISH_CONFIDENCE,
                 RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_CONFIDENCE,
+                RATING_SETTING_SPECULATIVE_BUY_MIN_POTENTIAL_BULLISH_CONFIDENCE,
                 RATING_SETTING_STRONG_SELL_MIN_BEARISH_CONFIDENCE,
                 RATING_SETTING_SELL_MIN_BEARISH_CONFIDENCE,
             } and (value < 0 or value > 10):
                 raise ValueError(f"{key} must be between 0 and 10")
+            if key == RATING_SETTING_SPECULATIVE_BUY_MIN_BULLISH_POTENTIAL_DRIVERS and (
+                value < 0 or value > 20 or not value.is_integer()
+            ):
+                raise ValueError(f"{key} must be a whole number between 0 and 20")
             conn.execute(
                 """
                 INSERT INTO app_settings (key, value, updated_at)
@@ -6505,6 +6521,13 @@ def list_analysis_symbols(conn):
                {_confidence_sql('Bullish', 'Potential Driver')} AS potential_bullish_confidence,
                {_confidence_sql('Bearish', 'Potential Driver')} AS potential_bearish_confidence,
                (
+                   SELECT COUNT(*)
+                   FROM analysis_version_key_variables kv
+                   WHERE kv.analysis_version_id = v.id
+                     AND kv.driver_category = 'Potential Driver'
+                     AND kv.variable_type = 'Bullish'
+               ) AS bullish_potential_driver_count,
+               (
                    SELECT MAX(rc.checked_at)
                    FROM recent_event_checks rc
                    WHERE rc.symbol = r.symbol
@@ -7327,6 +7350,7 @@ def _version_payload(conn, version_row):
         "potential_bullish_confidence": confidence_breakdown["potential_bullish_confidence"],
         "potential_bearish_confidence": confidence_breakdown["potential_bearish_confidence"],
         "potential_confidence_diff": confidence_breakdown["potential_confidence_diff"],
+        "bullish_potential_driver_count": confidence_breakdown["bullish_potential_driver_count"],
         "rating": rating,
         "assumptions": version_row["assumptions_text"],
         "business_model": version_row["business_model_text"],
@@ -10973,6 +10997,9 @@ def _linear_stock_penalty_factor(item, core_net, potential_net, upside, rating, 
 
     if settings.get("hold_rating_penalty_enabled", True) and str(rating or "").strip().lower() == "hold":
         apply_penalty("hold_rating_penalty", "Hold rating")
+
+    if str(rating or "").strip().lower() == "speculative buy":
+        apply_penalty("speculative_buy_rating_penalty", "Speculative Buy rating")
 
     return _clamp(factor, 0.0, 1.0), penalties
 

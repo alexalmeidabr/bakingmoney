@@ -240,6 +240,12 @@ def calculate_confidence_breakdown(key_variables: List[Dict[str, Any]]) -> Dict[
     core_bearish = calculate_confidence_for_category(key_variables, "Core Driver", "Bearish")
     potential_bullish = calculate_confidence_for_category(key_variables, "Potential Driver", "Bullish")
     potential_bearish = calculate_confidence_for_category(key_variables, "Potential Driver", "Bearish")
+    bullish_potential_driver_count = sum(
+        1
+        for item in key_variables or []
+        if _key_variable_driver_category(item) == "Potential Driver"
+        and _key_variable_type(item) == "Bullish"
+    )
     bullish = calculate_overall_confidence([
         item for item in key_variables or [] if _key_variable_type(item) == "Bullish"
     ])
@@ -256,4 +262,5 @@ def calculate_confidence_breakdown(key_variables: List[Dict[str, Any]]) -> Dict[
         "potential_bullish_confidence": potential_bullish,
         "potential_bearish_confidence": potential_bearish,
         "potential_confidence_diff": _confidence_diff(potential_bullish, potential_bearish),
+        "bullish_potential_driver_count": bullish_potential_driver_count,
     }

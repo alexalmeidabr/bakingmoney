@@ -191,6 +191,8 @@ const configRatingSpeculativeBuyMinUpsideEl = document.getElementById('config-ra
 const configRatingSpeculativeBuyMinDiffEl = document.getElementById('config-rating-speculative-buy-min-diff');
 const configRatingSpeculativeBuyMinBullishConfidenceEl = document.getElementById('config-rating-speculative-buy-min-bullish-confidence');
 const configRatingSpeculativeBuyMinCoreDiffFloorEl = document.getElementById('config-rating-speculative-buy-min-core-diff-floor');
+const configRatingSpeculativeBuyMinPotentialBullishConfidenceEl = document.getElementById('config-rating-speculative-buy-min-potential-bullish-confidence');
+const configRatingSpeculativeBuyMinBullishPotentialDriversEl = document.getElementById('config-rating-speculative-buy-min-bullish-potential-drivers');
 const configRatingStrongSellMaxUpsideEl = document.getElementById('config-rating-strong-sell-max-upside');
 const configRatingStrongSellMaxDiffEl = document.getElementById('config-rating-strong-sell-max-diff');
 const configRatingStrongSellMinBearishConfidenceEl = document.getElementById('config-rating-strong-sell-min-bearish-confidence');
@@ -343,6 +345,8 @@ const DEFAULT_RATING_SETTINGS = {
   speculative_buy_min_diff: 0.1,
   speculative_buy_min_bullish_confidence: 4.5,
   speculative_buy_min_core_diff_floor: -0.5,
+  speculative_buy_min_potential_bullish_confidence: 5.0,
+  speculative_buy_min_bullish_potential_drivers: 2,
   strong_sell_max_upside: 0.0,
   strong_sell_max_diff: -1.5,
   strong_sell_min_bearish_confidence: 7.0,
@@ -501,6 +505,7 @@ const DEFAULT_ACTION_PLAN_SETTINGS = {
   potential_confidence_penalty: 0.05,
   hold_rating_penalty_enabled: true,
   hold_rating_penalty: 0.10,
+  speculative_buy_rating_penalty: 0.15,
   linear_rating_bonus_enabled: true,
   linear_strong_buy_rating_bonus: 0.05,
   linear_buy_rating_bonus: 0.02,
@@ -6066,6 +6071,8 @@ function getRatingSettingsFromForm() {
     speculative_buy_min_diff: Number(configRatingSpeculativeBuyMinDiffEl.value),
     speculative_buy_min_bullish_confidence: Number(configRatingSpeculativeBuyMinBullishConfidenceEl.value),
     speculative_buy_min_core_diff_floor: Number(configRatingSpeculativeBuyMinCoreDiffFloorEl.value),
+    speculative_buy_min_potential_bullish_confidence: Number(configRatingSpeculativeBuyMinPotentialBullishConfidenceEl.value),
+    speculative_buy_min_bullish_potential_drivers: Number(configRatingSpeculativeBuyMinBullishPotentialDriversEl.value),
     strong_sell_max_upside: Number(configRatingStrongSellMaxUpsideEl.value),
     strong_sell_max_diff: Number(configRatingStrongSellMaxDiffEl.value),
     strong_sell_min_bearish_confidence: Number(configRatingStrongSellMinBearishConfidenceEl.value),
@@ -6088,6 +6095,8 @@ function applyRatingSettingsToForm(settings) {
   configRatingSpeculativeBuyMinDiffEl.value = effective.speculative_buy_min_diff;
   configRatingSpeculativeBuyMinBullishConfidenceEl.value = effective.speculative_buy_min_bullish_confidence;
   configRatingSpeculativeBuyMinCoreDiffFloorEl.value = effective.speculative_buy_min_core_diff_floor;
+  configRatingSpeculativeBuyMinPotentialBullishConfidenceEl.value = effective.speculative_buy_min_potential_bullish_confidence;
+  configRatingSpeculativeBuyMinBullishPotentialDriversEl.value = effective.speculative_buy_min_bullish_potential_drivers;
   configRatingStrongSellMaxUpsideEl.value = effective.strong_sell_max_upside;
   configRatingStrongSellMaxDiffEl.value = effective.strong_sell_max_diff;
   configRatingStrongSellMinBearishConfidenceEl.value = effective.strong_sell_min_bearish_confidence;
@@ -6102,6 +6111,7 @@ function validateRatingSettings(settings) {
     'strong_buy_min_bullish_confidence',
     'buy_min_bullish_confidence',
     'speculative_buy_min_bullish_confidence',
+    'speculative_buy_min_potential_bullish_confidence',
     'strong_sell_min_bearish_confidence',
     'sell_min_bearish_confidence',
   ];
@@ -6109,6 +6119,7 @@ function validateRatingSettings(settings) {
     if (!Number.isFinite(value)) return `${key} must be numeric.`;
     if (confidenceKeys.includes(key) && (value < 0 || value > 10)) return `${key} must be between 0 and 10.`;
   }
+  if (!Number.isInteger(settings.speculative_buy_min_bullish_potential_drivers) || settings.speculative_buy_min_bullish_potential_drivers < 0 || settings.speculative_buy_min_bullish_potential_drivers > 20) return 'speculative_buy_min_bullish_potential_drivers must be a whole number between 0 and 20.';
   return null;
 }
 

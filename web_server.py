@@ -2048,9 +2048,12 @@ def _manual_quote_time(value, now):
 class _ManualQuoteObservations:
     """Retain live bid and ask events while ib_insync clears per-packet ticks."""
 
-    def __init__(self):
+    def __init__(self, required_contract_keys=None):
         self._active_tickers = {}
         self._latest_by_contract = {}
+        self._required_contract_keys = (
+            None if required_contract_keys is None else frozenset(required_contract_keys)
+        )
 
     def register(self, ticker, contract):
         key = market_data_contract_key(contract)
@@ -2080,15 +2083,27 @@ class _ManualQuoteObservations:
     def for_contract(self, contract_key):
         return self._latest_by_contract.get(contract_key, {})
 
+    def requires(self, contract_key):
+        return bool(contract_key) and (
+            self._required_contract_keys is None or contract_key in self._required_contract_keys
+        )
 
-def _manual_quote_proof_from_ticker(ticker, contract_key, refresh_at, diagnostic, observations=None, now=None):
-    now = now or datetime.now(timezone.utc)
-    refresh_time = _manual_quote_time(refresh_at, now)
-    if (ticker is None or refresh_time is None or (diagnostic or {}).get("delayed")
+    def is_active(self, ticker, contract_key):
+        active = self._active_tickers.get(id(ticker))
+        return bool(active and active[0] is ticker and active[1] == contract_key)
+
+    def ready(self, ticker, contract_key, now=None):
+        return _manual_live_quote_sides(
+            ticker, contract_key, self, now or datetime.now(timezone.utc),
+        ) is not None
+
+
+def _manual_live_quote_sides(ticker, contract_key, observations, now):
+    if (ticker is None or observations is None or not observations.is_active(ticker, contract_key)
             or getattr(ticker, "marketDataType", None) != 1
             or market_data_contract_key(getattr(ticker, "contract", None)) != contract_key):
         return None
-    sides = observations.for_contract(contract_key) if observations is not None else {}
+    sides = observations.for_contract(contract_key)
     bid_observation = sides.get("bid") or {}
     ask_observation = sides.get("ask") or {}
     bid = safe_number(bid_observation.get("price"))
@@ -2104,11 +2119,51 @@ def _manual_quote_proof_from_ticker(ticker, contract_key, refresh_at, diagnostic
             or not (safe_number(getattr(ticker, "bidSize", None)) or 0) > 0
             or not (safe_number(getattr(ticker, "askSize", None)) or 0) > 0):
         return None
+    return bid, ask, bid_time, ask_time
+
+
+def _manual_quote_proof_from_ticker(ticker, contract_key, refresh_at, diagnostic, observations=None, now=None):
+    now = now or datetime.now(timezone.utc)
+    refresh_time = _manual_quote_time(refresh_at, now)
+    if refresh_time is None or (diagnostic or {}).get("delayed"):
+        return None
+    sides = _manual_live_quote_sides(ticker, contract_key, observations, now)
+    if sides is None:
+        return None
+    bid, ask, bid_time, ask_time = sides
     return {
         "source": "live_bid_ask", "contract_key": contract_key,
         "bid": bid, "ask": ask,
         "bid_tick_at": bid_time.isoformat(), "ask_tick_at": ask_time.isoformat(),
         "refresh_at": refresh_time.isoformat(),
+    }
+
+
+def _manual_quote_required_contract_keys(account_ids, positions_by_account):
+    """Only saved triggers need the full bid/ask wait during positions refresh."""
+    if not account_ids:
+        return set()
+    conn = None
+    try:
+        conn = get_db_connection()
+        placeholders = ", ".join("?" for _ in account_ids)
+        rows = conn.execute(
+            f"SELECT account_id, symbol FROM manual_execution_triggers WHERE account_id IN ({placeholders}) "
+            "AND (buy_trigger_price IS NOT NULL OR sell_trigger_price IS NOT NULL)",
+            tuple(account_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        logger.warning("Manual trigger lookup unavailable during positions refresh")
+        return set()
+    finally:
+        if conn is not None:
+            conn.close()
+    triggered = {(row["account_id"], row["symbol"]) for row in rows}
+    return {
+        market_data_contract_key(position.contract)
+        for account_id in account_ids
+        for position in positions_by_account.get(account_id, [])
+        if position.contract and (account_id, normalize_symbol(position.contract.symbol)) in triggered
     }
 
 
@@ -3649,12 +3704,29 @@ def request_ib_tickers_batched(ib, qualified_contracts, purpose, quote_observati
                 deadline = time.monotonic() + base_wait
                 extended_deadline = deadline + extra_wait
                 unresolved = set(range(len(batch_tickers)))
-                while unresolved and time.monotonic() < (extended_deadline if delayed_warning_seen else deadline):
+                while time.monotonic() < (extended_deadline if delayed_warning_seen else deadline):
                     for idx in list(unresolved):
                         if extract_price(batch_tickers[idx]) is not None:
                             unresolved.remove(idx)
-                    if unresolved:
-                        ib.sleep(0.25)
+                    pending_manual = False
+                    if quote_subscribed and time.monotonic() < deadline:
+                        for ticker in batch_tickers:
+                            contract = getattr(ticker, "contract", None)
+                            key = market_data_contract_key(contract)
+                            if not quote_observations.requires(key):
+                                continue
+                            diagnostic = diagnostics.get(key) or diagnostics.get(
+                                normalize_symbol(getattr(contract, "symbol", None))
+                            ) or {}
+                            if (diagnostic.get("fatal") or diagnostic.get("delayed")
+                                    or getattr(ticker, "marketDataType", None) in {2, 3, 4}):
+                                continue
+                            if not quote_observations.ready(ticker, key):
+                                pending_manual = True
+                                break
+                    if not unresolved and not pending_manual:
+                        break
+                    ib.sleep(0.25)
                 tickers.extend(batch_tickers)
             else:
                 batch_tickers = ib.reqTickers(*batch)
@@ -14787,7 +14859,10 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 "affected_symbols": [],
             }
             _diagnostics = {}
-            quote_observations = _ManualQuoteObservations()
+            required_quote_keys = _manual_quote_required_contract_keys(
+                account_ids_to_refresh, positions_by_account,
+            )
+            quote_observations = _ManualQuoteObservations(required_contract_keys=required_quote_keys)
             if contracts:
                 qualified = unique_market_data_contracts(ib.qualifyContracts(*contracts))
                 if qualified:

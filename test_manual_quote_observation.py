@@ -47,23 +47,42 @@ class PacketIB:
         self.pendingTickersEvent = FakeEvent()
         self.errorEvent = FakeEvent()
         self.ticker = None
+        self.tickers_by_key = {}
         self.cancelled = []
+        self.requests = []
+        self.clock = None
 
     def reqMktData(self, contract, *_args):
+        self.requests.append(contract)
         if self.fail_request:
             raise RuntimeError("subscription failed")
-        self.ticker = PacketTicker(contract, self.market_data_type)
+        key = web_server.market_data_contract_key(contract)
+        self.ticker = self.tickers_by_key.setdefault(key, PacketTicker(contract, self.market_data_type))
         return self.ticker
 
     def sleep(self, _seconds):
+        if self.clock is not None:
+            self.clock.value += _seconds
         if not self.packets:
             return
-        side, price, size, timestamp = self.packets.pop(0)
-        ticker = self.ticker
+        packet = self.packets.pop(0)
+        if len(packet) == 5:
+            contract, side, price, size, timestamp = packet
+            ticker = self.tickers_by_key[web_server.market_data_contract_key(contract)]
+        else:
+            side, price, size, timestamp = packet
+            ticker = self.ticker
         if side == "bid":
             ticker.bid, ticker.bidSize, tick_type = price, size, 1
-        else:
+        elif side == "ask":
             ticker.ask, ticker.askSize, tick_type = price, size, 2
+        elif side == "last":
+            ticker.last, tick_type = price, 4
+        elif side == "close":
+            ticker.close = ticker.prevClose = price
+            tick_type = 9
+        else:
+            raise ValueError(side)
         ticker.ticks = [SimpleNamespace(tickType=tick_type, price=price, size=size, time=timestamp)]
         self.pendingTickersEvent.emit([ticker])
         ticker.ticks = []
@@ -231,7 +250,7 @@ class ManualQuoteObservationTests(unittest.TestCase):
 
     def test_observed_quote_controls_buy_and_sell_funding(self):
         ib, _tickers, diagnostics, observations = self.collect([
-            ("bid", 78, 10, self.now), ("ask", 79, 10, self.now),
+            ("last", 100, 1, self.now), ("bid", 78, 10, self.now), ("ask", 79, 10, self.now),
         ])
         proof = self.proof(ib, diagnostics, observations)
         candidate = linear_candidate(
@@ -257,7 +276,7 @@ class ManualQuoteObservationTests(unittest.TestCase):
         self.assertGreater(row["executable_action_amount"], 0)
 
         sell_ib, _tickers, sell_diagnostics, sell_observations = self.collect([
-            ("bid", 121, 10, self.now), ("ask", 122, 10, self.now),
+            ("last", 120, 1, self.now), ("bid", 121, 10, self.now), ("ask", 122, 10, self.now),
         ])
         sell_proof = self.proof(sell_ib, sell_diagnostics, sell_observations)
         sell_candidate = linear_candidate(
@@ -278,6 +297,149 @@ class ManualQuoteObservationTests(unittest.TestCase):
         )["manual_execution"]
         self.assertEqual(sell_payload["rows"][0]["manual_trigger_status"], "eligible")
         self.assertEqual(sell_payload["summary"]["executable_sell_trim_proceeds"], 1_210)
+
+    def test_last_price_does_not_end_collection_before_live_bid_and_ask(self):
+        clock = SimpleNamespace(value=0.0)
+        ib = PacketIB(self.contract, [
+            ("last", 100, 1, self.now),
+            ("bid", 99, 10, self.now),
+            ("ask", 101, 10, self.now),
+        ])
+        ib.clock = clock
+        observations = web_server._ManualQuoteObservations()
+        with mock.patch.object(web_server.time, "monotonic", side_effect=lambda: clock.value), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=2):
+            tickers, diagnostics = web_server.request_ib_tickers_batched(
+                ib, [self.contract], "positions_api", quote_observations=observations,
+            )
+        self.assertEqual(tickers, [ib.ticker])
+        self.assertEqual(ib.packets, [])
+        self.assertLess(clock.value, 2)
+        self.assertEqual(len(ib.requests), 1)
+        self.assertEqual(ib.cancelled, [self.contract])
+        self.assertEqual(len(ib.pendingTickersEvent.handlers), 0)
+        self.assertEqual((self.proof(ib, diagnostics, observations)["bid"],
+                          self.proof(ib, diagnostics, observations)["ask"]), (99, 101))
+
+    def test_previous_close_does_not_end_collection_before_live_quote(self):
+        clock = SimpleNamespace(value=0.0)
+        ib = PacketIB(self.contract, [
+            ("close", 100, 1, self.now),
+            ("bid", 98, 10, self.now),
+            ("ask", 99, 10, self.now),
+        ])
+        ib.clock = clock
+        observations = web_server._ManualQuoteObservations()
+        with mock.patch.object(web_server.time, "monotonic", side_effect=lambda: clock.value), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=2):
+            web_server.request_ib_tickers_batched(
+                ib, [self.contract], "positions_api", quote_observations=observations,
+            )
+        self.assertEqual(ib.packets, [])
+        self.assertLess(clock.value, 2)
+        self.assertEqual((self.proof(ib, {}, observations)["bid"],
+                          self.proof(ib, {}, observations)["ask"]), (98, 99))
+
+    def test_one_sided_quote_uses_one_batch_deadline_and_keeps_last_price(self):
+        clock = SimpleNamespace(value=0.0)
+        ib = PacketIB(self.contract, [
+            ("last", 100, 1, self.now), ("bid", 99, 10, self.now),
+        ])
+        ib.clock = clock
+        observations = web_server._ManualQuoteObservations()
+        with mock.patch.object(web_server.time, "monotonic", side_effect=lambda: clock.value), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=1):
+            tickers, diagnostics = web_server.request_ib_tickers_batched(
+                ib, [self.contract], "positions_api", quote_observations=observations,
+            )
+        self.assertEqual(clock.value, 1)
+        self.assertEqual(web_server.extract_price(tickers[0]), 100)
+        self.assertIsNone(self.proof(ib, diagnostics, observations))
+        self.assertEqual(self.buy_status(None), "price_confirmation_required")
+        self.assertEqual(ib.cancelled, [self.contract])
+        self.assertEqual(len(ib.pendingTickersEvent.handlers), 0)
+
+    def test_nonlive_last_price_does_not_wait_for_impossible_proof(self):
+        for market_data_type in (2, 3, 4):
+            with self.subTest(market_data_type=market_data_type):
+                clock = SimpleNamespace(value=0.0)
+                ib = PacketIB(self.contract, [("last", 100, 1, self.now)], market_data_type)
+                ib.clock = clock
+                observations = web_server._ManualQuoteObservations()
+                with mock.patch.object(web_server.time, "monotonic", side_effect=lambda: clock.value), \
+                     mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=2):
+                    tickers, diagnostics = web_server.request_ib_tickers_batched(
+                        ib, [self.contract], "positions_api", quote_observations=observations,
+                    )
+                self.assertLess(clock.value, 2)
+                self.assertEqual(web_server.extract_price(tickers[0]), 100)
+                self.assertIsNone(self.proof(ib, diagnostics, observations))
+
+    def test_multiple_contracts_share_one_bounded_verification_window(self):
+        msft = SimpleNamespace(symbol="MSFT", conId=202, secType="STK", currency="USD")
+        asml = SimpleNamespace(symbol="ASML", conId=303, secType="STK", currency="USD")
+        clock = SimpleNamespace(value=0.0)
+        ib = PacketIB(self.contract, [
+            (self.contract, "bid", 99, 10, self.now),
+            (msft, "last", 200, 1, self.now),
+            (asml, "bid", 98, 10, self.now),
+            (self.contract, "ask", 101, 10, self.now),
+            (asml, "ask", 99, 10, self.now),
+        ])
+        ib.clock = clock
+        observations = web_server._ManualQuoteObservations()
+        with mock.patch.object(web_server.time, "monotonic", side_effect=lambda: clock.value), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=2):
+            tickers, _diagnostics = web_server.request_ib_tickers_batched(
+                ib, [self.contract, msft, asml], "positions_api", quote_observations=observations,
+            )
+        self.assertEqual(len(tickers), 3)
+        self.assertEqual(len(ib.requests), 3)
+        self.assertEqual(clock.value, 2)
+        self.assertEqual(
+            {web_server.market_data_contract_key(contract) for contract in ib.cancelled},
+            {web_server.market_data_contract_key(contract) for contract in (self.contract, msft, asml)},
+        )
+        for contract in (self.contract, asml):
+            key = web_server.market_data_contract_key(contract)
+            proof = web_server._manual_quote_proof_from_ticker(
+                ib.tickers_by_key[key], key, self.now.isoformat(), {}, observations=observations, now=self.now,
+            )
+            self.assertIsNotNone(proof)
+        self.assertIsNone(web_server._manual_quote_proof_from_ticker(
+            ib.tickers_by_key[web_server.market_data_contract_key(msft)],
+            web_server.market_data_contract_key(msft), self.now.isoformat(), {},
+            observations=observations, now=self.now,
+        ))
+
+    def test_incomplete_manual_quote_does_not_retry_usable_last_price(self):
+        clock = SimpleNamespace(value=0.0)
+        ib = PacketIB(self.contract, [("last", 100, 1, self.now), ("bid", 99, 10, self.now)])
+        ib.clock = clock
+        observations = web_server._ManualQuoteObservations()
+        with mock.patch.object(web_server.time, "monotonic", side_effect=lambda: clock.value), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=1):
+            tickers, diagnostics, refresh = web_server.request_ib_tickers_with_retry(
+                ib, [self.contract], "positions_api", quote_observations=observations,
+            )
+        self.assertEqual(clock.value, 1)
+        self.assertEqual(len(ib.requests), 1)
+        self.assertEqual(refresh["retry_contracts"], 0)
+        self.assertEqual(web_server.extract_price(tickers[self.key]), 100)
+        self.assertIsNone(self.proof(ib, diagnostics, observations))
+
+    def test_general_price_caller_still_stops_after_last_price(self):
+        clock = SimpleNamespace(value=0.0)
+        ib = PacketIB(self.contract, [
+            ("last", 100, 1, self.now), ("bid", 99, 10, self.now), ("ask", 101, 10, self.now),
+        ])
+        ib.clock = clock
+        with mock.patch.object(web_server.time, "monotonic", side_effect=lambda: clock.value), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=2):
+            tickers, _diagnostics = web_server.request_ib_tickers_batched(ib, [self.contract], "price_fetch")
+        self.assertEqual(clock.value, 0.25)
+        self.assertEqual(web_server.extract_price(tickers[0]), 100)
+        self.assertEqual(len(ib.packets), 2)
 
 
 if __name__ == "__main__":

@@ -169,6 +169,57 @@ class ManualExecutionApiTests(unittest.TestCase):
         self.assertNotIn((self.db_path, "U_ACCOUNT_A"), web_server._session_manual_verified_quotes)
         self.assertIn("AAA", web_server._session_manual_verified_quotes[(self.db_path, "U_ACCOUNT_B")])
 
+    def _refresh_with_early_last(self):
+        position = FakePosition("U_ACCOUNT_A", "AAA", 1, 80, 1)
+        tick_at = datetime.now(timezone.utc)
+        market = PacketIB(position.contract, [
+            ("last", 100.0, 1, tick_at),
+            ("bid", 99.0, 10, tick_at),
+            ("ask", 101.0, 10, tick_at),
+        ])
+        clock = SimpleNamespace(value=0.0)
+        market.clock = clock
+        ib = FakeIB(
+            positions=[position], managed_accounts=["U_ACCOUNT_A"],
+            summary_items=[FakeSummaryItem("U_ACCOUNT_A", "NetLiquidation", "100000"),
+                           FakeSummaryItem("U_ACCOUNT_A", "CashBalance", "20000")],
+        )
+        for name in ("pendingTickersEvent", "errorEvent", "reqMktData", "sleep", "cancelMktData"):
+            setattr(ib, name, getattr(market, name))
+        handler = SimpleNamespace()
+        handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
+        with mock.patch.object(web_server, "ensure_event_loop", return_value=None), \
+             mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=2), \
+             mock.patch.object(web_server.time, "monotonic", side_effect=lambda: clock.value), \
+             mock.patch.object(web_server, "list_analysis_symbols", return_value=[]):
+            web_server.BakingMoneyHandler.handle_positions_api(handler, refresh=True, account_id="U_ACCOUNT_A")
+        return handler.response, market, clock
+
+    def test_saved_trigger_waits_for_bid_and_ask_after_last_price(self):
+        web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "AAA", {"buy_trigger_price": 102})
+        response, market, clock = self._refresh_with_early_last()
+        self.assertEqual(response[0], 200)
+        self.assertEqual(market.packets, [])
+        self.assertLess(clock.value, 2)
+        self.assertEqual(len(market.requests), 1)
+        self.assertEqual(len(market.pendingTickersEvent.handlers), 0)
+        self.assertEqual(web_server._session_manual_verified_quotes[(self.db_path, "U_ACCOUNT_A")]["AAA"]["ask"], 101)
+        row = next(item for item in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"]
+                   if item["symbol"] == "AAA")
+        self.assertEqual(row["manual_trigger_status"], "eligible")
+
+    def test_unrelated_account_trigger_does_not_slow_selected_refresh(self):
+        web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_B", "AAA", {"buy_trigger_price": 102})
+        response, market, clock = self._refresh_with_early_last()
+        self.assertEqual(response[0], 200)
+        self.assertEqual(response[1]["positions"][0]["price"], 100)
+        self.assertEqual(clock.value, 0.25)
+        self.assertEqual(len(market.packets), 2)
+        self.assertEqual(len(market.requests), 1)
+        self.assertEqual(web_server._session_manual_verified_quotes[(self.db_path, "U_ACCOUNT_A")], {})
+        self.assertIn("AAA", web_server._session_manual_verified_quotes[(self.db_path, "U_ACCOUNT_B")])
+
     def test_trigger_aware_details_match_list_and_unavailable_account_is_rejected(self):
         web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "AAA", {"buy_trigger_price": 80})
         with mock.patch.object(web_server, "list_analysis_symbols", return_value=self.analysis_items) as analysis_list, \

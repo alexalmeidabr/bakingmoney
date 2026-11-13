@@ -47,5 +47,5 @@
 ### Task 3: Verify and update PR
 
 - [x] Run full Python and Node suites, syntax checks, and `git diff --check`.
-- [ ] Commit and push corrections to the existing branch.
-- [ ] Update draft PR #49 with the revised quote lifecycle and actual test counts; leave unmerged.
+- [x] Commit and push corrections to the existing branch.
+- [x] Update draft PR #49 with the revised quote lifecycle and actual test counts; leave unmerged.

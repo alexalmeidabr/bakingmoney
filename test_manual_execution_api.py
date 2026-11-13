@@ -7,7 +7,8 @@ from unittest import mock
 
 import web_server
 from test_manual_execution_engine import linear_settings
-from test_multi_account_portfolio_db import FakeIB, FakePosition, FakeSummaryItem, FakeTicker
+from test_multi_account_portfolio_db import FakeIB, FakePosition, FakeSummaryItem
+from test_manual_quote_observation import PacketIB
 
 
 class ManualExecutionApiTests(unittest.TestCase):
@@ -132,34 +133,27 @@ class ManualExecutionApiTests(unittest.TestCase):
 
     def test_positions_refresh_records_account_scoped_live_tick_proof(self):
         position = FakePosition("U_ACCOUNT_A", "AAA", 1, 80, 1)
-        ticker = FakeTicker(position.contract, price=100)
         tick_at = datetime.now(timezone.utc)
-        ticker.bid, ticker.ask, ticker.bidSize, ticker.askSize = 99.0, 101.0, 10, 10
-        ticker.marketDataType = 1
-        ticker.ticks = [
-            SimpleNamespace(tickType=1, price=99.0, time=tick_at),
-            SimpleNamespace(tickType=2, price=101.0, time=tick_at),
-        ]
+        market = PacketIB(position.contract, [
+            ("bid", 99.0, 10, tick_at), ("ask", 101.0, 10, tick_at),
+        ])
         ib = FakeIB(
             positions=[position], managed_accounts=["U_ACCOUNT_A"],
             summary_items=[FakeSummaryItem("U_ACCOUNT_A", "NetLiquidation", "100000"),
                            FakeSummaryItem("U_ACCOUNT_A", "CashBalance", "20000")],
         )
+        for name in ("pendingTickersEvent", "errorEvent", "reqMktData", "sleep", "cancelMktData"):
+            setattr(ib, name, getattr(market, name))
         handler = SimpleNamespace()
         handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
-        refresh = {
-            "unique_contracts_requested": 1, "initial_quotes_received": 1, "retry_contracts": 0,
-            "retry_quotes_recovered": 0, "cached_prices_used": 0, "unavailable_prices": 0,
-            "incomplete": False, "affected_symbols": [],
-        }
         with mock.patch.object(web_server, "ensure_event_loop", return_value=None), \
              mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
-             mock.patch.object(web_server, "request_ib_tickers_with_retry", return_value=(
-                 {web_server.market_data_contract_key(position.contract): ticker}, {}, refresh,
-             )), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0.05), \
              mock.patch.object(web_server, "list_analysis_symbols", return_value=[]):
             web_server.BakingMoneyHandler.handle_positions_api(handler, refresh=True, account_id="U_ACCOUNT_A")
         self.assertEqual(handler.response[0], 200)
+        self.assertEqual(market.ticker.ticks, [])
+        self.assertEqual(len(market.pendingTickersEvent.handlers), 0)
         proof = web_server._session_manual_verified_quotes[(self.db_path, "U_ACCOUNT_A")]["AAA"]
         self.assertEqual((proof["bid"], proof["ask"]), (99, 101))
         self.assertEqual(web_server._session_manual_verified_quotes[(self.db_path, "U_ACCOUNT_B")]["AAA"]["ask"], 100)
@@ -168,6 +162,12 @@ class ManualExecutionApiTests(unittest.TestCase):
                    if item["symbol"] == "AAA")
         self.assertEqual(row["manual_trigger_status"], "eligible")
         self.assertEqual(row["manual_verified_price"], 101)
+        with mock.patch.object(web_server, "ensure_event_loop", return_value=None), \
+             mock.patch.object(web_server, "get_ib_connection", side_effect=RuntimeError("TWS offline")), \
+             mock.patch.object(web_server, "list_analysis_symbols", return_value=[]):
+            web_server.BakingMoneyHandler.handle_positions_api(handler, refresh=True, account_id="U_ACCOUNT_A")
+        self.assertNotIn((self.db_path, "U_ACCOUNT_A"), web_server._session_manual_verified_quotes)
+        self.assertIn("AAA", web_server._session_manual_verified_quotes[(self.db_path, "U_ACCOUNT_B")])
 
     def test_trigger_aware_details_match_list_and_unavailable_account_is_rejected(self):
         web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "AAA", {"buy_trigger_price": 80})

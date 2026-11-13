@@ -1,6 +1,6 @@
 import unittest
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import web_server
@@ -105,20 +105,28 @@ class ManualExecutionEvaluationTests(unittest.TestCase):
 
     def test_fresh_bid_and_ask_ticks_create_proof_but_old_ticks_do_not(self):
         contract = SimpleNamespace(symbol="NVDA", secType="STK", currency="USD", exchange="SMART", conId=123)
+        now = datetime.now(timezone.utc)
         ticker = SimpleNamespace(
             contract=contract, marketPrice=lambda: 100.0, last=100.0, bid=99.0, ask=101.0,
             bidSize=1, askSize=1, marketDataType=1,
-            ticks=[SimpleNamespace(tickType=1, price=99.0, time=NOW),
-                   SimpleNamespace(tickType=2, price=101.0, time=NOW)],
+            ticks=[SimpleNamespace(tickType=1, price=99.0, size=1, time=now),
+                   SimpleNamespace(tickType=2, price=101.0, size=1, time=now)],
         )
-        proof = web_server._manual_quote_proof_from_ticker(ticker, "test:NVDA", "2026-01-01T10:00:00+00:00", {}, now=NOW)
+        key = web_server.market_data_contract_key(contract)
+        observations = web_server._ManualQuoteObservations()
+        observations.register(ticker, contract)
+        observations.observe([ticker])
+        proof = web_server._manual_quote_proof_from_ticker(ticker, key, now.isoformat(), {}, observations=observations, now=now)
         self.assertEqual(proof["bid"], 99)
         self.assertEqual(proof["ask"], 101)
         ticker.marketDataType = 2
-        self.assertIsNone(web_server._manual_quote_proof_from_ticker(ticker, "test:NVDA", "2026-01-01T10:00:00+00:00", {}, now=NOW))
+        self.assertIsNone(web_server._manual_quote_proof_from_ticker(ticker, key, now.isoformat(), {}, observations=observations, now=now))
         ticker.marketDataType = 1
-        ticker.ticks[1].time = datetime(2026, 1, 1, 9, 50, tzinfo=timezone.utc)
-        self.assertIsNone(web_server._manual_quote_proof_from_ticker(ticker, "test:NVDA", "2026-01-01T10:00:00+00:00", {}, now=NOW))
+        ticker.ticks[1].time = now - timedelta(minutes=10)
+        stale_observations = web_server._ManualQuoteObservations()
+        stale_observations.register(ticker, contract)
+        stale_observations.observe([ticker])
+        self.assertIsNone(web_server._manual_quote_proof_from_ticker(ticker, key, now.isoformat(), {}, observations=stale_observations, now=now))
 
     def test_trigger_compares_buy_to_ask_and_sell_to_bid(self):
         buy = verified_row(current_price=75, manual_quote_proof={

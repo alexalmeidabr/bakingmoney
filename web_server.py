@@ -2045,32 +2045,69 @@ def _manual_quote_time(value, now):
         return None
 
 
-def _manual_quote_proof_from_ticker(ticker, contract_key, refresh_at, diagnostic, now=None):
+class _ManualQuoteObservations:
+    """Retain live bid and ask events while ib_insync clears per-packet ticks."""
+
+    def __init__(self):
+        self._active_tickers = {}
+        self._latest_by_contract = {}
+
+    def register(self, ticker, contract):
+        key = market_data_contract_key(contract)
+        if key and market_data_contract_key(getattr(ticker, "contract", None)) == key:
+            self._active_tickers[id(ticker)] = (ticker, key)
+
+    def observe(self, pending_tickers):
+        now = datetime.now(timezone.utc)
+        for ticker in pending_tickers or ():
+            active = self._active_tickers.get(id(ticker))
+            if (not active or active[0] is not ticker
+                    or market_data_contract_key(getattr(ticker, "contract", None)) != active[1]
+                    or getattr(ticker, "marketDataType", None) != 1):
+                continue
+            sides = self._latest_by_contract.setdefault(active[1], {})
+            for tick in getattr(ticker, "ticks", ()) or ():
+                side = {1: "bid", 2: "ask"}.get(getattr(tick, "tickType", None))
+                price = safe_number(getattr(tick, "price", None))
+                size = safe_number(getattr(tick, "size", None))
+                tick_time = _manual_quote_time(getattr(tick, "time", None), now)
+                if not side or not is_valid_market_price(price) or size is None or size <= 0 or tick_time is None:
+                    continue
+                previous = sides.get(side)
+                if previous is None or tick_time >= previous["time"]:
+                    sides[side] = {"price": price, "size": size, "time": tick_time}
+
+    def for_contract(self, contract_key):
+        return self._latest_by_contract.get(contract_key, {})
+
+
+def _manual_quote_proof_from_ticker(ticker, contract_key, refresh_at, diagnostic, observations=None, now=None):
     now = now or datetime.now(timezone.utc)
     refresh_time = _manual_quote_time(refresh_at, now)
     if (ticker is None or refresh_time is None or (diagnostic or {}).get("delayed")
-            or getattr(ticker, "marketDataType", None) != 1):
+            or getattr(ticker, "marketDataType", None) != 1
+            or market_data_contract_key(getattr(ticker, "contract", None)) != contract_key):
         return None
-    bid = safe_number(getattr(ticker, "bid", None))
-    ask = safe_number(getattr(ticker, "ask", None))
+    sides = observations.for_contract(contract_key) if observations is not None else {}
+    bid_observation = sides.get("bid") or {}
+    ask_observation = sides.get("ask") or {}
+    bid = safe_number(bid_observation.get("price"))
+    ask = safe_number(ask_observation.get("price"))
+    bid_time = _manual_quote_time(bid_observation.get("time"), now)
+    ask_time = _manual_quote_time(ask_observation.get("time"), now)
     if (not is_valid_market_price(bid) or not is_valid_market_price(ask)
-            or ask < bid or not (safe_number(getattr(ticker, "bidSize", None)) or 0) > 0
+            or ask < bid or bid_time is None or ask_time is None
+            or not (safe_number(bid_observation.get("size")) or 0) > 0
+            or not (safe_number(ask_observation.get("size")) or 0) > 0
+            or safe_number(getattr(ticker, "bid", None)) != bid
+            or safe_number(getattr(ticker, "ask", None)) != ask
+            or not (safe_number(getattr(ticker, "bidSize", None)) or 0) > 0
             or not (safe_number(getattr(ticker, "askSize", None)) or 0) > 0):
-        return None
-    tick_times = {}
-    for tick in getattr(ticker, "ticks", ()) or ():
-        tick_type = getattr(tick, "tickType", None)
-        expected_price = {1: bid, 2: ask}.get(tick_type)
-        tick_time = _manual_quote_time(getattr(tick, "time", None), now)
-        if expected_price is not None and tick_time and safe_number(getattr(tick, "price", None)) == expected_price:
-            if tick_type not in tick_times or tick_time > tick_times[tick_type]:
-                tick_times[tick_type] = tick_time
-    if 1 not in tick_times or 2 not in tick_times:
         return None
     return {
         "source": "live_bid_ask", "contract_key": contract_key,
         "bid": bid, "ask": ask,
-        "bid_tick_at": tick_times[1].isoformat(), "ask_tick_at": tick_times[2].isoformat(),
+        "bid_tick_at": bid_time.isoformat(), "ask_tick_at": ask_time.isoformat(),
         "refresh_at": refresh_time.isoformat(),
     }
 
@@ -3500,7 +3537,7 @@ def _safe_cancel_market_data(ib, contract, purpose):
             logger.warning("Unable to cancel IBKR market data purpose=%s symbol=%s error=%s", purpose, getattr(contract, "symbol", None), message)
 
 
-def request_ib_tickers_batched(ib, qualified_contracts, purpose):
+def request_ib_tickers_batched(ib, qualified_contracts, purpose, quote_observations=None):
     qualified_contracts = unique_market_data_contracts(qualified_contracts)
     if not qualified_contracts:
         return [], {}
@@ -3563,12 +3600,19 @@ def request_ib_tickers_batched(ib, qualified_contracts, purpose):
             )
 
         subscribed = False
+        quote_subscribed = False
         if hasattr(ib, "errorEvent"):
             try:
                 ib.errorEvent += handle_error
                 subscribed = True
             except Exception:
                 subscribed = False
+        if quote_observations is not None and hasattr(ib, "pendingTickersEvent"):
+            try:
+                ib.pendingTickersEvent += quote_observations.observe
+                quote_subscribed = True
+            except Exception:
+                quote_subscribed = False
         try:
             if hasattr(ib, "reqMktData"):
                 batch_tickers = []
@@ -3593,6 +3637,8 @@ def request_ib_tickers_batched(ib, qualified_contracts, purpose):
                             ticker.contract = ticker_contract
                         except Exception:
                             pass
+                    if quote_subscribed:
+                        quote_observations.register(ticker, contract)
                     req_id = getattr(ticker, "tickerId", None)
                     symbol = normalize_symbol(getattr(ticker_contract, "symbol", None))
                     if req_id is not None and symbol:
@@ -3615,6 +3661,11 @@ def request_ib_tickers_batched(ib, qualified_contracts, purpose):
                 ib.sleep(get_ib_price_wait_seconds())
                 tickers.extend(batch_tickers or [])
         finally:
+            if quote_subscribed:
+                try:
+                    ib.pendingTickersEvent -= quote_observations.observe
+                except Exception:
+                    pass
             if subscribed:
                 try:
                     ib.errorEvent -= handle_error
@@ -3637,7 +3688,7 @@ def _tickers_by_market_contract_key(tickers):
     return result
 
 
-def request_ib_tickers_with_retry(ib, qualified_contracts, purpose):
+def request_ib_tickers_with_retry(ib, qualified_contracts, purpose, quote_observations=None):
     """Collect unique quotes once, then make one bounded retry for unresolved contracts."""
     contracts = unique_market_data_contracts(qualified_contracts)
     if not contracts:
@@ -3648,7 +3699,10 @@ def request_ib_tickers_with_retry(ib, qualified_contracts, purpose):
             "retry_quotes_recovered": 0,
         }
 
-    initial_tickers, diagnostics = request_ib_tickers_batched(ib, contracts, purpose)
+    observation_kwargs = {"quote_observations": quote_observations} if quote_observations is not None else {}
+    initial_tickers, diagnostics = request_ib_tickers_batched(
+        ib, contracts, purpose, **observation_kwargs,
+    )
     tickers_by_key = _tickers_by_market_contract_key(initial_tickers)
     initial_received = sum(
         1 for contract in contracts
@@ -3664,7 +3718,9 @@ def request_ib_tickers_with_retry(ib, qualified_contracts, purpose):
 
     retry_recovered = 0
     if unresolved:
-        retry_tickers, retry_diagnostics = request_ib_tickers_batched(ib, unresolved, f"{purpose}_retry")
+        retry_tickers, retry_diagnostics = request_ib_tickers_batched(
+            ib, unresolved, f"{purpose}_retry", **observation_kwargs,
+        )
         for key, detail in retry_diagnostics.items():
             if key not in diagnostics or detail.get("fatal"):
                 diagnostics[key] = detail
@@ -14731,6 +14787,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 "affected_symbols": [],
             }
             _diagnostics = {}
+            quote_observations = _ManualQuoteObservations()
             if contracts:
                 qualified = unique_market_data_contracts(ib.qualifyContracts(*contracts))
                 if qualified:
@@ -14738,6 +14795,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         ib,
                         qualified,
                         purpose="positions_api",
+                        quote_observations=quote_observations,
                     )
                 else:
                     market_data_refresh["incomplete"] = bool(contracts)
@@ -14795,6 +14853,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         proof = _manual_quote_proof_from_ticker(
                             tickers_by_contract_key.get(contract_key), contract_key,
                             row.get("price_last_successful_at"), diagnostic,
+                            observations=quote_observations,
                         )
                         if proof:
                             _session_manual_verified_quotes[(str(DB_PATH), refresh_account_id)][row["symbol"]] = proof

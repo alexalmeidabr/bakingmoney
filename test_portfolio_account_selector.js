@@ -101,8 +101,8 @@ test('account changes clear stale portfolio views and reload the active portfoli
 
 test('portfolio-dependent fetches use the scoped account helper', () => {
   assert.ok(appJs.includes("withSelectedPortfolioAccount(options.refresh ? '/api/positions?refresh=1' : '/api/positions')"));
-  assert.ok(appJs.includes("withSelectedPortfolioAccount('/api/action-plan')"));
-  assert.ok(appJs.includes('withSelectedPortfolioAccount(`/api/action-plan/${encodeURIComponent(symbol)}`)'));
+  assert.ok(appJs.includes("withSelectedPortfolioAccount('/api/action-plan?execution_modes=both')"));
+  assert.ok(appJs.includes('withSelectedPortfolioAccount(`/api/action-plan/${encodeURIComponent(symbol)}?execution_modes=both`)'));
   assert.ok(appJs.includes("fetch('/api/ib-accounts')"));
   assert.ok(appJs.includes("fetch('/api/analysis')"));
 });

@@ -14,7 +14,7 @@ import zipfile
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from html import unescape
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from io import BytesIO
 from pathlib import Path
@@ -46,6 +46,7 @@ STATIC_DIR = BASE_DIR / "static"
 DB_PATH = BASE_DIR / "bakingmoney.db"
 _session_received_quotes = {}
 _session_manual_verified_quotes = {}
+_session_manual_explicit_quotes = {}
 PERF_LOG_ENABLED = os.getenv("BAKINGMONEY_PERF_LOG", "").strip().lower() in {"1", "true", "yes"}
 
 
@@ -2139,6 +2140,20 @@ def _manual_quote_proof_from_ticker(ticker, contract_key, refresh_at, diagnostic
     }
 
 
+def _manual_quote_proof_observed_at(proof, now):
+    if not proof or proof.get("source") != "live_bid_ask":
+        return None
+    timestamps = [_manual_quote_time(proof.get(field), now) for field in (
+        "refresh_at", "bid_tick_at", "ask_tick_at",
+    )]
+    bid = safe_number(proof.get("bid"))
+    ask = safe_number(proof.get("ask"))
+    if (any(timestamp is None for timestamp in timestamps)
+            or not is_valid_market_price(bid) or not is_valid_market_price(ask) or ask < bid):
+        return None
+    return min(timestamps)
+
+
 def _manual_quote_required_contract_keys(account_ids, positions_by_account):
     """Only saved triggers need the full bid/ask wait during positions refresh."""
     if not account_ids:
@@ -2186,6 +2201,7 @@ def evaluate_manual_execution_trigger(row, preference, now=None):
         "manual_trigger_direction": direction if trigger_price is not None else None,
         "verified_price": None,
         "verified_quote_at": None,
+        "verified_quote_expires_at": None,
         "verification_reason": None,
     }
     if not is_valid_market_price(trigger_price):
@@ -2200,7 +2216,7 @@ def evaluate_manual_execution_trigger(row, preference, now=None):
     bid = safe_number(proof.get("bid"))
     ask = safe_number(proof.get("ask"))
     price = ask if action in MANUAL_EXECUTION_BUY_ACTIONS else bid
-    verified = (
+    verified_position = (
         abs(safe_number(row.get("owned_share_quantity")) or 0.0) > 0
         and row.get("price_sizing_source") == "position_quote"
         and row.get("position_price_status") == "tws_received"
@@ -2213,15 +2229,26 @@ def evaluate_manual_execution_trigger(row, preference, now=None):
         and is_valid_market_price(bid) and is_valid_market_price(ask) and ask >= bid
         and is_valid_market_price(price)
     )
+    verified_explicit = (
+        row.get("manual_quote_source") == "explicit_refresh"
+        and proof.get("source") == "live_bid_ask"
+        and proof.get("symbol") == row.get("symbol")
+        and proof.get("contract_key") == row.get("contract_key")
+        and refresh_time is not None and bid_time is not None and ask_time is not None
+        and is_valid_market_price(bid) and is_valid_market_price(ask) and ask >= bid
+        and is_valid_market_price(price)
+    )
+    verified = verified_position or verified_explicit
     if not verified:
         result["status"] = "price_confirmation_required"
-        result["verification_reason"] = "A current verified TWS position quote is required."
+        result["verification_reason"] = "A current verified live TWS bid/ask quote is required."
         return result
     reached = price <= trigger_price if direction == "at_or_below" else price >= trigger_price
     result.update({
         "status": "eligible" if reached else "waiting",
         "verified_price": price,
         "verified_quote_at": (ask_time if action in MANUAL_EXECUTION_BUY_ACTIONS else bid_time).isoformat(),
+        "verified_quote_expires_at": (min(refresh_time, bid_time, ask_time) + timedelta(seconds=MANUAL_EXECUTION_QUOTE_MAX_AGE_SECONDS)).isoformat(),
     })
     return result
 
@@ -2269,7 +2296,7 @@ def has_usable_action_plan_price(row):
         return True
     if price_source == "unavailable":
         return False
-    if (row or {}).get("position_price_status") == "unavailable" and price_source != "analysis_price_fallback":
+    if (row or {}).get("position_price_status") == "unavailable" and price_source not in {"analysis_price_fallback", "explicit_verified_quote"}:
         return False
     return is_valid_market_price((row or {}).get("current_price"))
 
@@ -11839,9 +11866,13 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         row.update(_linear_action_compatibility_fields())
     manual_rows = deepcopy(rows) if manual_triggers is not None else None
     if manual_rows is not None:
-        proofs_by_symbol = {item.get("symbol"): item.get("manual_quote_proof") for item in candidates}
+        proofs_by_symbol = {item.get("symbol"): item for item in candidates}
         for row in manual_rows:
-            row["manual_quote_proof"] = proofs_by_symbol.get(row.get("symbol"))
+            candidate = proofs_by_symbol.get(row.get("symbol")) or {}
+            row["manual_quote_proof"] = candidate.get("manual_quote_proof")
+            if candidate.get("manual_quote_source"):
+                row["manual_quote_source"] = candidate["manual_quote_source"]
+                row["contract_key"] = candidate.get("contract_key")
     execution = _apply_linear_cash_constrained_execution_layer(
         rows,
         total_portfolio_value,
@@ -11879,6 +11910,9 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             row.pop("manual_quote_proof", None)
             if evaluation["status"] == "eligible":
                 verified_price = evaluation["verified_price"]
+                if row.pop("manual_quote_source", None) == "explicit_refresh":
+                    row["price_sizing_source"] = "explicit_verified_quote"
+                    row["price_warning"] = None
                 owned_quantity = abs(safe_number(row.get("owned_share_quantity")) or 0.0)
                 verified_market_value = owned_quantity * verified_price
                 row["current_price"] = verified_price
@@ -11908,6 +11942,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
                 "manual_trigger_direction": evaluation["manual_trigger_direction"],
                 "manual_verified_price": evaluation["verified_price"],
                 "manual_verified_quote_at": evaluation["verified_quote_at"],
+                "manual_verified_quote_expires_at": evaluation["verified_quote_expires_at"],
                 "manual_price_verification_reason": evaluation["verification_reason"],
                 "manual_trigger_blocked": evaluation["status"] in {"waiting", "price_confirmation_required"},
                 "reserve_enabled": bool(preference.get("reserve_enabled")),
@@ -11917,6 +11952,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
                 "fulfilled_reservation_from_current_cash_like": 0.0,
                 "fulfilled_reservation_from_projected_proceeds": 0.0,
             })
+            row.pop("manual_quote_source", None)
             row.update(calculate_manual_reservation(row, preference, total_portfolio_value, min_trade))
             row["unfulfilled_reservation"] = row["requested_reservation"]
         manual_execution = _apply_linear_cash_constrained_execution_layer(
@@ -11973,6 +12009,11 @@ def build_action_plan(conn, account_id=None, include_manual_execution=False):
         _session_manual_verified_quotes.get((str(DB_PATH), resolved_account_id), {})
         if include_manual_execution and resolved_account_id else {}
     )
+    explicit_quote_proofs = (
+        _session_manual_explicit_quotes.get((str(DB_PATH), resolved_account_id), {})
+        if include_manual_execution and resolved_account_id else {}
+    )
+    proof_now = datetime.now(timezone.utc)
     portfolio_cash_summary = build_portfolio_cash_summary(conn, positions, settings, account_id=resolved_account_id)
     total_portfolio_value = portfolio_cash_summary["portfolio_value_used"]
     portfolio_value_source = portfolio_cash_summary["portfolio_value_source"]
@@ -12122,6 +12163,17 @@ def build_action_plan(conn, account_id=None, include_manual_execution=False):
             if (proof and proof.get("contract_key") == position.get("contract_key")
                     and proof.get("refresh_at") == position.get("price_last_successful_at")):
                 candidate["manual_quote_proof"] = proof
+        if include_manual_execution:
+            proof = explicit_quote_proofs.get(symbol)
+            explicit_observed_at = _manual_quote_proof_observed_at(proof, proof_now)
+            position_observed_at = _manual_quote_proof_observed_at(candidate.get("manual_quote_proof"), proof_now)
+            if (proof and proof.get("symbol") == symbol and explicit_observed_at
+                    and (not position or not position.get("contract_key")
+                         or proof.get("contract_key") == position.get("contract_key"))
+                    and (position_observed_at is None or explicit_observed_at > position_observed_at)):
+                candidate["manual_quote_proof"] = proof
+                candidate["manual_quote_source"] = "explicit_refresh"
+                candidate["contract_key"] = proof.get("contract_key")
         candidates.append(candidate)
 
     equity_buckets = ["Strong Buy", "Buy", "Speculative Buy", "Hold"]
@@ -14427,6 +14479,9 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/manual-execution-quotes/refresh":
+            account_id = parse_qs(urlparse(self.path).query).get("account_id", [None])[0]
+            return self.handle_manual_execution_quotes_refresh(account_id=account_id)
         if path == "/api/analysis":
             return self.handle_analysis_post()
         if path == "/api/analysis/rerun-scenarios":
@@ -15966,6 +16021,135 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
 
     def handle_manual_execution_trigger_delete(self, symbol, account_id=None):
         return self._handle_manual_execution_request("delete", symbol, account_id)
+
+    def handle_manual_execution_quotes_refresh(self, account_id=None):
+        body = self._read_json_body()
+        if not isinstance(body, dict) or set(body) != {"symbols"} or not isinstance(body["symbols"], list):
+            return self._send_json({"error": "A JSON object with a symbols array is required"}, status=400)
+        raw_symbols = body["symbols"]
+        if not raw_symbols or len(raw_symbols) > 25:
+            return self._send_json({"error": "Provide 1 to 25 symbols"}, status=400)
+        try:
+            if any(not isinstance(symbol, str) for symbol in raw_symbols):
+                raise ValueError("Invalid manual execution trigger symbol")
+            symbols = list(dict.fromkeys(_manual_execution_symbol(symbol) for symbol in raw_symbols))
+            conn = get_db_connection()
+            try:
+                resolved = _manual_execution_account(conn, account_id)
+                placeholders = ", ".join("?" for _ in symbols)
+                analyzed = {normalize_symbol(row["symbol"]) for row in conn.execute(
+                    f"SELECT r.symbol FROM analysis_roots r WHERE r.symbol IN ({placeholders}) "
+                    "AND EXISTS (SELECT 1 FROM analysis_versions v WHERE v.analysis_root_id = r.id)",
+                    tuple(symbols),
+                ).fetchall()}
+            finally:
+                conn.close()
+        except PortfolioAccountResolutionError as exc:
+            return self._send_json(_portfolio_account_error_payload(exc), status=exc.status)
+        except ValueError as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+        except Exception:
+            logger.exception("Unable to prepare manual quote refresh")
+            return self._send_json({"error": "Unable to prepare manual quote refresh"}, status=500)
+
+        key = (str(DB_PATH), resolved)
+        proof_store = _session_manual_explicit_quotes.setdefault(key, {})
+        for symbol in symbols:
+            proof_store.pop(symbol, None)
+        results = {symbol: {"symbol": symbol, "status": "not_analyzed"} for symbol in symbols if symbol not in analyzed}
+        requested = [symbol for symbol in symbols if symbol in analyzed]
+        if not requested:
+            return self._send_json({"results": list(results.values())})
+        ib = None
+        live_mode_requested = False
+        try:
+            ensure_event_loop()
+            ib = get_ib_connection()
+            managed = get_managed_ib_account_ids(ib)
+            if resolved not in managed:
+                return self._send_json({
+                    "error": "Selected portfolio account is unavailable in TWS",
+                    "results": [{"symbol": symbol, "status": "tws_unavailable"} for symbol in symbols],
+                }, status=503)
+            if hasattr(ib, "reqMarketDataType"):
+                ib.reqMarketDataType(1)
+                live_mode_requested = True
+            from ib_insync import Stock
+            position_contracts = {}
+            if hasattr(ib, "positions"):
+                for position in ib.positions() or []:
+                    if _normalize_ib_account_id(getattr(position, "account", None)) != resolved:
+                        continue
+                    position_symbol = normalize_symbol(getattr(getattr(position, "contract", None), "symbol", None))
+                    if position_symbol in requested:
+                        position_contracts.setdefault(position_symbol, []).append(position.contract)
+            requested_contracts = {}
+            for symbol in requested:
+                owned_contracts = position_contracts.get(symbol, [])
+                if len({market_data_contract_key(contract) for contract in owned_contracts}) > 1:
+                    results[symbol] = {"symbol": symbol, "status": "contract_unavailable"}
+                    continue
+                requested_contracts[symbol] = owned_contracts[0] if owned_contracts else Stock(symbol, "SMART", "USD")
+            qualified_contracts = []
+            if requested_contracts:
+                try:
+                    qualified_contracts = ib.qualifyContracts(*requested_contracts.values()) or []
+                except Exception:
+                    logger.warning("Batch TWS contract qualification failed; trying symbols individually", exc_info=True)
+                    for symbol, contract in requested_contracts.items():
+                        try:
+                            qualified_contracts.extend(ib.qualifyContracts(contract) or [])
+                        except Exception:
+                            logger.warning("TWS contract qualification failed for manual quote symbol=%s", symbol, exc_info=True)
+            qualified = {}
+            for symbol, requested_contract in requested_contracts.items():
+                matching = [contract for contract in qualified_contracts
+                            if normalize_symbol(getattr(contract, "symbol", None)) == symbol
+                            and getattr(contract, "secType", None) == "STK"
+                            and getattr(contract, "currency", None) == getattr(requested_contract, "currency", None)
+                            and (safe_number(getattr(contract, "conId", None)) or 0) > 0
+                            and (symbol not in position_contracts
+                                 or market_data_contract_key(contract) == market_data_contract_key(requested_contract))]
+                if len(matching) != 1:
+                    results[symbol] = {"symbol": symbol, "status": "contract_unavailable"}
+                else:
+                    qualified[symbol] = matching[0]
+            observations = _ManualQuoteObservations({market_data_contract_key(contract) for contract in qualified.values()})
+            tickers, diagnostics, _refresh = request_ib_tickers_with_retry(
+                ib, list(qualified.values()), purpose="manual_execution_quotes",
+                quote_observations=observations,
+            )
+            refresh_at = utc_now_iso()
+            for symbol, contract in qualified.items():
+                contract_key = market_data_contract_key(contract)
+                diagnostic = diagnostics.get(contract_key) or diagnostics.get(symbol) or {}
+                proof = _manual_quote_proof_from_ticker(
+                    tickers.get(contract_key), contract_key, refresh_at, diagnostic,
+                    observations=observations,
+                )
+                if proof:
+                    proof["symbol"] = symbol
+                    proof_store[symbol] = proof
+                    results[symbol] = {
+                        "symbol": symbol, "status": "verified", "bid": proof["bid"],
+                        "ask": proof["ask"], "verified_at": proof["refresh_at"],
+                    }
+                else:
+                    results[symbol] = {"symbol": symbol, "status": "confirmation_required",
+                                       "reason": diagnostic.get("reason") or "Live bid and ask unavailable"}
+            return self._send_json({"results": [results[symbol] for symbol in symbols]})
+        except Exception:
+            logger.exception("Manual execution quote refresh unavailable")
+            return self._send_json({
+                "error": "TWS market data unavailable",
+                "results": [{"symbol": symbol, "status": "tws_unavailable"} for symbol in symbols],
+            }, status=503)
+        finally:
+            if live_mode_requested:
+                try:
+                    ib.reqMarketDataType(3)
+                except Exception:
+                    logger.warning("Unable to restore TWS market data mode after manual quote refresh")
 
     def handle_action_plan_get(self, account_id=None, execution_modes=None):
         if execution_modes not in (None, "both"):

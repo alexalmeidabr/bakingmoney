@@ -48,5 +48,5 @@
 ### Task 3: Verify and update PR
 
 - [x] Run full Python and Node suites, syntax checks, and `git diff --check`.
-- [ ] Commit and push to the existing branch.
-- [ ] Update draft PR #49 description with the timeout/retry strategy and actual test counts; leave unmerged.
+- [x] Commit and push to the existing branch.
+- [x] Update draft PR #49 description with the timeout/retry strategy and actual test counts; leave unmerged.

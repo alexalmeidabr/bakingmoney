@@ -42,8 +42,20 @@ class ManualExecutionPersistenceTests(unittest.TestCase):
         self.assertEqual(a["sell_trigger_direction"], "at_or_below")
         self.assertTrue(a["reserve_enabled"])
         self.assertEqual(b["buy_trigger_price"], 75)
+        self.assertEqual(b["sell_trigger_direction"], "at_or_above")
         self.assertEqual(len(web_server.list_manual_execution_triggers(self.conn, "U_ACCOUNT_A")), 1)
         self.assertEqual(len(web_server.list_manual_execution_triggers(self.conn, "U_ACCOUNT_B")), 1)
+        now = web_server.utc_now_iso()
+        root_id = self.conn.execute(
+            "INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES ('NVDA', ?, ?)", (now, now),
+        ).lastrowid
+        for version in (1, 2):
+            self.conn.execute(
+                "INSERT INTO analysis_versions (analysis_root_id, version_number, symbol, expected_price, created_at) VALUES (?, ?, 'NVDA', 150, ?)",
+                (root_id, version, now),
+            )
+        self.conn.commit()
+        self.assertEqual(web_server.get_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "NVDA")["buy_trigger_price"], 80)
 
         self.conn.close()
         web_server.init_db()
@@ -76,6 +88,26 @@ class ManualExecutionPersistenceTests(unittest.TestCase):
             finally:
                 restored.close()
 
+    def test_new_backup_restores_saved_account_preferences(self):
+        web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "NVDA", {
+            "buy_trigger_price": 80, "sell_trigger_price": 120,
+            "reserve_enabled": True, "reserve_percentage": 60,
+        })
+        backup_path = os.path.join(self.temp.name, "new-backup.db")
+        web_server._create_db_backup_snapshot(self.db_path, backup_path)
+        web_server._validate_backup_db_file(backup_path)
+        with mock.patch.object(web_server, "DB_PATH", backup_path):
+            web_server.init_db()
+            restored = web_server.get_db_connection()
+            try:
+                saved = web_server.get_manual_execution_trigger(restored, "U_ACCOUNT_A", "NVDA")
+                self.assertEqual(saved["buy_trigger_price"], 80)
+                self.assertEqual(saved["sell_trigger_price"], 120)
+                self.assertEqual(saved["reserve_percentage"], 60)
+                self.assertIsNone(web_server.get_manual_execution_trigger(restored, "U_ACCOUNT_B", "NVDA"))
+            finally:
+                restored.close()
+
     def test_validation_rejects_invalid_values_and_allows_inactive_reserve_preference(self):
         for symbol, payload in (
             ("", {}),
@@ -86,6 +118,7 @@ class ManualExecutionPersistenceTests(unittest.TestCase):
             ("AAPL", {"buy_trigger_price": float("nan")}),
             ("AAPL", {"sell_trigger_price": float("inf")}),
             ("AAPL", {"sell_trigger_direction": "sideways"}),
+            ("AAPL", {"sell_trigger_direction": ["at_or_above"]}),
             ("AAPL", {"reserve_percentage": -1}),
             ("AAPL", {"reserve_percentage": 101}),
             ("AAPL", {"reserve_enabled": "yes"}),
@@ -136,6 +169,18 @@ class ManualExecutionPersistenceTests(unittest.TestCase):
             self.assertEqual(capture.status, 409)
             web_server.BakingMoneyHandler.handle_manual_execution_trigger_delete(capture, "AAPL", account_id="U_ACCOUNT_A")
             self.assertEqual(capture.payload, {"deleted": True})
+
+    def test_crud_handler_returns_json_error_if_database_is_unavailable(self):
+        class Capture(web_server.BakingMoneyHandler):
+            def _send_json(self, payload, status=200):
+                self.payload = payload
+                self.status = status
+
+        capture = Capture.__new__(Capture)
+        with mock.patch.object(web_server, "get_db_connection", side_effect=RuntimeError("database unavailable")):
+            web_server.BakingMoneyHandler.handle_manual_execution_triggers_get(capture, account_id="U_ACCOUNT_A")
+        self.assertEqual(capture.status, 500)
+        self.assertIn("error", capture.payload)
 
 
 if __name__ == "__main__":

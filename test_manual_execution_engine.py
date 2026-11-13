@@ -1,6 +1,7 @@
 import unittest
 from copy import deepcopy
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import web_server
 
@@ -22,6 +23,14 @@ def verified_row(**overrides):
         "manual_trigger_status": "waiting",
     }
     row.update(overrides)
+    if "manual_quote_proof" not in overrides:
+        quote_at = row.get("price_last_successful_at")
+        price = row.get("current_price")
+        row["manual_quote_proof"] = {
+            "source": "live_bid_ask", "bid": price - 1 if isinstance(price, (int, float)) else None,
+            "ask": price, "bid_tick_at": quote_at, "ask_tick_at": quote_at,
+            "refresh_at": quote_at,
+        }
     return row
 
 
@@ -29,11 +38,12 @@ class ManualExecutionEvaluationTests(unittest.TestCase):
     def test_buy_threshold_is_inclusive_and_rechecked_at_current_price(self):
         preference = {"buy_trigger_price": 80}
         self.assertEqual(web_server.evaluate_manual_execution_trigger(verified_row(), preference, NOW)["status"], "waiting")
-        for price in (80, 75):
-            with self.subTest(price=price):
-                result = web_server.evaluate_manual_execution_trigger(verified_row(current_price=price), preference, NOW)
-                self.assertEqual(result["status"], "eligible")
-                self.assertEqual(result["verified_price"], price)
+        for action in ("Starter Buy", "Add", "Strong Add"):
+            for price in (80, 75):
+                with self.subTest(action=action, price=price):
+                    result = web_server.evaluate_manual_execution_trigger(verified_row(action=action, current_price=price), preference, NOW)
+                    self.assertEqual(result["status"], "eligible")
+                    self.assertEqual(result["verified_price"], price)
 
     def test_sell_and_trim_share_one_threshold_and_direction(self):
         above = {"sell_trigger_price": 120, "sell_trigger_direction": "at_or_above"}
@@ -65,6 +75,64 @@ class ManualExecutionEvaluationTests(unittest.TestCase):
                 result = web_server.evaluate_manual_execution_trigger(verified_row(**changes), preference, NOW)
                 self.assertEqual(result["status"], "price_confirmation_required")
                 self.assertIsNone(result["verified_price"])
+        boundary = web_server.evaluate_manual_execution_trigger(
+            verified_row(current_price=120, price_last_successful_at="2026-01-01T09:55:00+00:00"), preference, NOW,
+        )
+        self.assertEqual(boundary["status"], "eligible")
+
+    def test_delayed_position_quote_is_marked_unverified_for_manual_triggers(self):
+        contract = SimpleNamespace(symbol="NVDA", secType="STK", currency="USD", exchange="SMART", conId=123)
+        ticks = [
+            SimpleNamespace(tickType=1, price=99.0, time=NOW),
+            SimpleNamespace(tickType=2, price=101.0, time=NOW),
+        ]
+        ticker = SimpleNamespace(contract=contract, marketPrice=lambda: 100.0, last=100.0, close=95.0,
+                                 prevClose=95.0, bid=99.0, ask=101.0, bidSize=1, askSize=1,
+                                 marketDataType=1, ticks=ticks)
+        position = SimpleNamespace(contract=contract, position=1.0, avgCost=80.0)
+        contract_key = web_server.market_data_contract_key(contract)
+        rows = web_server._build_live_position_rows(
+            [position], {contract_key: ticker}, quote_success_at="2026-01-01T09:59:00+00:00",
+        )
+        self.assertEqual(rows[0]["price_source"], "marketPrice")
+        proof = web_server._manual_quote_proof_from_ticker(
+            ticker, contract_key, "2026-01-01T10:00:00+00:00", {"delayed": True}, now=NOW,
+        )
+        self.assertIsNone(proof)
+        result = web_server.evaluate_manual_execution_trigger(verified_row(manual_quote_proof=proof),
+                                                               {"buy_trigger_price": 120}, NOW)
+        self.assertEqual(result["status"], "price_confirmation_required")
+
+    def test_fresh_bid_and_ask_ticks_create_proof_but_old_ticks_do_not(self):
+        contract = SimpleNamespace(symbol="NVDA", secType="STK", currency="USD", exchange="SMART", conId=123)
+        ticker = SimpleNamespace(
+            contract=contract, marketPrice=lambda: 100.0, last=100.0, bid=99.0, ask=101.0,
+            bidSize=1, askSize=1, marketDataType=1,
+            ticks=[SimpleNamespace(tickType=1, price=99.0, time=NOW),
+                   SimpleNamespace(tickType=2, price=101.0, time=NOW)],
+        )
+        proof = web_server._manual_quote_proof_from_ticker(ticker, "test:NVDA", "2026-01-01T10:00:00+00:00", {}, now=NOW)
+        self.assertEqual(proof["bid"], 99)
+        self.assertEqual(proof["ask"], 101)
+        ticker.marketDataType = 2
+        self.assertIsNone(web_server._manual_quote_proof_from_ticker(ticker, "test:NVDA", "2026-01-01T10:00:00+00:00", {}, now=NOW))
+        ticker.marketDataType = 1
+        ticker.ticks[1].time = datetime(2026, 1, 1, 9, 50, tzinfo=timezone.utc)
+        self.assertIsNone(web_server._manual_quote_proof_from_ticker(ticker, "test:NVDA", "2026-01-01T10:00:00+00:00", {}, now=NOW))
+
+    def test_trigger_compares_buy_to_ask_and_sell_to_bid(self):
+        buy = verified_row(current_price=75, manual_quote_proof={
+            "source": "live_bid_ask", "bid": 84, "ask": 85,
+            "bid_tick_at": "2026-01-01T09:59:00+00:00", "ask_tick_at": "2026-01-01T09:59:00+00:00",
+            "refresh_at": "2026-01-01T09:59:00+00:00",
+        })
+        sell = verified_row(action="Sell", current_price=125, manual_quote_proof={
+            "source": "live_bid_ask", "bid": 115, "ask": 116,
+            "bid_tick_at": "2026-01-01T09:59:00+00:00", "ask_tick_at": "2026-01-01T09:59:00+00:00",
+            "refresh_at": "2026-01-01T09:59:00+00:00",
+        })
+        self.assertEqual(web_server.evaluate_manual_execution_trigger(buy, {"buy_trigger_price": 80}, NOW)["status"], "waiting")
+        self.assertEqual(web_server.evaluate_manual_execution_trigger(sell, {"sell_trigger_price": 120}, NOW)["status"], "waiting")
 
     def test_reservation_uses_additional_whole_shares_at_trigger_price(self):
         preference = {"buy_trigger_price": 80, "reserve_enabled": True, "reserve_percentage": 60}
@@ -140,6 +208,13 @@ def linear_candidate(symbol, **overrides):
         "extension_risk": 1.0,
     }
     candidate.update(overrides)
+    if "manual_quote_proof" not in overrides and candidate["owned_share_quantity"]:
+        quote_at = candidate["price_last_successful_at"]
+        price = candidate["current_price"]
+        candidate["manual_quote_proof"] = {
+            "source": "live_bid_ask", "bid": price - 1, "ask": price,
+            "bid_tick_at": quote_at, "ask_tick_at": quote_at, "refresh_at": quote_at,
+        }
     return candidate
 
 
@@ -189,8 +264,37 @@ class ManualExecutionFundingTests(unittest.TestCase):
         self.assertEqual(summary["fulfilled_reservations"], 5_000)
         self.assertGreater(rows["AAA"]["fulfilled_reservation"], 0)
         self.assertEqual(rows["BBB"]["fulfilled_reservation"], 0)
+        self.assertEqual(rows["AAA"]["fulfilled_reservation_from_current_cash_like"], 5_000)
         self.assertEqual(rows["AAA"]["fulfilled_reservation_from_projected_proceeds"], 0)
         self.assertEqual(summary["available_buy_budget"], 0)
+
+    def test_higher_linear_priority_reservation_precedes_alphabetical_order(self):
+        candidates = [
+            linear_candidate("AAA", expected_cagr=12.0, upside=30.0),
+            linear_candidate("ZZZ", expected_cagr=30.0, upside=80.0),
+        ]
+        payload = web_server.compute_linear_action_plan(
+            candidates, 100_000, 3_000,
+            linear_settings(action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
+            manual_triggers={symbol: {"buy_trigger_price": 80, "reserve_enabled": True, "reserve_percentage": 100}
+                             for symbol in ("AAA", "ZZZ")},
+        )["manual_execution"]
+        rows = rows_by_symbol(payload)
+        self.assertGreater(rows["ZZZ"]["linear_action_priority"], rows["AAA"]["linear_action_priority"])
+        self.assertEqual(rows["ZZZ"]["fulfilled_reservation"], 3_000)
+        self.assertEqual(rows["AAA"]["fulfilled_reservation"], 0)
+
+    def test_disabling_reservation_releases_budget_to_other_buy(self):
+        candidates = [linear_candidate("AAA"), linear_candidate("BBB")]
+        settings = linear_settings()
+        enabled = web_server.compute_linear_action_plan(candidates, 100_000, 20_000, settings,
+            manual_triggers={"AAA": {"buy_trigger_price": 80, "reserve_enabled": True, "reserve_percentage": 100}})["manual_execution"]
+        disabled = web_server.compute_linear_action_plan(candidates, 100_000, 20_000, settings,
+            manual_triggers={"AAA": {"buy_trigger_price": 80, "reserve_enabled": False, "reserve_percentage": 100}})["manual_execution"]
+        self.assertEqual(disabled["summary"]["fulfilled_reservations"], 0)
+        self.assertGreater(disabled["summary"]["available_buy_budget"], enabled["summary"]["available_buy_budget"])
+        self.assertGreater(rows_by_symbol(disabled)["BBB"]["executable_action_amount"],
+                           rows_by_symbol(enabled)["BBB"]["executable_action_amount"])
 
     def test_blocked_sell_has_no_projected_proceeds_and_eligible_sell_does(self):
         candidates = [
@@ -228,6 +332,11 @@ class ManualExecutionFundingTests(unittest.TestCase):
     def test_eligible_buy_releases_reservation_and_uses_verified_current_price(self):
         candidate = linear_candidate("AAA", current_price=75.0, current_position_market_value=75.0,
                                      current_position_weight=0.075)
+        quote_at = candidate["price_last_successful_at"]
+        candidate["manual_quote_proof"] = {
+            "source": "live_bid_ask", "bid": 74.0, "ask": 79.0,
+            "bid_tick_at": quote_at, "ask_tick_at": quote_at, "refresh_at": quote_at,
+        }
         payload = web_server.compute_linear_action_plan(
             [candidate], 100_000, 10_000,
             linear_settings(action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
@@ -235,9 +344,105 @@ class ManualExecutionFundingTests(unittest.TestCase):
         )["manual_execution"]
         row = payload["rows"][0]
         self.assertEqual(row["manual_trigger_status"], "eligible")
+        self.assertEqual(row["manual_verified_price"], 79)
+        self.assertEqual(row["current_price"], 79)
         self.assertEqual(row["requested_reservation"], 0)
         self.assertGreater(row["suggested_share_count"], 0)
-        self.assertEqual(row["executable_action_amount"], row["suggested_share_count"] * 75)
+        self.assertEqual(row["executable_action_amount"], row["suggested_share_count"] * 79)
+
+    def test_eligible_sell_sizes_proceeds_at_verified_bid(self):
+        candidate = linear_candidate("AAA", rating="Sell", current_price=125.0,
+                                     current_position_market_value=1_250.0,
+                                     current_position_weight=1.25, owned_share_quantity=10.0)
+        quote_at = candidate["price_last_successful_at"]
+        candidate["manual_quote_proof"] = {
+            "source": "live_bid_ask", "bid": 121.0, "ask": 126.0,
+            "bid_tick_at": quote_at, "ask_tick_at": quote_at, "refresh_at": quote_at,
+        }
+        payload = web_server.compute_linear_action_plan(
+            [candidate], 100_000, 0,
+            linear_settings(action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
+            manual_triggers={"AAA": {"sell_trigger_price": 120, "sell_trigger_direction": "at_or_above"}},
+        )
+        baseline = payload["rows"][0]
+        row = payload["manual_execution"]["rows"][0]
+        self.assertEqual(row["manual_trigger_status"], "eligible")
+        self.assertEqual(row["manual_verified_price"], 121)
+        self.assertEqual(row["current_price"], 121)
+        self.assertEqual(row["executable_action_amount"], row["suggested_share_count"] * 121)
+        self.assertEqual(baseline["current_price"], 125)
+
+    def test_eligible_buy_recomputes_gap_for_owned_shares_at_verified_ask(self):
+        candidate = linear_candidate("AAA", current_price=100.0,
+                                     current_position_market_value=10_000.0,
+                                     current_position_weight=10.0, owned_share_quantity=100.0)
+        quote_at = candidate["price_last_successful_at"]
+        candidate["manual_quote_proof"] = {
+            "source": "live_bid_ask", "bid": 79.0, "ask": 80.0,
+            "bid_tick_at": quote_at, "ask_tick_at": quote_at, "refresh_at": quote_at,
+        }
+        payload = web_server.compute_linear_action_plan(
+            [candidate], 100_000, 100_000,
+            linear_settings(action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
+            manual_triggers={"AAA": {"buy_trigger_price": 85}},
+        )
+        base = payload["rows"][0]
+        row = payload["manual_execution"]["rows"][0]
+        expected_shares = int((row["target_weight_mid"] / 100 * 100_000 - 100 * 80) // 80)
+        self.assertEqual(row["manual_trigger_status"], "eligible")
+        self.assertEqual(row["desired_share_count"], expected_shares)
+        self.assertEqual(row["suggested_share_count"], expected_shares)
+        self.assertEqual(row["executable_action_amount"], expected_shares * 80)
+        self.assertEqual(base["current_position_market_value"], 10_000)
+
+    def test_eligible_trim_recomputes_gap_for_owned_shares_at_verified_bid(self):
+        candidate = linear_candidate("AAA", current_price=125.0,
+                                     current_position_market_value=12_500.0,
+                                     current_position_weight=12.5, owned_share_quantity=100.0)
+        quote_at = candidate["price_last_successful_at"]
+        candidate["manual_quote_proof"] = {
+            "source": "live_bid_ask", "bid": 80.0, "ask": 81.0,
+            "bid_tick_at": quote_at, "ask_tick_at": quote_at, "refresh_at": quote_at,
+        }
+        payload = web_server.compute_linear_action_plan(
+            [candidate], 100_000, 0,
+            linear_settings(linear_allocated_target_total_pct=5.0,
+                            action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
+            manual_triggers={"AAA": {"sell_trigger_price": 90, "sell_trigger_direction": "at_or_below"}},
+        )
+        base = payload["rows"][0]
+        row = payload["manual_execution"]["rows"][0]
+        expected_shares = int((100 * 80 - row["target_weight_high"] / 100 * 100_000) // 80)
+        self.assertEqual(row["recommended_action"], "Trim")
+        self.assertEqual(row["manual_trigger_status"], "eligible")
+        self.assertEqual(row["suggested_share_count"], expected_shares)
+        self.assertEqual(row["executable_action_amount"], expected_shares * 80)
+        self.assertEqual(base["current_position_market_value"], 12_500)
+
+    def test_eligible_buy_with_quote_above_target_has_no_executable_gap(self):
+        candidate = linear_candidate("AAA", current_price=100.0,
+                                     current_position_market_value=10_000.0,
+                                     current_position_weight=10.0, owned_share_quantity=100.0)
+        quote_at = candidate["price_last_successful_at"]
+        candidate["manual_quote_proof"] = {
+            "source": "live_bid_ask", "bid": 249.0, "ask": 250.0,
+            "bid_tick_at": quote_at, "ask_tick_at": quote_at, "refresh_at": quote_at,
+        }
+        payload = web_server.compute_linear_action_plan(
+            [candidate], 100_000, 100_000,
+            linear_settings(action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
+            manual_triggers={"AAA": {"buy_trigger_price": 300}},
+        )
+        row = payload["manual_execution"]["rows"][0]
+        self.assertEqual(row["recommended_action"], "Add")
+        self.assertEqual(row["manual_trigger_status"], "eligible")
+        self.assertEqual(row["current_position_weight"], 25)
+        self.assertEqual(row["position_status"], "ABOVE_TARGET")
+        self.assertEqual(row["target_gap_amount"], 0)
+        self.assertEqual(row["executable_action_amount"], 0)
+        self.assertIn("no additional executable gap", row["linear_explanation"])
+        self.assertEqual(payload["manual_execution"]["summary"]["current_equity_allocation"], 25)
+        self.assertEqual(payload["summary"]["current_equity_allocation"], 10)
 
     def test_projected_sell_proceeds_reservation_is_identified_separately_from_cash(self):
         candidates = [
@@ -255,7 +460,7 @@ class ManualExecutionFundingTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["current_cash_unallocated"], 0)
         self.assertEqual(payload["summary"]["executable_sell_trim_proceeds"], 1_000)
         self.assertEqual(row["fulfilled_reservation"], 1_000)
-        self.assertEqual(row["fulfilled_reservation_from_existing_cash"], 0)
+        self.assertEqual(row["fulfilled_reservation_from_current_cash_like"], 0)
         self.assertEqual(row["fulfilled_reservation_from_projected_proceeds"], 1_000)
         self.assertEqual(payload["summary"]["funded_add_amount"], 0)
 
@@ -270,6 +475,16 @@ class ManualExecutionFundingTests(unittest.TestCase):
                 self.assertEqual(manual[symbol][field], base[symbol][field], (symbol, field))
         for field in ("available_buy_budget", "funded_add_amount", "target_reserve_amount", "bootstrap_execution_active"):
             self.assertEqual(payload["manual_execution"]["summary"][field], payload["summary"][field], field)
+
+    def test_no_trigger_mode_preserves_bootstrap_execution(self):
+        candidate = linear_candidate("AAA", current_position_weight=0.0, current_position_market_value=0.0,
+                                     owned_share_quantity=0.0, price_sizing_source="analysis_price_fallback")
+        settings = linear_settings(linear_allocated_target_total_pct=0.01,
+                                   action_min_cash_unallocated_target=0.0, linear_max_reserve_pct=0.0)
+        payload = web_server.compute_linear_action_plan([candidate], 100_000, 100, settings, manual_triggers={})
+        self.assertTrue(payload["summary"]["bootstrap_execution_active"])
+        self.assertEqual(payload["manual_execution"]["summary"]["bootstrap_amount_funded"], payload["summary"]["bootstrap_amount_funded"])
+        self.assertEqual(payload["manual_execution"]["rows"][0]["suggested_share_count"], payload["rows"][0]["suggested_share_count"])
 
 
 if __name__ == "__main__":

@@ -66,8 +66,8 @@
 
 **Interfaces:** `build_action_plan(conn, account_id=None, include_manual_execution=False)`; opt-in list and detail handlers expose `manual_execution` and `manual_execution_detail` without changing default JSON.
 
-- [ ] Write failing tests for default/opt-in payload equivalence, detail consistency, account isolation, unowned confirmation, selected account errors, and shared-analysis call count.
-- [ ] Run focused tests and confirm expected failures.
-- [ ] Wire preferences and independent execution results into list/detail API routes.
-- [ ] Run focused tests, full Python and Node suites, syntax checks, and `git diff --check`; commit and push.
+- [x] Write failing tests for default/opt-in payload equivalence, detail consistency, account isolation, unowned confirmation, selected account errors, and shared-analysis call count.
+- [x] Run focused tests and confirm expected failures.
+- [x] Wire preferences and independent execution results into list/detail API routes.
+- [x] Run focused tests, full Python and Node suites, syntax checks, and `git diff --check`; commit and push.
 - [ ] Open a draft PR against `main` with architecture, contracts, formulas, price freshness, baseline evidence, test counts, and PR 2 limitations; do not merge.

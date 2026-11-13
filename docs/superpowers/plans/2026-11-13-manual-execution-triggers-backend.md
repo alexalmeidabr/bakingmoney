@@ -44,10 +44,10 @@
 
 **Interfaces:** `evaluate_manual_execution_trigger(row, preference, now=None)` returns status and quote diagnostics; `calculate_manual_reservation(row, preference, portfolio_value, minimum_trade_amount)` returns planned shares/amount and requested reservation.
 
-- [ ] Write failing threshold, no-trigger, stale/analysis-price/unowned, rounding, existing-holdings, zero/disabled, and minimum-trade tests.
-- [ ] Run `python -m unittest test_manual_execution_engine -v` and confirm expected failures.
-- [ ] Implement the pure evaluation and arithmetic helpers.
-- [ ] Run focused tests and commit the working task.
+- [x] Write failing threshold, no-trigger, stale/analysis-price/unowned, rounding, existing-holdings, zero/disabled, and minimum-trade tests.
+- [x] Run `python -m unittest test_manual_execution_engine -v` and confirm expected failures.
+- [x] Implement the pure evaluation and arithmetic helpers.
+- [x] Run focused tests and commit the working task.
 
 ### Task 3: Independent trigger-aware funding
 

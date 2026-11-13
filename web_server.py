@@ -2027,6 +2027,98 @@ def resolve_action_plan_price(position, analysis):
     }
 
 
+MANUAL_EXECUTION_QUOTE_MAX_AGE_SECONDS = 300
+MANUAL_EXECUTION_BUY_ACTIONS = {"Strong Add", "Add", "Starter Buy"}
+MANUAL_EXECUTION_SELL_ACTIONS = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
+
+
+def evaluate_manual_execution_trigger(row, preference, now=None):
+    row = row or {}
+    preference = preference or {}
+    action = row.get("recommended_action") or row.get("action")
+    if action in MANUAL_EXECUTION_BUY_ACTIONS:
+        trigger_price = safe_number(preference.get("buy_trigger_price"))
+        direction = "at_or_below"
+    elif action in MANUAL_EXECUTION_SELL_ACTIONS:
+        trigger_price = safe_number(preference.get("sell_trigger_price"))
+        direction = preference.get("sell_trigger_direction") or "at_or_above"
+    else:
+        trigger_price = None
+        direction = None
+    result = {
+        "status": "no_manual_trigger",
+        "manual_trigger_price": trigger_price,
+        "manual_trigger_direction": direction if trigger_price is not None else None,
+        "verified_price": None,
+        "verified_quote_at": None,
+        "verification_reason": None,
+    }
+    if not is_valid_market_price(trigger_price):
+        result["manual_trigger_price"] = None
+        return result
+    current = now or datetime.now(timezone.utc)
+    quote_at = row.get("price_last_successful_at")
+    try:
+        quote_time = datetime.fromisoformat(quote_at) if isinstance(quote_at, str) else None
+        age_seconds = (current - quote_time).total_seconds() if quote_time and quote_time.tzinfo else None
+    except (TypeError, ValueError, OverflowError):
+        age_seconds = None
+    verified = (
+        abs(safe_number(row.get("owned_share_quantity")) or 0.0) > 0
+        and row.get("price_sizing_source") == "position_quote"
+        and row.get("position_price_status") == "tws_received"
+        and row.get("price_source") in {"marketPrice", "last"}
+        and is_valid_market_price(row.get("current_price"))
+        and age_seconds is not None
+        and 0 <= age_seconds <= MANUAL_EXECUTION_QUOTE_MAX_AGE_SECONDS
+    )
+    if not verified:
+        result["status"] = "price_confirmation_required"
+        result["verification_reason"] = "A current verified TWS position quote is required."
+        return result
+    price = safe_number(row["current_price"])
+    reached = price <= trigger_price if direction == "at_or_below" else price >= trigger_price
+    result.update({
+        "status": "eligible" if reached else "waiting",
+        "verified_price": price,
+        "verified_quote_at": quote_time.isoformat(),
+    })
+    return result
+
+
+def calculate_manual_reservation(row, preference, portfolio_value, minimum_trade_amount):
+    result = {
+        "planned_purchase_shares_at_trigger": 0,
+        "planned_purchase_amount_at_trigger": 0.0,
+        "requested_reservation": 0.0,
+    }
+    row = row or {}
+    preference = preference or {}
+    action = row.get("recommended_action") or row.get("action")
+    trigger_price = safe_number(preference.get("buy_trigger_price"))
+    percentage = safe_number(preference.get("reserve_percentage")) or 0.0
+    if (action not in MANUAL_EXECUTION_BUY_ACTIONS
+            or row.get("manual_trigger_status") not in {"waiting", "price_confirmation_required"}
+            or not preference.get("reserve_enabled")
+            or not is_valid_market_price(trigger_price)
+            or percentage <= 0):
+        return result
+    total = safe_number(portfolio_value) or 0.0
+    target_weight = safe_number(row.get("target_weight_mid")) or 0.0
+    owned_shares = max(0.0, safe_number(row.get("owned_share_quantity")) or 0.0)
+    gap = max(0.0, total * target_weight / 100.0 - owned_shares * trigger_price)
+    shares = whole_shares_for_amount(gap, trigger_price)
+    planned = _whole_share_amount(shares, trigger_price)
+    if planned < max(0.0, safe_number(minimum_trade_amount) or 0.0):
+        return result
+    result.update({
+        "planned_purchase_shares_at_trigger": shares,
+        "planned_purchase_amount_at_trigger": planned,
+        "requested_reservation": min(planned, planned * min(percentage, 100.0) / 100.0),
+    })
+    return result
+
+
 def has_usable_action_plan_price(row):
     price_source = (row or {}).get("price_sizing_source")
     # Older callers can omit Action Plan price provenance. Leave their

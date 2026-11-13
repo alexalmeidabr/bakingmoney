@@ -55,10 +55,10 @@
 
 **Interfaces:** `compute_linear_action_plan(..., manual_triggers=None)` returns original `rows`/`summary`, plus `manual_execution` only when requested; `_apply_linear_cash_constrained_execution_layer(..., manual_execution=False)` preserves default behavior.
 
-- [ ] Write failing tests for unchanged baseline, blocked Buy/Sell, eligible Sell proceeds, Dynamic Reserve precedence, partial priority allocation, eligible Buy reallocation, Bootstrap exclusion, and no cash double counting.
-- [ ] Run focused tests and confirm expected failures.
-- [ ] Copy pre-funding rows and add manual statuses before independent execution passes; integrate reservations into the existing funding budget.
-- [ ] Run focused and existing Linear tests; commit the working task.
+- [x] Write failing tests for unchanged baseline, blocked Buy/Sell, eligible Sell proceeds, Dynamic Reserve precedence, partial priority allocation, eligible Buy reallocation, Bootstrap exclusion, and no cash double counting.
+- [x] Run focused tests and confirm expected failures.
+- [x] Copy pre-funding rows and add manual statuses before independent execution passes; integrate reservations into the existing funding budget.
+- [x] Run focused and existing Linear tests; commit the working task.
 
 ### Task 4: Action Plan API and full integration
 

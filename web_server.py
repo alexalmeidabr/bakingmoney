@@ -11,6 +11,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from copy import deepcopy
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from html import unescape
 from datetime import date, datetime, timezone
@@ -10859,7 +10860,7 @@ def _apply_linear_bootstrap_execution(bootstrap_candidates, total_portfolio_valu
     }
 
 
-def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings, dynamic_reserve_pct=None):
+def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, cash_like_available, settings, dynamic_reserve_pct=None, manual_execution=False):
     total = safe_number(total_portfolio_value) or 0.0
     cash_available = safe_number(cash_like_available) or 0.0
     minimum_cash_reserve_amount = total * (safe_number(settings.get("action_min_cash_unallocated_target")) or 0.0) / 100.0
@@ -10875,6 +10876,16 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
     bootstrap_intentions = []
     for row in rows:
         _reset_linear_bootstrap_diagnostics(row)
+        if manual_execution and row.get("manual_trigger_blocked"):
+            row["desired_share_count"] = 0
+            row["desired_whole_share_amount"] = 0.0
+            row["suggested_share_count"] = 0
+            row["executable_action_amount"] = 0.0
+            row["unfunded_action_amount"] = 0.0
+            row["unfunded_share_count"] = 0
+            row["executable_action"] = "Watch" if row.get("recommended_action") in buy_actions else "Hold"
+            row["funding_status"] = "Manual trigger waiting" if row.get("manual_trigger_status") == "waiting" else "Price confirmation required"
+            continue
         if not has_usable_action_plan_price(row):
             row["executable_action_amount"] = 0.0
             row["unfunded_action_amount"] = 0.0
@@ -10911,14 +10922,63 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
             row["funding_status"] = "No funding needed"
     projected_cash_before_buys = cash_available + executable_sell_trim_proceeds
     available_buy_budget = max(0.0, projected_cash_before_buys - target_reserve_amount)
+    available_buy_budget_before_manual_reservations = available_buy_budget
     reserve_shortfall = max(0.0, target_reserve_amount - projected_cash_before_buys)
     reserve_excess = max(0.0, projected_cash_before_buys - target_reserve_amount)
+    manual_reservation_summary = {}
+    if manual_execution:
+        reservation_rows = [row for row in rows if (safe_number(row.get("requested_reservation")) or 0.0) > 0]
+        for row in reservation_rows:
+            gap_amount = safe_number(row.get("planned_purchase_amount_at_trigger")) or 0.0
+            gap_score = min(gap_amount / total / 0.05, 1.0) if total > 0 else 0.0
+            row["linear_action_priority"] = (
+                (safe_number(row.get("linear_allocation_score")) or 0.0) * 0.50
+                + gap_score * 0.20
+                + (safe_number(row.get("linear_expected_cagr_score")) or 0.0) * 0.20
+                + (safe_number(row.get("linear_core_net_score")) or 0.0) * 0.10
+            )
+            row["funding_priority_score"] = row["linear_action_priority"]
+        reservation_rows.sort(key=lambda row: (
+            -(safe_number(row.get("linear_action_priority")) or 0.0),
+            -(safe_number(row.get("linear_allocation_score")) or 0.0),
+            -(safe_number(row.get("expected_cagr")) or 0.0),
+            -(safe_number(row.get("upside")) or 0.0),
+            row.get("symbol") or "",
+        ))
+        remaining_reservable = available_buy_budget
+        remaining_existing_cash = min(available_buy_budget, max(0.0, cash_available - target_reserve_amount))
+        for row in reservation_rows:
+            requested = safe_number(row["requested_reservation"]) or 0.0
+            fulfilled = min(requested, remaining_reservable)
+            from_existing_cash = min(fulfilled, remaining_existing_cash)
+            row["fulfilled_reservation"] = fulfilled
+            row["unfulfilled_reservation"] = max(0.0, requested - fulfilled)
+            row["fulfilled_reservation_from_existing_cash"] = from_existing_cash
+            row["fulfilled_reservation_from_projected_proceeds"] = max(0.0, fulfilled - from_existing_cash)
+            remaining_reservable = max(0.0, remaining_reservable - fulfilled)
+            remaining_existing_cash = max(0.0, remaining_existing_cash - from_existing_cash)
+        requested_total = sum(safe_number(row.get("requested_reservation")) or 0.0 for row in rows)
+        fulfilled_total = sum(safe_number(row.get("fulfilled_reservation")) or 0.0 for row in rows)
+        available_buy_budget = remaining_reservable
+        manual_reservation_summary = {
+            "available_buy_budget_before_manual_reservations": available_buy_budget_before_manual_reservations,
+            "requested_reservations": requested_total,
+            "fulfilled_reservations": fulfilled_total,
+            "unfulfilled_reservations": max(0.0, requested_total - fulfilled_total),
+            "fulfilled_reservations_from_existing_cash": sum(safe_number(row.get("fulfilled_reservation_from_existing_cash")) or 0.0 for row in rows),
+            "fulfilled_reservations_from_projected_proceeds": sum(safe_number(row.get("fulfilled_reservation_from_projected_proceeds")) or 0.0 for row in rows),
+            "blocked_buy_planned_amount": sum(
+                safe_number(row.get("planned_action_amount")) or 0.0 for row in rows
+                if row.get("manual_trigger_blocked") and row.get("recommended_action") in buy_actions
+            ),
+        }
     buy_candidates = [
         row for row in rows
         if row.get("action") in buy_actions
         and row.get("action_amount_direction") == "add"
         and row.get("desired_share_count", 0) > 0
         and has_usable_action_plan_price(row)
+        and not (manual_execution and row.get("manual_trigger_blocked"))
     ]
     for row in buy_candidates:
         gap_score = min((row["desired_whole_share_amount"] / total / 0.05), 1.0) if total > 0 else 0.0
@@ -10997,8 +11057,10 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         row["reserve_shortfall"] = reserve_shortfall
         row["reserve_excess"] = reserve_excess
         row["cash_available_for_linear_buys"] = available_buy_budget
+        if manual_execution:
+            row["available_buy_budget_before_manual_reservations"] = available_buy_budget_before_manual_reservations
         _mark_unfunded_add_as_watch(row)
-    return {
+    result = {
         "available_buy_budget": available_buy_budget,
         "cash_available_for_linear_buys": available_buy_budget,
         "total_add_demand": total_add_demand,
@@ -11017,6 +11079,10 @@ def _apply_linear_cash_constrained_execution_layer(rows, total_portfolio_value, 
         "bootstrap_amount_funded": bootstrap_amount_funded,
         "bootstrap_unfunded_candidate_count": bootstrap_unfunded_candidate_count,
     }
+    if manual_execution:
+        result.update(manual_reservation_summary)
+        result["remaining_buy_budget"] = max(0.0, available_buy_budget - funded_add_amount)
+    return result
 
 
 
@@ -11362,7 +11428,7 @@ def block_stale_price_execution(rows):
         })
 
 
-def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings):
+def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_available, settings, manual_triggers=None):
     target_total = safe_number(settings.get("linear_allocated_target_total_pct")) or 0.0
     weight_keys = ["linear_expected_cagr_weight", "linear_upside_weight", "linear_core_confidence_weight", "linear_potential_confidence_weight", "linear_confidence_quality_weight"]
     weight_total = sum(safe_number(settings.get(key)) or 0.0 for key in weight_keys)
@@ -11592,6 +11658,7 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             **amount_fields,
         })
         row.update(_linear_action_compatibility_fields())
+    manual_rows = deepcopy(rows) if manual_triggers is not None else None
     execution = _apply_linear_cash_constrained_execution_layer(
         rows,
         total_portfolio_value,
@@ -11616,7 +11683,72 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
         **execution,
         "execution_warning": "Linear add demand exceeds available funding. Action amounts have been cash-constrained and prioritized." if execution["total_add_demand"] > execution["available_buy_budget"] + 1e-6 else None,
     }
-    return {"rows": rows, "summary": summary}
+    result = {"rows": rows, "summary": summary}
+    if manual_rows is not None:
+        evaluation_time = datetime.now(timezone.utc)
+        min_trade = safe_number(settings.get("action_min_executable_trade_amount")) or 0.0
+        for row in manual_rows:
+            preference = manual_triggers.get(row.get("symbol")) or {}
+            recommended_action = row.get("action")
+            planned = deepcopy(row)
+            _prepare_whole_share_execution(planned)
+            evaluation = evaluate_manual_execution_trigger(row, preference, evaluation_time)
+            row.update({
+                "recommended_action": recommended_action,
+                "planned_action_amount": safe_number(planned.get("action_amount")) or 0.0,
+                "planned_share_count": int(planned.get("suggested_share_count") or planned.get("desired_share_count") or 0),
+                "manual_trigger_status": evaluation["status"],
+                "manual_trigger_price": evaluation["manual_trigger_price"],
+                "manual_trigger_direction": evaluation["manual_trigger_direction"],
+                "manual_verified_price": evaluation["verified_price"],
+                "manual_verified_quote_at": evaluation["verified_quote_at"],
+                "manual_price_verification_reason": evaluation["verification_reason"],
+                "manual_trigger_blocked": evaluation["status"] in {"waiting", "price_confirmation_required"},
+                "reserve_enabled": bool(preference.get("reserve_enabled")),
+                "reserve_percentage": safe_number(preference.get("reserve_percentage")) or 0.0,
+                "fulfilled_reservation": 0.0,
+                "unfulfilled_reservation": 0.0,
+                "fulfilled_reservation_from_existing_cash": 0.0,
+                "fulfilled_reservation_from_projected_proceeds": 0.0,
+            })
+            row.update(calculate_manual_reservation(row, preference, total_portfolio_value, min_trade))
+            row["unfulfilled_reservation"] = row["requested_reservation"]
+        manual_execution = _apply_linear_cash_constrained_execution_layer(
+            manual_rows,
+            total_portfolio_value,
+            cash_like_available,
+            settings,
+            dynamic_reserve_pct=reserve_details["dynamic_reserve_pct"],
+            manual_execution=True,
+        )
+        block_stale_price_execution(manual_rows)
+        for row in manual_rows:
+            row["decision_path"] = _linear_action_decision_path(row, row.get("action") or "Hold")
+            row.update(_linear_detail_diagnostics(row))
+        manual_rows.sort(key=lambda row: (
+            -(safe_number(row.get("linear_action_priority")) or 0.0),
+            -(safe_number(row.get("linear_allocation_score")) or 0.0),
+            row.get("symbol") or "",
+        ))
+        manual_summary = {
+            **summary,
+            **manual_execution,
+            "execution_warning": (
+                "Eligible Linear add demand exceeds post-reservation funding."
+                if manual_execution["total_add_demand"] > manual_execution["available_buy_budget"] + 1e-6
+                else None
+            ),
+        }
+        result["manual_execution"] = {
+            "rows": manual_rows,
+            "summary": manual_summary,
+            "price_verification": {
+                "confirmation_required_symbols": [row["symbol"] for row in manual_rows if row["manual_trigger_status"] == "price_confirmation_required"],
+                "verified_trigger_symbols": [row["symbol"] for row in manual_rows if row["manual_trigger_status"] in {"eligible", "waiting"}],
+                "quote_max_age_seconds": MANUAL_EXECUTION_QUOTE_MAX_AGE_SECONDS,
+            },
+        }
+    return result
 
 def build_action_plan(conn, account_id=None):
     settings = get_action_plan_settings(conn)

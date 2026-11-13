@@ -70,4 +70,4 @@
 - [x] Run focused tests and confirm expected failures.
 - [x] Wire preferences and independent execution results into list/detail API routes.
 - [x] Run focused tests, full Python and Node suites, syntax checks, and `git diff --check`; commit and push.
-- [ ] Open a draft PR against `main` with architecture, contracts, formulas, price freshness, baseline evidence, test counts, and PR 2 limitations; do not merge.
+- [x] Open a draft PR against `main` with architecture, contracts, formulas, price freshness, baseline evidence, test counts, and PR 2 limitations; do not merge.

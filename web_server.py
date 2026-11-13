@@ -3969,6 +3969,108 @@ def resolve_portfolio_account(conn, requested_account_id=None, allow_none_when_e
     )
 
 
+MANUAL_EXECUTION_TRIGGER_FIELDS = {
+    "buy_trigger_price", "sell_trigger_price", "sell_trigger_direction",
+    "reserve_enabled", "reserve_percentage",
+}
+
+
+def _manual_execution_symbol(symbol):
+    normalized = normalize_symbol(symbol)
+    if not normalized or not re.fullmatch(r"[A-Z0-9][A-Z0-9.-]{0,19}", normalized):
+        raise ValueError("Invalid manual execution trigger symbol")
+    return normalized
+
+
+def _manual_execution_account(conn, account_id):
+    return resolve_portfolio_account(conn, account_id, allow_none_when_empty=False)
+
+
+def _manual_execution_price(value, field):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not is_valid_market_price(value):
+        raise ValueError(f"{field} must be a finite number greater than zero or null")
+    return float(value)
+
+
+def _serialize_manual_execution_trigger(row):
+    if row is None:
+        return None
+    result = dict(row)
+    result["reserve_enabled"] = bool(result["reserve_enabled"])
+    return result
+
+
+def list_manual_execution_triggers(conn, account_id):
+    resolved = _manual_execution_account(conn, account_id)
+    rows = conn.execute(
+        "SELECT * FROM manual_execution_triggers WHERE account_id = ? ORDER BY symbol ASC",
+        (resolved,),
+    ).fetchall()
+    return [_serialize_manual_execution_trigger(row) for row in rows]
+
+
+def get_manual_execution_trigger(conn, account_id, symbol):
+    resolved = _manual_execution_account(conn, account_id)
+    normalized = _manual_execution_symbol(symbol)
+    row = conn.execute(
+        "SELECT * FROM manual_execution_triggers WHERE account_id = ? AND symbol = ?",
+        (resolved, normalized),
+    ).fetchone()
+    return _serialize_manual_execution_trigger(row)
+
+
+def save_manual_execution_trigger(conn, account_id, symbol, payload):
+    resolved = _manual_execution_account(conn, account_id)
+    normalized = _manual_execution_symbol(symbol)
+    if not isinstance(payload, dict) or set(payload) - MANUAL_EXECUTION_TRIGGER_FIELDS:
+        raise ValueError("Invalid manual execution trigger payload")
+    buy_price = _manual_execution_price(payload.get("buy_trigger_price"), "buy_trigger_price")
+    sell_price = _manual_execution_price(payload.get("sell_trigger_price"), "sell_trigger_price")
+    direction = payload.get("sell_trigger_direction", "at_or_above")
+    if direction not in {"at_or_above", "at_or_below"}:
+        raise ValueError("sell_trigger_direction must be at_or_above or at_or_below")
+    reserve_enabled = payload.get("reserve_enabled", False)
+    if not isinstance(reserve_enabled, bool):
+        raise ValueError("reserve_enabled must be a boolean")
+    reserve_percentage = payload.get("reserve_percentage", 0)
+    if (isinstance(reserve_percentage, bool) or not isinstance(reserve_percentage, (int, float))
+            or safe_number(reserve_percentage) is None or not 0 <= reserve_percentage <= 100):
+        raise ValueError("reserve_percentage must be a finite number from 0 to 100")
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO manual_execution_triggers (
+            account_id, symbol, buy_trigger_price, sell_trigger_price, sell_trigger_direction,
+            reserve_enabled, reserve_percentage, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, symbol) DO UPDATE SET
+            buy_trigger_price = excluded.buy_trigger_price,
+            sell_trigger_price = excluded.sell_trigger_price,
+            sell_trigger_direction = excluded.sell_trigger_direction,
+            reserve_enabled = excluded.reserve_enabled,
+            reserve_percentage = excluded.reserve_percentage,
+            updated_at = excluded.updated_at
+        """,
+        (resolved, normalized, buy_price, sell_price, direction,
+         int(reserve_enabled), float(reserve_percentage), now, now),
+    )
+    conn.commit()
+    return get_manual_execution_trigger(conn, resolved, normalized)
+
+
+def delete_manual_execution_trigger(conn, account_id, symbol):
+    resolved = _manual_execution_account(conn, account_id)
+    normalized = _manual_execution_symbol(symbol)
+    cursor = conn.execute(
+        "DELETE FROM manual_execution_triggers WHERE account_id = ? AND symbol = ?",
+        (resolved, normalized),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
 def _create_ib_accounts_table(conn):
     conn.execute(
         """
@@ -4594,6 +4696,22 @@ def init_db():
             """
         )
         _create_ib_accounts_table(conn)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS manual_execution_triggers (
+              account_id TEXT NOT NULL,
+              symbol TEXT NOT NULL,
+              buy_trigger_price REAL,
+              sell_trigger_price REAL,
+              sell_trigger_direction TEXT NOT NULL DEFAULT 'at_or_above',
+              reserve_enabled INTEGER NOT NULL DEFAULT 0,
+              reserve_percentage REAL NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (account_id, symbol)
+            )
+            """
+        )
         _create_positions_cache_table(conn)
         _create_portfolio_summary_cache_table(conn)
         ensure_column_exists(conn, "positions_cache", "contract_key", "TEXT")
@@ -13791,6 +13909,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             return self.handle_action_plan_detail_get(symbol, account_id=account_id)
         if path == "/api/action-plan":
             return self.handle_action_plan_get(account_id=account_id)
+        if path == "/api/manual-execution-triggers":
+            return self.handle_manual_execution_triggers_get(account_id=account_id)
+        if path.startswith("/api/manual-execution-triggers/"):
+            symbol = path[len("/api/manual-execution-triggers/"):]
+            return self.handle_manual_execution_trigger_get(symbol, account_id=account_id)
         if path.startswith("/api/analysis/"):
             symbol = normalize_symbol(path[len("/api/analysis/") :])
             if not symbol:
@@ -13918,7 +14041,12 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         self.send_error(404, "Not Found")
 
     def do_PUT(self):
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+        if path.startswith("/api/manual-execution-triggers/"):
+            account_id = _normalize_ib_account_id((parse_qs(parsed_url.query).get("account_id") or [None])[0])
+            symbol = path[len("/api/manual-execution-triggers/"):]
+            return self.handle_manual_execution_trigger_put(symbol, account_id=account_id)
         if path == "/api/configuration/prompts":
             return self.handle_configuration_prompts_put()
         if path == "/api/configuration/general":
@@ -13940,7 +14068,12 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         self.send_error(404, "Not Found")
 
     def do_DELETE(self):
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+        if path.startswith("/api/manual-execution-triggers/"):
+            account_id = _normalize_ib_account_id((parse_qs(parsed_url.query).get("account_id") or [None])[0])
+            symbol = path[len("/api/manual-execution-triggers/"):]
+            return self.handle_manual_execution_trigger_delete(symbol, account_id=account_id)
         if path.startswith("/api/analysis/versions/"):
             parts = [item for item in path[len("/api/analysis/versions/") :].split("/") if item]
             if len(parts) == 3 and parts[0].isdigit() and parts[1] == "external-scenarios" and parts[2].isdigit():
@@ -15294,6 +15427,43 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
             self._send_json({"accounts": serialize_ib_accounts_for_api(conn)})
         finally:
             conn.close()
+
+    def _handle_manual_execution_request(self, operation, symbol=None, account_id=None):
+        conn = get_db_connection()
+        try:
+            resolved = _manual_execution_account(conn, account_id)
+            if operation == "list":
+                return self._send_json({"triggers": list_manual_execution_triggers(conn, resolved)})
+            if operation == "get":
+                trigger = get_manual_execution_trigger(conn, resolved, symbol)
+                return self._send_json({"trigger": trigger}, status=200) if trigger else self._send_json({"error": "Manual execution trigger not found"}, status=404)
+            if operation == "put":
+                body = self._read_json_body()
+                if not isinstance(body, dict):
+                    raise ValueError("A JSON object is required")
+                trigger = save_manual_execution_trigger(conn, resolved, symbol, body)
+                return self._send_json({"trigger": trigger})
+            if operation == "delete":
+                deleted = delete_manual_execution_trigger(conn, resolved, symbol)
+                return self._send_json({"deleted": True}) if deleted else self._send_json({"error": "Manual execution trigger not found"}, status=404)
+        except PortfolioAccountResolutionError as exc:
+            return self._send_json(_portfolio_account_error_payload(exc), status=exc.status)
+        except ValueError as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+        finally:
+            conn.close()
+
+    def handle_manual_execution_triggers_get(self, account_id=None):
+        return self._handle_manual_execution_request("list", account_id=account_id)
+
+    def handle_manual_execution_trigger_get(self, symbol, account_id=None):
+        return self._handle_manual_execution_request("get", symbol, account_id)
+
+    def handle_manual_execution_trigger_put(self, symbol, account_id=None):
+        return self._handle_manual_execution_request("put", symbol, account_id)
+
+    def handle_manual_execution_trigger_delete(self, symbol, account_id=None):
+        return self._handle_manual_execution_request("delete", symbol, account_id)
 
     def handle_action_plan_get(self, account_id=None):
         try:

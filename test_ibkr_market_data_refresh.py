@@ -183,21 +183,76 @@ class ResilientIbkrMarketDataRefreshTests(unittest.TestCase):
         self.assertEqual(rows[0]["price_source"], "marketPrice")
         self.assertEqual(rows[0]["price_last_successful_at"], "2026-11-11T10:00:00+00:00")
 
-    def test_stale_quote_blocks_execution_but_preserves_theoretical_sell_intent(self):
+    def test_cached_quote_keeps_execution_while_unavailable_price_remains_blocked(self):
         row = {
             "symbol": "UBER", "position_price_status": "cached_stale", "owned_share_quantity": 10,
+            "price_sizing_source": "position_quote",
             "action": "Sell", "desired_action": "Sell", "action_amount_direction": "sell",
-            "suggested_share_count": 10, "action_amount": 730, "executable_action_amount": 730,
+            "current_price": 73, "suggested_share_count": 10, "action_amount": 730, "executable_action_amount": 730,
         }
 
         web_server.block_stale_price_execution([row])
 
         self.assertEqual(row["desired_action"], "Sell")
-        self.assertEqual(row["action"], "Watch / Price Refresh")
-        self.assertEqual(row["executable_action"], "Watch / Price Refresh")
-        self.assertEqual(row["suggested_share_count"], 0)
-        self.assertEqual(row["executable_action_amount"], 0)
-        self.assertIn("cached price requires refresh", row["price_refresh_diagnostic"])
+        self.assertEqual(row["action"], "Sell")
+        self.assertEqual(row["suggested_share_count"], 10)
+        self.assertEqual(row["executable_action_amount"], 730)
+
+        unavailable = {
+            **row,
+            "position_price_status": "unavailable",
+            "current_price": None,
+            "price_sizing_source": "unavailable",
+        }
+        web_server.block_stale_price_execution([unavailable])
+        self.assertEqual(unavailable["action"], "Watch / Price Refresh")
+        self.assertEqual(unavailable["executable_action_amount"], 0)
+
+    def test_unavailable_price_blocks_unowned_buy_intent(self):
+        cases = (("Buy", "Add"), ("Speculative Buy", "Starter Buy"))
+        for rating, action in cases:
+            with self.subTest(rating=rating):
+                row = {
+                    "symbol": "UBER",
+                    "rating": rating,
+                    "position_price_status": "unavailable",
+                    "price_sizing_source": "unavailable",
+                    "owned_share_quantity": 0,
+                    "action": action,
+                    "desired_action": action,
+                    "executable_action": action,
+                    "action_priority": web_server.ACTION_PLAN_ACTION_PRIORITY[action],
+                    "action_amount_direction": "add",
+                    "current_price": None,
+                    "suggested_share_count": 0,
+                    "action_amount": 0,
+                    "executable_action_amount": 0,
+                }
+
+                web_server.block_stale_price_execution([row])
+
+                self.assertEqual(row["desired_action"], action)
+                self.assertEqual(row["action"], "Watch / Price Refresh")
+                self.assertEqual(row["executable_action"], "Watch / Price Refresh")
+                self.assertEqual(row["action_priority"], web_server.ACTION_PLAN_ACTION_PRIORITY.get("Watch / Price Refresh", 99))
+                self.assertEqual(row["suggested_share_count"], 0)
+                self.assertEqual(row["executable_action_amount"], 0)
+
+    def test_action_plan_price_uses_labeled_analysis_fallback_only_without_position_quote(self):
+        resolved = web_server.resolve_action_plan_price(
+            {"price": None, "price_status": "unavailable"},
+            {"current_price": 140},
+        )
+        self.assertEqual(resolved["price"], 140)
+        self.assertEqual(resolved["price_source"], "analysis_fallback")
+        self.assertEqual(resolved["price_sizing_source"], "analysis_price_fallback")
+
+        missing = web_server.resolve_action_plan_price(
+            {"price": None, "price_status": "unavailable"},
+            {"current_price": None},
+        )
+        self.assertIsNone(missing["price"])
+        self.assertEqual(missing["price_sizing_source"], "unavailable")
 
 
 if __name__ == "__main__":

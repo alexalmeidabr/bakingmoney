@@ -285,7 +285,9 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             for key in ("action_plan", "linear_action_plan"):
                 action = next(item for item in plan["payload"][key] if item["symbol"] == "NVDA")
                 self.assertEqual(action["desired_action"], "Sell")
-                self.assertEqual(action["executable_action_amount"], 0)
+                self.assertEqual(action["executable_action_amount"], 1000)
+                self.assertEqual(action["suggested_share_count"], 10)
+                self.assertNotEqual(action["funding_status"], "Price refresh required")
 
     def test_successful_refresh_is_current_for_followup_account_requests(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -347,8 +349,9 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             for key in ("action_plan", "linear_action_plan"):
                 row = next(item for item in plan["payload"][key] if item["symbol"] == "NVDA")
                 self.assertEqual(row["desired_action"], "Sell")
-                self.assertEqual(row["executable_action_amount"], 0)
-                self.assertEqual(row["suggested_share_count"], 0)
+                self.assertGreater(row["executable_action_amount"], 0)
+                self.assertGreater(row["suggested_share_count"], 0)
+                self.assertNotEqual(row["funding_status"], "Price refresh required")
             other = self.run_fake_positions_request(db_path, account_id="U_TEST_B")
             self.assertEqual(other["payload"]["positions"][0]["price_status"], "tws_received")
 
@@ -1392,7 +1395,7 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             self.assertEqual(row_a["owned_share_quantity"], 100)
             self.assertEqual(row_b["owned_share_quantity"], 25)
             self.assertAlmostEqual(row_a["current_position_weight"], 10.0)
-            self.assertAlmostEqual(row_b["current_position_weight"], 2.0)
+            self.assertAlmostEqual(row_b["current_position_weight"], 1.0)
             self.assertEqual(response_a["payload"]["summary"]["portfolio_value_used"], 100000)
             self.assertEqual(response_b["payload"]["summary"]["portfolio_value_used"], 250000)
 

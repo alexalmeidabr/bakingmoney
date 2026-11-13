@@ -157,13 +157,12 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
         if summary is not None:
             web_server.save_portfolio_summary_cache(conn, summary, account_id=account_id)
 
-    def run_fake_positions_refresh(self, db_path, ib, tws_data_enabled=True, account_id=None):
+    def run_fake_positions_refresh(self, db_path, ib, account_id=None):
         handler = CapturingPositionsHandler()
         tickers = [FakeTicker(position.contract) for position in ib.positions()]
         with mock.patch.object(web_server, "DB_PATH", db_path), \
              mock.patch.object(web_server, "ensure_event_loop", return_value=None), \
              mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
-             mock.patch.object(web_server, "is_tws_data_enabled", return_value=tws_data_enabled), \
              mock.patch.object(web_server, "request_ib_tickers_batched", return_value=(tickers, {})), \
              mock.patch.object(web_server, "list_analysis_symbols", return_value=[]):
             web_server.BakingMoneyHandler.handle_positions_api(handler, refresh=True, account_id=account_id)

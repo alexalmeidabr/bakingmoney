@@ -142,7 +142,6 @@ ANALYSIS_SETTING_SCENARIO_PASS_COUNT = "scenario_pass_count"
 ANALYSIS_SETTING_SCENARIO_OUTLIER_FILTER_ENABLED = "scenario_outlier_filter_enabled"
 ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS = "ib_price_wait_seconds"
 ANALYSIS_SETTING_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS = "ib_delayed_price_extra_wait_seconds"
-ANALYSIS_SETTING_USE_TWS_DATA = "use_tws_data"
 
 DEFAULT_SCENARIO_MULTI_PASS_ENABLED = False
 DEFAULT_SCENARIO_PASS_COUNT = 1
@@ -3049,11 +3048,6 @@ def apply_final_probabilities_to_scenarios(scenarios, final_probabilities):
 def get_general_configuration(conn):
     scenario = get_scenario_generation_config(conn)
     return {
-        "use_tws_data": get_bool_setting(
-            conn,
-            ANALYSIS_SETTING_USE_TWS_DATA,
-            False,
-        ),
         "ib_price_wait_seconds": get_float_setting(
             conn,
             ANALYSIS_SETTING_IB_PRICE_WAIT_SECONDS,
@@ -3082,27 +3076,6 @@ def save_general_configuration(conn, settings):
         raise ValueError("settings must be an object")
 
     now = utc_now_iso()
-    if "use_tws_data" in settings:
-        requested = bool(settings["use_tws_data"])
-        effective = requested
-        if requested:
-            try:
-                ib = get_ib_connection()
-                effective = bool(ib and ib.isConnected())
-            except Exception:
-                logger.warning("Unable to enable use_tws_data because TWS/IBKR is unavailable")
-                effective = False
-        conn.execute(
-            """
-            INSERT INTO app_settings (key, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-              value = excluded.value,
-              updated_at = excluded.updated_at
-            """,
-            (ANALYSIS_SETTING_USE_TWS_DATA, "1" if effective else "0", now),
-        )
-
     if "ib_price_wait_seconds" in settings:
         try:
             wait_seconds = float(settings.get("ib_price_wait_seconds"))
@@ -3275,17 +3248,6 @@ def get_ib_delayed_price_extra_wait_seconds():
             conn.close()
     except Exception:
         return DEFAULT_IB_DELAYED_PRICE_EXTRA_WAIT_SECONDS
-
-
-def is_tws_data_enabled():
-    try:
-        conn = get_db_connection()
-        try:
-            return get_bool_setting(conn, ANALYSIS_SETTING_USE_TWS_DATA, False)
-        finally:
-            conn.close()
-    except Exception:
-        return False
 
 
 def get_ib_market_data_batch_size():
@@ -4965,24 +4927,6 @@ def fetch_ib_prices(symbols, return_details=False):
     diagnostics = {symbol: None for symbol in symbols}
     if not symbols:
         return {"prices": prices, "warnings": warnings, "price_sources": price_sources, "diagnostics": diagnostics, "skipped_symbols": []} if return_details else (prices, warnings)
-    if not is_tws_data_enabled():
-        logger.info("Skipping IBKR price fetch because use_tws_data is disabled symbols=%s", len(symbols))
-        for symbol in symbols:
-            warnings[symbol] = {
-                "symbol": symbol,
-                "reason": NO_PRICE_WARNING,
-                "error_code": None,
-                "message": "TWS data is disabled or unavailable",
-                "severity": "warning",
-                "fatal": False,
-                "source": "tws_disabled",
-            }
-            diagnostics[symbol] = warnings[symbol]
-        skipped_symbols = [make_price_skip_detail(symbol, warnings[symbol]) for symbol in symbols]
-        if return_details:
-            return {"prices": prices, "warnings": warnings, "price_sources": price_sources, "diagnostics": diagnostics, "skipped_symbols": skipped_symbols}
-        return prices, {symbol: (detail.get("reason") if isinstance(detail, dict) else detail) for symbol, detail in warnings.items()}
-
     ensure_event_loop()
     from ib_insync import Stock
 
@@ -5113,9 +5057,6 @@ def fetch_latest_historical_close(symbol):
     normalized_symbol = normalize_symbol(symbol)
     if not normalized_symbol:
         return None, {"reason": "Invalid symbol", "message": "Symbol could not be normalized"}
-    if not is_tws_data_enabled():
-        return None, {"reason": NO_PRICE_WARNING, "message": "TWS data is disabled or unavailable"}
-
     ensure_event_loop()
     from ib_insync import Stock
 
@@ -14241,9 +14182,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 "incomplete": False,
                 "affected_symbols": [],
             }
-            tws_data_enabled = is_tws_data_enabled()
-
-            if contracts and tws_data_enabled:
+            if contracts:
                 qualified = unique_market_data_contracts(ib.qualifyContracts(*contracts))
                 if qualified:
                     tickers_by_contract_key, _diagnostics, market_data_refresh = request_ib_tickers_with_retry(
@@ -14318,8 +14257,6 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         "Refresh completed. Positions updated, but current quotes were unavailable for "
                         f"{len(cached_symbols) + len(unavailable_symbols)} securities. Cached prices were used where available."
                     )
-                if not tws_data_enabled:
-                    warning_message = "Data from TWS is disabled. Showing latest cached market values when available."
                 if account_summary_warning:
                     warning_message = " ".join([part for part in [warning_message, account_summary_warning] if part])
                 try:

@@ -201,8 +201,6 @@ const configRatingSellMaxDiffEl = document.getElementById('config-rating-sell-ma
 const configRatingSellMinBearishConfidenceEl = document.getElementById('config-rating-sell-min-bearish-confidence');
 const portfolioAccountSelectEl = document.getElementById('portfolio-account-select');
 const portfolioAccountStatusEl = document.getElementById('portfolio-account-status');
-const twsDataToggleEl = document.getElementById('tws-data-toggle');
-const twsDataStatusEl = document.getElementById('tws-data-status');
 const backupStatusEl = document.getElementById('backup-status');
 const backupExportBtn = document.getElementById('backup-export-btn');
 const backupIncludeEnvEl = document.getElementById('backup-include-env');
@@ -313,7 +311,6 @@ let alertDetailAnalysisState = null;
 let alertDetailIsEditingVariables = false;
 let currentAlertNavigationIds = [];
 let currentAlertDetailSymbol = null;
-let isUpdatingTwsDataToggle = false;
 let earningsReviewItems = [];
 let earningsReviewSelectedSymbol = null;
 let earningsReviewSelectedRecordId = null;
@@ -6238,59 +6235,6 @@ function restoreDefaultRatingSettings() {
   configurationStatusEl.className = 'status';
 }
 
-function applyTwsDataToggleState(useTwsData, message = '') {
-  twsDataToggleEl.checked = Boolean(useTwsData);
-  twsDataStatusEl.textContent = message;
-  twsDataStatusEl.className = message ? 'status' : 'status';
-}
-
-async function loadTwsDataToggleState() {
-  try {
-    const response = await fetch('/api/configuration/general');
-    const payload = await response.json();
-    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load TWS data switch state'));
-    const settings = payload.settings || {};
-    applyTwsDataToggleState(Boolean(settings.use_tws_data), settings.use_tws_data ? 'TWS data enabled.' : 'TWS data disabled.');
-  } catch (error) {
-    applyTwsDataToggleState(false, `Error: ${error.message}`);
-    twsDataStatusEl.className = 'status error';
-  }
-}
-
-async function updateTwsDataToggle(enabled) {
-  if (isUpdatingTwsDataToggle) return;
-  isUpdatingTwsDataToggle = true;
-  twsDataToggleEl.disabled = true;
-  twsDataStatusEl.textContent = enabled ? 'Enabling TWS data…' : 'Disabling TWS data…';
-  twsDataStatusEl.className = 'status';
-  try {
-    const response = await fetch('/api/configuration/general', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ settings: { use_tws_data: enabled } }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to update TWS data switch'));
-    const effective = Boolean(payload?.settings?.use_tws_data);
-    applyTwsDataToggleState(
-      effective,
-      enabled && !effective
-        ? 'TWS unavailable. Data from TWS remains off.'
-        : (effective ? 'TWS data enabled.' : 'TWS data disabled.'),
-    );
-    if (!effective) {
-      twsDataStatusEl.className = enabled ? 'status error' : 'status';
-    }
-  } catch (error) {
-    twsDataToggleEl.checked = false;
-    twsDataStatusEl.textContent = `Error: ${error.message}`;
-    twsDataStatusEl.className = 'status error';
-  } finally {
-    twsDataToggleEl.disabled = false;
-    isUpdatingTwsDataToggle = false;
-  }
-}
-
 async function loadGeneralConfiguration() {
   configurationStatusEl.textContent = 'Loading configuration…'; configurationStatusEl.className = 'status';
   try { const response = await fetch('/api/configuration/general'); const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load configuration'));
@@ -6303,7 +6247,6 @@ async function loadGeneralConfiguration() {
     applyScenarioProbabilitySettingsToForm(settings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
     applyRatingSettingsToForm(settings.rating_settings || DEFAULT_RATING_SETTINGS);
     applyActionPlanSettingsToForm(settings.action_plan_settings || DEFAULT_ACTION_PLAN_SETTINGS);
-    applyTwsDataToggleState(Boolean(settings.use_tws_data), Boolean(settings.use_tws_data) ? 'TWS data enabled.' : 'TWS data disabled.');
     configurationStatusEl.textContent = 'Configuration loaded.';
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
 }
@@ -6353,13 +6296,12 @@ async function saveGeneralConfiguration() {
   }
 
   configurationStatusEl.textContent = 'Saving configuration…'; configurationStatusEl.className = 'status';
-  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, ib_delayed_price_extra_wait_seconds: delayedPriceExtraWaitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings, action_plan_settings: actionPlanSettings, use_tws_data: Boolean(twsDataToggleEl.checked) } }) });
+  try { const response = await fetch('/api/configuration/general', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { ib_price_wait_seconds: waitSeconds, ib_delayed_price_extra_wait_seconds: delayedPriceExtraWaitSeconds, scenario_multi_pass_enabled: configScenarioMultiPassEnabledEl.checked, scenario_pass_count: passCount, scenario_probability_settings: scenarioProbabilitySettings, rating_settings: ratingSettings, action_plan_settings: actionPlanSettings } }) });
     const payload = await response.json(); if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to save configuration')); savedGeneralSettings = payload.settings || null; configurationStatusEl.textContent = 'Configuration saved.';
     if (savedGeneralSettings) {
       applyScenarioProbabilitySettingsToForm(savedGeneralSettings.scenario_probability_settings || DEFAULT_SCENARIO_PROBABILITY_SETTINGS);
       applyRatingSettingsToForm(savedGeneralSettings.rating_settings || DEFAULT_RATING_SETTINGS);
       applyActionPlanSettingsToForm(savedGeneralSettings.action_plan_settings || DEFAULT_ACTION_PLAN_SETTINGS);
-      applyTwsDataToggleState(Boolean(savedGeneralSettings.use_tws_data), Boolean(savedGeneralSettings.use_tws_data) ? 'TWS data enabled.' : 'TWS data disabled.');
     }
     await loadAnalysis();
   } catch (error) { configurationStatusEl.textContent = `Error: ${error.message}`; configurationStatusEl.className = 'status error'; }
@@ -6827,7 +6769,6 @@ actionPlanOpenAnalysisBtn.addEventListener('click', () => {
 });
 configActionPlanInputs.forEach((input) => input.addEventListener('input', updateActionPlanBucketTotal));
 portfolioAccountSelectEl?.addEventListener('change', handlePortfolioAccountChange);
-twsDataToggleEl.addEventListener('change', () => updateTwsDataToggle(Boolean(twsDataToggleEl.checked)));
 backupExportBtn.addEventListener('click', exportBackupFile);
 backupImportBtn.addEventListener('click', restoreBackupFile);
 
@@ -6846,5 +6787,4 @@ setActionPlanRatingFilterOpen(false);
 setActionPlanActionFilterOpen(false);
 setEarningsCalendarDateFilterOpen(false);
 initializeConfigHelpIcons();
-loadTwsDataToggleState();
 loadPortfolioAccounts({ preserveCurrent: false }).finally(() => setView('analysis'));

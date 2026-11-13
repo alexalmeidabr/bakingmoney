@@ -6967,6 +6967,11 @@ def refresh_latest_analysis_market_prices(conn):
         skipped_details_by_symbol = {item["symbol"]: item for item in fetch_details.get("skipped_symbols", [])}
         price_sources = fetch_details.get("price_sources", {})
         diagnostics = fetch_details.get("diagnostics", {})
+    connection_failed = any(
+        isinstance(diagnostics.get(symbol), dict)
+        and diagnostics[symbol].get("source") == "fetch_exception"
+        for symbol in symbols
+    )
     now = utc_now_iso()
     updated = 0
     skipped = 0
@@ -6983,6 +6988,8 @@ def refresh_latest_analysis_market_prices(conn):
 
     for symbol in symbols:
         if prices.get(symbol) is not None:
+            continue
+        if connection_failed:
             continue
         historical_price, historical_warning = fetch_latest_historical_close(symbol)
         if historical_price is not None:

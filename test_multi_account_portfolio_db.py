@@ -308,6 +308,43 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
             self.assertEqual(refreshed["payload"]["positions"][0]["price_status"], "tws_received")
             self.assertEqual(stored["payload"]["positions"][0]["price_status"], "tws_received")
 
+    def test_positions_refresh_requests_quotes_when_legacy_tws_setting_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "legacy-disabled-endpoint.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.upsert_ib_account(conn, "U_TEST_A")
+                    conn.execute(
+                        "INSERT INTO app_settings (key, value, updated_at) VALUES ('use_tws_data', '0', ?)",
+                        (web_server.utc_now_iso(),),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            position = FakePosition("U_TEST_A", "NVDA", 10, 90, 1)
+            ib = FakeIB(
+                positions=[position],
+                summary_items=[FakeSummaryItem("U_TEST_A", "NetLiquidation", "100000"), FakeSummaryItem("U_TEST_A", "CashBalance", "5000")],
+                managed_accounts=["U_TEST_A"],
+            )
+            handler = CapturingPositionsHandler()
+            tickers_by_contract_key = {
+                web_server.market_data_contract_key(position.contract): FakeTicker(position.contract, price=123.0),
+            }
+            with mock.patch.object(web_server, "DB_PATH", db_path), \
+                 mock.patch.object(web_server, "ensure_event_loop", return_value=None), \
+                 mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
+                 mock.patch.object(web_server, "unique_market_data_contracts", side_effect=lambda contracts: list(contracts)), \
+                 mock.patch.object(web_server, "request_ib_tickers_with_retry", return_value=(tickers_by_contract_key, {}, {"unique_contracts_requested": 1, "initial_quotes_received": 1, "retry_contracts": 0, "retry_quotes_recovered": 0, "cached_prices_used": 0, "unavailable_prices": 0, "incomplete": False, "affected_symbols": []})) as request_quotes, \
+                 mock.patch.object(web_server, "list_analysis_symbols", return_value=[]):
+                web_server.BakingMoneyHandler.handle_positions_api(handler, refresh=True, account_id="U_TEST_A")
+
+            self.assertEqual(handler.response["status"], 200)
+            request_quotes.assert_called_once()
+            self.assertEqual(handler.response["payload"]["positions"][0]["price"], 123.0)
+
     def test_failed_refresh_stales_selected_account_quote_without_affecting_other_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "failed-after-success.db")

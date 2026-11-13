@@ -793,6 +793,40 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_bulk_analysis_refresh_does_not_retry_connection_per_symbol_when_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "offline-bulk.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = web_server.utc_now_iso()
+                    for symbol, price in (("AAPL", 190.0), ("MSFT", 420.0)):
+                        conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", (symbol, now, now))
+                        root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()["id"]
+                        conn.execute(
+                            "INSERT INTO analysis_versions (analysis_root_id, version_number, symbol, current_price, expected_price, confidence_level, assumptions_text, business_model_text, business_summary_text, raw_ai_response, source_trigger, created_at) VALUES (?, 1, ?, ?, ?, 6, 'a', 'b', 'c', '{}', 'test', ?)",
+                            (root_id, symbol, price, price * 1.2, now),
+                        )
+                    conn.commit()
+                    offline = {
+                        "prices": {"AAPL": None, "MSFT": None},
+                        "warnings": {},
+                        "price_sources": {},
+                        "diagnostics": {
+                            symbol: {"symbol": symbol, "source": "fetch_exception", "reason": web_server.NO_PRICE_WARNING}
+                            for symbol in ("AAPL", "MSFT")
+                        },
+                        "skipped_symbols": [],
+                    }
+                    with mock.patch.object(web_server, "fetch_ib_prices", return_value=offline), \
+                         mock.patch.object(web_server, "fetch_latest_historical_close", return_value=(None, {"reason": "offline"})) as historical_close:
+                        result = web_server.refresh_latest_analysis_market_prices(conn)
+                    historical_close.assert_not_called()
+                    self.assertEqual(result["kept_previous"], 2)
+                finally:
+                    conn.close()
+
     def test_general_configuration_ignores_obsolete_use_tws_data_setting(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")

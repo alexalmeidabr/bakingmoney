@@ -377,7 +377,6 @@ class PositionsOfflineCacheTests(unittest.TestCase):
 
         with mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
              mock.patch.object(web_server, "get_ib_connection", return_value=fake_ib), \
-             mock.patch.object(web_server, "is_tws_data_enabled", return_value=True), \
              mock.patch.object(web_server, "get_ib_market_data_batch_size", return_value=2), \
              mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0):
             prices, warnings = web_server.fetch_ib_prices(symbols)
@@ -387,15 +386,68 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         self.assertTrue(all(prices[symbol] is not None for symbol in symbols))
         self.assertTrue(all(warnings[symbol] in (None, web_server.NO_PRICE_WARNING) for symbol in symbols))
 
-    def test_fetch_ib_prices_skips_ibkr_when_tws_data_is_disabled(self):
-        with mock.patch.object(web_server, "is_tws_data_enabled", return_value=False), \
-             mock.patch.object(web_server, "get_ib_connection") as mocked_get_ib:
-            prices, warnings = web_server.fetch_ib_prices(["AAPL", "MSFT"])
-        mocked_get_ib.assert_not_called()
-        self.assertEqual(prices["AAPL"], None)
-        self.assertEqual(prices["MSFT"], None)
-        self.assertEqual(warnings["AAPL"], web_server.NO_PRICE_WARNING)
-        self.assertEqual(warnings["MSFT"], web_server.NO_PRICE_WARNING)
+    def test_fetch_ib_prices_ignores_legacy_disabled_tws_setting_after_reconnect(self):
+        class FakeContract:
+            def __init__(self, symbol):
+                self.symbol = symbol
+                self.conId = 1
+
+        class FakeTicker:
+            def __init__(self, contract):
+                self.contract = contract
+
+            def marketPrice(self):
+                return 123.45
+
+        class FakeIB:
+            def __init__(self):
+                self.request_count = 0
+
+            def positions(self):
+                return []
+
+            def portfolio(self):
+                return []
+
+            def qualifyContracts(self, *contracts):
+                return list(contracts)
+
+            def reqTickers(self, *contracts):
+                self.request_count += 1
+                return [FakeTicker(contract) for contract in contracts]
+
+            def cancelMktData(self, _contract):
+                return None
+
+            def sleep(self, _seconds):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "legacy-disabled.db")
+            fake_ib = FakeIB()
+            fake_module = types.SimpleNamespace(Stock=lambda symbol, *_args: FakeContract(symbol))
+            with mock.patch.object(web_server, "DB_PATH", db_path), \
+                 mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
+                 mock.patch.object(web_server, "get_ib_connection", side_effect=[RuntimeError("offline"), fake_ib]), \
+                 mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    conn.execute(
+                        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                        ("use_tws_data", "0", web_server.utc_now_iso()),
+                    )
+                    conn.commit()
+                    offline_prices, offline_warnings = web_server.fetch_ib_prices(["AAPL"])
+                    prices, warnings = web_server.fetch_ib_prices(["AAPL"])
+                finally:
+                    conn.close()
+
+        self.assertEqual(fake_ib.request_count, 1)
+        self.assertIsNone(offline_prices["AAPL"])
+        self.assertEqual(offline_warnings["AAPL"], web_server.NO_PRICE_WARNING)
+        self.assertEqual(prices["AAPL"], 123.45)
+        self.assertIsNone(warnings["AAPL"])
 
     def test_extract_price_accepts_positive_fallback_when_market_price_is_invalid(self):
         ticker = types.SimpleNamespace(marketPrice=lambda: -1, last=125.5, close=120.0)
@@ -452,7 +504,6 @@ class PositionsOfflineCacheTests(unittest.TestCase):
 
         with mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
              mock.patch.object(web_server, "get_ib_connection", return_value=fake_ib), \
-             mock.patch.object(web_server, "is_tws_data_enabled", return_value=True), \
              mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0):
             prices, warnings = web_server.fetch_ib_prices(symbols)
 
@@ -530,7 +581,6 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         fake_module = types.SimpleNamespace(Stock=lambda symbol, *_args: FakeContract(symbol, 42))
         with mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
              mock.patch.object(web_server, "get_ib_connection", return_value=fake_ib), \
-             mock.patch.object(web_server, "is_tws_data_enabled", return_value=True), \
              mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0.5), \
              mock.patch.object(web_server, "get_ib_delayed_price_extra_wait_seconds", return_value=1.0):
             result = web_server.fetch_ib_prices(["MSFT"], return_details=True)
@@ -602,7 +652,6 @@ class PositionsOfflineCacheTests(unittest.TestCase):
         fake_module = types.SimpleNamespace(Stock=lambda symbol, *_args: FakeContract(symbol, conids[symbol]))
         with mock.patch.dict(sys.modules, {"ib_insync": fake_module}), \
              mock.patch.object(web_server, "get_ib_connection", return_value=fake_ib), \
-             mock.patch.object(web_server, "is_tws_data_enabled", return_value=True), \
              mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0.01), \
              mock.patch.object(web_server, "get_ib_delayed_price_extra_wait_seconds", return_value=0):
             result = web_server.fetch_ib_prices(["MISS", "HELD"], return_details=True)
@@ -744,17 +793,71 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                 finally:
                     conn.close()
 
-    def test_save_general_configuration_auto_turns_off_use_tws_data_when_ib_unavailable(self):
+    def test_bulk_analysis_refresh_does_not_retry_connection_per_symbol_when_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "offline-bulk.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = web_server.utc_now_iso()
+                    for symbol, price in (("AAPL", 190.0), ("MSFT", 420.0)):
+                        conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)", (symbol, now, now))
+                        root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()["id"]
+                        conn.execute(
+                            "INSERT INTO analysis_versions (analysis_root_id, version_number, symbol, current_price, expected_price, confidence_level, assumptions_text, business_model_text, business_summary_text, raw_ai_response, source_trigger, created_at) VALUES (?, 1, ?, ?, ?, 6, 'a', 'b', 'c', '{}', 'test', ?)",
+                            (root_id, symbol, price, price * 1.2, now),
+                        )
+                    conn.commit()
+                    offline = {
+                        "prices": {"AAPL": None, "MSFT": None},
+                        "warnings": {},
+                        "price_sources": {},
+                        "diagnostics": {
+                            symbol: {"symbol": symbol, "source": "tws_unavailable", "reason": web_server.NO_PRICE_WARNING}
+                            for symbol in ("AAPL", "MSFT")
+                        },
+                        "skipped_symbols": [],
+                    }
+                    with mock.patch.object(web_server, "fetch_ib_prices", return_value=offline), \
+                         mock.patch.object(web_server, "fetch_latest_historical_close", return_value=(None, {"reason": "offline"})) as historical_close:
+                        result = web_server.refresh_latest_analysis_market_prices(conn)
+                    historical_close.assert_not_called()
+                    self.assertEqual(result["kept_previous"], 2)
+                finally:
+                    conn.close()
+
+    def test_bulk_analysis_refresh_uses_historical_fallback_after_connected_quote_exception(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "connected-exception.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = web_server.utc_now_iso()
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES ('NVDA', ?, ?)", (now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute("INSERT INTO analysis_versions (analysis_root_id, version_number, symbol, current_price, expected_price, confidence_level, assumptions_text, business_model_text, business_summary_text, raw_ai_response, source_trigger, created_at) VALUES (?, 1, 'NVDA', 100, 150, 6, 'a', 'b', 'c', '{}', 'test', ?)", (root_id, now))
+                    conn.commit()
+                    direct_failure = {"symbol": "NVDA", "source": "fetch_exception", "reason": "quote retrieval failed"}
+                    with mock.patch.object(web_server, "fetch_ib_prices", return_value={"prices": {"NVDA": None}, "warnings": {"NVDA": direct_failure}, "price_sources": {}, "diagnostics": {"NVDA": direct_failure}, "skipped_symbols": []}), \
+                         mock.patch.object(web_server, "fetch_latest_historical_close", return_value=(125.0, None)) as historical_close:
+                        result = web_server.refresh_latest_analysis_market_prices(conn)
+                    historical_close.assert_called_once_with("NVDA")
+                    self.assertEqual(result["updated"], 1)
+                finally:
+                    conn.close()
+
+    def test_general_configuration_ignores_obsolete_use_tws_data_setting(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "test.db")
             with mock.patch.object(web_server, "DB_PATH", db_path):
                 web_server.init_db()
                 conn = web_server.get_db_connection()
                 try:
-                    with mock.patch.object(web_server, "get_ib_connection", side_effect=RuntimeError("down")):
-                        web_server.save_general_configuration(conn, {"use_tws_data": True})
+                    web_server.save_general_configuration(conn, {"use_tws_data": True})
                     settings = web_server.get_general_configuration(conn)
-                    self.assertFalse(settings["use_tws_data"])
+                    self.assertNotIn("use_tws_data", settings)
                 finally:
                     conn.close()
 
@@ -1564,8 +1667,9 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('This will replace the current key variables for this analysis version. Continue?', js)
         self.assertIn('data-sort-key="last_activity_at" class="sortable">Last Scenario/Event</th>', html)
         self.assertIn('data-sort-key="costBasis" class="sortable">Cost Value</th>', html)
-        self.assertIn('id="tws-data-toggle"', html)
-        self.assertIn('Data from TWS', html)
+        self.assertNotIn('id="tws-data-toggle"', html)
+        self.assertNotIn('id="tws-data-status"', html)
+        self.assertNotIn('Data from TWS', html)
         self.assertIn('data-view="action-plan"', html)
         self.assertIn('id="action-plan-linear-actions-table"', html)
         self.assertIn('action-plan-actions-table', html)
@@ -1908,12 +2012,13 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn('.action-plan-bucket-table', css)
         self.assertIn('.action-plan-tabs', css)
 
-    def test_tws_data_toggle_is_wired_in_frontend(self):
+    def test_tws_data_toggle_is_removed_from_frontend(self):
         from pathlib import Path
         js = Path('static/app.js').read_text(encoding='utf-8')
-        self.assertIn("const twsDataToggleEl = document.getElementById('tws-data-toggle');", js)
-        self.assertIn('async function updateTwsDataToggle(enabled)', js)
-        self.assertIn("twsDataToggleEl.addEventListener('change'", js)
+        self.assertNotIn("tws-data-toggle", js)
+        self.assertNotIn("tws-data-status", js)
+        self.assertNotIn("loadTwsDataToggleState", js)
+        self.assertNotIn("updateTwsDataToggle", js)
         self.assertIn('function shouldRetryTwsPositionsRefresh(payload)', js)
         self.assertIn('function shouldRetryTwsAnalysisPriceRefresh(payload)', js)
         self.assertIn("Connecting to TWS… retrying refresh once.", js)

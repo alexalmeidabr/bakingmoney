@@ -276,6 +276,7 @@ const earningsCalendarAddBtn = document.getElementById('earnings-calendar-add-bt
 const earningsCalendarReleaseDateHeaderEl = document.getElementById('earnings-calendar-release-date-header');
 
 let latestPositions = [];
+let latestAnalysisOwnershipPositions = [];
 let latestPositionsPortfolioSummary = null;
 let latestPositionsOwnershipAvailable = false;
 let positionSort = { key: 'marketValue', direction: 'desc' };
@@ -1660,6 +1661,7 @@ function isSelectedPortfolioAccountUnavailable() {
 
 function clearPositionsDisplay(message, className = 'status error') {
   latestPositions = [];
+  latestAnalysisOwnershipPositions = [];
   latestPositionsPortfolioSummary = null;
   latestPositionsOwnershipAvailable = false;
   saveCachedPositions([]);
@@ -1682,9 +1684,8 @@ function clearActionPlanDisplay(message, className = 'status error') {
 }
 
 function invalidateAnalysisOwnershipState() {
-  latestPositions = [];
+  latestAnalysisOwnershipPositions = [];
   latestPositionsOwnershipAvailable = false;
-  saveCachedPositions([]);
   if (portfolioFilter !== 'all') {
     portfolioFilter = 'all';
     analysisPortfolioFilterEl.value = 'all';
@@ -1798,6 +1799,7 @@ async function loadPortfolioAccounts(options = {}) {
 async function handlePortfolioAccountNotFound() {
   localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
   selectedPortfolioAccountId = null;
+  clearPositionsDisplay('', 'status');
   await loadPortfolioAccounts({ preserveCurrent: false });
 }
 
@@ -2208,7 +2210,7 @@ function mergePositionsWithAnalysis(positions, analysisItems) {
 
 function getPortfolioSymbols() {
   return new Set(
-    latestPositions
+    latestAnalysisOwnershipPositions
       .filter((position) => Number(position?.position) > 0)
       .map((position) => String(position.symbol || '').toUpperCase())
       .filter(Boolean),
@@ -4463,17 +4465,10 @@ async function loadPositions(options = {}) {
 
   try {
     let positionsPayload = null;
-    let analysisPayload = null;
-    let analysisResponseOk = false;
     const maxAttempts = options.refresh ? 2 : 1;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const [positionsResponse, analysisResponse] = await Promise.all([
-        fetch(withSelectedPortfolioAccount(options.refresh ? '/api/positions?refresh=1' : '/api/positions')),
-        fetch('/api/analysis'),
-      ]);
+      const positionsResponse = await fetch(withSelectedPortfolioAccount(options.refresh ? '/api/positions?refresh=1' : '/api/positions'));
       positionsPayload = await positionsResponse.json();
-      analysisPayload = await analysisResponse.json();
-      analysisResponseOk = analysisResponse.ok;
       if (!positionsResponse.ok) throw createPortfolioApiError(positionsPayload, 'Request failed');
       if (options.refresh && attempt === 0 && shouldRetryTwsPositionsRefresh(positionsPayload)) {
         positionsStatusEl.textContent = 'Connecting to TWS… retrying refresh once.';
@@ -4488,20 +4483,11 @@ async function loadPositions(options = {}) {
       count: (positionsPayload.positions || []).length,
       firstSymbol: (positionsPayload.positions || [])[0]?.symbol || null,
     });
-    console.debug('[positions] raw /api/analysis response sample:', {
-      ok: analysisResponseOk,
-      topLevelKeys: analysisPayload && typeof analysisPayload === 'object' ? Object.keys(analysisPayload) : [],
-      count: Array.isArray(analysisPayload?.analysis) ? analysisPayload.analysis.length : 0,
-      firstSymbol: Array.isArray(analysisPayload?.analysis) ? (analysisPayload.analysis[0]?.symbol || null) : null,
-    });
-
     latestPositionsPortfolioSummary = positionsPayload.portfolio_summary || null;
     latestPositionsOwnershipAvailable = positionsPayload.portfolio_data_available === true;
     renderPositionsPortfolioSummary(latestPositionsPortfolioSummary);
-    latestPositions = mergePositionsWithAnalysis(
-      positionsPayload.positions || [],
-      analysisResponseOk ? analysisPayload : [],
-    );
+    latestPositions = positionsPayload.positions || [];
+    latestAnalysisOwnershipPositions = latestPositions;
 
     console.debug('[positions] merged rows sample:', {
       count: latestPositions.length,
@@ -4569,7 +4555,7 @@ async function loadAnalysis() {
   try {
     const positionsRequest = isPortfolioAccountSelectionRequired()
       ? null
-      : fetch(withSelectedPortfolioAccount('/api/positions'));
+      : fetch(withSelectedPortfolioAccount('/api/positions?ownership=1'));
     const [analysisResult, positionsResult] = await Promise.allSettled([
       fetch('/api/analysis'),
       positionsRequest || Promise.resolve(null),
@@ -4604,10 +4590,10 @@ async function loadAnalysis() {
       && ownershipRequestCurrent();
     if (!ownershipRequestCurrent()) return;
     if (positionsPayloadUsable) {
-      latestPositions = positionsPayload.positions || [];
+      latestAnalysisOwnershipPositions = positionsPayload.positions || [];
       latestPositionsOwnershipAvailable = positionsPayload.portfolio_data_available === true;
-      console.debug('[analysis] refreshed cached positions with analysis enrichment', {
-        positionsCount: latestPositions.length,
+      console.debug('[analysis] refreshed portfolio ownership', {
+        positionsCount: latestAnalysisOwnershipPositions.length,
       });
     } else if (!positionsResponse || positionsPayload?.code === 'account_selection_required' || positionsPayload?.code === 'portfolio_data_unavailable') {
       invalidateAnalysisOwnershipState();
@@ -4623,11 +4609,6 @@ async function loadAnalysis() {
     }
     analysisPortfolioFilterEl.disabled = !latestPositionsOwnershipAvailable;
     latestAnalysis = enrichAnalysisWithPortfolioStatus(analysisPayload.analysis || []);
-    if (positionsPayloadUsable) {
-      latestPositions = mergePositionsWithAnalysis(latestPositions, latestAnalysis);
-      saveCachedPositions(latestPositions);
-    }
-
     analysisTableBody.innerHTML = '';
     selectedAnalysisSymbols = new Set([...selectedAnalysisSymbols].filter((symbol) => latestAnalysis.some((item) => item.symbol === symbol)));
     if (!latestAnalysis.length) { analysisStatusEl.textContent = 'Analysis is empty.'; syncSelectAllCheckbox(); return; }

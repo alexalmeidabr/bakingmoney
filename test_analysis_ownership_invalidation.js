@@ -30,12 +30,19 @@ test('portfolio account change invalidates Analysis ownership before reloading a
 
   const invalidateBody = functionBody('invalidateAnalysisOwnershipState');
   assert.match(invalidateBody, /latestPositionsOwnershipAvailable = false;/);
-  assert.match(invalidateBody, /latestPositions = \[\];/);
+  assert.match(invalidateBody, /latestAnalysisOwnershipPositions = \[\];/);
+  assert.doesNotMatch(invalidateBody, /latestPositions = \[\];/);
   assert.match(invalidateBody, /portfolioFilter = 'all';/);
   assert.match(invalidateBody, /analysisPortfolioFilterEl\.disabled = true;/);
   assert.match(invalidateBody, /latestAnalysis = enrichAnalysisWithPortfolioStatus\(latestAnalysis\);/);
   assert.match(invalidateBody, /getActiveViewId\(\) === 'analysis'/);
   assert.match(invalidateBody, /renderAnalysisList\(\);/);
+});
+
+test('a removed account clears full position rows as well as ownership state', () => {
+  const accountNotFoundBody = functionBody('handlePortfolioAccountNotFound');
+  assert.match(accountNotFoundBody, /selectedPortfolioAccountId = null;/);
+  assert.match(accountNotFoundBody, /clearPositionsDisplay\('', 'status'\);/);
 });
 
 test('loadAnalysis failures cannot retain previous true or false ownership state', () => {
@@ -58,7 +65,7 @@ test('stale Analysis ownership responses are ignored after account switches', ()
   assert.match(loadBody, /const ownershipRequestCurrent = \(\) => ownershipRequestId === analysisOwnershipRequestId && requestAccountId === selectedPortfolioAccountId;/);
   assert.match(loadBody, /const positionsPayloadUsable = positionsResponse\?\.ok[\s\S]*ownershipRequestCurrent\(\);/);
   assert.match(loadBody, /if \(positionsPayloadUsable\) \{/);
-  assert.match(loadBody, /if \(positionsPayloadUsable\) \{[\s\S]*latestPositions = mergePositionsWithAnalysis/);
+  assert.match(loadBody, /latestAnalysisOwnershipPositions = positionsPayload\.positions \|\| \[\];/);
 });
 
 test('Analysis ownership uses explicit availability instead of positions length', () => {

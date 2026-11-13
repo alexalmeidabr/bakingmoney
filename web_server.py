@@ -44,6 +44,13 @@ BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 DB_PATH = BASE_DIR / "bakingmoney.db"
 _session_received_quotes = {}
+PERF_LOG_ENABLED = os.getenv("BAKINGMONEY_PERF_LOG", "").strip().lower() in {"1", "true", "yes"}
+
+
+def log_performance(operation, started_at, **counts):
+    if PERF_LOG_ENABLED:
+        suffix = " ".join(f"{key}={value}" for key, value in counts.items())
+        logger.info("PERF operation=%s duration_ms=%.3f %s", operation, (time.perf_counter() - started_at) * 1000, suffix)
 ENV_PATH = BASE_DIR / ".env"
 BACKUP_DIR = BASE_DIR / "backups"
 UPLOADS_DIR = BASE_DIR / "uploads"
@@ -4293,6 +4300,7 @@ def init_db():
             )
             """
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_kv_version_type_category ON analysis_version_key_variables(analysis_version_id, variable_type, driver_category)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS analysis_version_scenario_passes (
@@ -4311,6 +4319,7 @@ def init_db():
             )
             """
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scenario_passes_version ON analysis_version_scenario_passes(analysis_version_id)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS analysis_external_scenarios (
@@ -4626,6 +4635,7 @@ def init_db():
             )
             """
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_checks_symbol_date ON recent_event_checks(symbol, checked_at DESC)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS analysis_momentum_snapshots (
@@ -6507,6 +6517,7 @@ def _confidence_sql(variable_type, driver_category=None):
 
 
 def list_analysis_symbols(conn):
+    started_at = time.perf_counter() if PERF_LOG_ENABLED else None
     rating_settings = get_rating_settings(conn)
     latest_release_dates = get_latest_earnings_release_dates_by_symbol(conn)
     next_releases = get_next_earnings_releases_by_symbol(conn)
@@ -6605,6 +6616,8 @@ def list_analysis_symbols(conn):
         activity_candidates = [dt for dt in (scenario_updated, event_checked) if dt is not None]
         item["last_activity_at"] = max(activity_candidates).isoformat() if activity_candidates else None
         output.append(item)
+    if started_at is not None:
+        log_performance("list_analysis_symbols", started_at, symbols=len(output))
     return output
 
 
@@ -8758,6 +8771,7 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
 
 
 def load_positions_cache(conn, account_id=None):
+    started_at = time.perf_counter() if PERF_LOG_ENABLED else None
     resolved_account_id = _resolve_cache_account_id(conn, account_id)
     if not resolved_account_id:
         return []
@@ -8806,6 +8820,8 @@ def load_positions_cache(conn, account_id=None):
         row["price_warning"] = "Current TWS refresh has not supplied this price in this session; showing a saved quote."
         row["dailyPnL"] = None
         row["changePercent"] = None
+    if started_at is not None:
+        log_performance("load_positions_cache", started_at, positions=len(result))
     return result
 
 
@@ -12033,6 +12049,7 @@ def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_
 
 
 def build_positions_payload(conn, positions, data_source, warning=None, account_id=None):
+    started_at = time.perf_counter() if PERF_LOG_ENABLED else None
     normalized_positions = []
     for row in positions or []:
         normalized_row = dict(row)
@@ -12050,6 +12067,8 @@ def build_positions_payload(conn, positions, data_source, warning=None, account_
     }
     if warning:
         payload["warning"] = warning
+    if started_at is not None:
+        log_performance("build_positions_payload", started_at, positions=len(payload["positions"]))
     return payload
 
 
@@ -13635,12 +13654,19 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(BASE_DIR), **kwargs)
 
     def _send_json(self, payload, status=200):
+        serialization_started = time.perf_counter() if PERF_LOG_ENABLED else None
         body = json.dumps(payload).encode("utf-8")
+        if serialization_started is not None:
+            log_performance("json_serialization", serialization_started, bytes=len(body))
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        endpoint_started = getattr(self, "_perf_endpoint_started", None)
+        if endpoint_started is not None:
+            log_performance("endpoint", endpoint_started, path=getattr(self, "_perf_endpoint_path", ""), status=status)
+            self._perf_endpoint_started = None
 
     def _read_json_body(self):
         try:
@@ -13715,11 +13741,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         account_id = _normalize_ib_account_id((query.get("account_id") or [None])[0])
 
         if path == "/api/positions":
+            self._perf_endpoint_started = time.perf_counter() if PERF_LOG_ENABLED else None
+            self._perf_endpoint_path = path
             refresh = str(query.get("refresh", ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
-            return self.handle_positions_api(refresh=refresh, account_id=account_id)
+            ownership_only = not refresh and str(query.get("ownership", ["0"])[0]).strip().lower() in {"1", "true"}
+            return self.handle_positions_api(refresh=refresh, account_id=account_id, ownership_only=ownership_only)
         if path == "/api/ib-accounts":
             return self.handle_ib_accounts_get()
         if path == "/api/analysis":
+            self._perf_endpoint_started = time.perf_counter() if PERF_LOG_ENABLED else None
+            self._perf_endpoint_path = path
             return self.handle_analysis_get()
         if path == "/api/earnings-review":
             return self.handle_earnings_review_get()
@@ -14048,7 +14079,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def handle_positions_api(self, refresh=False, account_id=None):
+    def handle_positions_api(self, refresh=False, account_id=None, ownership_only=False):
         if not refresh:
             conn = get_db_connection()
             try:
@@ -14075,6 +14106,15 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         "warning": warning,
                     }
                     return self._send_json(payload)
+                if ownership_only:
+                    return self._send_json({
+                        "positions": [
+                            {"symbol": row["symbol"], "position": row["position"]}
+                            for row in cached_positions
+                            if abs(safe_number(row.get("position")) or 0.0) > 0
+                        ],
+                        "portfolio_data_available": bool(resolved_account_id and is_portfolio_data_available(conn, resolved_account_id)),
+                    })
                 payload = build_positions_payload(
                     conn,
                     cached_positions,

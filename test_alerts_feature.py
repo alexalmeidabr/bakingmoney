@@ -814,7 +814,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                         "warnings": {},
                         "price_sources": {},
                         "diagnostics": {
-                            symbol: {"symbol": symbol, "source": "fetch_exception", "reason": web_server.NO_PRICE_WARNING}
+                            symbol: {"symbol": symbol, "source": "tws_unavailable", "reason": web_server.NO_PRICE_WARNING}
                             for symbol in ("AAPL", "MSFT")
                         },
                         "skipped_symbols": [],
@@ -824,6 +824,27 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                         result = web_server.refresh_latest_analysis_market_prices(conn)
                     historical_close.assert_not_called()
                     self.assertEqual(result["kept_previous"], 2)
+                finally:
+                    conn.close()
+
+    def test_bulk_analysis_refresh_uses_historical_fallback_after_connected_quote_exception(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "connected-exception.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    now = web_server.utc_now_iso()
+                    conn.execute("INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES ('NVDA', ?, ?)", (now, now))
+                    root_id = conn.execute("SELECT id FROM analysis_roots WHERE symbol = 'NVDA'").fetchone()["id"]
+                    conn.execute("INSERT INTO analysis_versions (analysis_root_id, version_number, symbol, current_price, expected_price, confidence_level, assumptions_text, business_model_text, business_summary_text, raw_ai_response, source_trigger, created_at) VALUES (?, 1, 'NVDA', 100, 150, 6, 'a', 'b', 'c', '{}', 'test', ?)", (root_id, now))
+                    conn.commit()
+                    direct_failure = {"symbol": "NVDA", "source": "fetch_exception", "reason": "quote retrieval failed"}
+                    with mock.patch.object(web_server, "fetch_ib_prices", return_value={"prices": {"NVDA": None}, "warnings": {"NVDA": direct_failure}, "price_sources": {}, "diagnostics": {"NVDA": direct_failure}, "skipped_symbols": []}), \
+                         mock.patch.object(web_server, "fetch_latest_historical_close", return_value=(125.0, None)) as historical_close:
+                        result = web_server.refresh_latest_analysis_market_prices(conn)
+                    historical_close.assert_called_once_with("NVDA")
+                    self.assertEqual(result["updated"], 1)
                 finally:
                     conn.close()
 

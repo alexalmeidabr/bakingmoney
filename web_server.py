@@ -4932,6 +4932,25 @@ def fetch_ib_prices(symbols, return_details=False):
 
     try:
         ib = get_ib_connection()
+    except Exception:
+        logger.exception("Unable to connect to IBKR/TWS for prices")
+        for symbol in symbols:
+            warnings[symbol] = {
+                "symbol": symbol,
+                "reason": NO_PRICE_WARNING,
+                "error_code": None,
+                "message": "IBKR/TWS connection unavailable",
+                "severity": "error",
+                "fatal": False,
+                "source": "tws_unavailable",
+            }
+            diagnostics[symbol] = warnings[symbol]
+        skipped_symbols = [make_price_skip_detail(symbol, warnings[symbol]) for symbol in symbols]
+        if return_details:
+            return {"prices": prices, "warnings": warnings, "price_sources": price_sources, "diagnostics": diagnostics, "skipped_symbols": skipped_symbols}
+        return prices, {symbol: detail["reason"] for symbol, detail in warnings.items()}
+
+    try:
         position_contracts_by_symbol = {}
         portfolio_price_by_symbol = {}
         try:
@@ -6969,7 +6988,7 @@ def refresh_latest_analysis_market_prices(conn):
         diagnostics = fetch_details.get("diagnostics", {})
     connection_failed = any(
         isinstance(diagnostics.get(symbol), dict)
-        and diagnostics[symbol].get("source") == "fetch_exception"
+        and diagnostics[symbol].get("source") == "tws_unavailable"
         for symbol in symbols
     )
     now = utc_now_iso()

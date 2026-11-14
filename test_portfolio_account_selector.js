@@ -73,6 +73,9 @@ test('adds selected account only to portfolio-scoped urls', () => {
   assert.equal(withPortfolioAccount('/api/positions?refresh=1', 'DU123456'), '/api/positions?refresh=1&account_id=DU123456');
   assert.equal(withPortfolioAccount('/api/action-plan', 'DU123456'), '/api/action-plan?account_id=DU123456');
   assert.equal(withPortfolioAccount('/api/action-plan/AAPL', 'DU123456'), '/api/action-plan/AAPL?account_id=DU123456');
+  assert.equal(withPortfolioAccount('/api/manual-execution-triggers', 'DU123456'), '/api/manual-execution-triggers?account_id=DU123456');
+  assert.equal(withPortfolioAccount('/api/manual-execution-triggers/BRK%2FB?refresh=1', 'DU123456'), '/api/manual-execution-triggers/BRK%2FB?refresh=1&account_id=DU123456');
+  assert.equal(withPortfolioAccount('/api/manual-execution-quotes/refresh?scope=selected', 'DU123456'), '/api/manual-execution-quotes/refresh?scope=selected&account_id=DU123456');
   assert.equal(withPortfolioAccount('/api/analysis', 'DU123456'), '/api/analysis');
   assert.equal(withPortfolioAccount('/api/ib-accounts', 'DU123456'), '/api/ib-accounts');
   assert.equal(withPortfolioAccount('/api/positions', ''), '/api/positions');
@@ -81,6 +84,10 @@ test('adds selected account only to portfolio-scoped urls', () => {
 test('portfolio scoped url detection is narrow', () => {
   assert.equal(isPortfolioAccountScopedUrl('/api/positions'), true);
   assert.equal(isPortfolioAccountScopedUrl('/api/action-plan/MSFT'), true);
+  assert.equal(isPortfolioAccountScopedUrl('/api/manual-execution-triggers'), true);
+  assert.equal(isPortfolioAccountScopedUrl('/api/manual-execution-triggers/MSFT'), true);
+  assert.equal(isPortfolioAccountScopedUrl('/api/manual-execution-quotes/refresh'), true);
+  assert.equal(isPortfolioAccountScopedUrl('/api/manual-execution-triggers-other'), false);
   assert.equal(isPortfolioAccountScopedUrl('/api/action-plan-settings'), false);
   assert.equal(isPortfolioAccountScopedUrl('/api/analysis'), false);
 });

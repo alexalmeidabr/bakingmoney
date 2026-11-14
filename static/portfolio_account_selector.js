@@ -63,7 +63,10 @@
     const parsed = new URL(url, 'http://bakingmoney.local');
     return parsed.pathname === '/api/positions'
       || parsed.pathname === '/api/action-plan'
-      || parsed.pathname.startsWith('/api/action-plan/');
+      || parsed.pathname.startsWith('/api/action-plan/')
+      || parsed.pathname === '/api/manual-execution-triggers'
+      || parsed.pathname.startsWith('/api/manual-execution-triggers/')
+      || parsed.pathname === '/api/manual-execution-quotes/refresh';
   }
 
   function withPortfolioAccount(url, accountId) {

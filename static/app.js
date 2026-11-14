@@ -2470,6 +2470,25 @@ function getManualTriggerPresentation(item) {
   return { status: 'No manual trigger', tone: '' };
 }
 
+function getLinearActionTableExecutionDisplay(item, manualMode) {
+  const unavailable = manualMode && (manualQuoteExpired(item)
+    || ['waiting', 'price_confirmation_required'].includes(item?.manual_trigger_status));
+  if (unavailable) {
+    return {
+      actionAmount: '—',
+      shares: '—',
+      funding: manualQuoteExpired(item) || item?.manual_trigger_status === 'price_confirmation_required'
+        ? 'Price confirmation required'
+        : 'Manual trigger waiting',
+    };
+  }
+  return {
+    actionAmount: item?.action_amount_label || '—',
+    shares: item?.suggested_share_count,
+    funding: item?.funding_status || 'No funding needed',
+  };
+}
+
 function validateManualTriggerForm(values) {
   const price = (value, label) => {
     if (String(value ?? '').trim() === '') return null;
@@ -3024,7 +3043,7 @@ function getActionPlanNumericSortValue(item, key) {
   if (!item || !key) return null;
   if (key === 'release_date') return getLinearReleaseDateSortValue(item);
   if (key === 'target_band') return window.ActionPlanSorting.getTargetBandMidpoint(item);
-  if (key === 'expected_equity_cagr') return window.ActionPlanSorting.getLinearCagrValue(item);
+  if (key === 'expected_cagr') return window.ActionPlanSorting.getLinearCagrValue(item);
   if (key === 'current_position_market_value') {
     const value = Number(item.current_position_market_value ?? item.market_value ?? item.position_market_value ?? 0);
     return Number.isFinite(value) ? value : 0;
@@ -3402,11 +3421,6 @@ function renderLinearAllocationRows() {
   const manualMode = actionPlanExecutionMode === 'with';
   const rows = getDisplayedLinearActionPlanItems(latestActionPlanPayload, actionPlanExecutionMode);
   const actionRows = sortLinearActionPlanItems(getFilteredLinearActionPlanItems());
-  const table = document.getElementById('action-plan-linear-actions-table');
-  table?.classList.toggle('manual-mode', manualMode);
-  table?.querySelectorAll('thead .manual-only').forEach((cell) => cell.classList.toggle('hidden', !manualMode));
-  const actionHeader = table?.querySelector('thead .action-column');
-  if (actionHeader) actionHeader.textContent = manualMode ? 'Recommendation' : 'Action';
   if (actionPlanLinearActionsTableBody) {
     actionPlanLinearActionsTableBody.innerHTML = '';
     actionRows.forEach((item) => {
@@ -3416,13 +3430,12 @@ function renderLinearAllocationRows() {
       const releaseTitle = item.release_date ? `Next known earnings release date: ${formatLinearReleaseDate(item).replace(/ BMO| AMC/, '')}${item.release_timing ? `, ${item.release_timing}` : ''}.` : 'Next known earnings release date from BakingMoney earnings calendar.';
       const momentumTitle = Number.isFinite(Number(item.momentum_score)) ? `Momentum: ${Number(item.momentum_score).toFixed(1)}/5${item.momentum_label ? ` ${item.momentum_label}` : ''}${item.momentum_updated_at ? `. Updated: ${item.momentum_updated_at}` : ''}.` : 'Momentum score and label from the stored deterministic momentum snapshot.';
       const displayedPrice = getActionPlanPriceDisplay(item, manualMode);
-      const presentation = getManualTriggerPresentation(item);
-      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml((manualMode ? item.recommended_action : item.action) || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="current-price-cell" title="${escapeHtml(displayedPrice.title)}">${displayedPrice.price}${displayedPrice.warning ? ' ⚠' : ''}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="release-date-cell" title="${escapeHtml(releaseTitle)}">${escapeHtml(formatLinearReleaseDate(item))}${renderLinearReleaseDateWarning(item)}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="momentum-cell" title="${escapeHtml(momentumTitle)}">${escapeHtml(formatLinearMomentum(item))}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>${manualMode ? `<td class="manual-only">${escapeHtml(manualTriggerLabel(item))}</td><td class="manual-only"><span class="manual-trigger-state ${presentation.tone}">${escapeHtml(presentation.status)}</span></td><td class="manual-only">${formatCurrencyValue(item.planned_action_amount, 'USD')}</td><td class="manual-only">${formatCurrencyValue(item.executable_action_amount, 'USD')}</td><td class="manual-only">${formatCurrencyValue(item.fulfilled_reservation, 'USD')}</td>` : ''}`;
+      const execution = getLinearActionTableExecutionDisplay(item, manualMode);
+      const shares = execution.shares === '—' ? '—' : formatSuggestedShareCount({ suggested_share_count: execution.shares });
+      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml((manualMode ? item.recommended_action : item.action) || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(execution.actionAmount)}</td><td class="shares-cell">${shares}</td><td class="funding-cell">${escapeHtml(execution.funding)}</td><td class="current-price-cell" title="${escapeHtml(displayedPrice.title)}">${displayedPrice.price}${displayedPrice.warning ? ' ⚠' : ''}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="release-date-cell" title="${escapeHtml(releaseTitle)}">${escapeHtml(formatLinearReleaseDate(item))}${renderLinearReleaseDateWarning(item)}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="momentum-cell" title="${escapeHtml(momentumTitle)}">${escapeHtml(formatLinearMomentum(item))}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
       if (manualMode && manualExecutionCalculationState !== 'current') {
         const label = manualExecutionCalculationState === 'recalculating' ? 'Recalculating' : 'Outdated';
         for (const selector of ['.action-amount-cell', '.shares-cell', '.funding-cell']) row.querySelector(selector).textContent = label;
-        const manualCells = row.querySelectorAll('.manual-only');
-        for (const index of [1, 3, 4]) manualCells[index].textContent = label;
       }
       actionPlanLinearActionsTableBody.appendChild(row);
       if (hasLinearTargetCap(item)) {

@@ -34,7 +34,7 @@ function helpers(...names) {
     escapeHtml: (value) => String(value),
     formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
   };
-  const dependencies = names.some((name) => ['getManualTriggerPresentation', 'getActionPlanPriceDisplay'].includes(name)) ? [functionSource('manualQuoteExpired')] : [];
+  const dependencies = names.some((name) => ['getManualTriggerPresentation', 'getActionPlanPriceDisplay', 'getLinearActionTableExecutionDisplay'].includes(name)) ? [functionSource('manualQuoteExpired')] : [];
   return vm.runInNewContext(`${dependencies.join('\n')}\n${names.map(functionSource).join('\n')}\n({${names.join(',')}})`, context);
 }
 
@@ -60,6 +60,36 @@ test('manual execution labels separate price eligibility, funding, and guardrail
   assert.equal(getManualTriggerPresentation({ recommended_action: 'Add', manual_trigger_status: 'eligible', suggested_share_count: 3, executable_action_amount: 237 }).status, 'Eligible, funded');
   assert.equal(getManualTriggerPresentation({ recommended_action: 'Add', manual_trigger_status: 'price_confirmation_required' }).status, 'Price confirmation required');
   assert.equal(getManualTriggerPresentation({ recommended_action: 'Watch / Rating Guardrail', manual_trigger_status: 'no_manual_trigger' }).status, 'Guardrail blocked');
+});
+
+test('trigger-aware table makes an unverified Sell unavailable while retaining its recommendation', () => {
+  const { getLinearActionTableExecutionDisplay } = helpers('getLinearActionTableExecutionDisplay');
+  assert.deepEqual(JSON.parse(JSON.stringify(getLinearActionTableExecutionDisplay({
+    recommended_action: 'Sell', action_amount_label: 'Sell $10,000.00', suggested_share_count: 20,
+    funding_status: 'Price confirmation required', manual_trigger_status: 'price_confirmation_required',
+  }, true))), {
+    actionAmount: '—', shares: '—', funding: 'Price confirmation required',
+  });
+});
+
+test('trigger-aware table uses executable values for an eligible trigger', () => {
+  const { getLinearActionTableExecutionDisplay } = helpers('getLinearActionTableExecutionDisplay');
+  assert.deepEqual(JSON.parse(JSON.stringify(getLinearActionTableExecutionDisplay({
+    action_amount_label: 'Add $1,250.00', suggested_share_count: 10,
+    funding_status: 'Fully funded', manual_trigger_status: 'eligible',
+  }, true))), {
+    actionAmount: 'Add $1,250.00', shares: 10, funding: 'Fully funded',
+  });
+});
+
+test('trigger-aware table keeps normal execution values for an action without a manual trigger', () => {
+  const { getLinearActionTableExecutionDisplay } = helpers('getLinearActionTableExecutionDisplay');
+  assert.deepEqual(JSON.parse(JSON.stringify(getLinearActionTableExecutionDisplay({
+    action_amount_label: 'Trim $500.00', suggested_share_count: 4,
+    funding_status: 'No funding needed', manual_trigger_status: 'no_manual_trigger',
+  }, true))), {
+    actionAmount: 'Trim $500.00', shares: 4, funding: 'No funding needed',
+  });
 });
 
 test('expired verification is never presented as eligible or funded', () => {
@@ -685,13 +715,12 @@ test('manual allocation rows mask stale execution figures and then render backen
   const { old, fresh } = expiringPlanFixture();
   const rows = [];
   const body = { innerHTML: '', appendChild: (row) => rows.push(row), querySelectorAll: () => [] };
-  const table = { classList: { toggle: () => {} }, querySelectorAll: () => [], querySelector: () => ({ textContent: '' }) };
+  const table = {};
   const makeRow = () => {
     const fields = Object.fromEntries(['.action-amount-cell', '.shares-cell', '.funding-cell'].map((key) => [key, { textContent: '' }]));
-    const manualCells = Array.from({ length: 5 }, () => ({ textContent: '' }));
     return { innerHTML: '', cells: Array.from({ length: 21 }, () => ({ textContent: '' })),
       querySelector: (selector) => fields[selector] || null,
-      querySelectorAll: (selector) => selector === '.manual-only' ? manualCells : [], fields, manualCells };
+      querySelectorAll: () => [], fields };
   };
   const context = {
     latestActionPlanPayload: old, actionPlanExecutionMode: 'with', manualExecutionCalculationState: 'outdated',
@@ -711,14 +740,12 @@ test('manual allocation rows mask stale execution figures and then render backen
     valueClass: () => '', escapeHtml: String, manualQuoteExpired: () => false,
     hasLinearTargetCap: () => false,
   };
-  vm.runInNewContext(functionSource('renderLinearAllocationRows'), context);
+  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getLinearActionTableExecutionDisplay')}\n${functionSource('renderLinearAllocationRows')}`, context);
   context.renderLinearAllocationRows();
   assert.equal(rows.length, 2);
   for (const row of rows) {
     assert.equal(row.fields['.shares-cell'].textContent, 'Outdated');
     assert.equal(row.fields['.funding-cell'].textContent, 'Outdated');
-    assert.equal(row.manualCells[3].textContent, 'Outdated');
-    assert.equal(row.manualCells[4].textContent, 'Outdated');
   }
   rows.length = 0;
   context.latestActionPlanPayload = fresh;

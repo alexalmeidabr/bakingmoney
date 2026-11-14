@@ -32,14 +32,7 @@
 
   function getLinearCagrValue(item) {
     if (!item) return null;
-    if (Object.prototype.hasOwnProperty.call(item, 'expected_equity_cagr')) {
-      return finiteNumber(item.expected_equity_cagr);
-    }
-    return finiteNumber(firstPresent(item, [
-      'expected_cagr',
-      'weighted_expected_cagr',
-      'scenario_expected_cagr',
-    ]));
+    return finiteNumber(item.expected_cagr);
   }
 
   function formatCagrPercent(value) {

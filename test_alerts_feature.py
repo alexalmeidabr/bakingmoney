@@ -690,7 +690,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                         web_server,
                         "fetch_ib_prices",
                         return_value=({"MSFT": None}, {"MSFT": web_server.NO_PRICE_WARNING}),
-                    ):
+                    ), mock.patch.object(web_server, "fetch_latest_historical_close", return_value=(None, "No close available")):
                         result = web_server.refresh_latest_analysis_market_prices(conn)
 
                     row = conn.execute(
@@ -731,7 +731,7 @@ class PositionsOfflineCacheTests(unittest.TestCase):
                         web_server,
                         "fetch_ib_prices",
                         return_value=({"NVDA": None}, {"NVDA": web_server.NO_PRICE_WARNING}),
-                    ):
+                    ), mock.patch.object(web_server, "fetch_latest_historical_close", return_value=(None, "No close available")):
                         result = web_server.refresh_latest_analysis_market_prices(conn)
 
                     row = conn.execute(
@@ -1772,8 +1772,8 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("window.addEventListener('resize', repositionOpenFloatingFilters)", js)
         self.assertIn("window.addEventListener('scroll', repositionOpenFloatingFilters, true)", js)
         self.assertNotIn('data-action-plan-setting="action_bucket_buy_target"', html.split('<template', 1)[0])
-        self.assertIn('async function loadActionPlan()', js)
-        self.assertIn('/api/action-plan', js)
+        self.assertIn('async function loadActionPlan(', js)
+        self.assertIn('/api/action-plan?execution_modes=both', js)
         self.assertIn('function getActionPlanNumericSortValue(item, key)', js)
         self.assertIn("if (key === 'target_band') return window.ActionPlanSorting.getTargetBandMidpoint(item);", js)
         self.assertIn('updateActionPlanSortHeaderState(); renderActionPlan();', js)

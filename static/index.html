@@ -818,6 +818,14 @@
           </div>
           <div id="action-plan-list-view">
           <p class="status">Linear Allocation uses dynamic reserve, whole-share sizing, and funding-aware actions.</p>
+          <div class="manual-plan-toolbar">
+            <div class="manual-plan-switch" role="group" aria-label="Action Plan execution mode">
+              <button id="action-plan-without-triggers" type="button" aria-pressed="true">Without Triggers</button>
+              <button id="action-plan-with-triggers" type="button" aria-pressed="false">With Triggers</button>
+            </div>
+            <button id="action-plan-refresh-trigger-prices" type="button">Refresh Trigger Prices</button>
+          </div>
+          <p id="action-plan-quote-status" class="status" role="status" aria-live="polite"></p>
           <p id="action-plan-status" class="status">Loading Action Plan…</p>
           <div id="action-plan-summary" class="summary-grid"></div>
           <div id="action-plan-actions-panel">
@@ -887,6 +895,11 @@
                     <th class="target-band-column sortable" data-sort-key="target_band">Target Band</th>
                     <th class="gap-column sortable" data-sort-key="position_gap_to_mid">Gap to Mid</th>
                     <th class="linear-score-column sortable" data-sort-key="linear_allocation_score">Linear Score</th>
+                    <th class="manual-only hidden">Manual Trigger</th>
+                    <th class="manual-only hidden">Trigger Status</th>
+                    <th class="manual-only hidden">Planned Amount</th>
+                    <th class="manual-only hidden">Funded Amount</th>
+                    <th class="manual-only hidden">Reserved Cash</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -902,6 +915,7 @@
             </div>
             <h3 id="action-plan-detail-title">Action Detail</h3>
             <p id="action-plan-detail-status" class="status"></p>
+            <div id="manual-trigger-detail"></div>
             <div id="action-plan-detail-content"></div>
           </div>
         </section>

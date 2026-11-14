@@ -254,8 +254,8 @@ test('Action Summary renders exactly the required Linear row fields in order', (
 test('Action Summary sources action, amount, shares, and market values from the Linear row item', () => {
   const summary = renderedDetailSection('Action Summary');
   assert.ok(summary.includes("['Action', escapeHtml(item.action || 'Hold')]"));
-  assert.ok(summary.includes("['Action Amount', escapeHtml(item.action_amount_label || '—')]"));
-  assert.ok(summary.includes("['Action Shares Amount', formatSuggestedShareCount(item)]"));
+  assert.ok(summary.includes("['Action Amount', manualFiguresUnavailable ? manualFiguresLabel : escapeHtml(item.action_amount_label || '—')]"));
+  assert.ok(summary.includes("['Action Shares Amount', manualFiguresUnavailable ? manualFiguresLabel : formatSuggestedShareCount(item)]"));
   assert.ok(summary.includes("['Current Price', formatActionDetailCurrencyValue(item.current_price, 'USD')]"));
   assert.ok(summary.includes("['Current Market Value', formatActionDetailCurrencyValue(item.current_position_market_value, 'USD')]"));
   assert.ok(summary.includes("['Expected Price', formatActionDetailCurrencyValue(item.expected_price, 'USD')]"));

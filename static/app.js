@@ -39,6 +39,11 @@ const actionPlanLinearActionsTableBody = document.querySelector('#action-plan-li
 const actionPlanLinearDetailTableBody = null;
 const actionPlanLinearSortHeaders = document.querySelectorAll('#action-plan-linear-actions-table th.sortable');
 const actionPlanRefreshBtn = document.getElementById('action-plan-refresh-btn');
+const actionPlanWithoutTriggersBtn = document.getElementById('action-plan-without-triggers');
+const actionPlanWithTriggersBtn = document.getElementById('action-plan-with-triggers');
+const actionPlanRefreshTriggerPricesBtn = document.getElementById('action-plan-refresh-trigger-prices');
+const actionPlanQuoteStatusEl = document.getElementById('action-plan-quote-status');
+const manualTriggerDetailEl = document.getElementById('manual-trigger-detail');
 const actionPlanListViewEl = document.getElementById('action-plan-list-view');
 const actionPlanDetailViewEl = document.getElementById('action-plan-detail-view');
 const actionPlanDetailBackBtn = document.getElementById('action-plan-detail-back-btn');
@@ -283,6 +288,14 @@ let positionSort = { key: 'marketValue', direction: 'desc' };
 let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
 let selectedActionPlanDetail = null;
+let latestActionPlanDetailPayload = null;
+let actionPlanExecutionMode = 'without';
+let actionPlanRequestId = 0;
+let actionPlanDetailRequestId = 0;
+let actionPlanQuoteRequestId = 0;
+let manualQuoteExpiryTimer = null;
+let manualExecutionCalculationState = 'current';
+let actionPlanPendingRequest = null;
 let portfolioAccounts = [];
 let selectedPortfolioAccountId = null;
 let analysisOwnershipRequestId = 0;
@@ -1673,12 +1686,23 @@ function clearPositionsDisplay(message, className = 'status error') {
 }
 
 function clearActionPlanDisplay(message, className = 'status error') {
+  actionPlanRequestId += 1;
+  actionPlanDetailRequestId += 1;
+  actionPlanQuoteRequestId += 1;
+  if (manualQuoteExpiryTimer) clearTimeout(manualQuoteExpiryTimer);
+  manualQuoteExpiryTimer = null;
+  manualExecutionCalculationState = 'current';
+  actionPlanPendingRequest = null;
   latestActionPlanPayload = { action_plan: [], linear_action_plan: [], summary: {} };
   selectedActionPlanDetail = null;
+  latestActionPlanDetailPayload = null;
   showActionPlanList();
   if (actionPlanSummaryEl) actionPlanSummaryEl.innerHTML = '';
   if (actionPlanLinearActionsTableBody) actionPlanLinearActionsTableBody.innerHTML = '';
   if (actionPlanDetailContentEl) actionPlanDetailContentEl.innerHTML = '';
+  if (manualTriggerDetailEl) manualTriggerDetailEl.innerHTML = '';
+  if (actionPlanQuoteStatusEl) actionPlanQuoteStatusEl.textContent = '';
+  if (actionPlanRefreshTriggerPricesBtn) actionPlanRefreshTriggerPricesBtn.disabled = false;
   actionPlanStatusEl.textContent = message;
   actionPlanStatusEl.className = className;
 }
@@ -1800,12 +1824,17 @@ async function handlePortfolioAccountNotFound() {
   localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
   selectedPortfolioAccountId = null;
   clearPositionsDisplay('', 'status');
+  clearActionPlanDisplay('', 'status');
+  actionPlanExecutionMode = 'without';
+  updateActionPlanModeButtons();
   await loadPortfolioAccounts({ preserveCurrent: false });
 }
 
 async function handlePortfolioAccountChange() {
   if (isUpdatingPortfolioAccountSelect) return;
   selectedPortfolioAccountId = normalizePortfolioAccountId(portfolioAccountSelectEl?.value);
+  actionPlanExecutionMode = 'without';
+  updateActionPlanModeButtons();
   if (selectedPortfolioAccountId) localStorage.setItem(PORTFOLIO_ACCOUNT_STORAGE_KEY, selectedPortfolioAccountId);
   else localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
   renderPortfolioAccountSelector();
@@ -2285,7 +2314,10 @@ function renderAnalysisList() {
 }
 
 function showActionPlanList() {
+  actionPlanDetailRequestId += 1;
   selectedActionPlanDetail = null;
+  latestActionPlanDetailPayload = null;
+  if (manualTriggerDetailEl) manualTriggerDetailEl.innerHTML = '';
   actionPlanListViewEl.classList.remove('hidden');
   actionPlanDetailViewEl.classList.add('hidden');
 }
@@ -2398,8 +2430,292 @@ function formatActionDetailNet(value) {
   return `${value >= 0 ? '+' : ''}${formatNumber(value)}`;
 }
 
+function getDisplayedLinearActionPlanItems(payload, mode) {
+  return mode === 'with' && Array.isArray(payload?.manual_execution?.linear_action_plan)
+    ? payload.manual_execution.linear_action_plan
+    : (Array.isArray(payload?.linear_action_plan) ? payload.linear_action_plan : []);
+}
+
+function manualQuoteExpired(item, now = Date.now()) {
+  const expiry = Date.parse(item?.manual_verified_quote_expires_at || '');
+  return Number.isFinite(expiry) && now >= expiry;
+}
+
+function getActionPlanPriceDisplay(item, manualMode) {
+  const fallbackTitle = item.price_warning || (item.price_source === 'analysis_fallback'
+    ? 'Action Plan is using the saved analysis price.' : 'Current Action Plan sizing price.');
+  if (manualMode && manualQuoteExpired(item)) {
+    return { price: 'Expired', title: 'Verified live quote expired. Refresh trigger prices and the Action Plan.', warning: true };
+  }
+  if (manualMode && item.manual_verified_price != null && item.manual_verified_quote_at) {
+    return { price: formatCurrencyValue(item.manual_verified_price, 'USD'),
+      title: `Verified live bid/ask at ${item.manual_verified_quote_at}`, warning: false };
+  }
+  return { price: formatCurrencyValue(item.current_price, 'USD'), title: fallbackTitle, warning: Boolean(item.price_warning) };
+}
+
+function getManualTriggerPresentation(item) {
+  const status = item?.manual_trigger_status;
+  if (manualQuoteExpired(item)) return { status: 'Price confirmation required', tone: 'confirmation' };
+  if (status === 'waiting') return { status: 'Waiting', tone: 'waiting' };
+  if (status === 'price_confirmation_required') return { status: 'Price confirmation required', tone: 'confirmation' };
+  if (status === 'eligible') {
+    const funded = Number(item.suggested_share_count) > 0 && Number(item.executable_action_amount) > 0;
+    return { status: funded ? 'Eligible, funded' : 'Eligible, unfunded', tone: funded ? 'funded' : 'waiting' };
+  }
+  if (['Watch / Rating Guardrail', 'Watch / Extended'].includes(item?.recommended_action || item?.action)
+      || item?.funding_status === 'Extension guardrail' || item?.funding_status === 'Rating blocks add') {
+    return { status: 'Guardrail blocked', tone: 'confirmation' };
+  }
+  return { status: 'No manual trigger', tone: '' };
+}
+
+function validateManualTriggerForm(values) {
+  const price = (value, label) => {
+    if (String(value ?? '').trim() === '') return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${label} must be a positive finite price.`);
+    return parsed;
+  };
+  try {
+    const buy = price(values.buy_trigger_price, 'Buy trigger');
+    const sell = price(values.sell_trigger_price, 'Sell/Trim trigger');
+    if (!['at_or_above', 'at_or_below'].includes(values.sell_trigger_direction)) {
+      throw new Error('Choose a valid Sell/Trim direction.');
+    }
+    const reserveText = String(values.reserve_percentage ?? '').trim();
+    const percentage = reserveText === '' ? 0 : Number(reserveText);
+    if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+      throw new Error('Reserve percentage must be from 0% to 100%.');
+    }
+    return { value: {
+      buy_trigger_price: buy, sell_trigger_price: sell,
+      sell_trigger_direction: values.sell_trigger_direction,
+      reserve_enabled: Boolean(values.reserve_enabled), reserve_percentage: percentage,
+    } };
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
+function updateActionPlanModeButtons() {
+  actionPlanWithoutTriggersBtn?.setAttribute('aria-pressed', String(actionPlanExecutionMode === 'without'));
+  actionPlanWithTriggersBtn?.setAttribute('aria-pressed', String(actionPlanExecutionMode === 'with'));
+}
+
+function setActionPlanExecutionMode(mode) {
+  if (!['without', 'with'].includes(mode)) return;
+  actionPlanExecutionMode = mode;
+  updateActionPlanModeButtons();
+  renderActionPlan();
+  if (latestActionPlanDetailPayload && !actionPlanDetailViewEl.classList.contains('hidden')) {
+    renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
+  }
+}
+
+function manualTriggerLabel(item) {
+  if (item.manual_trigger_price == null) return 'None';
+  const direction = item.manual_trigger_direction === 'at_or_below' ? '≤' : '≥';
+  return `${direction} ${formatCurrencyValue(item.manual_trigger_price, 'USD')}`;
+}
+
+function renderSelectedActionPlanDetail(payload) {
+  const baseline = payload?.action_detail;
+  if (!baseline) return;
+  renderActionPlanDetail(baseline);
+  const explanation = manualTriggerDetailEl?.querySelector('#manual-execution-explanation');
+  if (!explanation) return;
+  if (actionPlanExecutionMode !== 'with') {
+    explanation.innerHTML = '';
+    return;
+  }
+  const manual = getDisplayedLinearActionPlanItems(latestActionPlanPayload, 'with')
+    .find((item) => item.symbol === baseline.symbol) || payload.manual_execution_detail;
+  if (!manual) return;
+  const calculationUnavailable = manualExecutionCalculationState !== 'current';
+  const calculationLabel = manualExecutionCalculationState === 'recalculating' ? 'Recalculating' : 'Outdated; refresh Action Plan';
+  const presentation = getManualTriggerPresentation(manual);
+  const quoteExpired = manualQuoteExpired(manual);
+  const sellBlocked = ['Sell', 'Strong Sell'].includes(manual.recommended_action)
+    && ['waiting', 'price_confirmation_required'].includes(manual.manual_trigger_status);
+  const reservationText = calculationUnavailable
+    ? (manualExecutionCalculationState === 'recalculating' ? 'Manual execution funding is being recalculated.' : 'Manual execution funding is outdated. Refresh Action Plan to retry.')
+    : manual.reserve_enabled
+    ? 'A waiting Buy reserves only the funded portion shown below. When its trigger is reached, the reservation is released into normal trade funding.'
+    : 'Reservation is off; available capital may be allocated to other eligible companies.';
+  explanation.innerHTML = `<section class="detail-card"><h4>Manual Execution</h4>
+    ${manualExecutionCalculationState === 'outdated' ? '<p class="status warning">Verified trigger price expired and the Action Plan could not be recalculated. Manual execution funding is outdated. Refresh Action Plan to retry.</p>' : ''}
+    ${renderActionPlanMetricList([
+      ['Investment Recommendation', escapeHtml(manual.recommended_action || baseline.action || 'Hold')],
+      ['Original Planned Amount', formatCurrencyValue(manual.planned_action_amount, 'USD')],
+      ['Original Suggested Shares', formatNumber(manual.planned_share_count, 0)],
+      ['Manual Trigger', escapeHtml(manualTriggerLabel(manual))],
+      ['Trigger Status', calculationUnavailable ? calculationLabel : escapeHtml(presentation.status)],
+      ['Verified Price', manual.manual_verified_price == null || quoteExpired ? 'Verification required' : formatCurrencyValue(manual.manual_verified_price, 'USD')],
+      ['Verified At', escapeHtml(quoteExpired ? 'Expired; refresh trigger prices' : (manual.manual_verified_quote_at || '—'))],
+      ['Executable Action', calculationUnavailable ? calculationLabel : escapeHtml(manual.executable_action || manual.action || 'Hold')],
+      ['Funded Amount', calculationUnavailable ? calculationLabel : formatCurrencyValue(manual.executable_action_amount, 'USD')],
+      ['Funded Shares', calculationUnavailable ? calculationLabel : formatNumber(manual.suggested_share_count, 0)],
+      ['Funding Status', calculationUnavailable ? calculationLabel : escapeHtml(manual.funding_status || '—')],
+    ])}
+    ${sellBlocked ? '<p class="status warning manual-execution-warning">BakingMoney recommends selling this position, but the manual price condition currently prevents execution.</p>' : ''}
+    ${manual.manual_price_verification_reason ? `<p class="status warning">${escapeHtml(manual.manual_price_verification_reason)}</p>` : ''}
+    </section>
+    <section class="detail-card"><h4>Manual Cash Reservation</h4>
+    ${renderActionPlanMetricList([
+      ['Planned Purchase at Trigger Price', calculationUnavailable ? calculationLabel : formatCurrencyValue(manual.planned_purchase_amount_at_trigger, 'USD')],
+      ['Reservation Percentage', formatPercent(manual.reserve_percentage)],
+      ['Requested Reservation', calculationUnavailable ? calculationLabel : formatCurrencyValue(manual.requested_reservation, 'USD')],
+      ['Fulfilled Reservation', calculationUnavailable ? calculationLabel : formatCurrencyValue(manual.fulfilled_reservation, 'USD')],
+      ['Unfulfilled Reservation', calculationUnavailable ? calculationLabel : formatCurrencyValue(manual.unfulfilled_reservation, 'USD')],
+      ['From Current Cash-like Funds', calculationUnavailable ? calculationLabel : formatCurrencyValue(manual.fulfilled_reservation_from_current_cash_like, 'USD')],
+      ['From Projected Sell/Trim Proceeds', calculationUnavailable ? calculationLabel : formatCurrencyValue(manual.fulfilled_reservation_from_projected_proceeds, 'USD')],
+    ])}
+    <p>${escapeHtml(reservationText)} Reservations are planning earmarks, not actual IBKR cash restrictions or orders.</p></section>`;
+}
+
+function renderManualTriggerDetail(symbol, trigger) {
+  if (!manualTriggerDetailEl) return;
+  const saved = trigger || {};
+  manualTriggerDetailEl.innerHTML = `<section class="detail-card"><h4>Manual Execution Triggers</h4>
+    <div class="manual-trigger-editor">
+      <label>Buy at or below<input data-trigger-field="buy_trigger_price" type="number" min="0" step="any" inputmode="decimal" value="${escapeHtml(saved.buy_trigger_price ?? '')}"></label>
+      <label>Sell/Trim trigger price<input data-trigger-field="sell_trigger_price" type="number" min="0" step="any" inputmode="decimal" value="${escapeHtml(saved.sell_trigger_price ?? '')}"></label>
+      <label>Sell/Trim direction<select data-trigger-field="sell_trigger_direction"><option value="at_or_above"${saved.sell_trigger_direction !== 'at_or_below' ? ' selected' : ''}>At or above</option><option value="at_or_below"${saved.sell_trigger_direction === 'at_or_below' ? ' selected' : ''}>At or below</option></select></label>
+      <label class="manual-reserve-toggle"><input data-trigger-field="reserve_enabled" type="checkbox"${saved.reserve_enabled ? ' checked' : ''}> Reserve cash while waiting for Buy trigger</label>
+      <label data-reserve-percentage-label>Reserve percentage (%)<input data-trigger-field="reserve_percentage" type="number" min="0" max="100" step="1" inputmode="decimal" value="${escapeHtml(saved.reserve_percentage ?? 0)}"></label>
+      <p class="manual-reserve-help">The percentage of the estimated additional purchase at your Buy trigger price that should remain reserved instead of being allocated to other stocks. If the planned additional purchase at the trigger price is $5,000 and you reserve 60%, BakingMoney will request a $3,000 cash reservation.</p>
+      <div class="manual-editor-actions"><button type="button" data-trigger-action="save">Save Triggers</button><button type="button" data-trigger-action="clear">Clear Triggers</button><button type="button" data-trigger-action="refresh">Refresh This Trigger Price</button></div>
+    </div><p class="status" data-trigger-status role="status" aria-live="polite"></p></section><div id="manual-execution-explanation"></div>`;
+  const reserveToggle = manualTriggerDetailEl.querySelector('[data-trigger-field="reserve_enabled"]');
+  const reserveLabel = manualTriggerDetailEl.querySelector('[data-reserve-percentage-label]');
+  const syncReserve = () => { reserveLabel.hidden = !reserveToggle.checked; };
+  reserveToggle.addEventListener('change', syncReserve);
+  syncReserve();
+  manualTriggerDetailEl.querySelector('[data-trigger-action="save"]').addEventListener('click', () => saveManualTrigger(symbol));
+  manualTriggerDetailEl.querySelector('[data-trigger-action="clear"]').addEventListener('click', () => clearManualTrigger(symbol));
+  manualTriggerDetailEl.querySelector('[data-trigger-action="refresh"]').addEventListener('click', () => refreshTriggerPrices([symbol]));
+  if (latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
+}
+
+function manualTriggerEditorValues() {
+  const field = (name) => manualTriggerDetailEl.querySelector(`[data-trigger-field="${name}"]`);
+  return {
+    buy_trigger_price: field('buy_trigger_price').value,
+    sell_trigger_price: field('sell_trigger_price').value,
+    sell_trigger_direction: field('sell_trigger_direction').value,
+    reserve_enabled: field('reserve_enabled').checked,
+    reserve_percentage: field('reserve_percentage').value,
+  };
+}
+
+async function saveManualTrigger(symbol) {
+  const statusEl = manualTriggerDetailEl.querySelector('[data-trigger-status]');
+  const validation = validateManualTriggerForm(manualTriggerEditorValues());
+  if (validation.error) {
+    statusEl.textContent = validation.error;
+    statusEl.className = 'status error';
+    return;
+  }
+  const account = selectedPortfolioAccountId;
+  const detailId = actionPlanDetailRequestId;
+  statusEl.textContent = 'Saving triggers…';
+  try {
+    const response = await fetch(withSelectedPortfolioAccount(`/api/manual-execution-triggers/${encodeURIComponent(symbol)}`), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(validation.value),
+    });
+    const payload = await response.json();
+    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    if (!response.ok) throw createPortfolioApiError(payload, 'Unable to save triggers');
+    statusEl.textContent = 'Triggers saved. Updating Action Plan…';
+    statusEl.className = 'status';
+    const reloaded = await loadActionPlan({ preserveDetail: true });
+    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    statusEl.textContent = reloaded ? 'Triggers saved.' : 'Triggers saved, but Action Plan reload failed. Refresh Action Plan to retry.';
+    statusEl.className = reloaded ? 'status success' : 'status warning';
+  } catch (error) {
+    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    statusEl.textContent = `Error: ${error.message}`;
+    statusEl.className = 'status error';
+  }
+}
+
+async function clearManualTrigger(symbol) {
+  const statusEl = manualTriggerDetailEl.querySelector('[data-trigger-status]');
+  const account = selectedPortfolioAccountId;
+  const detailId = actionPlanDetailRequestId;
+  try {
+    const response = await fetch(withSelectedPortfolioAccount(`/api/manual-execution-triggers/${encodeURIComponent(symbol)}`), { method: 'DELETE' });
+    const payload = await response.json();
+    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    if (!response.ok && response.status !== 404) throw createPortfolioApiError(payload, 'Unable to clear triggers');
+    renderManualTriggerDetail(symbol, null);
+    const newStatus = manualTriggerDetailEl.querySelector('[data-trigger-status]');
+    newStatus.textContent = 'Triggers cleared. Updating Action Plan…';
+    const reloaded = await loadActionPlan({ preserveDetail: true });
+    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    newStatus.textContent = reloaded ? 'Triggers cleared.' : 'Triggers cleared, but Action Plan reload failed. Refresh Action Plan to retry.';
+    newStatus.className = reloaded ? 'status success' : 'status warning';
+  } catch (error) {
+    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    statusEl.textContent = `Error: ${error.message}`;
+    statusEl.className = 'status error';
+  }
+}
+
+async function refreshTriggerPrices(onlySymbols = null) {
+  if (isPortfolioAccountSelectionRequired()) {
+    clearActionPlanDisplay(PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE);
+    return;
+  }
+  const account = selectedPortfolioAccountId;
+  const requestId = ++actionPlanQuoteRequestId;
+  const symbols = onlySymbols || getDisplayedLinearActionPlanItems(latestActionPlanPayload, 'with')
+    .filter((item) => item.manual_trigger_price != null)
+    .map((item) => item.symbol);
+  const unique = [...new Set(symbols.filter(Boolean))];
+  const editorStatus = manualTriggerDetailEl?.querySelector('[data-trigger-status]');
+  const setStatus = (message, className = 'status') => {
+    if (actionPlanQuoteStatusEl) { actionPlanQuoteStatusEl.textContent = message; actionPlanQuoteStatusEl.className = className; }
+    if (editorStatus && onlySymbols) { editorStatus.textContent = message; editorStatus.className = className; }
+  };
+  if (!unique.length) {
+    setStatus('No applicable manual trigger prices to refresh.');
+    return;
+  }
+  setStatus(`Refreshing live prices for ${unique.length} trigger ${unique.length === 1 ? 'symbol' : 'symbols'}…`);
+  actionPlanRefreshTriggerPricesBtn.disabled = true;
+  try {
+    const results = [];
+    for (let start = 0; start < unique.length; start += 25) {
+      const response = await fetch(withSelectedPortfolioAccount('/api/manual-execution-quotes/refresh'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: unique.slice(start, start + 25) }),
+      });
+      const payload = await response.json();
+      if (requestId !== actionPlanQuoteRequestId || account !== selectedPortfolioAccountId) return;
+      if (!response.ok && !Array.isArray(payload.results)) throw createPortfolioApiError(payload, 'Unable to refresh trigger prices');
+      results.push(...(payload.results || []));
+    }
+    const verified = results.filter((item) => item.status === 'verified').length;
+    const failed = results.filter((item) => item.status !== 'verified');
+    const details = failed.length ? ` ${failed.map((item) => `${item.symbol}: ${item.reason || item.status}`).join('; ')}.` : '';
+    setStatus(`${verified} live ${verified === 1 ? 'price' : 'prices'} verified; ${failed.length} require confirmation.${details}`, failed.length ? 'status warning' : 'status success');
+    const reloaded = await loadActionPlan({ preserveDetail: !actionPlanDetailViewEl.classList.contains('hidden') });
+    if (requestId !== actionPlanQuoteRequestId || account !== selectedPortfolioAccountId) return;
+    if (!reloaded) setStatus('Quote refresh completed, but Action Plan reload failed. Refresh Action Plan to retry.', 'status warning');
+  } catch (error) {
+    if (requestId !== actionPlanQuoteRequestId || account !== selectedPortfolioAccountId) return;
+    setStatus(`Error: ${error.message}`, 'status error');
+  } finally {
+    if (requestId === actionPlanQuoteRequestId) actionPlanRefreshTriggerPricesBtn.disabled = false;
+  }
+}
+
 function renderActionPlanDetail(item) {
   if (!item) return;
+  const manualFiguresUnavailable = actionPlanExecutionMode === 'with' && manualExecutionCalculationState !== 'current';
+  const manualFiguresLabel = manualExecutionCalculationState === 'recalculating' ? 'Recalculating' : 'Outdated; refresh Action Plan';
   selectedActionPlanDetail = item;
   actionPlanDetailTitleEl.textContent = `Action Detail: ${item.symbol}`;
   actionPlanDetailStatusEl.textContent = item.price_refresh_diagnostic || item.price_warning || item.linear_explanation || item.reason || '';
@@ -2414,8 +2730,8 @@ function renderActionPlanDetail(item) {
       ['Symbol', escapeHtml(item.symbol || '')],
       ['Company Name', escapeHtml(item.company_name || '—')],
       ['Action', escapeHtml(item.action || 'Hold')],
-      ['Action Amount', escapeHtml(item.action_amount_label || '—')],
-      ['Action Shares Amount', formatSuggestedShareCount(item)],
+      ['Action Amount', manualFiguresUnavailable ? manualFiguresLabel : escapeHtml(item.action_amount_label || '—')],
+      ['Action Shares Amount', manualFiguresUnavailable ? manualFiguresLabel : formatSuggestedShareCount(item)],
       ['Rating', escapeHtml(item.rating || 'Hold')],
       ['Current Price', formatActionDetailCurrencyValue(item.current_price, 'USD')],
       ['Current Market Value', formatActionDetailCurrencyValue(item.current_position_market_value, 'USD')],
@@ -2435,14 +2751,14 @@ function renderActionPlanDetail(item) {
     ])}</section>
     <section class="detail-card"><h4>Bootstrap Execution</h4>${renderActionPlanMetricList([
       ['Capital-Constrained Execution', (item.linear_bootstrap_breakdown?.capital_constrained_execution ?? item.capital_constrained_execution) ? 'Yes' : 'No'],
-      ['Bootstrap Lot Funded', (item.linear_bootstrap_breakdown?.execution_applied ?? item.bootstrap_execution_applied) ? 'Yes' : 'No'],
+      ['Bootstrap Lot Funded', manualFiguresUnavailable ? manualFiguresLabel : ((item.linear_bootstrap_breakdown?.execution_applied ?? item.bootstrap_execution_applied) ? 'Yes' : 'No')],
       ['Bootstrap Priority', formatActionDetailNumber(item.linear_bootstrap_breakdown?.priority ?? item.bootstrap_priority, 0)],
       ['Original Target-Mid Gap', formatActionDetailCurrencyValue(item.linear_bootstrap_breakdown?.original_target_gap_amount ?? item.bootstrap_original_target_gap_amount, 'USD')],
       ['Minimum Bootstrap Shares', formatActionDetailNumber(item.linear_bootstrap_breakdown?.minimum_shares ?? item.bootstrap_minimum_shares, 0)],
       ['Minimum Bootstrap Amount', formatActionDetailCurrencyValue(item.linear_bootstrap_breakdown?.minimum_amount ?? item.bootstrap_minimum_amount, 'USD')],
       ['Target High Temporarily Exceeded', (item.linear_bootstrap_breakdown?.target_high_override ?? item.bootstrap_target_high_override) ? 'Yes' : 'No'],
-      ['Actual Funded Amount', formatActionDetailCurrencyValue((item.linear_bootstrap_breakdown?.execution_applied ?? item.bootstrap_execution_applied) ? (item.linear_bootstrap_breakdown?.funded_amount ?? item.executable_action_amount) : null, 'USD')],
-      ['Funding Status', escapeHtml(item.linear_bootstrap_breakdown?.funding_status ?? item.funding_status ?? 'No funding needed')],
+      ['Actual Funded Amount', manualFiguresUnavailable ? manualFiguresLabel : formatActionDetailCurrencyValue((item.linear_bootstrap_breakdown?.execution_applied ?? item.bootstrap_execution_applied) ? (item.linear_bootstrap_breakdown?.funded_amount ?? item.executable_action_amount) : null, 'USD')],
+      ['Funding Status', manualFiguresUnavailable ? manualFiguresLabel : escapeHtml(item.linear_bootstrap_breakdown?.funding_status ?? item.funding_status ?? 'No funding needed')],
     ])}</section>
     <section class="detail-card"><h4>Linear Target Calculation</h4>${renderActionPlanMetricRows([
       [['Linear Score', formatActionDetailNumber(score.linear_score ?? item.linear_allocation_score)]],
@@ -2545,15 +2861,28 @@ async function openActionPlanDetail(symbol) {
     clearActionPlanDisplay(PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE);
     return;
   }
-  const cached = (latestActionPlanPayload.linear_action_plan || []).find((item) => item.symbol === symbol);
+  const requestAccount = selectedPortfolioAccountId;
+  const requestId = ++actionPlanDetailRequestId;
+  latestActionPlanDetailPayload = null;
+  if (manualTriggerDetailEl) manualTriggerDetailEl.innerHTML = '';
+  const cached = getDisplayedLinearActionPlanItems(latestActionPlanPayload, actionPlanExecutionMode).find((item) => item.symbol === symbol);
   renderActionPlanDetail(cached || { symbol, action: 'Loading…' });
   actionPlanDetailStatusEl.textContent = `Loading ${symbol} Action Detail…`;
   try {
-    const response = await fetch(withSelectedPortfolioAccount(`/api/action-plan/${encodeURIComponent(symbol)}`));
+    const [response, triggerResponse] = await Promise.all([
+      fetch(withSelectedPortfolioAccount(`/api/action-plan/${encodeURIComponent(symbol)}?execution_modes=both`)),
+      fetch(withSelectedPortfolioAccount(`/api/manual-execution-triggers/${encodeURIComponent(symbol)}`)),
+    ]);
     const payload = await response.json();
+    const triggerPayload = await triggerResponse.json();
+    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId) return;
     if (!response.ok) throw createPortfolioApiError(payload, 'Unable to load Action Detail');
-    renderActionPlanDetail(payload.action_detail);
+    if (!triggerResponse.ok && triggerResponse.status !== 404) throw createPortfolioApiError(triggerPayload, 'Unable to load manual triggers');
+    latestActionPlanDetailPayload = payload;
+    renderSelectedActionPlanDetail(payload);
+    renderManualTriggerDetail(symbol, triggerPayload.trigger || null);
   } catch (error) {
+    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId) return;
     if (error.code === 'account_not_found') await handlePortfolioAccountNotFound();
     if (isPortfolioAccountBlockingError(error)) {
       actionPlanDetailContentEl.innerHTML = '';
@@ -2564,32 +2893,100 @@ async function openActionPlanDetail(symbol) {
   }
 }
 
-async function loadActionPlan() {
+async function loadActionPlan(options = {}) {
   if (!actionPlanLinearActionsTableBody) return;
-  showActionPlanList();
+  const requestAccount = selectedPortfolioAccountId;
+  const requestId = ++actionPlanRequestId;
+  if (!options.preserveDetail) showActionPlanList();
   if (isPortfolioAccountSelectionRequired()) {
     clearActionPlanDisplay(PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE);
     return;
   }
+  actionPlanPendingRequest = { id: requestId, account: requestAccount };
   actionPlanStatusEl.textContent = 'Loading Action Plan…';
   actionPlanStatusEl.className = 'status';
+  const requestStartedAt = Date.now();
   try {
-    const response = await fetch(withSelectedPortfolioAccount('/api/action-plan'));
+    const response = await fetch(withSelectedPortfolioAccount('/api/action-plan?execution_modes=both'));
     const payload = await response.json();
+    if (requestId !== actionPlanRequestId || requestAccount !== selectedPortfolioAccountId) return false;
+    actionPlanPendingRequest = null;
     if (!response.ok) throw createPortfolioApiError(payload, 'Unable to load Action Plan');
     latestActionPlanPayload = payload || { action_plan: [], summary: {} };
+    const quoteExpiredDuringRequest = getDisplayedLinearActionPlanItems(latestActionPlanPayload, 'with').some((item) => {
+      const expiry = Date.parse(item.manual_verified_quote_expires_at || '');
+      return Number.isFinite(expiry) && expiry > requestStartedAt && expiry <= Date.now();
+    });
+    manualExecutionCalculationState = 'current';
     renderActionPlan();
+    if (options.preserveDetail && latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
     actionPlanStatusEl.textContent = `Loaded ${payload.linear_action_plan?.length || 0} Linear Allocation rows.`;
     actionPlanStatusEl.className = 'status';
+    if (quoteExpiredDuringRequest) return handleManualQuoteExpiry();
+    return true;
   } catch (error) {
+    if (requestId !== actionPlanRequestId || requestAccount !== selectedPortfolioAccountId) return false;
+    actionPlanPendingRequest = null;
     if (error.code === 'account_not_found') await handlePortfolioAccountNotFound();
     if (isPortfolioAccountBlockingError(error)) {
       clearActionPlanDisplay(error.message);
-      return;
+      return false;
+    }
+    if (options.expirationRecalculation || manualExecutionCalculationState === 'recalculating'
+      || getDisplayedLinearActionPlanItems(latestActionPlanPayload, 'with').some((item) => manualQuoteExpired(item))) {
+      manualExecutionCalculationState = 'outdated';
+      renderActionPlan();
+      if (latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
+    } else {
+      renderActionPlan();
     }
     actionPlanStatusEl.textContent = `Error: ${error.message}`;
     actionPlanStatusEl.className = 'status error';
+    return false;
   }
+}
+
+async function refreshOpenActionPlanDetailAfterExpiry(account, symbol, detailRequestId) {
+  if (!symbol || account !== selectedPortfolioAccountId || detailRequestId !== actionPlanDetailRequestId) return;
+  const planRequestId = actionPlanRequestId;
+  try {
+    const response = await fetch(withSelectedPortfolioAccount(`/api/action-plan/${encodeURIComponent(symbol)}?execution_modes=both`));
+    const payload = await response.json();
+    if (account !== selectedPortfolioAccountId || detailRequestId !== actionPlanDetailRequestId
+      || planRequestId !== actionPlanRequestId
+      || selectedActionPlanDetail?.symbol !== symbol || actionPlanDetailViewEl.classList.contains('hidden')) return;
+    if (!response.ok) throw createPortfolioApiError(payload, 'Unable to reload Action Detail');
+    latestActionPlanDetailPayload = payload;
+    renderSelectedActionPlanDetail(payload);
+  } catch (error) {
+    if (account !== selectedPortfolioAccountId || detailRequestId !== actionPlanDetailRequestId
+      || planRequestId !== actionPlanRequestId) return;
+    actionPlanDetailStatusEl.textContent = `Action Detail refresh failed: ${error.message}`;
+    actionPlanDetailStatusEl.className = 'status warning';
+  }
+}
+
+async function handleManualQuoteExpiry() {
+  if (manualExecutionCalculationState !== 'current') return false;
+  const account = selectedPortfolioAccountId;
+  const symbol = actionPlanDetailViewEl.classList.contains('hidden') ? null : selectedActionPlanDetail?.symbol;
+  const detailRequestId = actionPlanDetailRequestId;
+  manualExecutionCalculationState = 'recalculating';
+  renderActionPlan();
+  if (latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
+  const reloaded = await loadActionPlan({ preserveDetail: true, expirationRecalculation: true });
+  if (reloaded && account === selectedPortfolioAccountId && detailRequestId === actionPlanDetailRequestId) {
+    await refreshOpenActionPlanDetailAfterExpiry(account, symbol, detailRequestId);
+  }
+  return reloaded;
+}
+
+async function refreshActionPlanFromButton() {
+  const account = selectedPortfolioAccountId;
+  const symbol = actionPlanDetailViewEl.classList.contains('hidden') ? null : selectedActionPlanDetail?.symbol;
+  const detailRequestId = actionPlanDetailRequestId;
+  const reloaded = await loadActionPlan({ preserveDetail: Boolean(symbol) });
+  if (reloaded && symbol) await refreshOpenActionPlanDetailAfterExpiry(account, symbol, detailRequestId);
 }
 
 function getFilteredActionPlanItems() {
@@ -2610,7 +3007,7 @@ function getFilteredActionPlanItems() {
 }
 
 function getFilteredLinearActionPlanItems() {
-  let items = latestActionPlanPayload.linear_action_plan || [];
+  let items = getDisplayedLinearActionPlanItems(latestActionPlanPayload, actionPlanExecutionMode);
   const selectedRatings = getSelectedActionPlanRatings();
   if (selectedRatings.size > 0 && selectedRatings.size < RATING_FILTER_OPTIONS.length) {
     const expectedRatings = new Set(Array.from(selectedRatings).map((key) => RATING_FILTER_LABEL_BY_KEY[key]).filter(Boolean));
@@ -2618,7 +3015,7 @@ function getFilteredLinearActionPlanItems() {
   }
   const selectedActions = getSelectedActionPlanActions();
   if (selectedActions.size > 0 && selectedActions.size < ACTION_PLAN_ACTION_FILTER_OPTIONS.length) {
-    items = items.filter((item) => selectedActions.has(getActionPlanActionFilterKey(item.action)));
+    items = items.filter((item) => selectedActions.has(getActionPlanActionFilterKey(item.recommended_action || item.action)));
   }
   return items;
 }
@@ -3002,8 +3399,14 @@ function openLinearCapExplanationModal(item) {
 }
 
 function renderLinearAllocationRows() {
-  const rows = Array.isArray(latestActionPlanPayload?.linear_action_plan) ? latestActionPlanPayload.linear_action_plan : [];
+  const manualMode = actionPlanExecutionMode === 'with';
+  const rows = getDisplayedLinearActionPlanItems(latestActionPlanPayload, actionPlanExecutionMode);
   const actionRows = sortLinearActionPlanItems(getFilteredLinearActionPlanItems());
+  const table = document.getElementById('action-plan-linear-actions-table');
+  table?.classList.toggle('manual-mode', manualMode);
+  table?.querySelectorAll('thead .manual-only').forEach((cell) => cell.classList.toggle('hidden', !manualMode));
+  const actionHeader = table?.querySelector('thead .action-column');
+  if (actionHeader) actionHeader.textContent = manualMode ? 'Recommendation' : 'Action';
   if (actionPlanLinearActionsTableBody) {
     actionPlanLinearActionsTableBody.innerHTML = '';
     actionRows.forEach((item) => {
@@ -3012,8 +3415,15 @@ function renderLinearAllocationRows() {
       const targetBand = `<span class="target-band-range">${formatPercent(item.linear_target_weight_low ?? item.target_weight_low)} – ${formatPercent(item.linear_target_weight_high ?? item.target_weight_high)}</span><span class="target-band-mid">(mid ${formatPercent(item.linear_target_weight_mid ?? item.target_weight_mid)})</span>`;
       const releaseTitle = item.release_date ? `Next known earnings release date: ${formatLinearReleaseDate(item).replace(/ BMO| AMC/, '')}${item.release_timing ? `, ${item.release_timing}` : ''}.` : 'Next known earnings release date from BakingMoney earnings calendar.';
       const momentumTitle = Number.isFinite(Number(item.momentum_score)) ? `Momentum: ${Number(item.momentum_score).toFixed(1)}/5${item.momentum_label ? ` ${item.momentum_label}` : ''}${item.momentum_updated_at ? `. Updated: ${item.momentum_updated_at}` : ''}.` : 'Momentum score and label from the stored deterministic momentum snapshot.';
-      const priceTitle = item.price_warning || (item.price_source === 'analysis_fallback' ? 'Action Plan is using the saved analysis price.' : 'Current Action Plan sizing price.');
-      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="current-price-cell" title="${escapeHtml(priceTitle)}">${formatCurrencyValue(item.current_price, 'USD')}${item.price_warning ? ' ⚠' : ''}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="release-date-cell" title="${escapeHtml(releaseTitle)}">${escapeHtml(formatLinearReleaseDate(item))}${renderLinearReleaseDateWarning(item)}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="momentum-cell" title="${escapeHtml(momentumTitle)}">${escapeHtml(formatLinearMomentum(item))}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>`;
+      const displayedPrice = getActionPlanPriceDisplay(item, manualMode);
+      const presentation = getManualTriggerPresentation(item);
+      row.innerHTML = `<td class="symbol-cell"><button class="symbol-link linear-allocation-symbol" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml((manualMode ? item.recommended_action : item.action) || 'Hold')}</td><td class="market-value-cell">${formatCurrencyValue(item.current_position_market_value ?? 0, 'USD')}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="current-price-cell" title="${escapeHtml(displayedPrice.title)}">${displayedPrice.price}${displayedPrice.warning ? ' ⚠' : ''}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="release-date-cell" title="${escapeHtml(releaseTitle)}">${escapeHtml(formatLinearReleaseDate(item))}${renderLinearReleaseDateWarning(item)}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="cagr-cell ${valueClass(cagr)}">${formatLinearCagrPercent(item)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="momentum-cell" title="${escapeHtml(momentumTitle)}">${escapeHtml(formatLinearMomentum(item))}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="linear-score-cell">${formatNumber(item.linear_allocation_score)}</td>${manualMode ? `<td class="manual-only">${escapeHtml(manualTriggerLabel(item))}</td><td class="manual-only"><span class="manual-trigger-state ${presentation.tone}">${escapeHtml(presentation.status)}</span></td><td class="manual-only">${formatCurrencyValue(item.planned_action_amount, 'USD')}</td><td class="manual-only">${formatCurrencyValue(item.executable_action_amount, 'USD')}</td><td class="manual-only">${formatCurrencyValue(item.fulfilled_reservation, 'USD')}</td>` : ''}`;
+      if (manualMode && manualExecutionCalculationState !== 'current') {
+        const label = manualExecutionCalculationState === 'recalculating' ? 'Recalculating' : 'Outdated';
+        for (const selector of ['.action-amount-cell', '.shares-cell', '.funding-cell']) row.querySelector(selector).textContent = label;
+        const manualCells = row.querySelectorAll('.manual-only');
+        for (const index of [1, 3, 4]) manualCells[index].textContent = label;
+      }
       actionPlanLinearActionsTableBody.appendChild(row);
       if (hasLinearTargetCap(item)) {
         const warningButton = document.createElement('button');
@@ -3063,6 +3473,10 @@ function renderLinearAllocationRows() {
         <td>${escapeHtml(item.funding_status || 'No funding needed')}</td>
         <td>${escapeHtml(item.action_amount_label || '—')}</td>
         <td>${formatSuggestedShareCount(item)}</td>`;
+      if (manualMode && manualExecutionCalculationState !== 'current') {
+        const label = manualExecutionCalculationState === 'recalculating' ? 'Recalculating' : 'Outdated';
+        for (const index of [18, 19, 20]) row.cells[index].textContent = label;
+      }
       actionPlanLinearDetailTableBody.appendChild(row);
     });
     actionPlanLinearDetailTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
@@ -3096,9 +3510,69 @@ function renderActionPlanSummaryCards(summary, modeLabel) {
   return `<div class="summary-item summary-mode-card"><div class="label">Active Mode</div><div class="value">Bucket Allocation</div></div><div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.portfolio_value_used ?? summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(summary.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(summary.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${formatCurrencyValue(summary.available_buy_budget, 'USD')}</div></div><div class="summary-item"><div class="label">Total Add Demand</div><div class="value">${formatCurrencyValue(summary.total_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Funded Add Amount</div><div class="value">${formatCurrencyValue(summary.funded_add_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Unfunded Add Demand</div><div class="value">${formatCurrencyValue(summary.unfunded_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Executable Sell/Trim Proceeds</div><div class="value">${formatCurrencyValue(summary.executable_sell_trim_proceeds, 'USD')}</div></div><div class="summary-item"><div class="label">Minimum Cash Reserve</div><div class="value">${formatCurrencyValue(summary.minimum_cash_reserve_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated Target Capacity</div><div class="value">${formatPercent(summary.unallocated_target_capacity ?? summary.unallocated_target_total)}</div></div>`;
 }
 
+function renderManualReservationSummary(summary) {
+  const values = [
+    ['Available Buy Budget Before Manual Reservations', summary.available_buy_budget_before_manual_reservations],
+    ['Requested Manual Reservations', summary.requested_reservations],
+    ['Fulfilled Manual Reservations', summary.fulfilled_reservations],
+    ['Unfulfilled Manual Reservations', summary.unfulfilled_reservations],
+    ['Reservations from Current Cash-like Funds', summary.fulfilled_reservations_from_current_cash_like],
+    ['Reservations from Projected Sell/Trim Proceeds', summary.fulfilled_reservations_from_projected_proceeds],
+    ['Cash Available for Other Buys', summary.available_buy_budget],
+    ['Funded Buy Amount', summary.funded_add_amount],
+    ['Remaining Buy Budget', summary.remaining_buy_budget],
+    ['Eligible Sell/Trim Proceeds', summary.executable_sell_trim_proceeds],
+  ];
+  return values.map(([label, value]) => `<div class="summary-item"><div class="label">${label}</div><div class="value">${formatCurrencyValue(value ?? 0, 'USD')}</div></div>`).join('');
+}
+
+function renderManualPlanSummary(summary, includeFunding = true) {
+  return `<div class="summary-item summary-mode-card"><div class="label">Active Mode</div><div class="value">Linear Allocation with Triggers</div></div>
+    <div class="summary-item"><div class="label">Dynamic Reserve Target</div><div class="value">${formatPercent(summary.dynamic_reserve_pct)}</div></div>
+    <div class="summary-item"><div class="label">Reserve Target Amount</div><div class="value">${formatCurrencyValue(summary.target_reserve_amount, 'USD')}</div></div>
+    ${includeFunding ? renderManualReservationSummary(summary) : ''}`;
+}
+
 function renderActionPlan() {
-  const summary = latestActionPlanPayload?.summary?.linear_summary || {};
-  actionPlanSummaryEl.innerHTML = renderActionPlanSummaryCards(summary, 'Linear Allocation');
+  const manualMode = actionPlanExecutionMode === 'with';
+  const summary = manualMode
+    ? (latestActionPlanPayload?.manual_execution?.summary || latestActionPlanPayload?.summary?.linear_summary || {})
+    : (latestActionPlanPayload?.summary?.linear_summary || {});
+  const manualRows = getDisplayedLinearActionPlanItems(latestActionPlanPayload, 'with');
+  const expired = manualMode && manualRows.some((item) => manualQuoteExpired(item));
+  const calculationUnavailable = manualMode && manualExecutionCalculationState !== 'current';
+  const calculationWarning = manualExecutionCalculationState === 'recalculating'
+    ? 'Verified trigger price expired. Recalculating manual execution funding…'
+    : 'Verified trigger price expired and the Action Plan could not be recalculated. Manual execution funding is outdated. Refresh Action Plan to retry.';
+  actionPlanSummaryEl.innerHTML = (calculationUnavailable
+    ? `<p class="status warning">${calculationWarning}</p>`
+    : expired ? '<p class="status warning">Verified trigger prices expired; execution requires new live verification.</p>' : '')
+    + (manualMode ? renderManualPlanSummary(summary, !calculationUnavailable) : renderActionPlanSummaryCards(summary, 'Linear Allocation'));
+  if (manualQuoteExpiryTimer) clearTimeout(manualQuoteExpiryTimer);
+  manualQuoteExpiryTimer = null;
+  if (manualExecutionCalculationState === 'current') {
+    const now = Date.now();
+    const nextExpiry = Math.min(...manualRows.map((item) => Date.parse(item.manual_verified_quote_expires_at || ''))
+      .filter((timestamp) => Number.isFinite(timestamp) && timestamp > now));
+    if (Number.isFinite(nextExpiry)) {
+      const timerAccount = selectedPortfolioAccountId;
+      const timerRequestId = actionPlanRequestId;
+      const timer = setTimeout(() => {
+        if (manualQuoteExpiryTimer !== timer || timerAccount !== selectedPortfolioAccountId) return false;
+        manualQuoteExpiryTimer = null;
+        if (actionPlanPendingRequest?.id === actionPlanRequestId
+          && actionPlanPendingRequest.account === timerAccount) {
+          manualExecutionCalculationState = 'recalculating';
+          renderActionPlan();
+          if (latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
+          return false;
+        }
+        if (timerRequestId !== actionPlanRequestId) return false;
+        return handleManualQuoteExpiry();
+      }, nextExpiry - now);
+      manualQuoteExpiryTimer = timer;
+    }
+  }
   renderLinearAllocationRows();
   return;
   if (actionPlanBucketActionsTableWrapEl) actionPlanBucketActionsTableWrapEl.classList.toggle('hidden', actionPlanActiveTab !== 'actions' || actionPlanActionMode !== 'bucket');
@@ -6742,7 +7216,10 @@ earningsReviewDocumentUploadBtn.addEventListener('click', uploadEarningsReviewDo
 configSaveBtn.addEventListener('click', saveGeneralConfiguration);
 configCancelBtn.addEventListener('click', cancelGeneralConfigurationEdits);
 configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings);
-actionPlanRefreshBtn.addEventListener('click', loadActionPlan);
+actionPlanRefreshBtn.addEventListener('click', refreshActionPlanFromButton);
+actionPlanWithoutTriggersBtn?.addEventListener('click', () => setActionPlanExecutionMode('without'));
+actionPlanWithTriggersBtn?.addEventListener('click', () => setActionPlanExecutionMode('with'));
+actionPlanRefreshTriggerPricesBtn?.addEventListener('click', () => refreshTriggerPrices());
 actionPlanDetailBackBtn.addEventListener('click', showActionPlanList);
 actionPlanOpenAnalysisBtn.addEventListener('click', () => {
   if (!selectedActionPlanDetail?.symbol) return;
@@ -6756,6 +7233,7 @@ backupImportBtn.addEventListener('click', restoreBackupFile);
 updateSortHeaderState();
 updateAnalysisSortHeaderState();
 updateActionPlanSortHeaderState();
+updateActionPlanModeButtons();
 setSelectedRatings(getAllRatingFilterKeys());
 setRatingFilterOpen(false);
 setSelectedPositionRatings(getAllRatingFilterKeys());

@@ -1,7 +1,7 @@
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
@@ -61,6 +61,20 @@ class ManualExecutionApiTests(unittest.TestCase):
             }
             for symbol in ("AAA", "BBB")
         ]
+        for symbol in ("AAA", "BBB"):
+            now = web_server.utc_now_iso()
+            self.conn.execute(
+                "INSERT INTO analysis_roots (symbol, created_at, updated_at) VALUES (?, ?, ?)",
+                (symbol, now, now),
+            )
+            root_id = self.conn.execute("SELECT id FROM analysis_roots WHERE symbol = ?", (symbol,)).fetchone()["id"]
+            self.conn.execute(
+                "INSERT INTO analysis_versions (analysis_root_id, version_number, symbol, current_price, expected_price, "
+                "confidence_level, assumptions_text, business_model_text, business_summary_text, raw_ai_response, "
+                "source_trigger, created_at) VALUES (?, 1, ?, 100, 160, 6, 'a', 'b', 'c', '{}', 'test', ?)",
+                (root_id, symbol, now),
+            )
+        self.conn.commit()
 
     def build(self, account, both=False):
         with mock.patch.object(web_server, "list_analysis_symbols", return_value=self.analysis_items):
@@ -116,6 +130,190 @@ class ManualExecutionApiTests(unittest.TestCase):
         self.assertEqual(row["executable_action_amount"], 0)
         self.assertGreater(row["requested_reservation"], 0)
         self.assertIn("BBB", payload["manual_execution"]["price_verification"]["confirmation_required_symbols"])
+
+    def test_explicit_unowned_quote_releases_reservation_and_keeps_baseline(self):
+        web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "BBB", {
+            "buy_trigger_price": 80, "reserve_enabled": True, "reserve_percentage": 60,
+        })
+        before = self.build("U_ACCOUNT_A", both=True)
+        contract = SimpleNamespace(symbol="BBB", conId=302, secType="STK", currency="USD")
+        tick_at = datetime.now(timezone.utc)
+        ib = PacketIB(contract, [("bid", 78, 10, tick_at), ("ask", 79, 10, tick_at)])
+        ib.qualifyContracts = lambda *contracts: [contract]
+        ib.managedAccounts = lambda: ["U_ACCOUNT_A", "U_ACCOUNT_B"]
+        ib.reqMarketDataType = mock.Mock()
+        handler = SimpleNamespace()
+        handler._read_json_body = lambda: {"symbols": ["BBB", "BBB"]}
+        handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
+        with mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0.05), \
+             mock.patch.object(web_server, "list_analysis_symbols", side_effect=AssertionError("Quote refresh must use only symbols, not full analysis rows")):
+            web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(handler, account_id="U_ACCOUNT_A")
+        self.assertEqual(handler.response[0], 200)
+        self.assertEqual(handler.response[1]["results"][0]["status"], "verified")
+        self.assertEqual(len(ib.requests), 1)
+        self.assertEqual(ib.reqMarketDataType.call_args_list, [mock.call(1), mock.call(3)])
+        after = self.build("U_ACCOUNT_A", both=True)
+        self.assertEqual(after["linear_action_plan"], before["linear_action_plan"])
+        row = next(row for row in after["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
+        self.assertEqual(row["manual_trigger_status"], "eligible")
+        self.assertEqual(row["manual_verified_price"], 79)
+        self.assertEqual(row["requested_reservation"], 0)
+        self.assertGreater(row["suggested_share_count"], 0)
+        other = next(row for row in self.build("U_ACCOUNT_B", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
+        self.assertEqual(other["manual_trigger_status"], "no_manual_trigger")
+
+    def test_failed_explicit_refresh_invalidates_old_unowned_quote(self):
+        web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "BBB", {"buy_trigger_price": 80})
+        now = web_server.utc_now_iso()
+        web_server._session_manual_explicit_quotes[(self.db_path, "U_ACCOUNT_A")] = {"BBB": {
+            "source": "live_bid_ask", "contract_key": "conid:302", "bid": 78, "ask": 79,
+            "bid_tick_at": now, "ask_tick_at": now, "refresh_at": now,
+        }}
+        self.addCleanup(web_server._session_manual_explicit_quotes.pop, (self.db_path, "U_ACCOUNT_A"), None)
+        handler = SimpleNamespace()
+        handler._read_json_body = lambda: {"symbols": ["BBB"]}
+        handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
+        with mock.patch.object(web_server, "get_ib_connection", side_effect=RuntimeError("offline")), \
+             mock.patch.object(web_server, "list_analysis_symbols", return_value=self.analysis_items):
+            web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(handler, account_id="U_ACCOUNT_A")
+        self.assertNotIn("BBB", web_server._session_manual_explicit_quotes[(self.db_path, "U_ACCOUNT_A")])
+        row = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
+        self.assertEqual(row["manual_trigger_status"], "price_confirmation_required")
+
+    def test_explicit_quote_requires_live_matching_bid_and_ask(self):
+        web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "BBB", {"buy_trigger_price": 80})
+        contract = SimpleNamespace(symbol="BBB", conId=302, secType="STK", currency="USD")
+        foreign = SimpleNamespace(symbol="BBB", conId=999, secType="STK", currency="USD")
+        now = datetime.now(timezone.utc)
+        cases = [
+            ([("bid", 78, 10, now)], 1, contract),
+            ([("bid", 78, 10, now), ("ask", 79, 10, now)], 2, contract),
+            ([("bid", 78, 10, now), ("ask", 79, 10, now)], 3, contract),
+            ([("bid", 78, 10, now), ("ask", 79, 10, now)], 4, contract),
+            ([("bid", 78, 10, now), ("ask", 79, 10, now)], 1, foreign),
+        ]
+        for packets, data_type, qualified in cases:
+            with self.subTest(data_type=data_type, qualified=qualified.conId, packets=packets):
+                ib = PacketIB(contract, packets, market_data_type=data_type)
+                ib.qualifyContracts = lambda *_contracts: [qualified]
+                ib.managedAccounts = lambda: ["U_ACCOUNT_A", "U_ACCOUNT_B"]
+                if qualified is foreign:
+                    original_request = ib.reqMktData
+                    def wrong_contract_request(requested, *args):
+                        ticker = original_request(requested, *args)
+                        ticker.contract = contract
+                        return ticker
+                    ib.reqMktData = wrong_contract_request
+                handler = SimpleNamespace()
+                handler._read_json_body = lambda: {"symbols": ["BBB"]}
+                handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
+                with mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
+                     mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0.01), \
+                     mock.patch.object(web_server, "get_ib_delayed_price_extra_wait_seconds", return_value=0), \
+                     mock.patch.object(web_server, "list_analysis_symbols", return_value=self.analysis_items):
+                    web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(handler, account_id="U_ACCOUNT_A")
+                self.assertEqual(handler.response[1]["results"][0]["status"], "confirmation_required")
+                self.assertEqual(len(ib.pendingTickersEvent.handlers), 0)
+                row = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
+                self.assertEqual(row["manual_trigger_status"], "price_confirmation_required")
+
+    def test_explicit_quote_waiting_expiration_and_account_isolation(self):
+        for account in ("U_ACCOUNT_A", "U_ACCOUNT_B"):
+            web_server.save_manual_execution_trigger(self.conn, account, "BBB", {"buy_trigger_price": 80})
+        now = datetime.now(timezone.utc)
+        proof = {
+            "source": "live_bid_ask", "symbol": "BBB", "contract_key": "conid:302",
+            "bid": 98, "ask": 99, "bid_tick_at": now.isoformat(),
+            "ask_tick_at": now.isoformat(), "refresh_at": now.isoformat(),
+        }
+        web_server._session_manual_explicit_quotes[(self.db_path, "U_ACCOUNT_A")] = {"BBB": proof}
+        self.addCleanup(web_server._session_manual_explicit_quotes.pop, (self.db_path, "U_ACCOUNT_A"), None)
+        a = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
+        b = next(row for row in self.build("U_ACCOUNT_B", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
+        self.assertEqual(a["manual_trigger_status"], "waiting")
+        self.assertEqual(b["manual_trigger_status"], "price_confirmation_required")
+        with mock.patch.object(web_server, "datetime") as clock:
+            clock.now.return_value = now + timedelta(minutes=6)
+            clock.fromisoformat.side_effect = datetime.fromisoformat
+            expired = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
+        self.assertEqual(expired["manual_trigger_status"], "price_confirmation_required")
+
+    def test_newer_owned_position_proof_survives_older_explicit_quote(self):
+        web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "AAA", {"buy_trigger_price": 102})
+        recent = datetime.now(timezone.utc) - timedelta(minutes=2)
+        old = recent - timedelta(minutes=4)
+        recent_at = recent.isoformat()
+        old_at = old.isoformat()
+        contract_key = "test:U_ACCOUNT_A:AAA"
+        web_server.save_positions_cache(self.conn, [{
+            "symbol": "AAA", "position": 1, "price": 100.0, "avgCost": 80.0,
+            "marketValue": 100.0, "contract_key": contract_key,
+            "price_status": "tws_received", "price_source": "marketPrice",
+            "price_last_successful_at": recent_at,
+        }], account_id="U_ACCOUNT_A")
+        web_server._session_received_quotes[(self.db_path, "U_ACCOUNT_A")] = {"AAA": (contract_key, recent_at)}
+        web_server._session_manual_verified_quotes[(self.db_path, "U_ACCOUNT_A")]["AAA"] = {
+            "source": "live_bid_ask", "contract_key": contract_key, "bid": 99, "ask": 101,
+            "bid_tick_at": recent_at, "ask_tick_at": recent_at, "refresh_at": recent_at,
+        }
+        web_server._session_manual_explicit_quotes[(self.db_path, "U_ACCOUNT_A")] = {"AAA": {
+            "source": "live_bid_ask", "symbol": "AAA", "contract_key": contract_key,
+            "bid": 78, "ask": 79, "bid_tick_at": old_at,
+            "ask_tick_at": old_at, "refresh_at": old_at,
+        }}
+        self.addCleanup(web_server._session_manual_explicit_quotes.pop, (self.db_path, "U_ACCOUNT_A"), None)
+        row = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "AAA")
+        self.assertEqual(row["manual_trigger_status"], "eligible")
+        self.assertEqual(row["manual_verified_price"], 101)
+
+    def test_quote_refresh_rejects_invalid_input_before_tws(self):
+        handler = SimpleNamespace()
+        handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
+        for body in ({"symbols": []}, {"symbols": ["BBB"] * 26}, {"symbols": ["BAD SYMBOL"]}, {"symbols": [7]}):
+            with self.subTest(body=body), mock.patch.object(web_server, "get_ib_connection") as connect:
+                handler._read_json_body = lambda: body
+                web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(handler, account_id="U_ACCOUNT_A")
+                self.assertEqual(handler.response[0], 400)
+                connect.assert_not_called()
+
+    def test_quote_refresh_route_forwards_selected_account(self):
+        class Capture(web_server.BakingMoneyHandler):
+            def handle_manual_execution_quotes_refresh(self, account_id=None):
+                self.called = account_id
+
+        handler = Capture.__new__(Capture)
+        handler.path = "/api/manual-execution-quotes/refresh?account_id=U_ACCOUNT_B"
+        handler.do_POST()
+        self.assertEqual(handler.called, "U_ACCOUNT_B")
+
+    def test_quote_refresh_skips_unanalyzed_symbols_without_tws(self):
+        handler = SimpleNamespace()
+        handler._read_json_body = lambda: {"symbols": ["UNKNOWN"]}
+        handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
+        with mock.patch.object(web_server, "get_ib_connection") as connect, \
+             mock.patch.object(web_server, "list_analysis_symbols", return_value=self.analysis_items):
+            web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(handler, account_id="U_ACCOUNT_A")
+        self.assertEqual(handler.response[1]["results"], [{"symbol": "UNKNOWN", "status": "not_analyzed"}])
+        connect.assert_not_called()
+
+    def test_quote_refresh_qualifies_requested_contracts_in_one_batch(self):
+        qualified = {
+            symbol: SimpleNamespace(symbol=symbol, conId=conid, secType="STK", currency="USD")
+            for symbol, conid in (("AAA", 301), ("BBB", 302))
+        }
+        ib = PacketIB(qualified["AAA"], [])
+        ib.managedAccounts = lambda: ["U_ACCOUNT_A", "U_ACCOUNT_B"]
+        ib.qualifyContracts = mock.Mock(side_effect=lambda *contracts: [qualified[contract.symbol] for contract in contracts])
+        handler = SimpleNamespace()
+        handler._read_json_body = lambda: {"symbols": ["AAA", "BBB"]}
+        handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
+        with mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
+             mock.patch.object(web_server, "get_ib_price_wait_seconds", return_value=0.01):
+            web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(handler, account_id="U_ACCOUNT_A")
+        self.assertEqual(ib.qualifyContracts.call_count, 1)
+        self.assertEqual(len(ib.qualifyContracts.call_args.args), 2)
+        self.assertEqual([item["symbol"] for item in handler.response[1]["results"]], ["AAA", "BBB"])
 
     def test_opt_in_with_no_account_keeps_empty_baseline(self):
         empty_path = os.path.join(self.temp.name, "empty.db")

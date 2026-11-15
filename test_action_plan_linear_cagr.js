@@ -28,15 +28,14 @@ function sortByLinearCagr(rows, direction) {
   });
 }
 
-test('Linear Allocation action table includes CAGR between Upside and Core Confidence', () => {
+test('Linear Allocation action table has the shared 19-column layout', () => {
   const headers = tableHeaders('action-plan-linear-actions-table');
-  assert.ok(headers.includes('CAGR'));
-  assert.ok(headers.includes('Rating'));
-  assert.ok(headers.includes('Upside'));
-  assert.ok(headers.includes('Core Confidence'));
-  assert.ok(headers.includes('Potential Confidence'));
-  assert.equal(headers[headers.indexOf('Upside') + 1], 'CAGR');
-  assert.ok(headers.indexOf('CAGR') < headers.indexOf('Core Confidence'));
+  assert.deepEqual(headers, [
+    'Symbol', 'Action', 'Market Value', 'Target Gap', 'Action Amount', 'Shares', 'Funding',
+    'Current Price', 'Rating', 'Release Date', 'Upside', 'CAGR', 'Core Confidence',
+    'Potential Confidence', 'Momentum', 'Current Weight', 'Target Band', 'Gap to Mid',
+    'Linear Score',
+  ]);
 });
 
 test('Action Plan exposes only the Linear Allocation table', () => {
@@ -45,12 +44,10 @@ test('Action Plan exposes only the Linear Allocation table', () => {
   assert.equal(indexHtml.includes('id="action-plan-tab-buckets"'), false);
 });
 
-test('Linear CAGR uses expected_equity_cagr before legacy expected CAGR fields', () => {
-  assert.equal(getLinearCagrValue({ expected_equity_cagr: 12.4, expected_cagr: 99 }), 12.4);
+test('Linear CAGR uses the same expected CAGR shown in Action Detail', () => {
+  assert.equal(getLinearCagrValue({ expected_equity_cagr: 7.6, expected_cagr: 12.43 }), 12.43);
   assert.equal(getLinearCagrValue({ expected_cagr: 8 }), 8);
-  assert.equal(getLinearCagrValue({ weighted_expected_cagr: -3.5 }), -3.5);
-  assert.equal(getLinearCagrValue({ scenario_expected_cagr: 4 }), 4);
-  assert.equal(getLinearCagrValue({ expected_equity_cagr: null, expected_cagr: 8 }), null);
+  assert.equal(getLinearCagrValue({ expected_equity_cagr: 8 }), null);
 });
 
 test('Linear CAGR formats percentages and invalid values safely', () => {
@@ -64,29 +61,28 @@ test('Linear CAGR formats percentages and invalid values safely', () => {
 
 test('Linear CAGR sorting is numeric ascending with missing values last', () => {
   const rows = [
-    { symbol: 'MISSING', expected_equity_cagr: null },
-    { symbol: 'HIGH', expected_equity_cagr: 12.4 },
-    { symbol: 'LOW', expected_equity_cagr: -3.5 },
-    { symbol: 'MID', expected_equity_cagr: 8 },
-    { symbol: 'FOUR', expected_equity_cagr: 4 },
+    { symbol: 'MISSING', expected_cagr: null },
+    { symbol: 'HIGH', expected_cagr: 12.4 },
+    { symbol: 'LOW', expected_cagr: -3.5 },
+    { symbol: 'MID', expected_cagr: 8 },
+    { symbol: 'FOUR', expected_cagr: 4 },
   ];
   assert.deepEqual(sortByLinearCagr(rows, 'asc').map((row) => row.symbol), ['LOW', 'FOUR', 'MID', 'HIGH', 'MISSING']);
 });
 
 test('Linear CAGR sorting is numeric descending with missing values last', () => {
   const rows = [
-    { symbol: 'MISSING', expected_equity_cagr: null },
-    { symbol: 'HIGH', expected_equity_cagr: 12.4 },
-    { symbol: 'LOW', expected_equity_cagr: -3.5 },
-    { symbol: 'MID', expected_equity_cagr: 8 },
-    { symbol: 'FOUR', expected_equity_cagr: 4 },
+    { symbol: 'MISSING', expected_cagr: null },
+    { symbol: 'HIGH', expected_cagr: 12.4 },
+    { symbol: 'LOW', expected_cagr: -3.5 },
+    { symbol: 'MID', expected_cagr: 8 },
+    { symbol: 'FOUR', expected_cagr: 4 },
   ];
   assert.deepEqual(sortByLinearCagr(rows, 'desc').map((row) => row.symbol), ['HIGH', 'MID', 'FOUR', 'LOW', 'MISSING']);
 });
 
-test('Linear renderer uses the CAGR source and never stringifies invalid numeric sentinels', () => {
-  assert.ok(appJs.includes('getLinearCagrValue(item)'));
-  assert.ok(appJs.includes('formatLinearCagrPercent(item)'));
-  assert.ok(appJs.includes('cagr-cell ${valueClass(cagr)}'));
-  assert.ok(indexHtml.includes('data-sort-key="expected_equity_cagr"'));
+test('Linear CAGR uses table precision and sorts by its displayed field', () => {
+  assert.equal(formatCagrPercent(getLinearCagrValue({ expected_equity_cagr: 7.6, expected_cagr: 12.43 })), '12.4%');
+  assert.ok(appJs.includes("if (key === 'expected_cagr')"));
+  assert.ok(indexHtml.includes('data-sort-key="expected_cagr"'));
 });

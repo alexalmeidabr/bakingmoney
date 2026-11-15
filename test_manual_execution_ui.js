@@ -6,6 +6,7 @@ const { withPortfolioAccount } = require('./static/portfolio_account_selector.js
 
 const source = fs.readFileSync('static/app.js', 'utf8');
 const html = fs.readFileSync('static/index.html', 'utf8');
+const styles = fs.readFileSync('static/styles.css', 'utf8');
 
 function functionSource(name) {
   const start = source.indexOf(`function ${name}(`);
@@ -34,7 +35,13 @@ function helpers(...names) {
     escapeHtml: (value) => String(value),
     formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
   };
-  const dependencies = names.some((name) => ['getManualTriggerPresentation', 'getActionPlanPriceDisplay'].includes(name)) ? [functionSource('manualQuoteExpired')] : [];
+  const needsExecutionVisibility = names.includes('getTriggerAwareVisibleRows');
+  const needsTriggerPriceReference = names.includes('getManualTriggerCurrentPriceReference');
+  const dependencies = names.some((name) => ['getManualTriggerPresentation', 'getActionPlanPriceDisplay', 'getLinearActionTableExecutionDisplay'].includes(name))
+    ? [functionSource('manualQuoteExpired')]
+    : needsExecutionVisibility || needsTriggerPriceReference
+      ? [functionSource('manualQuoteExpired'), functionSource('isUnderlyingTradeRecommendation'), functionSource('hasCurrentExecutableManualAction')]
+      : [];
   return vm.runInNewContext(`${dependencies.join('\n')}\n${names.map(functionSource).join('\n')}\n({${names.join(',')}})`, context);
 }
 
@@ -53,6 +60,82 @@ test('mode selection uses cached backend rows without changing recommendations',
   assert.match(html, /Refresh Trigger Prices/);
 });
 
+test('Action Plan starts With Triggers and account resets restore that default', () => {
+  const pressed = {};
+  const context = {
+    actionPlanExecutionMode: 'without',
+    actionPlanShowNonExecutableRecommendations: true,
+    actionPlanShowNonExecutableRecommendationsEl: null,
+    actionPlanWithoutTriggersBtn: { setAttribute: (_key, value) => { pressed.without = value; } },
+    actionPlanWithTriggersBtn: { setAttribute: (_key, value) => { pressed.with = value; } },
+  };
+  vm.runInNewContext(`${functionSource('updateActionPlanModeButtons')}\n${functionSource('resetActionPlanExecutionMode')}\nresetActionPlanExecutionMode()`, context);
+  assert.equal(context.actionPlanExecutionMode, 'with');
+  assert.equal(context.actionPlanShowNonExecutableRecommendations, false);
+  assert.deepEqual(pressed, { without: 'false', with: 'true' });
+  assert.match(source, /let actionPlanExecutionMode = 'with';/);
+  assert.match(functionSource('handlePortfolioAccountChange'), /resetActionPlanExecutionMode\(\);/);
+  assert.match(functionSource('handlePortfolioAccountNotFound'), /resetActionPlanExecutionMode\(\);/);
+});
+
+test('With Triggers hides blocked trade recommendations but retains eligible, partial, and Hold rows', () => {
+  const { getTriggerAwareVisibleRows } = helpers('getTriggerAwareVisibleRows');
+  const rows = [
+    { symbol: 'CRWV', recommended_action: 'Trim', suggested_share_count: 0, executable_action_amount: 0, funding_status: 'Price confirmation required' },
+    { symbol: 'PINS', recommended_action: 'Trim', suggested_share_count: 0, executable_action_amount: 0, funding_status: 'Below minimum trade amount' },
+    { symbol: 'BLOCKED_BUY', recommended_action: 'Add', suggested_share_count: 0, executable_action_amount: 0, funding_status: 'Manual trigger waiting' },
+    { symbol: 'ELIGIBLE', recommended_action: 'Add', suggested_share_count: 5, executable_action_amount: 500, funding_status: 'Fully funded' },
+    { symbol: 'PARTIAL', recommended_action: 'Add', suggested_share_count: 1, executable_action_amount: 100, funding_status: 'Partially funded' },
+    { symbol: 'FRACTIONAL', recommended_action: 'Add', suggested_share_count: 0.5, executable_action_amount: 50, funding_status: 'Partially funded' },
+    { symbol: 'HOLD', recommended_action: 'Hold', suggested_share_count: 0, executable_action_amount: 0, funding_status: 'No funding needed' },
+  ];
+  assert.deepEqual(getTriggerAwareVisibleRows(rows, false).map((item) => item.symbol), ['ELIGIBLE', 'PARTIAL', 'HOLD']);
+  assert.deepEqual(getTriggerAwareVisibleRows(rows, true).map((item) => item.symbol), rows.map((item) => item.symbol));
+});
+
+test('expired or outdated trigger-aware trades are never treated as executable', () => {
+  const { getTriggerAwareVisibleRows } = helpers('getTriggerAwareVisibleRows');
+  const expired = {
+    symbol: 'EXPIRED', recommended_action: 'Trim', suggested_share_count: 10, executable_action_amount: 1000,
+    manual_verified_quote_expires_at: new Date(Date.now() - 1000).toISOString(),
+  };
+  assert.deepEqual(getTriggerAwareVisibleRows([expired], false), []);
+});
+
+test('showing non-executable recommendations preserves Action and Rating filters', () => {
+  const context = {
+    latestActionPlanPayload: { manual_execution: { linear_action_plan: [
+      { symbol: 'CRWV', rating: 'Buy', recommended_action: 'Trim', suggested_share_count: 0, executable_action_amount: 0 },
+      { symbol: 'PINS', rating: 'Hold', recommended_action: 'Trim', suggested_share_count: 0, executable_action_amount: 0 },
+      { symbol: 'ELIGIBLE', rating: 'Buy', recommended_action: 'Trim', suggested_share_count: 2, executable_action_amount: 200 },
+    ] } },
+    actionPlanExecutionMode: 'with', actionPlanShowNonExecutableRecommendations: true,
+    manualExecutionCalculationState: 'current',
+    getSelectedActionPlanRatings: () => new Set(['buy']),
+    getSelectedActionPlanActions: () => new Set(['trim']),
+    RATING_FILTER_OPTIONS: [{ key: 'buy', label: 'Buy' }, { key: 'hold', label: 'Hold' }],
+    RATING_FILTER_LABEL_BY_KEY: { buy: 'Buy', hold: 'Hold' },
+    ACTION_PLAN_ACTION_FILTER_OPTIONS: [{ key: 'trim', label: 'Trim' }, { key: 'add', label: 'Add' }],
+    getActionPlanActionFilterKey: (value) => String(value).toLowerCase(),
+  };
+  const rendered = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('manualQuoteExpired')}\n${functionSource('isUnderlyingTradeRecommendation')}\n${functionSource('hasCurrentExecutableManualAction')}\n${functionSource('getTriggerAwareVisibleRows')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
+  assert.deepEqual(rendered.map((item) => item.symbol), ['CRWV', 'ELIGIBLE']);
+});
+
+test('the non-executable switch re-renders cached rows without fetching', () => {
+  let renders = 0;
+  const context = {
+    actionPlanShowNonExecutableRecommendations: false,
+    actionPlanShowNonExecutableRecommendationsEl: { checked: false },
+    renderActionPlan: () => { renders += 1; },
+    fetch: () => { throw new Error('visibility switch must not fetch'); },
+  };
+  vm.runInNewContext(`${functionSource('setActionPlanShowNonExecutableRecommendations')}\nsetActionPlanShowNonExecutableRecommendations(true)`, context);
+  assert.equal(context.actionPlanShowNonExecutableRecommendations, true);
+  assert.equal(context.actionPlanShowNonExecutableRecommendationsEl.checked, true);
+  assert.equal(renders, 1);
+});
+
 test('manual execution labels separate price eligibility, funding, and guardrails', () => {
   const { getManualTriggerPresentation } = helpers('getManualTriggerPresentation');
   assert.equal(getManualTriggerPresentation({ recommended_action: 'Add', manual_trigger_status: 'waiting', suggested_share_count: 0 }).status, 'Waiting');
@@ -60,6 +143,36 @@ test('manual execution labels separate price eligibility, funding, and guardrail
   assert.equal(getManualTriggerPresentation({ recommended_action: 'Add', manual_trigger_status: 'eligible', suggested_share_count: 3, executable_action_amount: 237 }).status, 'Eligible, funded');
   assert.equal(getManualTriggerPresentation({ recommended_action: 'Add', manual_trigger_status: 'price_confirmation_required' }).status, 'Price confirmation required');
   assert.equal(getManualTriggerPresentation({ recommended_action: 'Watch / Rating Guardrail', manual_trigger_status: 'no_manual_trigger' }).status, 'Guardrail blocked');
+});
+
+test('trigger-aware table makes an unverified Sell unavailable while retaining its recommendation', () => {
+  const { getLinearActionTableExecutionDisplay } = helpers('getLinearActionTableExecutionDisplay');
+  assert.deepEqual(JSON.parse(JSON.stringify(getLinearActionTableExecutionDisplay({
+    recommended_action: 'Sell', action_amount_label: 'Sell $10,000.00', suggested_share_count: 20,
+    funding_status: 'Price confirmation required', manual_trigger_status: 'price_confirmation_required',
+  }, true))), {
+    actionAmount: '—', shares: '—', funding: 'Price confirmation required',
+  });
+});
+
+test('trigger-aware table uses executable values for an eligible trigger', () => {
+  const { getLinearActionTableExecutionDisplay } = helpers('getLinearActionTableExecutionDisplay');
+  assert.deepEqual(JSON.parse(JSON.stringify(getLinearActionTableExecutionDisplay({
+    action_amount_label: 'Add $1,250.00', suggested_share_count: 10,
+    funding_status: 'Fully funded', manual_trigger_status: 'eligible',
+  }, true))), {
+    actionAmount: 'Add $1,250.00', shares: 10, funding: 'Fully funded',
+  });
+});
+
+test('trigger-aware table keeps normal execution values for an action without a manual trigger', () => {
+  const { getLinearActionTableExecutionDisplay } = helpers('getLinearActionTableExecutionDisplay');
+  assert.deepEqual(JSON.parse(JSON.stringify(getLinearActionTableExecutionDisplay({
+    action_amount_label: 'Trim $500.00', suggested_share_count: 4,
+    funding_status: 'No funding needed', manual_trigger_status: 'no_manual_trigger',
+  }, true))), {
+    actionAmount: 'Trim $500.00', shares: 4, funding: 'No funding needed',
+  });
 });
 
 test('expired verification is never presented as eligible or funded', () => {
@@ -77,6 +190,55 @@ test('expired verified price is hidden instead of shown as a current sizing pric
   assert.equal(displayed.price, 'Expired');
   assert.match(displayed.title, /expired/i);
   assert.equal(getActionPlanPriceDisplay(expired, false).price, '$79.00');
+});
+
+test('Manual Execution Trigger price reference labels saved and refreshed quotes plus saved fallbacks', () => {
+  const { getManualTriggerCurrentPriceReference } = helpers('getManualTriggerCurrentPriceReference');
+  const savedQuote = getManualTriggerCurrentPriceReference({
+    manual_verified_price: 101.25, manual_verified_quote_at: '2026-11-15T12:00:00Z',
+    manual_verified_quote_expires_at: new Date(Date.now() + 60_000).toISOString(),
+  });
+  assert.equal(savedQuote.price, '$101.25');
+  assert.match(savedQuote.source, /Saved verified quote/);
+  const refreshedQuote = getManualTriggerCurrentPriceReference({
+    manual_verified_price: 102, manual_verified_quote_at: '2026-11-15T12:01:00Z',
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(refreshedQuote)), {
+    price: '$102.00', source: 'Saved verified quote from 2026-11-15T12:01:00Z.',
+  });
+  const fallback = getManualTriggerCurrentPriceReference({ current_price: 88.5, price_source: 'analysis_fallback' });
+  assert.deepEqual(JSON.parse(JSON.stringify(fallback)), { price: '$88.50', source: 'Saved fallback price.' });
+});
+
+test('Manual Execution Trigger price reference reports unavailable prices and preserves unsaved inputs on refresh', () => {
+  const { getManualTriggerCurrentPriceReference } = helpers('getManualTriggerCurrentPriceReference');
+  assert.deepEqual(JSON.parse(JSON.stringify(getManualTriggerCurrentPriceReference({ current_price: null }))), {
+    price: 'Price unavailable.', source: 'No usable saved price is available.',
+  });
+  const unsavedBuyInput = { value: '77.50' };
+  const priceReference = { textContent: '' };
+  const context = {
+    manualTriggerDetailEl: { querySelector: (selector) => selector === '[data-trigger-current-price]' ? priceReference : unsavedBuyInput },
+    formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+  };
+  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\nupdateManualTriggerCurrentPriceReference({ manual_verified_price: 102, manual_verified_quote_at: '2026-11-15T12:01:00Z' })`, context);
+  assert.match(priceReference.textContent, /\$102\.00.*Saved verified quote/);
+  assert.equal(unsavedBuyInput.value, '77.50');
+});
+
+test('Manual Execution Trigger price reference uses the Action Summary mode row', () => {
+  const reference = { textContent: '' };
+  const explanation = { innerHTML: '' };
+  const context = {
+    actionPlanExecutionMode: 'without', manualExecutionCalculationState: 'current',
+    manualTriggerDetailEl: { querySelector: (selector) => selector === '[data-trigger-current-price]' ? reference : explanation },
+    latestActionPlanPayload: { linear_action_plan: [{ symbol: 'NVDA', current_price: 90 }], manual_execution: { linear_action_plan: [{ symbol: 'NVDA', manual_verified_price: 101, manual_verified_quote_at: 'saved' }] } },
+    renderActionPlanDetail: () => {}, getDisplayedLinearActionPlanItems: (payload, mode) => mode === 'with' ? payload.manual_execution.linear_action_plan : payload.linear_action_plan,
+    renderActionPlanMetricList: () => '', escapeHtml: String, formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+    formatPercent: () => '', formatNumber: () => '',
+  };
+  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({ action_detail: { symbol: 'NVDA', current_price: 90 } })`, context);
+  assert.match(reference.textContent, /\$90\.00.*Saved Action Plan price/);
 });
 
 test('complete editor values validate price and reservation limits', () => {
@@ -98,6 +260,8 @@ test('mode switch re-renders the cached payload without a fetch', () => {
   let renders = 0;
   const context = {
     actionPlanExecutionMode: 'without',
+    actionPlanShowNonExecutableRecommendations: false,
+    actionPlanShowNonExecutableRecommendationsEl: null,
     actionPlanWithoutTriggersBtn: { setAttribute: (_key, value) => { pressed.without = value; } },
     actionPlanWithTriggersBtn: { setAttribute: (_key, value) => { pressed.with = value; } },
     latestActionPlanDetailPayload: null,
@@ -110,19 +274,20 @@ test('mode switch re-renders the cached payload without a fetch', () => {
   assert.equal(renders, 1);
 });
 
-test('blocked Buy remains under Add filter in manual mode', () => {
+test('blocked Buy returns under Add filter in manual mode when non-executable rows are shown', () => {
   const context = {
     latestActionPlanPayload: {
       linear_action_plan: [{ symbol: 'NVDA', action: 'Add', rating: 'Buy' }],
-      manual_execution: { linear_action_plan: [{ symbol: 'NVDA', recommended_action: 'Add', action: 'Watch', rating: 'Buy' }] },
+      manual_execution: { linear_action_plan: [{ symbol: 'NVDA', recommended_action: 'Add', action: 'Watch', rating: 'Buy', suggested_share_count: 0, executable_action_amount: 0 }] },
     },
-    actionPlanExecutionMode: 'with',
+    actionPlanExecutionMode: 'with', actionPlanShowNonExecutableRecommendations: true,
+    manualExecutionCalculationState: 'current',
     getSelectedActionPlanRatings: () => new Set(),
     getSelectedActionPlanActions: () => new Set(['add']),
     ACTION_PLAN_ACTION_FILTER_OPTIONS: ['add', 'watch'],
     getActionPlanActionFilterKey: (value) => value.toLowerCase(),
   };
-  const rows = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
+  const rows = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('manualQuoteExpired')}\n${functionSource('isUnderlyingTradeRecommendation')}\n${functionSource('hasCurrentExecutableManualAction')}\n${functionSource('getTriggerAwareVisibleRows')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
   assert.deepEqual(rows.map((row) => row.symbol), ['NVDA']);
 });
 
@@ -142,6 +307,84 @@ test('manual summary displays backend reservation and proceeds figures', () => {
   assert.match(rendered, /Reservations from Projected Sell\/Trim Proceeds[\s\S]*\$1000\.00/);
   assert.match(rendered, /Remaining Buy Budget[\s\S]*\$1300\.00/);
   assert.doesNotMatch(rendered, /Dynamic Reserve Target/);
+});
+
+test('both Linear summary modes have the same retained common cards in order', () => {
+  const context = {
+    formatPercent: (value) => `${value}%`,
+    formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+    formatNumber: String,
+    escapeHtml: String,
+  };
+  const summary = {
+    maximum_deployable_equity_pct: 95.39, target_reserve_amount: 6065.24,
+    current_cash_unallocated: 10.60, reserve_shortfall: 0,
+    cash_available_for_linear_buys: 34800.59, total_add_demand: 39594.79,
+    funded_add_amount: 34783.91, unfunded_add_demand: 4810.88,
+    eligible_stock_count: 35, capped_stock_count: 0,
+    available_buy_budget_before_manual_reservations: 34800.59,
+  };
+  context.summary = summary;
+  const { baseline, manual } = vm.runInNewContext(`${functionSource('renderLinearActionPlanCommonSummary')}\n${functionSource('renderActionPlanSummaryCards')}\n${functionSource('renderManualReservationSummary')}\n${functionSource('renderManualPlanSummary')}\n({baseline: renderActionPlanSummaryCards(summary, 'Linear Allocation'), manual: renderManualPlanSummary(summary)})`, context);
+  const labels = (html) => Array.from(html.matchAll(/<div class="label">([^<]+)<\/div>/g), (match) => match[1]);
+  const common = ['Max Equity Allocation', 'Reserve Target Amount', 'Current Cash or cash-like',
+    'Available Buy Budget', 'Total Linear Add Demand',
+    'Funded Linear Add Amount', 'Unfunded Linear Add Demand', 'Eligible Stocks', 'Capped Stocks'];
+  assert.deepEqual(labels(baseline), common);
+  assert.deepEqual(labels(manual).slice(0, common.length), common);
+  assert.equal(labels(manual)[common.length], 'Available Buy Budget Before Manual Reservations');
+  assert.match(manual, /Available Buy Budget<\/div><div class="value">\$34800\.59/);
+  assert.doesNotMatch(baseline, /Reserve Excess Before Buys|Reserve Shortfall/);
+  assert.doesNotMatch(manual, /Reserve Excess Before Buys|Reserve Shortfall/);
+  assert.doesNotMatch(manual, /Active Mode|Opportunity Score|Dynamic Reserve Target|Reserve Benchmark|Reserve Scale Factor|Linear Allocated Target Total|Current Equity Allocation/);
+});
+
+test('Action Plan summary separates common and trigger-specific card groups', () => {
+  const context = {
+    formatPercent: (value) => `${value}%`,
+    formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+    formatNumber: String,
+    escapeHtml: String,
+  };
+  const summary = { current_cash_unallocated: 10.60, available_buy_budget: 10.60 };
+  context.summary = summary;
+  const { withoutTriggers, withTriggers } = vm.runInNewContext(`${functionSource('renderLinearActionPlanCommonSummary')}\n${functionSource('renderActionPlanSummaryCards')}\n${functionSource('renderManualReservationSummary')}\n${functionSource('renderManualPlanSummary')}\n({ withoutTriggers: renderActionPlanSummaryCards(summary, 'Linear Allocation'), withTriggers: renderManualPlanSummary(summary) })`, context);
+  assert.match(withoutTriggers, /^<div class="action-plan-summary-group action-plan-summary-common">/);
+  assert.doesNotMatch(withoutTriggers, /action-plan-summary-trigger-details/);
+  assert.match(withTriggers, /^<div class="action-plan-summary-group action-plan-summary-common">[\s\S]*<\/div>\s*<div class="action-plan-summary-group action-plan-summary-trigger-details">/);
+  assert.equal((withTriggers.match(/action-plan-summary-common/g) || []).length, 1);
+  assert.equal((withTriggers.match(/action-plan-summary-trigger-details/g) || []).length, 1);
+});
+
+test('Action Plan summary group warnings retain space below their card grid', () => {
+  assert.match(styles, /#action-plan-summary \.action-plan-summary-group > \.status\s*\{[^}]*margin:\s*12px 0 0;/);
+});
+
+test('With Triggers retains common cards but masks stale funding amounts', () => {
+  const context = {
+    formatPercent: (value) => `${value}%`,
+    formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+    formatNumber: String,
+    escapeHtml: String,
+  };
+  const html = vm.runInNewContext(`${functionSource('renderLinearActionPlanCommonSummary')}\n${functionSource('renderManualReservationSummary')}\n${functionSource('renderManualPlanSummary')}\nrenderManualPlanSummary({target_reserve_amount: 100, current_cash_unallocated: 10, reserve_shortfall: 900, available_buy_budget: 800, funded_add_amount: 700}, false, 'Outdated')`, context);
+  assert.match(html, /Max Equity Allocation/);
+  assert.match(html, /Reserve Target Amount/);
+  assert.match(html, /status warning[\s\S]*Reserve Shortfall: Outdated/);
+  assert.match(html, /Funded Linear Add Amount<\/div><div class="value">Outdated/);
+  assert.doesNotMatch(html, /Requested Manual Reservations|Reserve Excess Before Buys|\$900\.00|\$800\.00|\$700\.00/);
+});
+
+test('Action Plan header presents selected cash plus cash-equivalent holdings without proceeds', () => {
+  const context = {
+    formatPercent: (value) => `${value}%`,
+    formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+    formatNumber: String,
+    escapeHtml: String,
+  };
+  const header = vm.runInNewContext(`${functionSource('renderLinearActionPlanCommonSummary')}\nrenderLinearActionPlanCommonSummary({current_cash_unallocated: 10010.60, cash_like_available: 10010.60, actual_cash: 10.60, cash_equivalent_value: 10000, executable_sell_trim_proceeds: 4000})`, context);
+  assert.match(header, /Current Cash or cash-like<\/div><div class="value">\$10010\.60/);
+  assert.doesNotMatch(header, /\$4000\.00/);
 });
 
 test('save submits complete replacement and reports reload failure as persisted', async () => {
@@ -189,7 +432,7 @@ test('manual detail warns on blocked Sell and shows partial reservation', () => 
     formatPercent: (value) => `${Number(value || 0)}%`,
     formatNumber: (value) => String(value ?? 0),
   };
-  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({action_detail: {symbol: 'META', action: 'Strong Sell'}})`, context);
+  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({action_detail: {symbol: 'META', action: 'Strong Sell'}})`, context);
   assert.match(explanation.innerHTML, /manual price condition currently prevents execution/);
   assert.match(explanation.innerHTML, /Requested Reservation: \$3000\.00/);
   assert.match(explanation.innerHTML, /Unfulfilled Reservation: \$800\.00/);
@@ -492,8 +735,8 @@ function expiryHarness(old, fetch) {
     withSelectedPortfolioAccount: (url) => withPortfolioAccount(url, context.selectedPortfolioAccountId),
     fetch: async (url) => { requests.push(url); return fetch(url); },
   };
-  const names = ['getDisplayedLinearActionPlanItems', 'manualQuoteExpired', 'getManualTriggerPresentation',
-    'manualTriggerLabel', 'renderManualReservationSummary', 'renderManualPlanSummary', 'renderActionPlan',
+  const names = ['getDisplayedLinearActionPlanItems', 'manualQuoteExpired', 'getManualTriggerCurrentPriceReference', 'updateManualTriggerCurrentPriceReference', 'getManualTriggerPresentation',
+    'manualTriggerLabel', 'renderLinearActionPlanCommonSummary', 'renderManualReservationSummary', 'renderManualPlanSummary', 'renderActionPlan',
     'renderSelectedActionPlanDetail', 'loadActionPlan', 'refreshOpenActionPlanDetailAfterExpiry',
     'handleManualQuoteExpiry', 'refreshActionPlanFromButton'];
   vm.runInNewContext(names.map(functionSource).join('\n'), context);
@@ -685,13 +928,12 @@ test('manual allocation rows mask stale execution figures and then render backen
   const { old, fresh } = expiringPlanFixture();
   const rows = [];
   const body = { innerHTML: '', appendChild: (row) => rows.push(row), querySelectorAll: () => [] };
-  const table = { classList: { toggle: () => {} }, querySelectorAll: () => [], querySelector: () => ({ textContent: '' }) };
+  const table = {};
   const makeRow = () => {
     const fields = Object.fromEntries(['.action-amount-cell', '.shares-cell', '.funding-cell'].map((key) => [key, { textContent: '' }]));
-    const manualCells = Array.from({ length: 5 }, () => ({ textContent: '' }));
     return { innerHTML: '', cells: Array.from({ length: 21 }, () => ({ textContent: '' })),
       querySelector: (selector) => fields[selector] || null,
-      querySelectorAll: (selector) => selector === '.manual-only' ? manualCells : [], fields, manualCells };
+      querySelectorAll: () => [], fields };
   };
   const context = {
     latestActionPlanPayload: old, actionPlanExecutionMode: 'with', manualExecutionCalculationState: 'outdated',
@@ -711,14 +953,12 @@ test('manual allocation rows mask stale execution figures and then render backen
     valueClass: () => '', escapeHtml: String, manualQuoteExpired: () => false,
     hasLinearTargetCap: () => false,
   };
-  vm.runInNewContext(functionSource('renderLinearAllocationRows'), context);
+  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getLinearActionTableExecutionDisplay')}\n${functionSource('renderLinearAllocationRows')}`, context);
   context.renderLinearAllocationRows();
   assert.equal(rows.length, 2);
   for (const row of rows) {
     assert.equal(row.fields['.shares-cell'].textContent, 'Outdated');
     assert.equal(row.fields['.funding-cell'].textContent, 'Outdated');
-    assert.equal(row.manualCells[3].textContent, 'Outdated');
-    assert.equal(row.manualCells[4].textContent, 'Outdated');
   }
   rows.length = 0;
   context.latestActionPlanPayload = fresh;

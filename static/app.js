@@ -2454,6 +2454,29 @@ function getActionPlanPriceDisplay(item, manualMode) {
   return { price: formatCurrencyValue(item.current_price, 'USD'), title: fallbackTitle, warning: Boolean(item.price_warning) };
 }
 
+function getManualTriggerCurrentPriceReference(item) {
+  if (manualQuoteExpired(item)) {
+    return { price: 'Price unavailable.', source: 'Saved verified quote expired; refresh trigger prices.' };
+  }
+  if (item?.manual_verified_price != null && item?.manual_verified_quote_at) {
+    return { price: formatCurrencyValue(item.manual_verified_price, 'USD'), source: `Saved verified quote from ${item.manual_verified_quote_at}.` };
+  }
+  if (Number.isFinite(Number(item?.current_price)) && Number(item.current_price) > 0) {
+    if (item?.price_source === 'analysis_fallback' || item?.price_warning) {
+      return { price: formatCurrencyValue(item.current_price, 'USD'), source: 'Saved fallback price.' };
+    }
+    return { price: formatCurrencyValue(item.current_price, 'USD'), source: 'Saved Action Plan price.' };
+  }
+  return { price: 'Price unavailable.', source: 'No usable saved price is available.' };
+}
+
+function updateManualTriggerCurrentPriceReference(item) {
+  const referenceEl = manualTriggerDetailEl?.querySelector('[data-trigger-current-price]');
+  if (!referenceEl) return;
+  const reference = getManualTriggerCurrentPriceReference(item);
+  referenceEl.textContent = `Current Price: ${reference.price} — ${reference.source}`;
+}
+
 function getManualTriggerPresentation(item) {
   const status = item?.manual_trigger_status;
   if (manualQuoteExpired(item)) return { status: 'Price confirmation required', tone: 'confirmation' };
@@ -2576,14 +2599,15 @@ function renderSelectedActionPlanDetail(payload) {
   const baseline = payload?.action_detail;
   if (!baseline) return;
   renderActionPlanDetail(baseline);
+  const manual = getDisplayedLinearActionPlanItems(latestActionPlanPayload, actionPlanExecutionMode)
+    .find((item) => item.symbol === baseline.symbol) || payload.manual_execution_detail || baseline;
+  updateManualTriggerCurrentPriceReference(manual);
   const explanation = manualTriggerDetailEl?.querySelector('#manual-execution-explanation');
   if (!explanation) return;
   if (actionPlanExecutionMode !== 'with') {
     explanation.innerHTML = '';
     return;
   }
-  const manual = getDisplayedLinearActionPlanItems(latestActionPlanPayload, 'with')
-    .find((item) => item.symbol === baseline.symbol) || payload.manual_execution_detail;
   if (!manual) return;
   const calculationUnavailable = manualExecutionCalculationState !== 'current';
   const calculationLabel = manualExecutionCalculationState === 'recalculating' ? 'Recalculating' : 'Outdated; refresh Action Plan';
@@ -2632,6 +2656,7 @@ function renderManualTriggerDetail(symbol, trigger) {
   const saved = trigger || {};
   manualTriggerDetailEl.innerHTML = `<section class="detail-card"><h4>Manual Execution Triggers</h4>
     <div class="manual-trigger-editor">
+      <p class="manual-trigger-price-reference" data-trigger-current-price aria-live="polite">Current Price: Price unavailable. — Loading saved price reference.</p>
       <label>Buy at or below<input data-trigger-field="buy_trigger_price" type="number" min="0" step="any" inputmode="decimal" value="${escapeHtml(saved.buy_trigger_price ?? '')}"></label>
       <label>Sell/Trim trigger price<input data-trigger-field="sell_trigger_price" type="number" min="0" step="any" inputmode="decimal" value="${escapeHtml(saved.sell_trigger_price ?? '')}"></label>
       <label>Sell/Trim direction<select data-trigger-field="sell_trigger_direction"><option value="at_or_above"${saved.sell_trigger_direction !== 'at_or_below' ? ' selected' : ''}>At or above</option><option value="at_or_below"${saved.sell_trigger_direction === 'at_or_below' ? ' selected' : ''}>At or below</option></select></label>
@@ -2645,6 +2670,9 @@ function renderManualTriggerDetail(symbol, trigger) {
   const syncReserve = () => { reserveLabel.hidden = !reserveToggle.checked; };
   reserveToggle.addEventListener('change', syncReserve);
   syncReserve();
+  const detailItem = getDisplayedLinearActionPlanItems(latestActionPlanPayload, actionPlanExecutionMode)
+    .find((item) => item.symbol === symbol) || latestActionPlanDetailPayload?.manual_execution_detail || latestActionPlanDetailPayload?.action_detail;
+  updateManualTriggerCurrentPriceReference(detailItem);
   manualTriggerDetailEl.querySelector('[data-trigger-action="save"]').addEventListener('click', () => saveManualTrigger(symbol));
   manualTriggerDetailEl.querySelector('[data-trigger-action="clear"]').addEventListener('click', () => clearManualTrigger(symbol));
   manualTriggerDetailEl.querySelector('[data-trigger-action="refresh"]').addEventListener('click', () => refreshTriggerPrices([symbol]));

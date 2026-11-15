@@ -36,9 +36,10 @@ function helpers(...names) {
     formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
   };
   const needsExecutionVisibility = names.includes('getTriggerAwareVisibleRows');
+  const needsTriggerPriceReference = names.includes('getManualTriggerCurrentPriceReference');
   const dependencies = names.some((name) => ['getManualTriggerPresentation', 'getActionPlanPriceDisplay', 'getLinearActionTableExecutionDisplay'].includes(name))
     ? [functionSource('manualQuoteExpired')]
-    : needsExecutionVisibility
+    : needsExecutionVisibility || needsTriggerPriceReference
       ? [functionSource('manualQuoteExpired'), functionSource('isUnderlyingTradeRecommendation'), functionSource('hasCurrentExecutableManualAction')]
       : [];
   return vm.runInNewContext(`${dependencies.join('\n')}\n${names.map(functionSource).join('\n')}\n({${names.join(',')}})`, context);
@@ -189,6 +190,55 @@ test('expired verified price is hidden instead of shown as a current sizing pric
   assert.equal(displayed.price, 'Expired');
   assert.match(displayed.title, /expired/i);
   assert.equal(getActionPlanPriceDisplay(expired, false).price, '$79.00');
+});
+
+test('Manual Execution Trigger price reference labels saved and refreshed quotes plus saved fallbacks', () => {
+  const { getManualTriggerCurrentPriceReference } = helpers('getManualTriggerCurrentPriceReference');
+  const savedQuote = getManualTriggerCurrentPriceReference({
+    manual_verified_price: 101.25, manual_verified_quote_at: '2026-11-15T12:00:00Z',
+    manual_verified_quote_expires_at: new Date(Date.now() + 60_000).toISOString(),
+  });
+  assert.equal(savedQuote.price, '$101.25');
+  assert.match(savedQuote.source, /Saved verified quote/);
+  const refreshedQuote = getManualTriggerCurrentPriceReference({
+    manual_verified_price: 102, manual_verified_quote_at: '2026-11-15T12:01:00Z',
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(refreshedQuote)), {
+    price: '$102.00', source: 'Saved verified quote from 2026-11-15T12:01:00Z.',
+  });
+  const fallback = getManualTriggerCurrentPriceReference({ current_price: 88.5, price_source: 'analysis_fallback' });
+  assert.deepEqual(JSON.parse(JSON.stringify(fallback)), { price: '$88.50', source: 'Saved fallback price.' });
+});
+
+test('Manual Execution Trigger price reference reports unavailable prices and preserves unsaved inputs on refresh', () => {
+  const { getManualTriggerCurrentPriceReference } = helpers('getManualTriggerCurrentPriceReference');
+  assert.deepEqual(JSON.parse(JSON.stringify(getManualTriggerCurrentPriceReference({ current_price: null }))), {
+    price: 'Price unavailable.', source: 'No usable saved price is available.',
+  });
+  const unsavedBuyInput = { value: '77.50' };
+  const priceReference = { textContent: '' };
+  const context = {
+    manualTriggerDetailEl: { querySelector: (selector) => selector === '[data-trigger-current-price]' ? priceReference : unsavedBuyInput },
+    formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+  };
+  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\nupdateManualTriggerCurrentPriceReference({ manual_verified_price: 102, manual_verified_quote_at: '2026-11-15T12:01:00Z' })`, context);
+  assert.match(priceReference.textContent, /\$102\.00.*Saved verified quote/);
+  assert.equal(unsavedBuyInput.value, '77.50');
+});
+
+test('Manual Execution Trigger price reference uses the Action Summary mode row', () => {
+  const reference = { textContent: '' };
+  const explanation = { innerHTML: '' };
+  const context = {
+    actionPlanExecutionMode: 'without', manualExecutionCalculationState: 'current',
+    manualTriggerDetailEl: { querySelector: (selector) => selector === '[data-trigger-current-price]' ? reference : explanation },
+    latestActionPlanPayload: { linear_action_plan: [{ symbol: 'NVDA', current_price: 90 }], manual_execution: { linear_action_plan: [{ symbol: 'NVDA', manual_verified_price: 101, manual_verified_quote_at: 'saved' }] } },
+    renderActionPlanDetail: () => {}, getDisplayedLinearActionPlanItems: (payload, mode) => mode === 'with' ? payload.manual_execution.linear_action_plan : payload.linear_action_plan,
+    renderActionPlanMetricList: () => '', escapeHtml: String, formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+    formatPercent: () => '', formatNumber: () => '',
+  };
+  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({ action_detail: { symbol: 'NVDA', current_price: 90 } })`, context);
+  assert.match(reference.textContent, /\$90\.00.*Saved Action Plan price/);
 });
 
 test('complete editor values validate price and reservation limits', () => {
@@ -382,7 +432,7 @@ test('manual detail warns on blocked Sell and shows partial reservation', () => 
     formatPercent: (value) => `${Number(value || 0)}%`,
     formatNumber: (value) => String(value ?? 0),
   };
-  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({action_detail: {symbol: 'META', action: 'Strong Sell'}})`, context);
+  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({action_detail: {symbol: 'META', action: 'Strong Sell'}})`, context);
   assert.match(explanation.innerHTML, /manual price condition currently prevents execution/);
   assert.match(explanation.innerHTML, /Requested Reservation: \$3000\.00/);
   assert.match(explanation.innerHTML, /Unfulfilled Reservation: \$800\.00/);
@@ -685,7 +735,7 @@ function expiryHarness(old, fetch) {
     withSelectedPortfolioAccount: (url) => withPortfolioAccount(url, context.selectedPortfolioAccountId),
     fetch: async (url) => { requests.push(url); return fetch(url); },
   };
-  const names = ['getDisplayedLinearActionPlanItems', 'manualQuoteExpired', 'getManualTriggerPresentation',
+  const names = ['getDisplayedLinearActionPlanItems', 'manualQuoteExpired', 'getManualTriggerCurrentPriceReference', 'updateManualTriggerCurrentPriceReference', 'getManualTriggerPresentation',
     'manualTriggerLabel', 'renderLinearActionPlanCommonSummary', 'renderManualReservationSummary', 'renderManualPlanSummary', 'renderActionPlan',
     'renderSelectedActionPlanDetail', 'loadActionPlan', 'refreshOpenActionPlanDetailAfterExpiry',
     'handleManualQuoteExpiry', 'refreshActionPlanFromButton'];

@@ -3534,19 +3534,20 @@ function renderLinearAllocationRows() {
 }
 
 function renderLinearActionPlanCommonSummary(summary, unavailableLabel = null) {
-  const reserveBalanceLabel = (summary.reserve_shortfall || 0) > 0 ? 'Reserve Shortfall' : 'Reserve Excess Before Buys';
-  const reserveBalanceValue = (summary.reserve_shortfall || 0) > 0 ? summary.reserve_shortfall : summary.reserve_excess;
   const fundingValue = (value) => unavailableLabel || formatCurrencyValue(value, 'USD');
+  const reserveShortfallWarning = (summary.reserve_shortfall || 0) > 0
+    ? `<p class="status warning">Reserve Shortfall: ${fundingValue(summary.reserve_shortfall)} is protected before buys.</p>`
+    : '';
   return `<div class="summary-item"><div class="label">Max Equity Allocation</div><div class="value">${formatPercent(summary.maximum_deployable_equity_pct)}</div></div>
     <div class="summary-item"><div class="label">Reserve Target Amount</div><div class="value">${formatCurrencyValue(summary.target_reserve_amount, 'USD')}</div></div>
-    <div class="summary-item"><div class="label">Current Cash / Unallocated</div><div class="value">${formatCurrencyValue(summary.current_cash_unallocated, 'USD')}</div></div>
-    <div class="summary-item"><div class="label">${reserveBalanceLabel}</div><div class="value">${fundingValue(reserveBalanceValue)}</div></div>
+    <div class="summary-item"><div class="label">Current Cash or cash-like</div><div class="value">${formatCurrencyValue(summary.current_cash_unallocated, 'USD')}</div></div>
     <div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${fundingValue(summary.cash_available_for_linear_buys ?? summary.available_buy_budget)}</div></div>
     <div class="summary-item"><div class="label">Total Linear Add Demand</div><div class="value">${fundingValue(summary.total_add_demand)}</div></div>
     <div class="summary-item"><div class="label">Funded Linear Add Amount</div><div class="value">${fundingValue(summary.funded_add_amount)}</div></div>
     <div class="summary-item"><div class="label">Unfunded Linear Add Demand</div><div class="value">${fundingValue(summary.unfunded_add_demand)}</div></div>
     <div class="summary-item"><div class="label">Eligible Stocks</div><div class="value">${formatNumber(summary.eligible_stock_count, 0)}</div></div>
-    <div class="summary-item"><div class="label">Capped Stocks</div><div class="value">${formatNumber(summary.capped_stock_count, 0)}</div></div>`;
+    <div class="summary-item"><div class="label">Capped Stocks</div><div class="value">${formatNumber(summary.capped_stock_count, 0)}</div></div>
+    ${reserveShortfallWarning}`;
 }
 
 function renderActionPlanSummaryCards(summary, modeLabel) {

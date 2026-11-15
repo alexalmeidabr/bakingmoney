@@ -267,7 +267,7 @@ test('both Linear summary modes have the same retained common cards in order', (
   };
   const summary = {
     maximum_deployable_equity_pct: 95.39, target_reserve_amount: 6065.24,
-    current_cash_unallocated: 10.60, reserve_excess: 38600.97,
+    current_cash_unallocated: 10.60, reserve_shortfall: 0,
     cash_available_for_linear_buys: 34800.59, total_add_demand: 39594.79,
     funded_add_amount: 34783.91, unfunded_add_demand: 4810.88,
     eligible_stock_count: 35, capped_stock_count: 0,
@@ -276,13 +276,15 @@ test('both Linear summary modes have the same retained common cards in order', (
   context.summary = summary;
   const { baseline, manual } = vm.runInNewContext(`${functionSource('renderLinearActionPlanCommonSummary')}\n${functionSource('renderActionPlanSummaryCards')}\n${functionSource('renderManualReservationSummary')}\n${functionSource('renderManualPlanSummary')}\n({baseline: renderActionPlanSummaryCards(summary, 'Linear Allocation'), manual: renderManualPlanSummary(summary)})`, context);
   const labels = (html) => Array.from(html.matchAll(/<div class="label">([^<]+)<\/div>/g), (match) => match[1]);
-  const common = ['Max Equity Allocation', 'Reserve Target Amount', 'Current Cash / Unallocated',
-    'Reserve Excess Before Buys', 'Available Buy Budget', 'Total Linear Add Demand',
+  const common = ['Max Equity Allocation', 'Reserve Target Amount', 'Current Cash or cash-like',
+    'Available Buy Budget', 'Total Linear Add Demand',
     'Funded Linear Add Amount', 'Unfunded Linear Add Demand', 'Eligible Stocks', 'Capped Stocks'];
   assert.deepEqual(labels(baseline), common);
   assert.deepEqual(labels(manual).slice(0, common.length), common);
   assert.equal(labels(manual)[common.length], 'Available Buy Budget Before Manual Reservations');
   assert.match(manual, /Available Buy Budget<\/div><div class="value">\$34800\.59/);
+  assert.doesNotMatch(baseline, /Reserve Excess Before Buys|Reserve Shortfall/);
+  assert.doesNotMatch(manual, /Reserve Excess Before Buys|Reserve Shortfall/);
   assert.doesNotMatch(manual, /Active Mode|Opportunity Score|Dynamic Reserve Target|Reserve Benchmark|Reserve Scale Factor|Linear Allocated Target Total|Current Equity Allocation/);
 });
 
@@ -293,12 +295,24 @@ test('With Triggers retains common cards but masks stale funding amounts', () =>
     formatNumber: String,
     escapeHtml: String,
   };
-  const html = vm.runInNewContext(`${functionSource('renderLinearActionPlanCommonSummary')}\n${functionSource('renderManualReservationSummary')}\n${functionSource('renderManualPlanSummary')}\nrenderManualPlanSummary({target_reserve_amount: 100, current_cash_unallocated: 10, reserve_excess: 900, available_buy_budget: 800, funded_add_amount: 700}, false, 'Outdated')`, context);
+  const html = vm.runInNewContext(`${functionSource('renderLinearActionPlanCommonSummary')}\n${functionSource('renderManualReservationSummary')}\n${functionSource('renderManualPlanSummary')}\nrenderManualPlanSummary({target_reserve_amount: 100, current_cash_unallocated: 10, reserve_shortfall: 900, available_buy_budget: 800, funded_add_amount: 700}, false, 'Outdated')`, context);
   assert.match(html, /Max Equity Allocation/);
   assert.match(html, /Reserve Target Amount/);
-  assert.match(html, /Reserve Excess Before Buys<\/div><div class="value">Outdated/);
+  assert.match(html, /status warning[\s\S]*Reserve Shortfall: Outdated/);
   assert.match(html, /Funded Linear Add Amount<\/div><div class="value">Outdated/);
-  assert.doesNotMatch(html, /Requested Manual Reservations|\$900\.00|\$800\.00|\$700\.00/);
+  assert.doesNotMatch(html, /Requested Manual Reservations|Reserve Excess Before Buys|\$900\.00|\$800\.00|\$700\.00/);
+});
+
+test('Action Plan header presents selected cash plus cash-equivalent holdings without proceeds', () => {
+  const context = {
+    formatPercent: (value) => `${value}%`,
+    formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+    formatNumber: String,
+    escapeHtml: String,
+  };
+  const header = vm.runInNewContext(`${functionSource('renderLinearActionPlanCommonSummary')}\nrenderLinearActionPlanCommonSummary({current_cash_unallocated: 10010.60, cash_like_available: 10010.60, actual_cash: 10.60, cash_equivalent_value: 10000, executable_sell_trim_proceeds: 4000})`, context);
+  assert.match(header, /Current Cash or cash-like<\/div><div class="value">\$10010\.60/);
+  assert.doesNotMatch(header, /\$4000\.00/);
 });
 
 test('save submits complete replacement and reports reload failure as persisted', async () => {

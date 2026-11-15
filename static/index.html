@@ -820,8 +820,8 @@
           <p class="status">Linear Allocation uses dynamic reserve, whole-share sizing, and funding-aware actions.</p>
           <div class="manual-plan-toolbar">
             <div class="manual-plan-switch" role="group" aria-label="Action Plan execution mode">
-              <button id="action-plan-without-triggers" type="button" aria-pressed="true">Without Triggers</button>
-              <button id="action-plan-with-triggers" type="button" aria-pressed="false">With Triggers</button>
+              <button id="action-plan-without-triggers" type="button" aria-pressed="false">Without Triggers</button>
+              <button id="action-plan-with-triggers" type="button" aria-pressed="true">With Triggers</button>
             </div>
             <button id="action-plan-refresh-trigger-prices" type="button">Refresh Trigger Prices</button>
           </div>
@@ -869,6 +869,7 @@
                 <label class="rating-filter-option"><input type="checkbox" value="watch_rating_guardrail" /> <span class="rating-filter-option-label">Watch / Rating Guardrail</span></label>
               </div>
             </div>
+            <label class="inline-control-label"><input id="action-plan-show-non-executable-recommendations" type="checkbox" /> Show non-executable recommendations</label>
           </div>
           <div id="action-plan-linear-actions-panel">
             <p class="status">Rating is context only; actions are determined by Linear Allocation.</p>

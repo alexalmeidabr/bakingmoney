@@ -34,7 +34,12 @@ function helpers(...names) {
     escapeHtml: (value) => String(value),
     formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
   };
-  const dependencies = names.some((name) => ['getManualTriggerPresentation', 'getActionPlanPriceDisplay', 'getLinearActionTableExecutionDisplay'].includes(name)) ? [functionSource('manualQuoteExpired')] : [];
+  const needsExecutionVisibility = names.includes('getTriggerAwareVisibleRows');
+  const dependencies = names.some((name) => ['getManualTriggerPresentation', 'getActionPlanPriceDisplay', 'getLinearActionTableExecutionDisplay'].includes(name))
+    ? [functionSource('manualQuoteExpired')]
+    : needsExecutionVisibility
+      ? [functionSource('manualQuoteExpired'), functionSource('isUnderlyingTradeRecommendation'), functionSource('hasCurrentExecutableManualAction')]
+      : [];
   return vm.runInNewContext(`${dependencies.join('\n')}\n${names.map(functionSource).join('\n')}\n({${names.join(',')}})`, context);
 }
 
@@ -51,6 +56,82 @@ test('mode selection uses cached backend rows without changing recommendations',
   assert.match(html, /Without Triggers/);
   assert.match(html, /With Triggers/);
   assert.match(html, /Refresh Trigger Prices/);
+});
+
+test('Action Plan starts With Triggers and account resets restore that default', () => {
+  const pressed = {};
+  const context = {
+    actionPlanExecutionMode: 'without',
+    actionPlanShowNonExecutableRecommendations: true,
+    actionPlanShowNonExecutableRecommendationsEl: null,
+    actionPlanWithoutTriggersBtn: { setAttribute: (_key, value) => { pressed.without = value; } },
+    actionPlanWithTriggersBtn: { setAttribute: (_key, value) => { pressed.with = value; } },
+  };
+  vm.runInNewContext(`${functionSource('updateActionPlanModeButtons')}\n${functionSource('resetActionPlanExecutionMode')}\nresetActionPlanExecutionMode()`, context);
+  assert.equal(context.actionPlanExecutionMode, 'with');
+  assert.equal(context.actionPlanShowNonExecutableRecommendations, false);
+  assert.deepEqual(pressed, { without: 'false', with: 'true' });
+  assert.match(source, /let actionPlanExecutionMode = 'with';/);
+  assert.match(functionSource('handlePortfolioAccountChange'), /resetActionPlanExecutionMode\(\);/);
+  assert.match(functionSource('handlePortfolioAccountNotFound'), /resetActionPlanExecutionMode\(\);/);
+});
+
+test('With Triggers hides blocked trade recommendations but retains eligible, partial, and Hold rows', () => {
+  const { getTriggerAwareVisibleRows } = helpers('getTriggerAwareVisibleRows');
+  const rows = [
+    { symbol: 'CRWV', recommended_action: 'Trim', suggested_share_count: 0, executable_action_amount: 0, funding_status: 'Price confirmation required' },
+    { symbol: 'PINS', recommended_action: 'Trim', suggested_share_count: 0, executable_action_amount: 0, funding_status: 'Below minimum trade amount' },
+    { symbol: 'BLOCKED_BUY', recommended_action: 'Add', suggested_share_count: 0, executable_action_amount: 0, funding_status: 'Manual trigger waiting' },
+    { symbol: 'ELIGIBLE', recommended_action: 'Add', suggested_share_count: 5, executable_action_amount: 500, funding_status: 'Fully funded' },
+    { symbol: 'PARTIAL', recommended_action: 'Add', suggested_share_count: 1, executable_action_amount: 100, funding_status: 'Partially funded' },
+    { symbol: 'FRACTIONAL', recommended_action: 'Add', suggested_share_count: 0.5, executable_action_amount: 50, funding_status: 'Partially funded' },
+    { symbol: 'HOLD', recommended_action: 'Hold', suggested_share_count: 0, executable_action_amount: 0, funding_status: 'No funding needed' },
+  ];
+  assert.deepEqual(getTriggerAwareVisibleRows(rows, false).map((item) => item.symbol), ['ELIGIBLE', 'PARTIAL', 'HOLD']);
+  assert.deepEqual(getTriggerAwareVisibleRows(rows, true).map((item) => item.symbol), rows.map((item) => item.symbol));
+});
+
+test('expired or outdated trigger-aware trades are never treated as executable', () => {
+  const { getTriggerAwareVisibleRows } = helpers('getTriggerAwareVisibleRows');
+  const expired = {
+    symbol: 'EXPIRED', recommended_action: 'Trim', suggested_share_count: 10, executable_action_amount: 1000,
+    manual_verified_quote_expires_at: new Date(Date.now() - 1000).toISOString(),
+  };
+  assert.deepEqual(getTriggerAwareVisibleRows([expired], false), []);
+});
+
+test('showing non-executable recommendations preserves Action and Rating filters', () => {
+  const context = {
+    latestActionPlanPayload: { manual_execution: { linear_action_plan: [
+      { symbol: 'CRWV', rating: 'Buy', recommended_action: 'Trim', suggested_share_count: 0, executable_action_amount: 0 },
+      { symbol: 'PINS', rating: 'Hold', recommended_action: 'Trim', suggested_share_count: 0, executable_action_amount: 0 },
+      { symbol: 'ELIGIBLE', rating: 'Buy', recommended_action: 'Trim', suggested_share_count: 2, executable_action_amount: 200 },
+    ] } },
+    actionPlanExecutionMode: 'with', actionPlanShowNonExecutableRecommendations: true,
+    manualExecutionCalculationState: 'current',
+    getSelectedActionPlanRatings: () => new Set(['buy']),
+    getSelectedActionPlanActions: () => new Set(['trim']),
+    RATING_FILTER_OPTIONS: [{ key: 'buy', label: 'Buy' }, { key: 'hold', label: 'Hold' }],
+    RATING_FILTER_LABEL_BY_KEY: { buy: 'Buy', hold: 'Hold' },
+    ACTION_PLAN_ACTION_FILTER_OPTIONS: [{ key: 'trim', label: 'Trim' }, { key: 'add', label: 'Add' }],
+    getActionPlanActionFilterKey: (value) => String(value).toLowerCase(),
+  };
+  const rendered = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('manualQuoteExpired')}\n${functionSource('isUnderlyingTradeRecommendation')}\n${functionSource('hasCurrentExecutableManualAction')}\n${functionSource('getTriggerAwareVisibleRows')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
+  assert.deepEqual(rendered.map((item) => item.symbol), ['CRWV', 'ELIGIBLE']);
+});
+
+test('the non-executable switch re-renders cached rows without fetching', () => {
+  let renders = 0;
+  const context = {
+    actionPlanShowNonExecutableRecommendations: false,
+    actionPlanShowNonExecutableRecommendationsEl: { checked: false },
+    renderActionPlan: () => { renders += 1; },
+    fetch: () => { throw new Error('visibility switch must not fetch'); },
+  };
+  vm.runInNewContext(`${functionSource('setActionPlanShowNonExecutableRecommendations')}\nsetActionPlanShowNonExecutableRecommendations(true)`, context);
+  assert.equal(context.actionPlanShowNonExecutableRecommendations, true);
+  assert.equal(context.actionPlanShowNonExecutableRecommendationsEl.checked, true);
+  assert.equal(renders, 1);
 });
 
 test('manual execution labels separate price eligibility, funding, and guardrails', () => {
@@ -128,6 +209,8 @@ test('mode switch re-renders the cached payload without a fetch', () => {
   let renders = 0;
   const context = {
     actionPlanExecutionMode: 'without',
+    actionPlanShowNonExecutableRecommendations: false,
+    actionPlanShowNonExecutableRecommendationsEl: null,
     actionPlanWithoutTriggersBtn: { setAttribute: (_key, value) => { pressed.without = value; } },
     actionPlanWithTriggersBtn: { setAttribute: (_key, value) => { pressed.with = value; } },
     latestActionPlanDetailPayload: null,
@@ -140,19 +223,20 @@ test('mode switch re-renders the cached payload without a fetch', () => {
   assert.equal(renders, 1);
 });
 
-test('blocked Buy remains under Add filter in manual mode', () => {
+test('blocked Buy returns under Add filter in manual mode when non-executable rows are shown', () => {
   const context = {
     latestActionPlanPayload: {
       linear_action_plan: [{ symbol: 'NVDA', action: 'Add', rating: 'Buy' }],
-      manual_execution: { linear_action_plan: [{ symbol: 'NVDA', recommended_action: 'Add', action: 'Watch', rating: 'Buy' }] },
+      manual_execution: { linear_action_plan: [{ symbol: 'NVDA', recommended_action: 'Add', action: 'Watch', rating: 'Buy', suggested_share_count: 0, executable_action_amount: 0 }] },
     },
-    actionPlanExecutionMode: 'with',
+    actionPlanExecutionMode: 'with', actionPlanShowNonExecutableRecommendations: true,
+    manualExecutionCalculationState: 'current',
     getSelectedActionPlanRatings: () => new Set(),
     getSelectedActionPlanActions: () => new Set(['add']),
     ACTION_PLAN_ACTION_FILTER_OPTIONS: ['add', 'watch'],
     getActionPlanActionFilterKey: (value) => value.toLowerCase(),
   };
-  const rows = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
+  const rows = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('manualQuoteExpired')}\n${functionSource('isUnderlyingTradeRecommendation')}\n${functionSource('hasCurrentExecutableManualAction')}\n${functionSource('getTriggerAwareVisibleRows')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
   assert.deepEqual(rows.map((row) => row.symbol), ['NVDA']);
 });
 

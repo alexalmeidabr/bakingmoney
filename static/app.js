@@ -66,6 +66,7 @@ const actionPlanActionFilterLabelEl = document.getElementById('action-plan-actio
 const actionPlanActionFilterPanelEl = document.getElementById('action-plan-action-filter-panel');
 const actionPlanActionFilterSelectAllEl = document.getElementById('action-plan-action-filter-select-all');
 const actionPlanActionFilterClearEl = document.getElementById('action-plan-action-filter-clear');
+const actionPlanShowNonExecutableRecommendationsEl = document.getElementById('action-plan-show-non-executable-recommendations');
 const analysisRerunSelectedBtn = document.getElementById('analysis-rerun-selected-btn');
 const analysisCheckEventsBtn = document.getElementById('analysis-check-events-btn');
 
@@ -289,7 +290,8 @@ let latestAnalysis = [];
 let latestActionPlanPayload = { action_plan: [], summary: {} };
 let selectedActionPlanDetail = null;
 let latestActionPlanDetailPayload = null;
-let actionPlanExecutionMode = 'without';
+let actionPlanExecutionMode = 'with';
+let actionPlanShowNonExecutableRecommendations = false;
 let actionPlanRequestId = 0;
 let actionPlanDetailRequestId = 0;
 let actionPlanQuoteRequestId = 0;
@@ -1825,16 +1827,14 @@ async function handlePortfolioAccountNotFound() {
   selectedPortfolioAccountId = null;
   clearPositionsDisplay('', 'status');
   clearActionPlanDisplay('', 'status');
-  actionPlanExecutionMode = 'without';
-  updateActionPlanModeButtons();
+  resetActionPlanExecutionMode();
   await loadPortfolioAccounts({ preserveCurrent: false });
 }
 
 async function handlePortfolioAccountChange() {
   if (isUpdatingPortfolioAccountSelect) return;
   selectedPortfolioAccountId = normalizePortfolioAccountId(portfolioAccountSelectEl?.value);
-  actionPlanExecutionMode = 'without';
-  updateActionPlanModeButtons();
+  resetActionPlanExecutionMode();
   if (selectedPortfolioAccountId) localStorage.setItem(PORTFOLIO_ACCOUNT_STORAGE_KEY, selectedPortfolioAccountId);
   else localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
   renderPortfolioAccountSelector();
@@ -2470,6 +2470,22 @@ function getManualTriggerPresentation(item) {
   return { status: 'No manual trigger', tone: '' };
 }
 
+function isUnderlyingTradeRecommendation(item) {
+  return /(?:^|\s)(?:buy|add|sell|trim)(?:$|\s)/i.test(String(item?.recommended_action || item?.action || ''));
+}
+
+function hasCurrentExecutableManualAction(item) {
+  if (manualQuoteExpired(item)) return false;
+  if (typeof manualExecutionCalculationState !== 'undefined' && manualExecutionCalculationState !== 'current') return false;
+  const shares = Number(item?.suggested_share_count);
+  return Number.isInteger(shares) && shares >= 1 && Number(item?.executable_action_amount) > 0;
+}
+
+function getTriggerAwareVisibleRows(items, showNonExecutable) {
+  if (showNonExecutable) return items;
+  return items.filter((item) => !isUnderlyingTradeRecommendation(item) || hasCurrentExecutableManualAction(item));
+}
+
 function getLinearActionTableExecutionDisplay(item, manualMode) {
   const unavailable = manualMode && (manualQuoteExpired(item)
     || ['waiting', 'price_confirmation_required'].includes(item?.manual_trigger_status));
@@ -2520,6 +2536,24 @@ function validateManualTriggerForm(values) {
 function updateActionPlanModeButtons() {
   actionPlanWithoutTriggersBtn?.setAttribute('aria-pressed', String(actionPlanExecutionMode === 'without'));
   actionPlanWithTriggersBtn?.setAttribute('aria-pressed', String(actionPlanExecutionMode === 'with'));
+  if (actionPlanShowNonExecutableRecommendationsEl) {
+    actionPlanShowNonExecutableRecommendationsEl.checked = actionPlanShowNonExecutableRecommendations;
+    actionPlanShowNonExecutableRecommendationsEl.disabled = actionPlanExecutionMode !== 'with';
+  }
+}
+
+function resetActionPlanExecutionMode() {
+  actionPlanExecutionMode = 'with';
+  actionPlanShowNonExecutableRecommendations = false;
+  updateActionPlanModeButtons();
+}
+
+function setActionPlanShowNonExecutableRecommendations(show) {
+  actionPlanShowNonExecutableRecommendations = Boolean(show);
+  if (actionPlanShowNonExecutableRecommendationsEl) {
+    actionPlanShowNonExecutableRecommendationsEl.checked = actionPlanShowNonExecutableRecommendations;
+  }
+  renderActionPlan();
 }
 
 function setActionPlanExecutionMode(mode) {
@@ -3035,6 +3069,9 @@ function getFilteredLinearActionPlanItems() {
   const selectedActions = getSelectedActionPlanActions();
   if (selectedActions.size > 0 && selectedActions.size < ACTION_PLAN_ACTION_FILTER_OPTIONS.length) {
     items = items.filter((item) => selectedActions.has(getActionPlanActionFilterKey(item.recommended_action || item.action)));
+  }
+  if (actionPlanExecutionMode === 'with') {
+    items = getTriggerAwareVisibleRows(items, actionPlanShowNonExecutableRecommendations);
   }
   return items;
 }
@@ -7232,6 +7269,9 @@ configRestoreDefaultsBtn.addEventListener('click', restoreDefaultRatingSettings)
 actionPlanRefreshBtn.addEventListener('click', refreshActionPlanFromButton);
 actionPlanWithoutTriggersBtn?.addEventListener('click', () => setActionPlanExecutionMode('without'));
 actionPlanWithTriggersBtn?.addEventListener('click', () => setActionPlanExecutionMode('with'));
+actionPlanShowNonExecutableRecommendationsEl?.addEventListener('change', () => {
+  setActionPlanShowNonExecutableRecommendations(actionPlanShowNonExecutableRecommendationsEl.checked);
+});
 actionPlanRefreshTriggerPricesBtn?.addEventListener('click', () => refreshTriggerPrices());
 actionPlanDetailBackBtn.addEventListener('click', showActionPlanList);
 actionPlanOpenAnalysisBtn.addEventListener('click', () => {

@@ -6,6 +6,7 @@ const { withPortfolioAccount } = require('./static/portfolio_account_selector.js
 
 const source = fs.readFileSync('static/app.js', 'utf8');
 const html = fs.readFileSync('static/index.html', 'utf8');
+const styles = fs.readFileSync('static/styles.css', 'utf8');
 
 function functionSource(name) {
   const start = source.indexOf(`function ${name}(`);
@@ -286,6 +287,27 @@ test('both Linear summary modes have the same retained common cards in order', (
   assert.doesNotMatch(baseline, /Reserve Excess Before Buys|Reserve Shortfall/);
   assert.doesNotMatch(manual, /Reserve Excess Before Buys|Reserve Shortfall/);
   assert.doesNotMatch(manual, /Active Mode|Opportunity Score|Dynamic Reserve Target|Reserve Benchmark|Reserve Scale Factor|Linear Allocated Target Total|Current Equity Allocation/);
+});
+
+test('Action Plan summary separates common and trigger-specific card groups', () => {
+  const context = {
+    formatPercent: (value) => `${value}%`,
+    formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
+    formatNumber: String,
+    escapeHtml: String,
+  };
+  const summary = { current_cash_unallocated: 10.60, available_buy_budget: 10.60 };
+  context.summary = summary;
+  const { withoutTriggers, withTriggers } = vm.runInNewContext(`${functionSource('renderLinearActionPlanCommonSummary')}\n${functionSource('renderActionPlanSummaryCards')}\n${functionSource('renderManualReservationSummary')}\n${functionSource('renderManualPlanSummary')}\n({ withoutTriggers: renderActionPlanSummaryCards(summary, 'Linear Allocation'), withTriggers: renderManualPlanSummary(summary) })`, context);
+  assert.match(withoutTriggers, /^<div class="action-plan-summary-group action-plan-summary-common">/);
+  assert.doesNotMatch(withoutTriggers, /action-plan-summary-trigger-details/);
+  assert.match(withTriggers, /^<div class="action-plan-summary-group action-plan-summary-common">[\s\S]*<\/div>\s*<div class="action-plan-summary-group action-plan-summary-trigger-details">/);
+  assert.equal((withTriggers.match(/action-plan-summary-common/g) || []).length, 1);
+  assert.equal((withTriggers.match(/action-plan-summary-trigger-details/g) || []).length, 1);
+});
+
+test('Action Plan summary group warnings retain space below their card grid', () => {
+  assert.match(styles, /#action-plan-summary \.action-plan-summary-group > \.status\s*\{[^}]*margin:\s*12px 0 0;/);
 });
 
 test('With Triggers retains common cards but masks stale funding amounts', () => {

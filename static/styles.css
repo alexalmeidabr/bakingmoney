@@ -378,6 +378,16 @@ th.sortable[data-sort-direction='desc']::after {
   gap: 12px;
 }
 
+#action-plan-summary.summary-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.action-plan-summary-group {
+  min-width: 0;
+}
+
 .summary-item {
   background: #f9fafb;
   border: 1px solid var(--border);
@@ -1411,6 +1421,10 @@ th.sortable[data-sort-direction='desc']::after {
   margin: 0;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+#action-plan-summary .action-plan-summary-group > .status {
+  margin: 12px 0 0;
 }
 
 .manual-plan-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }

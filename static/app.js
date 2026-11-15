@@ -3538,7 +3538,7 @@ function renderLinearActionPlanCommonSummary(summary, unavailableLabel = null) {
   const reserveShortfallWarning = (summary.reserve_shortfall || 0) > 0
     ? `<p class="status warning">Reserve Shortfall: ${fundingValue(summary.reserve_shortfall)} is protected before buys.</p>`
     : '';
-  return `<div class="summary-item"><div class="label">Max Equity Allocation</div><div class="value">${formatPercent(summary.maximum_deployable_equity_pct)}</div></div>
+  return `<div class="summary-grid action-plan-summary-cards"><div class="summary-item"><div class="label">Max Equity Allocation</div><div class="value">${formatPercent(summary.maximum_deployable_equity_pct)}</div></div>
     <div class="summary-item"><div class="label">Reserve Target Amount</div><div class="value">${formatCurrencyValue(summary.target_reserve_amount, 'USD')}</div></div>
     <div class="summary-item"><div class="label">Current Cash or cash-like</div><div class="value">${formatCurrencyValue(summary.current_cash_unallocated, 'USD')}</div></div>
     <div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${fundingValue(summary.cash_available_for_linear_buys ?? summary.available_buy_budget)}</div></div>
@@ -3546,15 +3546,15 @@ function renderLinearActionPlanCommonSummary(summary, unavailableLabel = null) {
     <div class="summary-item"><div class="label">Funded Linear Add Amount</div><div class="value">${fundingValue(summary.funded_add_amount)}</div></div>
     <div class="summary-item"><div class="label">Unfunded Linear Add Demand</div><div class="value">${fundingValue(summary.unfunded_add_demand)}</div></div>
     <div class="summary-item"><div class="label">Eligible Stocks</div><div class="value">${formatNumber(summary.eligible_stock_count, 0)}</div></div>
-    <div class="summary-item"><div class="label">Capped Stocks</div><div class="value">${formatNumber(summary.capped_stock_count, 0)}</div></div>
+    <div class="summary-item"><div class="label">Capped Stocks</div><div class="value">${formatNumber(summary.capped_stock_count, 0)}</div></div></div>
     ${reserveShortfallWarning}`;
 }
 
 function renderActionPlanSummaryCards(summary, modeLabel) {
   if (modeLabel === 'Linear Allocation') {
-    return `${renderLinearActionPlanCommonSummary(summary)}
+    return `<div class="action-plan-summary-group action-plan-summary-common">${renderLinearActionPlanCommonSummary(summary)}
       ${summary.reserve_configuration_valid === false ? '<p class="status warning">Dynamic Reserve configuration is invalid; the minimum reserve is being protected.</p>' : ''}
-      ${summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : ''}`;
+      ${summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : ''}</div>`;
   }
   return `<div class="summary-item summary-mode-card"><div class="label">Active Mode</div><div class="value">Bucket Allocation</div></div><div class="summary-item"><div class="label">Portfolio Value Used</div><div class="value">${formatCurrencyValue(summary.portfolio_value_used ?? summary.total_portfolio_value, 'USD')}</div></div><div class="summary-item"><div class="label">Actual Cash</div><div class="value">${formatCurrencyValue(summary.actual_cash, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Holdings</div><div class="value">${formatCurrencyValue(summary.cash_equivalent_value, 'USD')}</div></div><div class="summary-item"><div class="label">Cash-like Available</div><div class="value">${formatCurrencyValue(summary.cash_like_available, 'USD')}</div></div><div class="summary-item"><div class="label">Available Buy Budget</div><div class="value">${formatCurrencyValue(summary.available_buy_budget, 'USD')}</div></div><div class="summary-item"><div class="label">Total Add Demand</div><div class="value">${formatCurrencyValue(summary.total_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Funded Add Amount</div><div class="value">${formatCurrencyValue(summary.funded_add_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Unfunded Add Demand</div><div class="value">${formatCurrencyValue(summary.unfunded_add_demand, 'USD')}</div></div><div class="summary-item"><div class="label">Executable Sell/Trim Proceeds</div><div class="value">${formatCurrencyValue(summary.executable_sell_trim_proceeds, 'USD')}</div></div><div class="summary-item"><div class="label">Minimum Cash Reserve</div><div class="value">${formatCurrencyValue(summary.minimum_cash_reserve_amount, 'USD')}</div></div><div class="summary-item"><div class="label">Allocated Target Total</div><div class="value">${formatPercent(summary.allocated_target_total)}</div></div><div class="summary-item"><div class="label">Unallocated Target Capacity</div><div class="value">${formatPercent(summary.unallocated_target_capacity ?? summary.unallocated_target_total)}</div></div>`;
 }
@@ -3576,10 +3576,13 @@ function renderManualReservationSummary(summary) {
 }
 
 function renderManualPlanSummary(summary, includeFunding = true, unavailableLabel = null) {
-  return `${renderLinearActionPlanCommonSummary(summary, unavailableLabel)}
-    ${includeFunding ? renderManualReservationSummary(summary) : ''}
-    ${summary.reserve_configuration_valid === false ? '<p class="status warning">Dynamic Reserve configuration is invalid; the minimum reserve is being protected.</p>' : ''}
-    ${includeFunding && summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : ''}`;
+  const commonGroup = `<div class="action-plan-summary-group action-plan-summary-common">${renderLinearActionPlanCommonSummary(summary, unavailableLabel)}
+    ${summary.reserve_configuration_valid === false ? '<p class="status warning">Dynamic Reserve configuration is invalid; the minimum reserve is being protected.</p>' : ''}</div>`;
+  const triggerDetailsGroup = includeFunding
+    ? `<div class="action-plan-summary-group action-plan-summary-trigger-details"><div class="summary-grid action-plan-summary-cards">${renderManualReservationSummary(summary)}</div>
+      ${summary.execution_warning ? `<p class="status warning">${escapeHtml(summary.execution_warning)}</p>` : ''}</div>`
+    : '';
+  return `${commonGroup}${triggerDetailsGroup}`;
 }
 
 function renderActionPlan() {

@@ -12179,7 +12179,7 @@ def build_action_plan(conn, account_id=None, include_manual_execution=False,
                 "bid", "ask", "bid_tick_at", "ask_tick_at",
             )}}
         observations = [dict(item, symbol=symbol) for item in (
-            saved_observations.get(symbol), manual_quote_proofs.get(symbol), explicit_quote_proofs.get(symbol),
+            *saved_observations.get(symbol, []), manual_quote_proofs.get(symbol), explicit_quote_proofs.get(symbol),
         ) if item]
         action_plan_price = resolve_action_plan_price(position, analysis, observations)
         position_quantity = safe_number(position.get("position")) if position else 0.0

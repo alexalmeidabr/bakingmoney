@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 import web_server
+import action_plan_prices
 
 
 class BackupRestoreValidationTests(unittest.TestCase):
@@ -56,6 +57,32 @@ class BackupRestoreValidationTests(unittest.TestCase):
             finally:
                 copied_conn.close()
             self.assertEqual(row[0], "backup-test")
+
+    def test_backup_snapshot_preserves_distinct_contract_observations(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = os.path.join(tmpdir, "source.db")
+            destination_path = os.path.join(tmpdir, "snapshot.db")
+            with mock.patch.object(web_server, "DB_PATH", source_path):
+                web_server.init_db()
+            conn = web_server.sqlite3.connect(source_path)
+            try:
+                for contract_key, price in (("conid:111", 100), ("conid:222", 105)):
+                    action_plan_prices.persist_observation(conn, "A", "ABC", {
+                        "symbol": "ABC", "contract_key": contract_key, "price": price,
+                        "price_source": "last", "market_observed_at": "2026-11-22T10:00:00+00:00",
+                    })
+                conn.commit()
+            finally:
+                conn.close()
+            web_server._create_db_backup_snapshot(source_path, destination_path)
+            copied = web_server.sqlite3.connect(destination_path)
+            try:
+                saved = action_plan_prices.load_observations(copied, "A")["ABC"]
+            finally:
+                copied.close()
+            self.assertEqual({("conid:111", 100), ("conid:222", 105)}, {
+                (row["contract_key"], row["price"]) for row in saved
+            })
 
     def test_build_backup_manifest_reports_env_flag(self):
         with tempfile.TemporaryDirectory() as tmpdir:

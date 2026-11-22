@@ -19,6 +19,53 @@ DELAYED = dict(symbol="ABC", contract_key="1", price=22, price_source="delayed_l
 
 
 class PriceResolution(unittest.TestCase):
+    def test_persistence_isolated_by_contract_and_account(self):
+        with sqlite3.connect(":memory:") as conn:
+            prices.init_schema(conn)
+            self.assertTrue(prices.persist_observation(conn, "A", "ABC", {
+                "symbol": "ABC", "contract_key": "conid:111", "price": 100,
+                "price_source": "last", "market_observed_at": OLD,
+            }))
+            self.assertTrue(prices.persist_observation(conn, "A", "ABC", {
+                "symbol": "ABC", "contract_key": "conid:222", "price": 105,
+                "price_source": "last", "market_observed_at": NEW,
+            }))
+            self.assertTrue(prices.persist_observation(conn, "B", "ABC", {
+                "symbol": "ABC", "contract_key": "conid:111", "price": 200,
+                "price_source": "last", "market_observed_at": NEW,
+            }))
+            self.assertFalse(prices.persist_observation(conn, "A", "ABC", {
+                "symbol": "ABC", "contract_key": "conid:111", "price": 90,
+                "price_source": "last", "market_observed_at": "2024-01-01T10:00:00+00:00",
+            }))
+            self.assertTrue(prices.persist_observation(conn, "A", "ABC", {
+                "symbol": "ABC", "contract_key": "conid:111", "price": 110,
+                "price_source": "last", "market_observed_at": LATER_RETRIEVAL,
+            }))
+            self.assertTrue(prices.persist_observation(conn, "A", "ABC", {
+                "symbol": "ABC", "price": 80, "price_source": "cached",
+                "retrieved_at": LATER_RETRIEVAL,
+            }))
+            account_a = prices.load_observations(conn, "A")["ABC"]
+            account_b = prices.load_observations(conn, "B")["ABC"]
+        self.assertEqual({None, "conid:111", "conid:222"}, {row["contract_key"] for row in account_a})
+        self.assertEqual({110, 105, 80}, {row["price"] for row in account_a})
+        self.assertEqual([(200, "conid:111")], [(row["price"], row["contract_key"]) for row in account_b])
+
+    def test_owned_resolution_uses_exact_contract_and_unowned_prefers_known_identity(self):
+        observations = [
+            dict(POSITION, contract_key="conid:111", price=100, market_observed_at=OLD),
+            dict(POSITION, contract_key="conid:222", price=105, market_observed_at=NEW),
+            dict(POSITION, contract_key=None, price=999, market_observed_at=LATER_RETRIEVAL, persisted=True),
+        ]
+        owned = prices.resolve_price({"symbol": "ABC", "contract_key": "conid:111"}, {}, observations)
+        unowned = prices.resolve_price({}, {"symbol": "ABC"}, observations)
+        legacy = prices.resolve_price({}, {"symbol": "ABC"}, [observations[-1]])
+        self.assertEqual((100, "conid:111"), (owned["price"], owned["contract_key"]))
+        self.assertEqual((105, "conid:222"), (unowned["price"], unowned["contract_key"]))
+        self.assertEqual(999, legacy["price"])
+        self.assertIn("contract identity is unknown", legacy["price_warning"].lower())
+
     def test_newer_live_observation_beats_older_close_retrieved_later(self):
         live = dict(POSITION, price=100, market_observed_at=NEW, retrieved_at=NEW)
         close = dict(POSITION, price=95, price_source="close", market_observed_at=OLD,
@@ -141,7 +188,7 @@ class PriceResolution(unittest.TestCase):
                 reopened.backup(backup)
                 for account, expected in (("A", 22), ("B", 20)):
                     saved = prices.load_observations(backup, account)["ABC"]
-                    self.assertEqual(expected, prices.resolve_price({}, {}, [saved])["price"])
+                    self.assertEqual(expected, prices.resolve_price({}, {}, saved)["price"])
                 self.assertFalse(prices.load_observations(backup, "C"))
             reopened.close()
 
@@ -160,11 +207,21 @@ class PriceResolution(unittest.TestCase):
                 INSERT INTO action_plan_price_observations
                 VALUES ('A','ABC','1',95,'close',?,NULL,NULL,NULL,NULL,0,NULL)
             """, (LATER_RETRIEVAL,))
+            conn.execute("""
+                INSERT INTO action_plan_price_observations
+                VALUES ('A','DEF',NULL,85,'close',?,NULL,NULL,NULL,NULL,0,NULL)
+            """, (LATER_RETRIEVAL,))
             prices.init_schema(conn)
-            saved = prices.load_observations(conn, "A")["ABC"]
+            saved = prices.load_observations(conn, "A")["ABC"][0]
+            unknown_identity = prices.load_observations(conn, "A")["DEF"][0]
             selected = prices.resolve_price({}, {}, [saved])
             columns = {row[1] for row in conn.execute("PRAGMA table_info(action_plan_price_observations)")}
+            primary_key = [row[1] for row in sorted(
+                conn.execute("PRAGMA table_info(action_plan_price_observations)"), key=lambda row: row[5]
+            ) if row[5]]
         self.assertTrue({"market_observed_at", "retrieved_at", "persisted_at"}.issubset(columns))
+        self.assertEqual(["account_id", "symbol", "contract_key"], primary_key)
+        self.assertIsNone(unknown_identity["contract_key"])
         self.assertEqual((None, LATER_RETRIEVAL, "retrieval"), (
             selected["market_observed_at"], selected["retrieved_at"], selected["price_timestamp_kind"],
         ))
@@ -181,5 +238,5 @@ class PriceResolution(unittest.TestCase):
                 "symbol": "ABC", "contract_key": "1", "price": float("nan"),
                 "price_source": "last", "retrieved_at": LATER_RETRIEVAL,
             }))
-            selected = prices.resolve_price({}, {}, [prices.load_observations(conn, "A")["ABC"]])
+            selected = prices.resolve_price({}, {}, prices.load_observations(conn, "A")["ABC"])
         self.assertEqual((22, NEW), (selected["price"], selected["market_observed_at"]))

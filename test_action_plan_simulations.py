@@ -92,6 +92,25 @@ class SimulationTests(unittest.TestCase):
         self.assertFalse(row['manual_trigger_blocked'])
         self.assertIn('Delayed', row['manual_price_verification_reason'])
 
+    def test_owned_action_plan_uses_only_its_persisted_contract_observation(self):
+        import action_plan_prices
+        app.save_positions_cache(self.conn, [{
+            'symbol': 'NVDA', 'position': 10, 'avgCost': 50, 'contract_key': 'conid:111',
+            'price': None, 'price_status': 'unavailable',
+        }], account_id='A')
+        with self.conn:
+            action_plan_prices.persist_observation(self.conn, 'A', 'NVDA', {
+                'symbol': 'NVDA', 'contract_key': 'conid:111', 'price': 80,
+                'price_source': 'last', 'market_observed_at': '2026-11-21T10:00:00+00:00',
+            })
+            action_plan_prices.persist_observation(self.conn, 'A', 'NVDA', {
+                'symbol': 'NVDA', 'contract_key': 'conid:222', 'price': 200,
+                'price_source': 'last', 'market_observed_at': '2026-11-22T10:00:00+00:00',
+            })
+        plan = app.build_action_plan(self.conn, 'A')
+        row = next(item for item in plan['linear_action_plan'] if item['symbol'] == 'NVDA')
+        self.assertEqual(80, row['current_price'])
+
     def test_position_refresh_preserves_delayed_and_frozen_provenance(self):
         import action_plan_prices
         contract = SimpleNamespace(symbol='NVDA', conId=123, currency='USD')
@@ -139,7 +158,7 @@ class SimulationTests(unittest.TestCase):
         self.assertTrue(app.reconcile_legacy_account_to_real_account(self.conn, 'REAL'))
         self.assertEqual(app.get_action_plan_simulation(self.conn, 'REAL', simulation['id'])['name'], 'Legacy')
         self.assertEqual(app.list_simulation_triggers(self.conn, 'REAL', simulation['id'])[0]['buy_trigger_price'], 80)
-        self.assertEqual(action_plan_prices.load_observations(self.conn, 'REAL')['NVDA']['price'], 70)
+        self.assertEqual(action_plan_prices.load_observations(self.conn, 'REAL')['NVDA'][0]['price'], 70)
 
     def test_zero_cash_exact_parity_and_cash_invariants_without_cache_writes(self):
         app.save_manual_execution_trigger(self.conn, 'A', 'NVDA', {'buy_trigger_price': 80, 'reserve_enabled': True, 'reserve_percentage': 60})

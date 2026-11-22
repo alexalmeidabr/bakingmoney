@@ -15,6 +15,7 @@ SOURCE_QUALITY = {
     "delayed": 4,
     "live": 5,
 }
+UNKNOWN_CONTRACT_KEY = ""
 
 
 def _positive(value):
@@ -146,13 +147,19 @@ def resolve_price(position, analysis, observations=()):
     position, analysis = position or {}, analysis or {}
     symbol = position.get("symbol") or analysis.get("symbol")
     contract = position.get("contract_key")
+    observations = list(observations or ())
+    known_contract_available = not contract and any(
+        raw and raw.get("contract_key") for raw in [position, *observations]
+    )
     candidates = []
-    for raw in [position, *(observations or ())]:
+    for raw in [position, *observations]:
         if not raw or (symbol and raw.get("symbol") and raw["symbol"] != symbol):
             continue
         if position.get("account_id") and raw.get("account_id") not in (None, position["account_id"]):
             continue
         if contract and raw.get("contract_key") != contract:
+            continue
+        if known_contract_available and not raw.get("contract_key"):
             continue
         item = _observation(raw)
         if item:
@@ -160,12 +167,16 @@ def resolve_price(position, analysis, observations=()):
     if candidates:
         item, is_position = max(candidates, key=lambda candidate: _rank(candidate[0]))
         status = item["price_status"] or ("cached_stale" if item["persisted"] else "tws_received")
+        warning = _warning(item, datetime.now(timezone.utc))
+        if not contract and not item.get("contract_key"):
+            identity_warning = "Contract identity is unknown; this saved price was selected without an owned-contract match."
+            warning = " ".join(part for part in (warning, identity_warning) if part)
         return dict(
             price=item["price"], price_source=item["price_source"], price_status=status,
             market_observed_at=item["market_observed_at"], retrieved_at=item["retrieved_at"],
             persisted_at=item["persisted_at"], price_timestamp_kind=item["price_timestamp_kind"],
             price_last_successful_at=item["price_last_successful_at"],
-            price_warning=_warning(item, datetime.now(timezone.utc)),
+            price_warning=warning,
             price_sizing_source="position_quote" if is_position else "market_observation",
             contract_key=item["contract_key"], manual_quote_proof=item if item["bid"] else None,
         )
@@ -260,20 +271,65 @@ def _ensure_column(conn, name, definition):
         conn.execute(f"ALTER TABLE action_plan_price_observations ADD COLUMN {name} {definition}")
 
 
-def init_schema(conn):
+def _create_observation_table(conn):
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS action_plan_price_observations (
-            account_id TEXT NOT NULL, symbol TEXT NOT NULL, contract_key TEXT,
+        CREATE TABLE action_plan_price_observations (
+            account_id TEXT NOT NULL, symbol TEXT NOT NULL, contract_key TEXT NOT NULL DEFAULT '',
             price REAL NOT NULL CHECK(price > 0), price_source TEXT NOT NULL,
             price_last_successful_at TEXT, market_observed_at TEXT, retrieved_at TEXT,
             persisted_at TEXT, bid REAL, ask REAL,
             bid_tick_at TEXT, ask_tick_at TEXT, delayed INTEGER NOT NULL,
-            price_warning TEXT, PRIMARY KEY(account_id, symbol)
+            price_warning TEXT, PRIMARY KEY(account_id, symbol, contract_key)
         )
     """)
+
+
+def _primary_key_columns(conn):
+    rows = conn.execute("PRAGMA table_info(action_plan_price_observations)").fetchall()
+    return [row[1] for row in sorted(rows, key=lambda row: row[5]) if row[5]]
+
+
+def _migrate_contract_identity_key(conn):
+    savepoint = "action_plan_price_contract_migration"
+    legacy_table = "action_plan_price_observations_legacy_contract_key"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (legacy_table,)).fetchone():
+            raise RuntimeError(f"Unexpected leftover migration table: {legacy_table}")
+        legacy_count = conn.execute("SELECT COUNT(*) FROM action_plan_price_observations").fetchone()[0]
+        conn.execute(f"ALTER TABLE action_plan_price_observations RENAME TO {legacy_table}")
+        _create_observation_table(conn)
+        conn.execute(f"""
+            INSERT INTO action_plan_price_observations
+            (account_id,symbol,contract_key,price,price_source,price_last_successful_at,
+             market_observed_at,retrieved_at,persisted_at,bid,ask,bid_tick_at,ask_tick_at,delayed,price_warning)
+            SELECT account_id,symbol,COALESCE(NULLIF(TRIM(contract_key), ''), ''),price,price_source,
+                   price_last_successful_at,market_observed_at,retrieved_at,persisted_at,
+                   bid,ask,bid_tick_at,ask_tick_at,delayed,price_warning
+            FROM {legacy_table}
+        """)
+        migrated_count = conn.execute("SELECT COUNT(*) FROM action_plan_price_observations").fetchone()[0]
+        if migrated_count != legacy_count:
+            raise RuntimeError("action_plan_price_observations migration row count mismatch")
+        conn.execute(f"DROP TABLE {legacy_table}")
+    except Exception:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        raise
+    conn.execute(f"RELEASE {savepoint}")
+
+
+def init_schema(conn):
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='action_plan_price_observations'"
+    ).fetchone()
+    if not exists:
+        _create_observation_table(conn)
     _ensure_column(conn, "market_observed_at", "TEXT")
     _ensure_column(conn, "retrieved_at", "TEXT")
     _ensure_column(conn, "persisted_at", "TEXT")
+    if _primary_key_columns(conn) != ["account_id", "symbol", "contract_key"]:
+        _migrate_contract_identity_key(conn)
 
 
 def _row_dict(cursor, row):
@@ -291,9 +347,10 @@ def persist_observation(conn, account_id, symbol, observation):
     if item is None:
         return False
 
+    contract_key = str(item.get("contract_key") or UNKNOWN_CONTRACT_KEY).strip()
     cursor = conn.execute(
-        "SELECT * FROM action_plan_price_observations WHERE account_id=? AND symbol=?",
-        (account_id, symbol),
+        "SELECT * FROM action_plan_price_observations WHERE account_id=? AND symbol=? AND contract_key=?",
+        (account_id, symbol, contract_key),
     )
     existing_row = cursor.fetchone()
     if existing_row is not None:
@@ -301,7 +358,7 @@ def persist_observation(conn, account_id, symbol, observation):
         if existing is not None and _rank(item) <= _rank(existing):
             return False
 
-    values = dict(item, account_id=account_id, symbol=symbol,
+    values = dict(item, account_id=account_id, symbol=symbol, contract_key=contract_key,
                   persisted_at=datetime.now(timezone.utc).isoformat())
     conn.execute("""
         INSERT INTO action_plan_price_observations
@@ -309,8 +366,8 @@ def persist_observation(conn, account_id, symbol, observation):
          market_observed_at,retrieved_at,persisted_at,bid,ask,bid_tick_at,ask_tick_at,delayed,price_warning)
         VALUES (:account_id,:symbol,:contract_key,:price,:price_source,:price_last_successful_at,
                 :market_observed_at,:retrieved_at,:persisted_at,:bid,:ask,:bid_tick_at,:ask_tick_at,:delayed,:price_warning)
-        ON CONFLICT(account_id,symbol) DO UPDATE SET
-            contract_key=excluded.contract_key, price=excluded.price, price_source=excluded.price_source,
+        ON CONFLICT(account_id,symbol,contract_key) DO UPDATE SET
+            price=excluded.price, price_source=excluded.price_source,
             price_last_successful_at=excluded.price_last_successful_at,
             market_observed_at=excluded.market_observed_at, retrieved_at=excluded.retrieved_at,
             persisted_at=excluded.persisted_at, bid=excluded.bid, ask=excluded.ask,
@@ -321,7 +378,14 @@ def persist_observation(conn, account_id, symbol, observation):
 
 
 def load_observations(conn, account_id):
-    cursor = conn.execute("SELECT * FROM action_plan_price_observations WHERE account_id=?", (account_id,))
+    cursor = conn.execute(
+        "SELECT * FROM action_plan_price_observations WHERE account_id=? ORDER BY symbol, contract_key",
+        (account_id,),
+    )
     columns = [field[0] for field in cursor.description]
-    items = (dict(zip(columns, row), persisted=True) for row in cursor)
-    return {item["symbol"]: item for item in items}
+    grouped = {}
+    for row in cursor:
+        item = dict(zip(columns, row), persisted=True)
+        item["contract_key"] = item.get("contract_key") or None
+        grouped.setdefault(item["symbol"], []).append(item)
+    return grouped

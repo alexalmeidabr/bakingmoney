@@ -143,7 +143,9 @@ class ResilientIbkrMarketDataRefreshTests(unittest.TestCase):
                     web_server.save_positions_cache(conn, [{
                         "symbol": "NVDA", "contract_key": "conid:1", "position": 10, "price": 100,
                         "avgCost": 90, "price_status": "tws_received", "price_source": "last",
-                        "price_last_successful_at": "2026-11-11T10:00:00+00:00", "price_warning": None,
+                        "price_last_successful_at": "2026-11-11T10:01:00+00:00",
+                        "market_observed_at": "2026-11-11T10:00:00+00:00",
+                        "retrieved_at": "2026-11-11T10:01:00+00:00", "price_warning": None,
                     }], account_id="U1111111")
                     row = web_server.load_positions_cache(conn, "U1111111")[0]
                 finally:
@@ -152,7 +154,9 @@ class ResilientIbkrMarketDataRefreshTests(unittest.TestCase):
         self.assertEqual(row["contract_key"], "conid:1")
         self.assertEqual(row["price_status"], "cached_stale")
         self.assertEqual(row["price_source"], "cached")
-        self.assertEqual(row["price_last_successful_at"], "2026-11-11T10:00:00+00:00")
+        self.assertEqual(row["market_observed_at"], "2026-11-11T10:00:00+00:00")
+        self.assertEqual(row["retrieved_at"], "2026-11-11T10:01:00+00:00")
+        self.assertIsNotNone(row["persisted_at"])
 
     def test_live_rows_record_current_quote_provenance_by_contract_identity(self):
         class Position:
@@ -180,8 +184,39 @@ class ResilientIbkrMarketDataRefreshTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["contract_key"], "conid:1")
         self.assertEqual(rows[0]["price_status"], "tws_received")
-        self.assertEqual(rows[0]["price_source"], "marketPrice")
+        self.assertEqual(rows[0]["price_source"], "last")
         self.assertEqual(rows[0]["price_last_successful_at"], "2026-11-11T10:00:00+00:00")
+        self.assertIsNone(rows[0]["market_observed_at"])
+        self.assertEqual(rows[0]["retrieved_at"], "2026-11-11T10:00:00+00:00")
+        self.assertEqual(rows[0]["price_timestamp_kind"], "retrieval")
+
+    def test_delayed_frozen_live_row_has_distinct_source(self):
+        contract = Contract("NVDA", 1)
+        position = mock.Mock(contract=contract, position=1, avgCost=90)
+        ticker = mock.Mock(contract=contract, marketDataType=4, last=100, close=98, prevClose=98)
+        ticker.marketPrice.return_value = 100
+        row = web_server._build_live_position_rows(
+            [position], {"conid:1": ticker}, quote_success_at="2026-11-11T10:00:00+00:00",
+        )[0]
+        self.assertEqual(row["price_source"], "delayed_frozen_last")
+        self.assertIn("Delayed-frozen", row["price_warning"])
+
+    def test_previous_close_is_labeled_as_close_not_live_market_price(self):
+        ticker = mock.Mock(last=None, close=95, prevClose=95, bid=None, ask=None)
+        ticker.marketPrice.return_value = 95
+        self.assertEqual(web_server._ticker_price_source(ticker), "close")
+
+    def test_position_cache_schema_migrates_explicit_timestamp_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "positions.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    columns = {row[1] for row in conn.execute("PRAGMA table_info(positions_cache)")}
+                finally:
+                    conn.close()
+        self.assertTrue({"market_observed_at", "retrieved_at", "persisted_at"}.issubset(columns))
 
     def test_cached_quote_keeps_execution_while_unavailable_price_remains_blocked(self):
         row = {

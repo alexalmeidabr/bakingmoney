@@ -3500,11 +3500,15 @@ def make_price_skip_detail(symbol, warning=None):
 def _ticker_price_source(ticker):
     if not ticker:
         return None
-    if hasattr(ticker, "marketPrice") and normalize_market_price(ticker.marketPrice()) is not None:
+    bid = normalize_market_price(getattr(ticker, "bid", None))
+    ask = normalize_market_price(getattr(ticker, "ask", None))
+    if bid is not None and ask is not None and ask >= bid:
         return "marketPrice"
     for field in ("last", "close", "prevClose"):
         if normalize_market_price(getattr(ticker, field, None)) is not None:
             return field
+    if hasattr(ticker, "marketPrice") and normalize_market_price(ticker.marketPrice()) is not None:
+        return "marketPrice"
     return None
 
 
@@ -4464,6 +4468,9 @@ def _create_positions_cache_table(conn):
           price_status TEXT,
           price_source TEXT,
           price_last_successful_at TEXT,
+          market_observed_at TEXT,
+          retrieved_at TEXT,
+          persisted_at TEXT,
           price_warning TEXT,
           updated_at TEXT NOT NULL,
           PRIMARY KEY (account_id, symbol)
@@ -5105,6 +5112,9 @@ def init_db():
         ensure_column_exists(conn, "positions_cache", "price_status", "TEXT")
         ensure_column_exists(conn, "positions_cache", "price_source", "TEXT")
         ensure_column_exists(conn, "positions_cache", "price_last_successful_at", "TEXT")
+        ensure_column_exists(conn, "positions_cache", "market_observed_at", "TEXT")
+        ensure_column_exists(conn, "positions_cache", "retrieved_at", "TEXT")
+        ensure_column_exists(conn, "positions_cache", "persisted_at", "TEXT")
         ensure_column_exists(conn, "positions_cache", "price_warning", "TEXT")
         conn.execute(
             """
@@ -9226,8 +9236,9 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
             INSERT INTO positions_cache (
               account_id, symbol, position, price, avg_cost, change_percent,
               market_value, unrealized_pnl, daily_pnl, currency, contract_key,
-              price_status, price_source, price_last_successful_at, price_warning, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              price_status, price_source, price_last_successful_at,
+              market_observed_at, retrieved_at, persisted_at, price_warning, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_id, symbol) DO UPDATE SET
               position = excluded.position,
               price = excluded.price,
@@ -9241,6 +9252,9 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
               price_status = excluded.price_status,
               price_source = excluded.price_source,
               price_last_successful_at = excluded.price_last_successful_at,
+              market_observed_at = excluded.market_observed_at,
+              retrieved_at = excluded.retrieved_at,
+              persisted_at = excluded.persisted_at,
               price_warning = excluded.price_warning,
               updated_at = excluded.updated_at
             """,
@@ -9259,6 +9273,9 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
                 row.get("price_status"),
                 row.get("market_data_source") or row.get("price_source"),
                 row.get("price_last_successful_at"),
+                row.get("market_observed_at"),
+                row.get("retrieved_at") or row.get("price_retrieved_at") or row.get("price_last_successful_at"),
+                now,
                 row.get("price_warning"),
                 now,
             ),
@@ -9284,7 +9301,8 @@ def load_positions_cache(conn, account_id=None):
         """
         SELECT symbol, position, price, avg_cost, change_percent,
                market_value, unrealized_pnl, daily_pnl, currency, contract_key,
-               price_status, price_source, price_last_successful_at, price_warning
+               price_status, price_source, price_last_successful_at,
+               market_observed_at, retrieved_at, persisted_at, price_warning, updated_at
         FROM positions_cache
         WHERE account_id = ?
         ORDER BY symbol ASC
@@ -9308,6 +9326,11 @@ def load_positions_cache(conn, account_id=None):
             "price_source": row["price_source"],
             "market_data_source": row["price_source"],
             "price_last_successful_at": row["price_last_successful_at"],
+            "market_observed_at": row["market_observed_at"],
+            "retrieved_at": row["retrieved_at"] or (
+                row["price_last_successful_at"] if row["market_observed_at"] is None else None
+            ),
+            "persisted_at": row["persisted_at"] or row["updated_at"],
             "price_warning": row["price_warning"],
         }
         for row in rows
@@ -9323,7 +9346,10 @@ def load_positions_cache(conn, account_id=None):
             continue
         row["price_status"] = "cached_stale"
         row["price_source"] = "cached"
+        saved_warning = row.get("price_warning")
         row["price_warning"] = "Current TWS refresh has not supplied this price in this session; showing a saved quote."
+        if saved_warning and saved_warning not in row["price_warning"]:
+            row["price_warning"] += " " + saved_warning
         row["dailyPnL"] = None
         row["changePercent"] = None
     if started_at is not None:
@@ -11808,6 +11834,10 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
             "position_price_status": item.get("position_price_status"),
             "price_source": item.get("price_source"),
             "price_last_successful_at": item.get("price_last_successful_at"),
+            "market_observed_at": item.get("market_observed_at"),
+            "retrieved_at": item.get("retrieved_at"),
+            "persisted_at": item.get("persisted_at"),
+            "price_timestamp_kind": item.get("price_timestamp_kind"),
             "price_warning": item.get("price_warning"),
             "price_sizing_source": item.get("price_sizing_source"),
             "total_portfolio_value": total_portfolio_value,
@@ -12035,6 +12065,9 @@ def compute_linear_action_plan(candidates, total_portfolio_value, cash_like_avai
                 "manual_trigger_direction": evaluation["manual_trigger_direction"],
                 "manual_verified_price": evaluation["verified_price"],
                 "manual_verified_quote_at": evaluation["verified_quote_at"],
+                "manual_verified_market_observed_at": evaluation["verified_market_observed_at"],
+                "manual_verified_retrieved_at": evaluation["verified_retrieved_at"],
+                "manual_verified_quote_time_kind": evaluation["verified_quote_time_kind"],
                 "manual_verified_quote_expires_at": evaluation["verified_quote_expires_at"],
                 "manual_price_verification_reason": evaluation["verification_reason"],
                 "manual_price_source": evaluation.get("price_source"),
@@ -12139,7 +12172,9 @@ def build_action_plan(conn, account_id=None, include_manual_execution=False,
         # time can follow the exchange side times by milliseconds.
         position_proof = manual_quote_proofs.get(symbol) or {}
         if (position and position_proof.get("contract_key") == position.get("contract_key")
-                and position_proof.get("refresh_at") == position.get("price_last_successful_at")):
+                and position_proof.get("refresh_at") == (
+                    position.get("retrieved_at") or position.get("price_last_successful_at")
+                )):
             position = {**position, **{key: position_proof.get(key) for key in (
                 "bid", "ask", "bid_tick_at", "ask_tick_at",
             )}}
@@ -12262,6 +12297,10 @@ def build_action_plan(conn, account_id=None, include_manual_execution=False,
             "current_price": action_plan_price["price"],
             "price_source": action_plan_price["price_source"],
             "price_last_successful_at": action_plan_price["price_last_successful_at"],
+            "market_observed_at": action_plan_price["market_observed_at"],
+            "retrieved_at": action_plan_price["retrieved_at"],
+            "persisted_at": action_plan_price["persisted_at"],
+            "price_timestamp_kind": action_plan_price["price_timestamp_kind"],
             "price_warning": action_plan_price["price_warning"],
             "price_sizing_source": action_plan_price["price_sizing_source"],
             "bucket": rating,
@@ -12348,6 +12387,10 @@ def build_action_plan(conn, account_id=None, include_manual_execution=False,
             "position_price_status": item.get("position_price_status"),
             "price_source": item.get("price_source"),
             "price_last_successful_at": item.get("price_last_successful_at"),
+            "market_observed_at": item.get("market_observed_at"),
+            "retrieved_at": item.get("retrieved_at"),
+            "persisted_at": item.get("persisted_at"),
+            "price_timestamp_kind": item.get("price_timestamp_kind"),
             "price_warning": item.get("price_warning"),
             "price_sizing_source": item.get("price_sizing_source"),
             "total_portfolio_value": total_portfolio_value,
@@ -12715,6 +12758,11 @@ def overlay_cached_market_fields(live_rows, cached_rows):
                 "price_source": "cached",
                 "market_data_source": cached.get("market_data_source") or cached.get("price_source"),
                 "price_last_successful_at": cached.get("price_last_successful_at"),
+                "market_observed_at": cached.get("market_observed_at"),
+                "retrieved_at": cached.get("retrieved_at") or (
+                    cached.get("price_last_successful_at") if not cached.get("market_observed_at") else None
+                ),
+                "persisted_at": cached.get("persisted_at"),
                 "price_warning": "Current TWS refresh did not supply a usable price; retained local cached price.",
             })
         else:
@@ -12774,9 +12822,12 @@ def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_
         if price is not None:
             data_type = getattr(ticker, "marketDataType", None)
             diagnostic = (diagnostics or {}).get(contract_key) or (diagnostics or {}).get(normalize_symbol(contract.symbol)) or {}
-            if data_type in (3, 4) or diagnostic.get("delayed"):
+            if data_type == 4:
+                price_source = "delayed_frozen_" + (price_source or "marketPrice")
+                price_warning = "Delayed-frozen market data."
+            elif data_type == 3 or diagnostic.get("delayed"):
                 price_source = "delayed_" + (price_source or "marketPrice")
-                price_warning = "Delayed market data." + (" Frozen snapshot." if data_type == 4 else "")
+                price_warning = "Delayed market data."
             elif data_type == 2:
                 price_source = "frozen_" + (price_source or "marketPrice")
                 price_warning = "Frozen market data."
@@ -12818,6 +12869,11 @@ def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_
                 "price_status": "tws_received" if price is not None else "unavailable",
                 "price_source": price_source,
                 "price_last_successful_at": quote_success_at if price is not None else None,
+                # reqMktData completion is retrieval metadata. A reliable market
+                # time is carried separately when the provider supplies one.
+                "market_observed_at": None,
+                "retrieved_at": quote_success_at if price is not None else None,
+                "price_timestamp_kind": "retrieval" if price is not None and quote_success_at else "unknown",
                 "price_warning": price_warning if price is not None else "Current TWS refresh did not supply a usable price.",
             }
         )
@@ -16345,9 +16401,12 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                 if proof:
                     proof["symbol"] = symbol
                     proof_store[symbol] = proof
+                    market_observed_at = min(proof["bid_tick_at"], proof["ask_tick_at"])
                     results[symbol] = {
                         "symbol": symbol, "status": "verified", "bid": proof["bid"],
-                        "ask": proof["ask"], "verified_at": proof["refresh_at"],
+                        "ask": proof["ask"], "verified_at": market_observed_at,
+                        "market_observed_at": market_observed_at,
+                        "retrieved_at": proof["refresh_at"], "timestamp_kind": "market_observation",
                     }
                 else:
                     ticker = tickers.get(contract_key)
@@ -16358,13 +16417,16 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                         delayed = data_type in (3, 4) or bool(diagnostic.get("delayed"))
                         frozen = data_type in (2, 4)
                         # This is a retrieval timestamp, not a fabricated exchange tick timestamp.
+                        source_prefix = "delayed_frozen_" if delayed and frozen else "delayed_" if delayed else "frozen_" if frozen else ""
                         proof = {"symbol": symbol, "contract_key": contract_key, "price": price,
-                                 "price_source": ("delayed_" if delayed else "frozen_" if frozen else "") + source,
-                                 "refresh_at": refresh_at, "delayed": delayed,
-                                 "price_warning": "Frozen market data." if frozen else None}
+                                 "price_source": source_prefix + source,
+                                 "refresh_at": refresh_at, "retrieved_at": refresh_at,
+                                 "market_observed_at": None, "delayed": delayed, "frozen": frozen,
+                                 "price_warning": "Delayed-frozen market data." if delayed and frozen else "Frozen market data." if frozen else None}
                         proof_store[symbol] = proof
                         results[symbol] = {"symbol": symbol, "status": "updated", "price": price,
-                                           "source": proof["price_source"], "retrieved_at": refresh_at}
+                                           "source": proof["price_source"], "market_observed_at": None,
+                                           "retrieved_at": refresh_at, "timestamp_kind": "retrieval"}
                     else:
                         results[symbol] = {"symbol": symbol, "status": "unavailable",
                                            "reason": diagnostic.get("reason") or "No newer usable market price received; retaining the last usable price."}

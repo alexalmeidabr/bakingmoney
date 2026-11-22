@@ -80,8 +80,9 @@ def _observation(raw):
         _time(raw.get("retrieved_at"))
         or _time(raw.get("price_retrieved_at"))
         or _time(raw.get("refresh_at"))
-        or _time(raw.get("price_last_successful_at"))
     )
+    if retrieved_time is None and explicit_market_time is None:
+        retrieved_time = _time(raw.get("price_last_successful_at"))
     persisted_time = _time(raw.get("persisted_at"))
     source_kind, delayed, frozen = _source_kind(raw, source)
     market_iso = market_time.isoformat() if market_time else None
@@ -117,11 +118,13 @@ def _warning(item, now):
     if item.get("price_warning"):
         warnings.append(item["price_warning"])
     source_kind = item.get("source_kind") or _source_kind(item, item.get("price_source"))[0]
-    if source_kind == "delayed_frozen":
+    delayed = bool(item.get("delayed") or "delay" in str(item.get("price_source") or "").lower())
+    frozen = bool(item.get("frozen") or "frozen" in str(item.get("price_source") or "").lower())
+    if delayed and frozen:
         warnings.append("Delayed-frozen market data.")
-    elif source_kind == "delayed":
+    elif delayed:
         warnings.append("Delayed market data.")
-    elif source_kind == "frozen":
+    elif frozen or source_kind == "frozen":
         warnings.append("Frozen or closing market data.")
     if item.get("persisted") or source_kind == "cached":
         warnings.append("Using a saved market price.")
@@ -212,7 +215,16 @@ def evaluate_trigger(row, preference, now=None):
     row_observation = _observation({
         **row, "price": price, "market_observed_at": market_observed_at, "retrieved_at": retrieved_at,
     }) if price is not None else None
-    current_proof = selected is not None and (row_observation is None or _rank(selected) >= _rank(row_observation))
+    if selected is None or row_observation is None:
+        current_proof = selected is not None
+    elif selected.get("market_observed_at") and row_observation.get("market_observed_at"):
+        current_proof = selected["market_observed_at"] >= row_observation["market_observed_at"]
+    elif row_observation.get("market_observed_at"):
+        current_proof = False
+    elif selected.get("market_observed_at"):
+        current_proof = True
+    else:
+        current_proof = _rank(selected) >= _rank(row_observation)
     if selected and selected["bid"] and current_proof and all(
             not row.get(key) or not selected.get(key) or row[key] == selected[key]
             for key in ("contract_key", "symbol")):

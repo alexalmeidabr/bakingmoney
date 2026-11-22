@@ -2464,13 +2464,27 @@ function getActionPlanPriceDisplay(item, manualMode) {
 function getManualTriggerCurrentPriceReference(item) {
   if (Number.isFinite(item?.manual_verified_price) && item.manual_verified_price > 0) {
     const source = String(item.manual_price_source || item.price_source || 'Saved market price').replaceAll('_', ' ');
-    const time = item.manual_verified_quote_at ? ' at ' + item.manual_verified_quote_at : ' (time unknown)';
+    const marketTime = item.manual_verified_market_observed_at;
+    const retrievalTime = item.manual_verified_retrieved_at;
+    const time = marketTime
+      ? ' · market observed at ' + marketTime
+      : retrievalTime
+        ? ' · retrieved at ' + retrievalTime
+        : item.manual_verified_quote_at
+          ? ' at ' + item.manual_verified_quote_at
+          : ' (time unknown)';
     const warning = item.manual_price_verification_reason ? ' · ' + item.manual_price_verification_reason : '';
     return { price: formatCurrencyValue(item.manual_verified_price, 'USD'), source: source + time + warning };
   }
   if (item?.manual_trigger_status !== 'price_unavailable' && Number.isFinite(item?.current_price) && item.current_price > 0) {
     const source = String(item.price_source || 'Saved Action Plan price').replaceAll('_', ' ');
-    const time = item.price_last_successful_at ? ' at ' + item.price_last_successful_at : ' (time unknown)';
+    const time = item.market_observed_at
+      ? ' · market observed at ' + item.market_observed_at
+      : item.retrieved_at
+        ? ' · retrieved at ' + item.retrieved_at
+        : item.price_last_successful_at
+          ? ' at ' + item.price_last_successful_at
+          : ' (time unknown)';
     return { price: formatCurrencyValue(item.current_price, 'USD'), source: source + time + (item.price_warning ? ' · ' + item.price_warning : '') };
   }
   return { price: 'Price unavailable.', source: 'No usable saved price is available.' };
@@ -2619,6 +2633,11 @@ function renderSelectedActionPlanDetail(payload) {
   const calculationUnavailable = manualExecutionCalculationState !== 'current';
   const calculationLabel = manualExecutionCalculationState === 'recalculating' ? 'Recalculating' : 'Outdated; refresh Action Plan';
   const presentation = getManualTriggerPresentation(manual);
+  const priceTimeMetric = manual.manual_verified_market_observed_at
+    ? ['Market Observed At', manual.manual_verified_market_observed_at]
+    : manual.manual_verified_retrieved_at
+      ? ['Retrieved At', manual.manual_verified_retrieved_at]
+      : ['Price Time', manual.manual_verified_quote_at || 'Unknown'];
   const sellBlocked = ['Sell', 'Strong Sell'].includes(manual.recommended_action)
     && ['waiting', 'price_unavailable', 'price_confirmation_required'].includes(manual.manual_trigger_status);
   const reservationText = calculationUnavailable
@@ -2636,7 +2655,7 @@ function renderSelectedActionPlanDetail(payload) {
       ['Trigger Status', calculationUnavailable ? calculationLabel : escapeHtml(presentation.status)],
       ['Evaluation Price', manual.manual_verified_price == null ? (manual.manual_trigger_status === 'price_unavailable' ? 'Unavailable' : '—') : formatCurrencyValue(manual.manual_verified_price, 'USD')],
       ['Price Source', escapeHtml(String(manual.manual_price_source || manual.price_source || '—').replaceAll('_', ' '))],
-      ['Price As Of', escapeHtml(manual.manual_verified_quote_at || 'Unknown')],
+      [priceTimeMetric[0], escapeHtml(priceTimeMetric[1])],
       ['Executable Action', calculationUnavailable ? calculationLabel : escapeHtml(manual.executable_action || manual.action || 'Hold')],
       ['Funded Amount', calculationUnavailable ? calculationLabel : formatCurrencyValue(manual.executable_action_amount, 'USD')],
       ['Funded Shares', calculationUnavailable ? calculationLabel : formatNumber(manual.suggested_share_count, 0)],

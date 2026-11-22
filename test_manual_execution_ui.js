@@ -206,6 +206,29 @@ test('Manual Execution Trigger price reference labels saved and refreshed quotes
   assert.deepEqual(JSON.parse(JSON.stringify(fallback)), { price: '$88.50', source: 'analysis fallback (time unknown)' });
 });
 
+test('price provenance labels market observation and retrieval timestamps accurately', () => {
+  const { getManualTriggerCurrentPriceReference } = helpers('getManualTriggerCurrentPriceReference');
+  const observed = getManualTriggerCurrentPriceReference({
+    manual_verified_price: 100, manual_price_source: 'live_last',
+    manual_verified_market_observed_at: '2026-11-15T12:00:00+00:00',
+    manual_verified_retrieved_at: '2026-11-15T12:01:00+00:00',
+    manual_verified_quote_time_kind: 'market_observation',
+  });
+  assert.match(observed.source, /market observed at 2026-11-15T12:00:00\+00:00/i);
+  assert.doesNotMatch(observed.source, /retrieved at/);
+  const retrieved = getManualTriggerCurrentPriceReference({
+    manual_verified_price: 95, manual_price_source: 'frozen_close',
+    manual_verified_retrieved_at: '2026-11-15T12:02:00+00:00',
+    manual_verified_quote_time_kind: 'retrieval',
+  });
+  assert.match(retrieved.source, /retrieved at 2026-11-15T12:02:00\+00:00/i);
+  assert.doesNotMatch(retrieved.source, /market observed at/);
+  const unknown = getManualTriggerCurrentPriceReference({
+    current_price: 90, price_source: 'cached', price_timestamp_kind: 'unknown',
+  });
+  assert.match(unknown.source, /time unknown/i);
+});
+
 test('Manual Execution Trigger price reference reports unavailable prices and preserves unsaved inputs on refresh', () => {
   const { getManualTriggerCurrentPriceReference } = helpers('getManualTriggerCurrentPriceReference');
   assert.deepEqual(JSON.parse(JSON.stringify(getManualTriggerCurrentPriceReference({ current_price: null }))), {

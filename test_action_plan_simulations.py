@@ -85,6 +85,9 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(row['manual_verified_price'], 75)
         self.assertEqual(row['current_price'], 75)
         self.assertEqual(row['manual_verified_quote_at'], old)
+        self.assertEqual(row['manual_verified_market_observed_at'], old)
+        self.assertIsNone(row['manual_verified_retrieved_at'])
+        self.assertEqual(row['manual_verified_quote_time_kind'], 'market_observation')
         self.assertIsNone(row['manual_verified_quote_expires_at'])
         self.assertFalse(row['manual_trigger_blocked'])
         self.assertIn('Delayed', row['manual_price_verification_reason'])
@@ -93,16 +96,17 @@ class SimulationTests(unittest.TestCase):
         import action_plan_prices
         contract = SimpleNamespace(symbol='NVDA', conId=123, currency='USD')
         position = SimpleNamespace(contract=contract, position=10, avgCost=50)
-        for data_type, label in ((2, 'Frozen'), (3, 'Delayed'), (4, 'Delayed')):
+        for data_type, label, source in ((2, 'Frozen', 'frozen'), (3, 'Delayed', 'delayed'),
+                                         (4, 'Delayed-frozen', 'delayed_frozen')):
             with self.subTest(data_type=data_type):
                 ticker = SimpleNamespace(marketDataType=data_type, marketPrice=lambda: 100,
                                          close=99, prevClose=99, last=100)
                 rows = app._build_live_position_rows([position], {'conid:123': ticker}, app.utc_now_iso())
-                self.assertIn(label.lower(), rows[0]['price_source'])
+                self.assertIn(source, rows[0]['price_source'])
                 self.assertIn(label, rows[0]['price_warning'])
                 app.save_positions_cache(self.conn, rows, account_id='A')
                 selected = action_plan_prices.resolve_price(app.load_positions_cache(self.conn, 'A')[0], {})
-                self.assertIn(label.lower(), selected['price_source'])
+                self.assertIn(source, selected['price_source'])
                 self.assertIn(label, selected['price_warning'])
 
     def test_validation_and_ambiguous_accounts(self):

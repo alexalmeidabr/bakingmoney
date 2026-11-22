@@ -2000,9 +2000,11 @@ def is_valid_market_price(value):
     return numeric is not None and numeric > 0
 
 
-def resolve_action_plan_price(position, analysis, observations=()):
+def resolve_action_plan_price(position, analysis, observations=(), selected_contract=None):
     """Select a usable Action Plan price without changing company-analysis inputs."""
-    return action_plan_prices.resolve_price(position, analysis, observations)
+    return action_plan_prices.resolve_price(
+        position, analysis, observations, selected_contract=selected_contract,
+    )
 
 
 MANUAL_EXECUTION_QUOTE_MAX_AGE_SECONDS = 300
@@ -4130,7 +4132,10 @@ def reconcile_legacy_account_to_real_account(conn, real_account_id):
             "UPDATE portfolio_summary_cache SET account_id = ? WHERE account_id = ?",
             (normalized_real_account_id, LEGACY_IB_ACCOUNT_ID),
         )
-        for table in ("manual_execution_triggers", "action_plan_simulations", "action_plan_price_observations"):
+        for table in (
+            "manual_execution_triggers", "action_plan_simulations",
+            "action_plan_price_observations", "action_plan_contract_selections",
+        ):
             if _table_exists(conn, table):
                 conn.execute(f"UPDATE {table} SET account_id = ? WHERE account_id = ?", (normalized_real_account_id, LEGACY_IB_ACCOUNT_ID))
         conn.execute("DELETE FROM ib_accounts WHERE account_id = ?", (LEGACY_IB_ACCOUNT_ID,))
@@ -12178,6 +12183,10 @@ def build_action_plan(conn, account_id=None, include_manual_execution=False,
     manual_quote_proofs = _session_manual_verified_quotes.get(quote_key, {})
     explicit_quote_proofs = _session_manual_explicit_quotes.get(quote_key, {})
     saved_observations = action_plan_prices.load_observations(conn, resolved_account_id) if resolved_account_id else {}
+    selected_contracts = (
+        action_plan_prices.load_contract_selections(conn, resolved_account_id)
+        if resolved_account_id else {}
+    )
     portfolio_cash_summary = build_portfolio_cash_summary(conn, positions, settings, account_id=resolved_account_id)
     # Adjust local derived inputs exactly once. Real caches and cash-equivalent holdings are untouched.
     if additional_cash_usd:
@@ -12210,8 +12219,13 @@ def build_action_plan(conn, account_id=None, include_manual_execution=False,
         # The price and side events belong to one received snapshot. Its receipt
         # time can follow the exchange side times by milliseconds.
         position_proof = manual_quote_proofs.get(symbol) or {}
+        if position and not position_proof:
+            position_time = position.get("retrieved_at") or position.get("price_last_successful_at")
+            position_proof = next((item for item in saved_observations.get(symbol, [])
+                                   if item.get("contract_key") == position.get("contract_key")
+                                   and item.get("retrieved_at") == position_time), {})
         if (position and position_proof.get("contract_key") == position.get("contract_key")
-                and position_proof.get("refresh_at") == (
+                and (position_proof.get("refresh_at") or position_proof.get("retrieved_at")) == (
                     position.get("retrieved_at") or position.get("price_last_successful_at")
                 )):
             position = {**position, **{key: position_proof.get(key) for key in (
@@ -12220,7 +12234,9 @@ def build_action_plan(conn, account_id=None, include_manual_execution=False,
         observations = [dict(item, symbol=symbol) for item in (
             *saved_observations.get(symbol, []), manual_quote_proofs.get(symbol), explicit_quote_proofs.get(symbol),
         ) if item]
-        action_plan_price = resolve_action_plan_price(position, analysis, observations)
+        action_plan_price = resolve_action_plan_price(
+            position, analysis, observations, selected_contracts.get(symbol),
+        )
         position_quantity = safe_number(position.get("position")) if position else 0.0
         market_value = (
             abs(position_quantity * action_plan_price["price"])
@@ -16433,6 +16449,21 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     results[symbol] = {"symbol": symbol, "status": "contract_unavailable"}
                 else:
                     qualified[symbol] = matching[0]
+            if qualified:
+                selection_conn = get_db_connection()
+                qualified_at = utc_now_iso()
+                try:
+                    with selection_conn:
+                        for symbol, contract in qualified.items():
+                            action_plan_prices.save_contract_selection(
+                                selection_conn, resolved, symbol,
+                                market_data_contract_key(contract),
+                                getattr(contract, "secType", None),
+                                getattr(contract, "currency", None),
+                                qualified_at,
+                            )
+                finally:
+                    selection_conn.close()
             observations = _ManualQuoteObservations({market_data_contract_key(contract) for contract in qualified.values()})
             tickers, diagnostics, _refresh = request_ib_tickers_with_retry(
                 ib, list(qualified.values()), purpose="manual_execution_quotes",

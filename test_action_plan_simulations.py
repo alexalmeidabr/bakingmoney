@@ -111,6 +111,46 @@ class SimulationTests(unittest.TestCase):
         row = next(item for item in plan['linear_action_plan'] if item['symbol'] == 'NVDA')
         self.assertEqual(80, row['current_price'])
 
+    def test_unowned_contract_selection_controls_trigger_and_sizing_in_both_workspaces(self):
+        import action_plan_prices
+        app.save_manual_execution_trigger(self.conn, 'A', 'MSFT', {'buy_trigger_price': 80})
+        simulation = self.create(additional_cash_usd=0)
+        with self.conn:
+            action_plan_prices.persist_observation(self.conn, 'A', 'MSFT', {
+                'symbol': 'MSFT', 'contract_key': 'conid:111', 'security_type': 'STK',
+                'currency': 'USD', 'price': 75, 'price_source': 'last',
+                'market_observed_at': '2026-11-21T10:00:00+00:00',
+            })
+            action_plan_prices.persist_observation(self.conn, 'A', 'MSFT', {
+                'symbol': 'MSFT', 'contract_key': 'conid:222', 'security_type': 'STK',
+                'currency': 'USD', 'price': 50, 'price_source': 'last',
+                'market_observed_at': '2026-11-22T10:00:00+00:00',
+            })
+
+        ambiguous = app.build_action_plan(self.conn, 'A', include_manual_execution=True)
+        ambiguous_row = next(row for row in ambiguous['manual_execution']['linear_action_plan']
+                             if row['symbol'] == 'MSFT')
+        self.assertEqual((100, 'waiting'),
+                         (ambiguous_row['current_price'], ambiguous_row['manual_trigger_status']))
+        self.assertIn('multiple contract', ambiguous_row['price_warning'].lower())
+
+        with self.conn:
+            action_plan_prices.save_contract_selection(
+                self.conn, 'A', 'MSFT', 'conid:111', 'STK', 'USD',
+                '2026-11-22T11:00:00+00:00',
+            )
+        actual = app.build_action_plan(self.conn, 'A', include_manual_execution=True)
+        simulated = app.build_simulation_action_plan(self.conn, 'A', simulation['id'])
+        actual_row = next(row for row in actual['manual_execution']['linear_action_plan']
+                          if row['symbol'] == 'MSFT')
+        simulated_row = next(row for row in simulated['manual_execution']['linear_action_plan']
+                             if row['symbol'] == 'MSFT')
+        self.assertEqual((75, 'eligible'),
+                         (actual_row['current_price'], actual_row['manual_trigger_status']))
+        self.assertEqual(actual_row['current_price'], simulated_row['current_price'])
+        self.assertEqual(actual_row['manual_trigger_status'], simulated_row['manual_trigger_status'])
+        self.assertEqual(actual_row['suggested_share_count'], simulated_row['suggested_share_count'])
+
     def test_position_refresh_preserves_delayed_and_frozen_provenance(self):
         import action_plan_prices
         contract = SimpleNamespace(symbol='NVDA', conId=123, currency='USD')

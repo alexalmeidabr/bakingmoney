@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import web_server
+import action_plan_prices
 from test_manual_execution_engine import linear_settings
 from test_multi_account_portfolio_db import FakeIB, FakePosition, FakeSummaryItem
 from test_manual_quote_observation import PacketIB
@@ -79,6 +80,64 @@ class ManualExecutionApiTests(unittest.TestCase):
     def build(self, account, both=False):
         with mock.patch.object(web_server, "list_analysis_symbols", return_value=self.analysis_items):
             return web_server.build_action_plan(self.conn, account_id=account, include_manual_execution=both)
+
+    def test_qualified_contract_selection_updates_before_quote_and_rejects_ambiguous_transitions(self):
+        action_plan_prices.save_contract_selection(
+            self.conn, "U_ACCOUNT_A", "BBB", "conid:111", "STK", "USD",
+            "2026-11-22T10:00:00+00:00",
+        )
+        action_plan_prices.save_contract_selection(
+            self.conn, "U_ACCOUNT_B", "BBB", "conid:222", "STK", "USD",
+            "2026-11-22T10:00:00+00:00",
+        )
+        self.conn.commit()
+
+        def refresh(qualification):
+            ib = SimpleNamespace(
+                managedAccounts=lambda: ["U_ACCOUNT_A", "U_ACCOUNT_B"],
+                positions=lambda: [],
+                qualifyContracts=mock.Mock(side_effect=qualification),
+                reqMarketDataType=mock.Mock(),
+            )
+            handler = SimpleNamespace()
+            handler._read_json_body = lambda: {"symbols": ["BBB"]}
+            handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
+            with mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
+                 mock.patch.object(web_server, "request_ib_tickers_with_retry", return_value=({}, {}, None)):
+                web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(
+                    handler, account_id="U_ACCOUNT_A",
+                )
+            return handler.response
+
+        transitioned = SimpleNamespace(symbol="BBB", conId=333, secType="STK", currency="USD")
+        response = refresh(lambda *_contracts: [transitioned])
+        self.assertEqual(response[1]["results"][0]["status"], "unavailable")
+        self.assertEqual(
+            action_plan_prices.load_contract_selections(self.conn, "U_ACCOUNT_A")["BBB"]["contract_key"],
+            "conid:333",
+        )
+        self.assertEqual(
+            action_plan_prices.load_contract_selections(self.conn, "U_ACCOUNT_B")["BBB"]["contract_key"],
+            "conid:222",
+        )
+
+        ambiguous = [
+            SimpleNamespace(symbol="BBB", conId=444, secType="STK", currency="USD"),
+            SimpleNamespace(symbol="BBB", conId=555, secType="STK", currency="USD"),
+        ]
+        response = refresh(lambda *_contracts: ambiguous)
+        self.assertEqual(response[1]["results"][0]["status"], "contract_unavailable")
+        self.assertEqual(
+            action_plan_prices.load_contract_selections(self.conn, "U_ACCOUNT_A")["BBB"]["contract_key"],
+            "conid:333",
+        )
+
+        response = refresh(RuntimeError("qualification failed"))
+        self.assertEqual(response[1]["results"][0]["status"], "contract_unavailable")
+        self.assertEqual(
+            action_plan_prices.load_contract_selections(self.conn, "U_ACCOUNT_A")["BBB"]["contract_key"],
+            "conid:333",
+        )
 
     def test_opt_in_keeps_default_payload_exact_and_reuses_one_analysis_list(self):
         web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "AAA", {
@@ -231,12 +290,16 @@ class ManualExecutionApiTests(unittest.TestCase):
                     self.assertEqual(row["manual_trigger_status"], "waiting")
                 elif qualified is foreign:
                     self.assertEqual(result["status"], "unavailable")
-                    self.assertEqual(row["manual_verified_price"], 78.5)  # Previous delayed refresh survives.
-                    self.assertIn("delayed", row["manual_price_source"])
+                    self.assertEqual(row["manual_verified_price"], 100)
+                    self.assertEqual(row["manual_price_source"], "analysis_fallback")
+                    self.assertIn("qualified contract", row["manual_price_verification_reason"].lower())
                 else:
                     self.assertEqual(result["status"], "updated")
                     self.assertEqual(row["manual_verified_price"], result["price"])
-                    self.assertEqual(row["manual_verified_quote_at"], result["retrieved_at"])
+                    if data_type == 4:
+                        self.assertNotEqual(row["manual_verified_quote_at"], result["retrieved_at"])
+                    else:
+                        self.assertEqual(row["manual_verified_quote_at"], result["retrieved_at"])
                     self.assertEqual(row["manual_trigger_status"], "eligible")
                     if data_type in (3, 4):
                         self.assertIn("delayed", result["source"])

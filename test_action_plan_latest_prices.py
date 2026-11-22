@@ -60,12 +60,72 @@ class PriceResolution(unittest.TestCase):
             dict(POSITION, contract_key=None, price=999, market_observed_at=LATER_RETRIEVAL, persisted=True),
         ]
         owned = prices.resolve_price({"symbol": "ABC", "contract_key": "conid:111"}, {}, observations)
-        unowned = prices.resolve_price({}, {"symbol": "ABC"}, observations)
+        unowned = prices.resolve_price({}, {"symbol": "ABC", "current_price": 90}, observations)
         legacy = prices.resolve_price({}, {"symbol": "ABC"}, [observations[-1]])
         self.assertEqual((100, "conid:111"), (owned["price"], owned["contract_key"]))
-        self.assertEqual((105, "conid:222"), (unowned["price"], unowned["contract_key"]))
+        self.assertEqual((90, "analysis_fallback"), (unowned["price"], unowned["price_source"]))
+        self.assertIn("multiple contract", unowned["price_warning"].lower())
         self.assertEqual(999, legacy["price"])
         self.assertIn("contract identity is unknown", legacy["price_warning"].lower())
+
+    def test_unowned_resolution_uses_selected_or_inferred_contract_safely(self):
+        observations = [
+            dict(POSITION, contract_key="conid:111", price=100, market_observed_at=OLD,
+                 security_type="STK", currency="USD"),
+            dict(POSITION, contract_key="conid:222", price=150, market_observed_at=NEW,
+                 security_type="STK", currency="USD"),
+        ]
+        selected = prices.resolve_price(
+            {}, {"symbol": "ABC", "current_price": 90}, observations,
+            selected_contract={"contract_key": "conid:111", "security_type": "STK", "currency": "USD"},
+        )
+        self.assertEqual((100, "conid:111"), (selected["price"], selected["contract_key"]))
+        self.assertNotIn("inferred", (selected["price_warning"] or "").lower())
+
+        inferred = prices.resolve_price({}, {"symbol": "ABC", "current_price": 90}, [observations[0]])
+        self.assertEqual((100, "conid:111"), (inferred["price"], inferred["contract_key"]))
+        self.assertIn("inferred, not verified", inferred["price_warning"].lower())
+
+        for incompatible in (
+            dict(observations[0], security_type="OPT"),
+            dict(observations[0], currency="EUR"),
+        ):
+            with self.subTest(incompatible=incompatible):
+                fallback = prices.resolve_price(
+                    {}, {"symbol": "ABC", "current_price": 90, "currency": "USD"}, [incompatible]
+                )
+                self.assertEqual((90, "analysis_fallback"),
+                                 (fallback["price"], fallback["price_source"]))
+                self.assertIn("instrument metadata", fallback["price_warning"].lower())
+
+        missing_selected = prices.resolve_price(
+            {}, {"symbol": "ABC", "current_price": 90}, [observations[1]],
+            selected_contract={"contract_key": "conid:111", "security_type": "STK", "currency": "USD"},
+        )
+        self.assertEqual((90, "analysis_fallback"),
+                         (missing_selected["price"], missing_selected["price_source"]))
+        self.assertIn("qualified contract", missing_selected["price_warning"].lower())
+
+    def test_contract_selection_persists_transitions_and_account_isolation(self):
+        with sqlite3.connect(":memory:") as conn:
+            prices.init_schema(conn)
+            self.assertTrue(prices.save_contract_selection(
+                conn, "A", "ABC", "conid:111", "STK", "USD", OLD,
+            ))
+            self.assertTrue(prices.save_contract_selection(
+                conn, "B", "ABC", "conid:222", "STK", "USD", NEW,
+            ))
+            self.assertTrue(prices.save_contract_selection(
+                conn, "A", "ABC", "conid:333", "STK", "USD", LATER_RETRIEVAL,
+            ))
+            account_a = prices.load_contract_selections(conn, "A")
+            account_b = prices.load_contract_selections(conn, "B")
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+        self.assertIn("action_plan_contract_selections", tables)
+        self.assertEqual("conid:333", account_a["ABC"]["contract_key"])
+        self.assertEqual("conid:222", account_b["ABC"]["contract_key"])
 
     def test_owned_position_without_contract_does_not_use_contract_specific_observation(self):
         position = {
@@ -231,16 +291,16 @@ class PriceResolution(unittest.TestCase):
         for raw in (dict(DELAYED, contract_key=None), dict(DELAYED, account_id="B")):
             self.assertEqual(20, prices.resolve_price(dict(POSITION, account_id="A"), {}, [raw])["price"])
 
-    def test_fresh_live_sides_display_source_and_do_not_warn(self):
+    def test_fresh_live_sides_display_source_and_warn_when_contract_is_inferred(self):
         now = datetime.now(timezone.utc)
         stamp = now.isoformat()
         quote = dict(QUOTE, refresh_at=stamp, bid_tick_at=stamp, ask_tick_at=stamp)
         selected = prices.resolve_price({}, {}, [quote])
         evaluation = prices.evaluate_trigger(dict(selected, action="Trim", current_price=selected["price"]),
                                               {"sell_trigger_price": 19}, now)
-        self.assertEqual(("eligible", "live_bid_ask (bid)", stamp, None),
-                         (evaluation["status"], evaluation["price_source"], evaluation["verified_quote_at"],
-                          evaluation["verification_reason"]))
+        self.assertEqual(("eligible", "live_bid_ask (bid)", stamp),
+                         (evaluation["status"], evaluation["price_source"], evaluation["verified_quote_at"]))
+        self.assertIn("inferred, not verified", evaluation["verification_reason"].lower())
 
     def test_direct_evaluator_discards_older_side_price(self):
         row = dict(action="Add", current_price=22, price_source="delayed_last",

@@ -1546,6 +1546,11 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                         {"net_liquidation": 100000, "actual_cash": 10000},
                         account_id=web_server.LEGACY_IB_ACCOUNT_ID,
                     )
+                    web_server.action_plan_prices.save_contract_selection(
+                        conn, web_server.LEGACY_IB_ACCOUNT_ID, "NVDA", "conid:123",
+                        "STK", "USD", "2026-11-22T10:00:00+00:00",
+                    )
+                    conn.commit()
                     web_server.save_portfolio_summary_cache(
                         conn,
                         {"net_liquidation": 100000, "actual_cash": 10000},
@@ -1559,6 +1564,10 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                     self.assertEqual(rows[1]["market_value"], 10000)
                     self.assertIsNone(web_server.load_portfolio_summary_cache(conn, web_server.LEGACY_IB_ACCOUNT_ID))
                     self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["actual_cash"], 10000)
+                    self.assertEqual(
+                        web_server.action_plan_prices.load_contract_selections(conn, "U1111111")["NVDA"]["contract_key"],
+                        "conid:123",
+                    )
                 finally:
                     conn.close()
 

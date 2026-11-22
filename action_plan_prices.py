@@ -161,7 +161,15 @@ def _warning(item, now):
     return " ".join(dict.fromkeys(warnings)) or None
 
 
-def resolve_price(position, analysis, observations=()):
+def _instrument_metadata_matches(observation, expected_currency):
+    security_type = str(observation.get("security_type") or "").strip().upper()
+    currency = str(observation.get("currency") or "").strip().upper()
+    return (not security_type or security_type == "STK") and (
+        not currency or currency == expected_currency
+    )
+
+
+def resolve_price(position, analysis, observations=(), selected_contract=None):
     position, analysis = position or {}, analysis or {}
     symbol = position.get("symbol") or analysis.get("symbol")
     contract = position.get("contract_key")
@@ -172,10 +180,12 @@ def resolve_price(position, analysis, observations=()):
     owned_without_contract = (
         not contract and math.isfinite(position_quantity) and position_quantity != 0
     )
+    selected_contract = selected_contract or {}
+    selected_contract_key = selected_contract.get("contract_key") if not contract else None
+    expected_currency = str(
+        selected_contract.get("currency") or analysis.get("currency") or "USD"
+    ).strip().upper()
     observations = list(observations or ())
-    known_contract_available = not contract and not owned_without_contract and any(
-        raw and raw.get("contract_key") for raw in [position, *observations]
-    )
     candidates = []
     for raw in [position, *observations]:
         if not raw or (symbol and raw.get("symbol") and raw["symbol"] != symbol):
@@ -186,11 +196,44 @@ def resolve_price(position, analysis, observations=()):
             continue
         if owned_without_contract and raw is not position:
             continue
-        if known_contract_available and not raw.get("contract_key"):
-            continue
         item = _observation(raw)
         if item:
             candidates.append((item, raw is position))
+    identity_warning = None
+    if not contract and not owned_without_contract:
+        if selected_contract_key:
+            candidates = [candidate for candidate in candidates
+                          if candidate[0].get("contract_key") == selected_contract_key
+                          and _instrument_metadata_matches(candidate[0], expected_currency)]
+            if not candidates:
+                identity_warning = (
+                    "The qualified contract has no usable matching price; unrelated contracts were ignored."
+                )
+        else:
+            known_contracts = {candidate[0].get("contract_key") for candidate in candidates
+                               if candidate[0].get("contract_key")}
+            if len(known_contracts) > 1:
+                candidates = []
+                identity_warning = (
+                    "Multiple contract identities are available and none is qualified; no contract price was selected."
+                )
+            elif len(known_contracts) == 1:
+                inferred_key = next(iter(known_contracts))
+                matching = [candidate for candidate in candidates
+                            if candidate[0].get("contract_key") == inferred_key]
+                candidates = [candidate for candidate in matching
+                              if _instrument_metadata_matches(candidate[0], expected_currency)]
+                if candidates:
+                    identity_warning = (
+                        "Contract identity is inferred, not verified, from the only compatible saved candidate."
+                    )
+                else:
+                    identity_warning = (
+                        "The only saved contract has incompatible instrument metadata; no contract price was selected."
+                    )
+            else:
+                candidates = [candidate for candidate in candidates
+                              if not candidate[0].get("contract_key")]
     if candidates:
         item, is_position = max(candidates, key=lambda candidate: _rank(candidate[0]))
         status = item["price_status"] or ("cached_stale" if item["persisted"] else "tws_received")
@@ -200,6 +243,8 @@ def resolve_price(position, analysis, observations=()):
             warning = " ".join(part for part in (warning, identity_warning) if part)
         elif not contract and not item.get("contract_key"):
             identity_warning = "Contract identity is unknown; this saved price was selected without an owned-contract match."
+            warning = " ".join(part for part in (warning, identity_warning) if part)
+        elif identity_warning:
             warning = " ".join(part for part in (warning, identity_warning) if part)
         return dict(
             price=item["price"], price_source=item["price_source"], price_status=status,
@@ -219,13 +264,18 @@ def resolve_price(position, analysis, observations=()):
             price_timestamp_kind="unknown", price_last_successful_at=None,
             price_sizing_source="analysis_price_fallback",
             acquisition_kind=None,
-            price_warning="Using saved analysis price because no usable IBKR market observation is available.",
+            price_warning=" ".join(part for part in (
+                "Using saved analysis price because no usable IBKR market observation is available.",
+                identity_warning,
+            ) if part),
         )
     return dict(
         price=None, price_source=None, price_status="unavailable",
         market_observed_at=None, retrieved_at=None, persisted_at=None,
         price_timestamp_kind="unknown", price_last_successful_at=None,
-        price_warning="No usable market price is available for Action Plan sizing.",
+        price_warning=" ".join(part for part in (
+            "No usable market price is available for Action Plan sizing.", identity_warning,
+        ) if part),
         price_sizing_source="unavailable",
         acquisition_kind=None,
     )
@@ -368,6 +418,51 @@ def init_schema(conn):
     _ensure_column(conn, "acquisition_kind", "TEXT")
     if _primary_key_columns(conn) != ["account_id", "symbol", "contract_key"]:
         _migrate_contract_identity_key(conn)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS action_plan_contract_selections (
+            account_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            contract_key TEXT NOT NULL,
+            security_type TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            qualified_at TEXT NOT NULL,
+            PRIMARY KEY(account_id, symbol)
+        )
+    """)
+
+
+def save_contract_selection(conn, account_id, symbol, contract_key, security_type, currency, qualified_at):
+    account_id = str(account_id or "").strip()
+    symbol = str(symbol or "").strip().upper()
+    contract_key = str(contract_key or "").strip()
+    security_type = str(security_type or "").strip().upper()
+    currency = str(currency or "").strip().upper()
+    qualified_at = _iso(qualified_at)
+    if not account_id or not symbol or not contract_key or security_type != "STK" or not currency or not qualified_at:
+        return False
+    cursor = conn.execute("""
+        INSERT INTO action_plan_contract_selections
+        (account_id, symbol, contract_key, security_type, currency, qualified_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, symbol) DO UPDATE SET
+            contract_key=excluded.contract_key,
+            security_type=excluded.security_type,
+            currency=excluded.currency,
+            qualified_at=excluded.qualified_at
+        WHERE excluded.qualified_at >= action_plan_contract_selections.qualified_at
+    """, (account_id, symbol, contract_key, security_type, currency, qualified_at))
+    return cursor.rowcount > 0
+
+
+def load_contract_selections(conn, account_id):
+    cursor = conn.execute("""
+        SELECT symbol, contract_key, security_type, currency, qualified_at
+        FROM action_plan_contract_selections
+        WHERE account_id = ?
+        ORDER BY symbol
+    """, (account_id,))
+    columns = [field[0] for field in cursor.description]
+    return {row[0]: dict(zip(columns, row)) for row in cursor}
 
 
 def _row_dict(cursor, row):

@@ -10,7 +10,7 @@ Select a portfolio account and open **Action Plan Simulator**, directly below **
 
 Open a symbol to edit **Simulation Triggers**. Set a Buy threshold, Sell/Trim threshold and direction, or the percentage of a waiting purchase to reserve. Saving or clearing affects only this simulation. Later changes in the regular Action Plan or another simulation are independent.
 
-The trigger editor tracks normalized values for Buy price, Sell/Trim price and direction, reserve enabled, and reserve percentage. Changing a value back to its saved value clears the unsaved state. Refreshing market prices or recalculating the plan does not create a trigger edit.
+The trigger editor tracks normalized values for Buy price, Sell/Trim price and direction, reserve enabled, and reserve percentage. Changing a value back to its saved value clears the unsaved state. Refreshing market prices or recalculating the plan does not create a trigger edit. Save and Clear share one in-flight request slot for the current account, simulation and symbol, preventing an older request from overwriting a newer operation. The mutation buttons are temporarily disabled while the fields remain editable; changes made during the request stay dirty and require another explicit Save.
 
 ## Change or revisit a simulation
 
@@ -24,7 +24,7 @@ Simulated deposits exist only in the calculation. Saving or running a simulation
 
 ## Persistence and validation
 
-SQLite stores simulation assumptions in `action_plan_simulations` and their independent preferences in `action_plan_simulation_triggers`. Last-known account market observations are stored in `action_plan_price_observations`; positions retain their existing cache. The normal database backup includes all three tables. Restoring an older backup creates missing tables during initialization. Calculated plans and portfolio snapshots are not saved as simulation data.
+SQLite stores simulation assumptions in `action_plan_simulations` and their independent preferences in `action_plan_simulation_triggers`. Last-known market observations are stored by account, symbol and IBKR contract in `action_plan_price_observations`; positions retain their existing cache. Distinct contracts with the same symbol remain independent across restart and backup. The normal database backup includes all three tables. Restoring an older backup creates missing tables and migrates symbol-keyed observations without discarding valid rows. Calculated plans and portfolio snapshots are not saved as simulation data.
 
 Additional cash accepts finite numeric amounts between $0 and $1 billion. Names must contain 1–200 characters. Unsaved cash or trigger edits keep the previous saved results visible. Switching simulations or accounts, leaving Action Detail or the Simulator, opening another symbol or Full Analysis, applying cash and recalculating, refreshing, duplicating, deleting, or closing the tab requires the user to remain or explicitly discard the edits. Trigger changes are never silently saved during navigation. A failed save retains the edited fields and dirty state; a successful save or clear updates the baseline only after the request succeeds.
 

@@ -9231,6 +9231,9 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
             )
             continue
         active_symbols.add(symbol)
+        retrieved_at = row.get("retrieved_at") or row.get("price_retrieved_at")
+        if retrieved_at is None and row.get("market_observed_at") is None:
+            retrieved_at = row.get("price_last_successful_at")
         conn.execute(
             """
             INSERT INTO positions_cache (
@@ -9274,7 +9277,7 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
                 row.get("market_data_source") or row.get("price_source"),
                 row.get("price_last_successful_at"),
                 row.get("market_observed_at"),
-                row.get("retrieved_at") or row.get("price_retrieved_at") or row.get("price_last_successful_at"),
+                retrieved_at,
                 now,
                 row.get("price_warning"),
                 now,

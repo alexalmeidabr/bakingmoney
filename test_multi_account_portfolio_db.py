@@ -511,6 +511,46 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_position_cache_preserves_explicit_timestamp_meaning_across_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "position-times.db")
+            market_time = "2026-11-22T10:00:00+00:00"
+            retrieval_time = "2026-11-22T10:01:00+00:00"
+            legacy_time = "2026-11-22T10:02:00+00:00"
+            rows = [
+                {"symbol": "BOTH", "position": 1, "price": 10, "market_observed_at": market_time,
+                 "retrieved_at": retrieval_time, "price_last_successful_at": legacy_time},
+                {"symbol": "MARKET", "position": 1, "price": 10, "market_observed_at": market_time,
+                 "price_last_successful_at": legacy_time},
+                {"symbol": "RETRIEVED", "position": 1, "price": 10, "retrieved_at": retrieval_time,
+                 "price_last_successful_at": legacy_time},
+                {"symbol": "LEGACY", "position": 1, "price": 10,
+                 "price_last_successful_at": legacy_time},
+                {"symbol": "NONE", "position": 1, "price": 10},
+            ]
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.save_positions_cache(conn, rows, account_id="U1111111")
+                finally:
+                    conn.close()
+                conn = web_server.get_db_connection()
+                try:
+                    saved = {row["symbol"]: row for row in web_server.load_positions_cache(conn, "U1111111")}
+                finally:
+                    conn.close()
+            self.assertEqual((market_time, retrieval_time),
+                             (saved["BOTH"]["market_observed_at"], saved["BOTH"]["retrieved_at"]))
+            self.assertEqual((market_time, None),
+                             (saved["MARKET"]["market_observed_at"], saved["MARKET"]["retrieved_at"]))
+            self.assertEqual((None, retrieval_time),
+                             (saved["RETRIEVED"]["market_observed_at"], saved["RETRIEVED"]["retrieved_at"]))
+            self.assertEqual((None, legacy_time),
+                             (saved["LEGACY"]["market_observed_at"], saved["LEGACY"]["retrieved_at"]))
+            self.assertEqual((None, None),
+                             (saved["NONE"]["market_observed_at"], saved["NONE"]["retrieved_at"]))
+
     def test_position_cleanup_is_account_scoped(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "cleanup.db")

@@ -2029,7 +2029,7 @@ class _ManualQuoteObservations:
     def __init__(self, required_contract_keys=None):
         self._active_tickers = {}
         self._latest_by_contract = {}
-        self._price_fields_by_contract = {}
+        self._price_evidence_by_ticker = {}
         self._required_contract_keys = (
             None if required_contract_keys is None else frozenset(required_contract_keys)
         )
@@ -2055,7 +2055,9 @@ class _ManualQuoteObservations:
                 }.get(tick_type)
                 price = safe_number(getattr(tick, "price", None))
                 if field and is_valid_market_price(price):
-                    self._price_fields_by_contract.setdefault(active[1], set()).add(field)
+                    self._price_evidence_by_ticker.setdefault(id(ticker), set()).add(
+                        (field, getattr(ticker, "marketDataType", None))
+                    )
                 if getattr(ticker, "marketDataType", None) != 1:
                     continue
                 side = field if field in {"bid", "ask"} else None
@@ -2076,7 +2078,8 @@ class _ManualQuoteObservations:
         frozen = data_type in {2, 4} or "frozen" in source
         if frozen or "close" in source:
             return "snapshot"
-        fields = self._price_fields_by_contract.get(contract_key, set())
+        fields = {field for field, observed_data_type in self._price_evidence_by_ticker.get(id(ticker), set())
+                  if observed_data_type == data_type}
         matched = bool(fields.intersection({"bid", "ask"})) if "marketprice" in source else (
             "last" in fields if "last" in source else False
         )

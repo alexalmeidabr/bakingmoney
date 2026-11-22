@@ -160,6 +160,33 @@ class ManualQuoteObservationTests(unittest.TestCase):
             ib.ticker, self.key, 'marketPrice', diagnostics.get('NVDA') or {},
         ))
 
+    def test_streaming_evidence_belongs_to_the_ticker_and_feed_that_emitted_it(self):
+        observations = web_server._ManualQuoteObservations()
+        ticked = PacketTicker(self.contract, market_data_type=1)
+        unevidenced = PacketTicker(self.contract, market_data_type=1)
+        observations.register(ticked, self.contract)
+        observations.register(unevidenced, self.contract)
+        ticked.last = 120
+        ticked.ticks = [SimpleNamespace(tickType=4, price=120, size=1, time=self.now)]
+        observations.observe([ticked])
+        unevidenced.last = 120
+        self.assertEqual("streaming_live", observations.acquisition_kind(
+            ticked, self.key, "last", {},
+        ))
+        self.assertIsNone(observations.acquisition_kind(
+            unevidenced, self.key, "last", {},
+        ))
+
+        frozen = PacketTicker(self.contract, market_data_type=2)
+        observations.register(frozen, self.contract)
+        frozen.last = 120
+        frozen.ticks = [SimpleNamespace(tickType=4, price=120, size=1, time=self.now)]
+        observations.observe([frozen])
+        frozen.marketDataType = 1
+        self.assertIsNone(observations.acquisition_kind(
+            frozen, self.key, "last", {},
+        ))
+
     def test_only_one_side_or_final_fields_without_events_cannot_verify(self):
         for packets in ([('bid', 78, 10, self.now)], [('ask', 79, 10, self.now)], []):
             with self.subTest(packets=packets):

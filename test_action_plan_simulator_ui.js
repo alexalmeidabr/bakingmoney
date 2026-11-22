@@ -100,6 +100,16 @@ test('every normalized simulation trigger field participates in dirty tracking a
   assert.equal(h.run('simulationTriggerDirty()'), false, 'real Action Plan remains unaffected');
 });
 
+test('an empty saved trigger matches the editor defaults and is clean', () => {
+  const h = simulatorHarness();
+  h.run("selectedSimulation = {id: 7, additional_cash_usd: 0}");
+  h.context.currentTriggerValues = triggerValues({
+    buy_trigger_price: '', sell_trigger_price: '', sell_trigger_direction: 'at_or_above',
+  });
+  h.run("setManualTriggerBaseline('NVDA', {})");
+  assert.equal(h.run('simulationTriggerDirty()'), false);
+});
+
 test('trigger price refresh does not dirty the editor and beforeunload protects actual edits', () => {
   const h = simulatorHarness();
   h.run("selectedSimulation = {id: 7, additional_cash_usd: 0}");

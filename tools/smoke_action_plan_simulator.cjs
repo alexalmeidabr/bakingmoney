@@ -75,12 +75,12 @@ async function main(){
  try{
  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
  let tab;
- for(let i=0;i<100&&!tab;i++){try{tab=(await(await fetch('http://127.0.0.1:'+remote+'/json')).json()).find(t=>t.type==='page')}catch{}if(!tab)await sleep(100);}
+ for(let i=0;i<100&&!tab;i++){try{const tabs=await(await fetch('http://127.0.0.1:'+remote+'/json')).json();tab=tabs.find(t=>t.type==='page'&&t.url==='about:blank')||tabs.find(t=>t.type==='page'&&!t.url.startsWith('edge://'));}catch{}if(!tab)await sleep(100);}
  if(!tab)throw Error('No Edge debugging tab');
  ws=new WebSocket(tab.webSocketDebuggerUrl);await new Promise(r=>ws.onopen=r);
  let seq=0; const pending=new Map(),errors=[];
- ws.onmessage=e=>{const msg=JSON.parse(e.data);if(msg.id){pending.get(msg.id)(msg);pending.delete(msg.id);}if(msg.method==='Runtime.exceptionThrown')errors.push(msg.params.exceptionDetails.exception?.description ||msg.params.exceptionDetails.text);};
- const send=(method,params={})=>new Promise(r=>{const id=++seq;pending.set(id,r);ws.send(JSON.stringify({id,method,params}));});
+ ws.onmessage=e=>{const msg=JSON.parse(e.data);if(msg.id){const callback=pending.get(msg.id);if(callback)callback(msg);pending.delete(msg.id);}if(msg.method==='Runtime.exceptionThrown')errors.push(msg.params.exceptionDetails.exception?.description ||msg.params.exceptionDetails.text);};
+ const send=(method,params={})=>new Promise((resolve,reject)=>{const id=++seq;const detail=method==='Runtime.evaluate'?' '+String(params.expression).slice(0,160):'';const timer=setTimeout(()=>{pending.delete(id);reject(Error('CDP timeout: '+method+detail));},5000);pending.set(id,msg=>{clearTimeout(timer);resolve(msg);});ws.send(JSON.stringify({id,method,params}));});
  const run=async(expression)=>{const msg=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(msg.result?.exceptionDetails)throw Error(msg.result.exceptionDetails.exception?.description);return msg.result.result.value;};
  const until=async(exp)=>{for(let i=0;i<75;i++){if(await run(exp))return;await sleep(50);}throw Error('timeout '+exp+' '+JSON.stringify(errors)+' '+JSON.stringify(calls));};
  await send('Runtime.enable');await send('Page.navigate',{url:'http://127.0.0.1:'+server.address().port});

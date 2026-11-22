@@ -2732,7 +2732,6 @@ async function saveManualTrigger(symbol) {
   }
   const account = selectedPortfolioAccountId;
   const detailId = actionPlanDetailRequestId;
-  const editRevision = typeof manualTriggerEditRevision === 'number' ? manualTriggerEditRevision : 0;
   statusEl.textContent = 'Saving triggers…';
   try {
     const response = await fetch(withSelectedPortfolioAccount(`/api/manual-execution-triggers/${encodeURIComponent(symbol)}`), {
@@ -3818,11 +3817,12 @@ function normalizeManualTriggerValues(values = {}) {
   };
   const percentageText = String(values.reserve_percentage ?? '').trim();
   const percentage = percentageText === '' ? 0 : Number(percentageText);
+  const directionText = String(values.sell_trigger_direction ?? '').trim();
   return {
     buy_trigger_price: price(values.buy_trigger_price),
     sell_trigger_price: price(values.sell_trigger_price),
-    sell_trigger_direction: ['at_or_above', 'at_or_below'].includes(values.sell_trigger_direction)
-      ? values.sell_trigger_direction : `invalid:${String(values.sell_trigger_direction)}`,
+    sell_trigger_direction: directionText === '' ? 'at_or_above'
+      : ['at_or_above', 'at_or_below'].includes(directionText) ? directionText : `invalid:${directionText}`,
     reserve_enabled: Boolean(values.reserve_enabled),
     reserve_percentage: Number.isFinite(percentage) && percentage >= 0 && percentage <= 100
       ? percentage : `invalid:${percentageText}`,

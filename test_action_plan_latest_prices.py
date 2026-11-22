@@ -9,15 +9,26 @@ import action_plan_prices as prices
 
 OLD = "2024-01-02T10:00:00+00:00"
 NEW = "2024-01-03T10:00:00+00:00"
+LATER_RETRIEVAL = "2024-01-04T10:00:00+00:00"
 POSITION = dict(symbol="ABC", contract_key="1", price=20, price_status="cached_stale",
-                price_source="last", price_last_successful_at=OLD)
+                price_source="last", market_observed_at=OLD, retrieved_at=OLD)
 QUOTE = dict(symbol="ABC", contract_key="1", bid=19, ask=21, source="live_bid_ask",
              refresh_at=OLD, bid_tick_at=OLD, ask_tick_at=OLD)
 DELAYED = dict(symbol="ABC", contract_key="1", price=22, price_source="delayed_last",
-               price_last_successful_at=NEW)
+               market_observed_at=NEW, retrieved_at=NEW)
 
 
 class PriceResolution(unittest.TestCase):
+    def test_newer_live_observation_beats_older_close_retrieved_later(self):
+        live = dict(POSITION, price=100, market_observed_at=NEW, retrieved_at=NEW)
+        close = dict(POSITION, price=95, price_source="close", market_observed_at=OLD,
+                     retrieved_at=LATER_RETRIEVAL)
+        selected = prices.resolve_price(live, {}, [close])
+        self.assertEqual((100, NEW, NEW, "market_observation"), (
+            selected["price"], selected["market_observed_at"], selected["retrieved_at"],
+            selected["price_timestamp_kind"],
+        ))
+
     def test_newer_delayed_price_beats_older_live_sides(self):
         for items in ([QUOTE, DELAYED], [DELAYED, QUOTE]):
             selected = prices.resolve_price(POSITION, {}, items)
@@ -25,6 +36,43 @@ class PriceResolution(unittest.TestCase):
                              selected["price_last_successful_at"]))
             self.assertIsNone(selected.get("manual_quote_proof"))
             self.assertTrue(selected["price_warning"])
+
+    def test_equal_market_times_use_documented_source_quality(self):
+        cases = [
+            (dict(POSITION, price=100, price_source="last", price_status="tws_received"),
+             dict(POSITION, price=101, price_source="delayed_last", price_status="tws_received"), 100, "last"),
+            (dict(POSITION, price=100, price_source="delayed_last", delayed=True, price_status="tws_received"),
+             dict(POSITION, price=101, price_source="frozen_last", price_status="tws_received"), 100, "delayed_last"),
+            (dict(POSITION, price=100, price_source="frozen_last", price_status="tws_received"),
+             dict(POSITION, price=101, price_source="delayed_frozen_last", delayed=True,
+                  price_status="tws_received"), 100, "frozen_last"),
+        ]
+        for first, second, expected_price, expected_source in cases:
+            with self.subTest(first=first["price_source"], second=second["price_source"]):
+                selected = prices.resolve_price({}, {}, [second, first])
+                self.assertEqual((expected_price, expected_source),
+                                 (selected["price"], selected["price_source"]))
+
+    def test_unknown_time_uses_source_quality_before_retrieval_time(self):
+        frozen = dict(symbol="ABC", contract_key="1", price=95, price_source="frozen_close",
+                      retrieved_at=LATER_RETRIEVAL)
+        live = dict(symbol="ABC", contract_key="1", price=100, price_source="last",
+                    retrieved_at=OLD)
+        selected = prices.resolve_price({}, {}, [frozen, live])
+        self.assertEqual((100, "last", None, OLD, "retrieval"), (
+            selected["price"], selected["price_source"], selected["market_observed_at"],
+            selected["retrieved_at"], selected["price_timestamp_kind"],
+        ))
+
+    def test_cached_known_time_beats_refreshed_unknown_time(self):
+        cached = dict(POSITION, persisted=True, price=100, market_observed_at=NEW,
+                      retrieved_at=NEW)
+        refreshed = dict(POSITION, price=105, price_source="last", market_observed_at=None,
+                         retrieved_at=LATER_RETRIEVAL)
+        selected = prices.resolve_price({}, {}, [refreshed, cached])
+        self.assertEqual((100, NEW, "market_observation"), (
+            selected["price"], selected["market_observed_at"], selected["price_timestamp_kind"],
+        ))
 
     def test_side_prices_and_cached_price_conditions(self):
         for observations, action, threshold, expected_price, status in [
@@ -48,8 +96,10 @@ class PriceResolution(unittest.TestCase):
                 dict(action="Add", current_price=selected["price"]), {"buy_trigger_price": 1})["status"])
         selected = prices.resolve_price({}, {"current_price": 10})
         self.assertEqual(("analysis_fallback", 10), (selected["price_source"], selected["price"]))
-        unknown = dict(POSITION, price_last_successful_at=None)
-        self.assertIsNone(prices.resolve_price(unknown, {})["price_last_successful_at"])
+        unknown = dict(POSITION, market_observed_at=None, retrieved_at=None)
+        resolved_unknown = prices.resolve_price(unknown, {})
+        self.assertIsNone(resolved_unknown["price_last_successful_at"])
+        self.assertEqual("unknown", resolved_unknown["price_timestamp_kind"])
         self.assertEqual(22, prices.resolve_price(unknown, {}, [DELAYED])["price"])
 
     def test_identity(self):
@@ -73,7 +123,7 @@ class PriceResolution(unittest.TestCase):
 
     def test_direct_evaluator_discards_older_side_price(self):
         row = dict(action="Add", current_price=22, price_source="delayed_last",
-                   price_last_successful_at=NEW, manual_quote_proof=QUOTE)
+                   market_observed_at=NEW, retrieved_at=NEW, manual_quote_proof=QUOTE)
         result = prices.evaluate_trigger(row, {"buy_trigger_price": 21})
         self.assertEqual(("waiting", 22, NEW), (result["status"], result["verified_price"], result["verified_quote_at"]))
 
@@ -94,3 +144,42 @@ class PriceResolution(unittest.TestCase):
                     self.assertEqual(expected, prices.resolve_price({}, {}, [saved])["price"])
                 self.assertFalse(prices.load_observations(backup, "C"))
             reopened.close()
+
+    def test_legacy_timestamp_migrates_as_retrieval_not_market_observation(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.execute("""
+                CREATE TABLE action_plan_price_observations (
+                    account_id TEXT NOT NULL, symbol TEXT NOT NULL, contract_key TEXT,
+                    price REAL NOT NULL, price_source TEXT NOT NULL,
+                    price_last_successful_at TEXT, bid REAL, ask REAL,
+                    bid_tick_at TEXT, ask_tick_at TEXT, delayed INTEGER NOT NULL,
+                    price_warning TEXT, PRIMARY KEY(account_id, symbol)
+                )
+            """)
+            conn.execute("""
+                INSERT INTO action_plan_price_observations
+                VALUES ('A','ABC','1',95,'close',?,NULL,NULL,NULL,NULL,0,NULL)
+            """, (LATER_RETRIEVAL,))
+            prices.init_schema(conn)
+            saved = prices.load_observations(conn, "A")["ABC"]
+            selected = prices.resolve_price({}, {}, [saved])
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(action_plan_price_observations)")}
+        self.assertTrue({"market_observed_at", "retrieved_at", "persisted_at"}.issubset(columns))
+        self.assertEqual((None, LATER_RETRIEVAL, "retrieval"), (
+            selected["market_observed_at"], selected["retrieved_at"], selected["price_timestamp_kind"],
+        ))
+
+    def test_failed_or_unknown_refresh_does_not_replace_known_saved_observation(self):
+        with sqlite3.connect(":memory:") as conn:
+            prices.init_schema(conn)
+            self.assertTrue(prices.persist_observation(conn, "A", "ABC", DELAYED))
+            self.assertFalse(prices.persist_observation(conn, "A", "ABC", {
+                "symbol": "ABC", "contract_key": "1", "price": 30,
+                "price_source": "last", "retrieved_at": LATER_RETRIEVAL,
+            }))
+            self.assertFalse(prices.persist_observation(conn, "A", "ABC", {
+                "symbol": "ABC", "contract_key": "1", "price": float("nan"),
+                "price_source": "last", "retrieved_at": LATER_RETRIEVAL,
+            }))
+            selected = prices.resolve_price({}, {}, [prices.load_observations(conn, "A")["ABC"]])
+        self.assertEqual((22, NEW), (selected["price"], selected["market_observed_at"]))

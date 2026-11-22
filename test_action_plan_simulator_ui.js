@@ -4,6 +4,19 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const html = fs.readFileSync('static/index.html','utf8');
 const app = fs.readFileSync('static/app.js','utf8');
+function functionSource(name) {
+  const start = app.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} exists`);
+  const declarationStart = app.slice(start - 6, start) === 'async ' ? start - 6 : start;
+  const opening = app.indexOf('{', app.indexOf(')', start));
+  let depth = 0;
+  for (let index = opening; index < app.length; index += 1) {
+    if (app[index] === '{') depth += 1;
+    if (app[index] === '}') depth -= 1;
+    if (depth === 0) return app.slice(declarationStart, index + 1);
+  }
+  throw new Error(`${name} is incomplete`);
+}
 test('Simulator follows Action Plan and defaults to collapsed settings and one-time trigger copy', () => {
   assert.match(html,/data-view="action-plan">Action Plan<\/button>\s*<button[^>]+data-view="action-plan-simulator"/);
   assert.match(html,/<details id="simulation-settings">/);
@@ -20,6 +33,7 @@ test('simulation routing isolates trigger writes while sharing market refresh', 
 
 function simulatorHarness() {
   const elements = new Map();
+  const windowHandlers = {};
   const node = (id) => {
     if (!elements.has(id)) {
       const el = {
@@ -37,14 +51,17 @@ function simulatorHarness() {
   const requests = [], plans = [];
   const context = vm.createContext({
     document: {getElementById: node}, Option: class { constructor(label,value) { Object.assign(this,{label,value}); } },
-    window: {addEventListener() {}, confirm: () => false},
+    window: {addEventListener(type, fn) { windowHandlers[type] = fn; }, confirm: () => false},
     selectedPortfolioAccountId: 'A', actionPlanExecutionMode: 'with', actionPlanShowNonExecutableRecommendations: false,
     actionPlanRatingFilters: [], actionPlanActionFilters: [], actionPlanLinearSort: {},
     getAllRatingFilterKeys: () => [], getAllActionPlanActionFilterKeys: () => [],
+    manualTriggerDetailEl: null,
     setSelectedActionPlanRatings() {}, setSelectedActionPlanActions() {}, updateActionPlanSortHeaderState() {}, updateActionPlanModeButtons() {},
     clearActionPlanDisplay() {}, formatCurrencyValue: (value) => '$' + value,
     loadActionPlan() { plans.push(vm.runInContext('selectedSimulation?.id', context)); },
     refreshActionPlanFromButton() {}, createPortfolioApiError: (p) => Error(p.error),
+    currentTriggerValues: null,
+    manualTriggerEditorValues() { return context.currentTriggerValues; },
     withSelectedPortfolioAccount: (url) => url + '?account_id=' + context.selectedPortfolioAccountId,
     fetch: (url, options) => new Promise((resolve) => requests.push({
       url, options, finish(payload, ok = true) { resolve({ ok, json: async () => payload }); },
@@ -53,8 +70,170 @@ function simulatorHarness() {
   vm.runInContext(app.slice(app.indexOf('const simulationEl ='), app.indexOf('function setView(')), context);
   const run = (code) => vm.runInContext(code, context);
   run('simulatorActive = true');
-  return { run, requests, plans, el: (name) => node('simulation-' + name), context };
+  return { run, requests, plans, el: (name) => node('simulation-' + name), context, windowHandlers };
 }
+
+const triggerValues = (overrides = {}) => ({
+  buy_trigger_price: '80', sell_trigger_price: '700', sell_trigger_direction: 'at_or_above',
+  reserve_enabled: false, reserve_percentage: '0', ...overrides,
+});
+
+test('every normalized simulation trigger field participates in dirty tracking and reverting clears it', () => {
+  const h = simulatorHarness();
+  h.run("selectedSimulation = {id: 7, additional_cash_usd: 0}");
+  h.context.currentTriggerValues = triggerValues();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  assert.equal(h.run('simulationTriggerDirty()'), false);
+  for (const [field, value] of Object.entries({
+    buy_trigger_price: '81', sell_trigger_price: '701', sell_trigger_direction: 'at_or_below',
+    reserve_enabled: true, reserve_percentage: '60',
+  })) {
+    h.context.currentTriggerValues = triggerValues({ [field]: value });
+    assert.equal(h.run('simulationTriggerDirty()'), true, field);
+  }
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '80.0', reserve_percentage: '0.0' });
+  assert.equal(h.run('simulationTriggerDirty()'), false);
+  h.run("noteManualTriggerEdit()");
+  assert.equal(h.run('simulationTriggerDirty()'), false);
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '99' });
+  h.run('simulatorActive = false');
+  assert.equal(h.run('simulationTriggerDirty()'), false, 'real Action Plan remains unaffected');
+});
+
+test('trigger price refresh does not dirty the editor and beforeunload protects actual edits', () => {
+  const h = simulatorHarness();
+  h.run("selectedSimulation = {id: 7, additional_cash_usd: 0}");
+  h.context.currentTriggerValues = triggerValues();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  assert.equal(h.run('simulationTriggerDirty()'), false);
+  const cleanEvent = { prevented: false, preventDefault() { this.prevented = true; } };
+  h.windowHandlers.beforeunload(cleanEvent);
+  assert.equal(cleanEvent.prevented, false);
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '81' });
+  const dirtyEvent = { prevented: false, returnValue: undefined, preventDefault() { this.prevented = true; } };
+  h.windowHandlers.beforeunload(dirtyEvent);
+  assert.equal(dirtyEvent.prevented, true);
+  assert.equal(dirtyEvent.returnValue, '');
+});
+
+test('switching simulations rejects or explicitly discards unsaved trigger edits', async () => {
+  const h = simulatorHarness();
+  h.run("savedSimulations = [{id:1,name:'One',additional_cash_usd:0},{id:2,name:'Two',additional_cash_usd:0}]; selectedSimulation = savedSimulations[0]");
+  h.el('select').value = '2';
+  h.context.currentTriggerValues = triggerValues();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ reserve_enabled: true });
+  h.el('select').fire('change');
+  assert.equal(h.run('selectedSimulation.id'), 1);
+  assert.equal(h.el('select').value, 1);
+  assert.equal(h.context.currentTriggerValues.reserve_enabled, true);
+  h.context.window.confirm = () => true;
+  h.el('select').value = '2';
+  h.el('select').fire('change');
+  await new Promise(setImmediate);
+  assert.equal(h.run('selectedSimulation.id'), 2);
+});
+
+test('delete duplicate and refresh are blocked by unsaved trigger edits until discard is confirmed', () => {
+  const h = simulatorHarness();
+  h.run("selectedSimulation = {id:7,name:'Saved',additional_cash_usd:0}; savedSimulations=[selectedSimulation]");
+  h.context.currentTriggerValues = triggerValues();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ reserve_percentage: '50' });
+  h.el('duplicate').fire('click');
+  h.el('refresh').fire('click');
+  h.el('delete').fire('click');
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.plans.length, 0);
+});
+
+function triggerPersistenceHarness() {
+  const status = { textContent: '', className: '' };
+  const requests = [];
+  const context = vm.createContext({
+    selectedPortfolioAccountId: 'A', selectedSimulation: { id: 7 }, simulatorActive: true,
+    actionPlanDetailRequestId: 1, manualTriggerEditRevision: 0,
+    currentTriggerValues: triggerValues(), manualTriggerDetailEl: { querySelector: () => status },
+    manualTriggerEditorValues() { return context.currentTriggerValues; },
+    setManualTriggerEditorValues(values) { context.currentTriggerValues = { ...values }; },
+    withSelectedPortfolioAccount: (url) => url + '?account_id=A',
+    createPortfolioApiError: (payload) => Error(payload.error || 'request failed'),
+    loadActionPlan: async () => true,
+    renderManualTriggerDetail() {},
+    fetch: (url, options) => new Promise((resolve) => requests.push({
+      url, options, finish(payload, ok = true, statusCode = ok ? 200 : 500) {
+        resolve({ ok, status: statusCode, json: async () => payload });
+      },
+    })),
+  });
+  vm.runInContext(`let manualTriggerBaseline = null;
+    ${functionSource('normalizeManualTriggerValues')}
+    ${functionSource('manualTriggerContextKey')}
+    ${functionSource('setManualTriggerBaseline')}
+    ${functionSource('simulationTriggerDirty')}
+    ${functionSource('validateManualTriggerForm')}
+    ${functionSource('saveManualTrigger')}
+    ${functionSource('clearManualTrigger')}`, context);
+  return { context, requests, status, run: (code) => vm.runInContext(code, context) };
+}
+
+test('saving clears dirty state while failed saving retains edited values', async () => {
+  const h = triggerPersistenceHarness();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '81' });
+  assert.equal(h.run('simulationTriggerDirty()'), true);
+  const save = h.run("saveManualTrigger('NVDA')");
+  h.requests[0].finish({ trigger: { buy_trigger_price: 81 } });
+  await save;
+  assert.equal(h.run('simulationTriggerDirty()'), false);
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '82' });
+  const failed = h.run("saveManualTrigger('NVDA')");
+  h.requests[1].finish({ error: 'offline' }, false);
+  await failed;
+  assert.equal(h.context.currentTriggerValues.buy_trigger_price, '82');
+  assert.equal(h.run('simulationTriggerDirty()'), true);
+  assert.match(h.status.textContent, /offline/);
+});
+
+test('clear updates the baseline but a late response cannot overwrite newer edits', async () => {
+  const h = triggerPersistenceHarness();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  const clear = h.run("clearManualTrigger('NVDA')");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '83' });
+  h.context.manualTriggerEditRevision += 1;
+  h.requests[0].finish({ deleted: true });
+  await clear;
+  assert.equal(h.context.currentTriggerValues.buy_trigger_price, '83');
+  assert.equal(h.run('simulationTriggerDirty()'), true);
+  assert.match(h.status.textContent, /newer trigger changes remain unsaved/);
+  const second = h.run("clearManualTrigger('NVDA')");
+  h.requests[1].finish({ deleted: true });
+  await second;
+  assert.equal(h.run('simulationTriggerDirty()'), false);
+  assert.equal(h.context.currentTriggerValues.buy_trigger_price, null);
+});
+
+test('account switching and opening another symbol are cancelled when trigger discard is rejected', async () => {
+  const h = simulatorHarness();
+  h.run("selectedSimulation = {id:7,additional_cash_usd:0}");
+  h.context.currentTriggerValues = triggerValues();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ sell_trigger_price: '710' });
+  let accountRenderCount = 0;
+  Object.assign(h.context, {
+    isUpdatingPortfolioAccountSelect: false,
+    portfolioAccountSelectEl: { value: 'B' },
+    renderPortfolioAccountSelector() { accountRenderCount += 1; },
+  });
+  h.run(functionSource('handlePortfolioAccountChange'));
+  await h.run('handlePortfolioAccountChange()');
+  assert.equal(h.context.selectedPortfolioAccountId, 'A');
+  assert.equal(accountRenderCount, 1);
+  h.run(functionSource('openActionPlanDetail'));
+  const opened = await h.run("openActionPlanDetail('MSFT')");
+  assert.equal(opened, false);
+  assert.equal(h.context.currentTriggerValues.sell_trigger_price, '710');
+});
 
 test('late list and mutation results cannot replace a different account or simulation', async () => {
   const h = simulatorHarness();
@@ -173,6 +352,8 @@ test('opening full analysis and returning retains the simulator, stock detail, e
     analysisBackBtn:h.el('test-back'), actionPlanOpenAnalysisBtn:h.el('test-open'),
     loadAnalysisDetail: async symbol => { assert.equal(symbol,'ABC'); },
   });
+  views[1].classList.active = true;
+  menuItems[1].classList.active = true;
   h.run("actionPlanExecutionMode = 'without'");
   const functions = ['setView','showAnalysisDetailFromOriginMenu','showAnalysisDetailFromActionPlanOrigin','openAnalysisDetailForSymbol'];
   for (const name of functions) h.run(app.match(new RegExp('(?:async )?function ' + name + '\\([^]*?\\n}'))[0]);
@@ -180,6 +361,12 @@ test('opening full analysis and returning retains the simulator, stock detail, e
     const start = app.indexOf(source + ".addEventListener('click'");
     h.run(app.slice(start, app.indexOf('\n});', start) + 4));
   }
+  h.context.currentTriggerValues = triggerValues();
+  h.run("setManualTriggerBaseline('ABC', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '81' });
+  h.el('test-open').fire('click');
+  assert.equal(views.find(v => v.classList.active).id,'action-plan-simulator');
+  h.context.window.confirm = () => true;
   h.el('test-open').fire('click');
   assert.equal(views.find(v => v.classList.active).id,'analysis');
   assert.equal(menuItems.find(v => v.classList.active).dataset.view,'action-plan-simulator');

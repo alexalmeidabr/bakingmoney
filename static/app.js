@@ -2329,6 +2329,7 @@ function renderAnalysisList() {
 
 function showActionPlanList() {
   actionPlanDetailRequestId += 1;
+  if (typeof clearManualTriggerBaseline === 'function') clearManualTriggerBaseline();
   selectedActionPlanDetail = null;
   latestActionPlanDetailPayload = null;
   if (manualTriggerDetailEl) manualTriggerDetailEl.innerHTML = '';
@@ -2696,6 +2697,11 @@ function renderManualTriggerDetail(symbol, trigger) {
   const syncReserve = () => { reserveLabel.hidden = !reserveToggle.checked; };
   reserveToggle.addEventListener('change', syncReserve);
   syncReserve();
+  setManualTriggerBaseline(symbol, saved);
+  manualTriggerDetailEl.querySelectorAll('[data-trigger-field]').forEach((field) => {
+    field.addEventListener('input', noteManualTriggerEdit);
+    field.addEventListener('change', noteManualTriggerEdit);
+  });
   const detailItem = getDisplayedLinearActionPlanItems(latestActionPlanPayload, actionPlanExecutionMode)
     .find((item) => item.symbol === symbol) || latestActionPlanDetailPayload?.manual_execution_detail || latestActionPlanDetailPayload?.action_detail;
   updateManualTriggerCurrentPriceReference(detailItem);
@@ -2726,6 +2732,7 @@ async function saveManualTrigger(symbol) {
   }
   const account = selectedPortfolioAccountId;
   const detailId = actionPlanDetailRequestId;
+  const editRevision = typeof manualTriggerEditRevision === 'number' ? manualTriggerEditRevision : 0;
   statusEl.textContent = 'Saving triggers…';
   try {
     const response = await fetch(withSelectedPortfolioAccount(`/api/manual-execution-triggers/${encodeURIComponent(symbol)}`), {
@@ -2734,12 +2741,17 @@ async function saveManualTrigger(symbol) {
     const payload = await response.json();
     if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
     if (!response.ok) throw createPortfolioApiError(payload, 'Unable to save triggers');
+    if (typeof setManualTriggerBaseline === 'function') setManualTriggerBaseline(symbol, validation.value);
     statusEl.textContent = 'Triggers saved. Updating Action Plan…';
     statusEl.className = 'status';
     const reloaded = await loadActionPlan({ preserveDetail: true });
     if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
-    statusEl.textContent = reloaded ? 'Triggers saved.' : 'Triggers saved, but Action Plan reload failed. Refresh Action Plan to retry.';
-    statusEl.className = reloaded ? 'status success' : 'status warning';
+    const newerEditsRemain = typeof simulatorActive !== 'undefined' && simulatorActive
+      && typeof simulationTriggerDirty === 'function' && simulationTriggerDirty();
+    statusEl.textContent = newerEditsRemain
+      ? 'Triggers saved; newer trigger changes remain unsaved.'
+      : reloaded ? 'Triggers saved.' : 'Triggers saved, but Action Plan reload failed. Refresh Action Plan to retry.';
+    statusEl.className = newerEditsRemain || !reloaded ? 'status warning' : 'status success';
   } catch (error) {
     if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
     statusEl.textContent = `Error: ${error.message}`;
@@ -2751,18 +2763,32 @@ async function clearManualTrigger(symbol) {
   const statusEl = manualTriggerDetailEl.querySelector('[data-trigger-status]');
   const account = selectedPortfolioAccountId;
   const detailId = actionPlanDetailRequestId;
+  const editRevision = typeof manualTriggerEditRevision === 'number' ? manualTriggerEditRevision : 0;
   try {
     const response = await fetch(withSelectedPortfolioAccount(`/api/manual-execution-triggers/${encodeURIComponent(symbol)}`), { method: 'DELETE' });
     const payload = await response.json();
     if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
     if (!response.ok && response.status !== 404) throw createPortfolioApiError(payload, 'Unable to clear triggers');
-    renderManualTriggerDetail(symbol, null);
+    const cleared = {
+      buy_trigger_price: null, sell_trigger_price: null, sell_trigger_direction: 'at_or_above',
+      reserve_enabled: false, reserve_percentage: 0,
+    };
+    if (typeof setManualTriggerBaseline === 'function') setManualTriggerBaseline(symbol, cleared);
+    const currentRevision = typeof manualTriggerEditRevision === 'number' ? manualTriggerEditRevision : 0;
+    if (editRevision === currentRevision) {
+      if (typeof setManualTriggerEditorValues === 'function') setManualTriggerEditorValues(cleared);
+      else renderManualTriggerDetail(symbol, null);
+    }
     const newStatus = manualTriggerDetailEl.querySelector('[data-trigger-status]');
     newStatus.textContent = 'Triggers cleared. Updating Action Plan…';
     const reloaded = await loadActionPlan({ preserveDetail: true });
     if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
-    newStatus.textContent = reloaded ? 'Triggers cleared.' : 'Triggers cleared, but Action Plan reload failed. Refresh Action Plan to retry.';
-    newStatus.className = reloaded ? 'status success' : 'status warning';
+    const newerEditsRemain = typeof simulatorActive !== 'undefined' && simulatorActive
+      && typeof simulationTriggerDirty === 'function' && simulationTriggerDirty();
+    newStatus.textContent = newerEditsRemain
+      ? 'Triggers cleared; newer trigger changes remain unsaved.'
+      : reloaded ? 'Triggers cleared.' : 'Triggers cleared, but Action Plan reload failed. Refresh Action Plan to retry.';
+    newStatus.className = newerEditsRemain || !reloaded ? 'status warning' : 'status success';
   } catch (error) {
     if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
     statusEl.textContent = `Error: ${error.message}`;
@@ -2964,6 +2990,8 @@ function renderActionPlanDetail(item) {
 }
 
 async function openActionPlanDetail(symbol) {
+  if (typeof simulatorActive !== 'undefined' && simulatorActive
+      && simulationTriggerDirty() && !discardSimulationEdits()) return false;
   if (isPortfolioAccountSelectionRequired()) {
     clearActionPlanDisplay(PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE);
     return;
@@ -3069,6 +3097,7 @@ async function refreshOpenActionPlanDetail(account, symbol, detailRequestId) {
 }
 
 async function refreshActionPlanFromButton() {
+  if (typeof simulatorActive !== 'undefined' && simulatorActive && !discardSimulationEdits()) return false;
   const account = selectedPortfolioAccountId;
   const symbol = actionPlanDetailViewEl.classList.contains('hidden') ? null : selectedActionPlanDetail?.symbol;
   const detailRequestId = actionPlanDetailRequestId;
@@ -3776,8 +3805,85 @@ let savedSimulations = [];
 let selectedSimulation = null;
 let simulationGeneration = 0;
 let simulationBusy = false;
+let manualTriggerBaseline = null;
+let manualTriggerEditRevision = 0;
 const previousSimulation = new Map();
 const planPreferences = new Map();
+
+function normalizeManualTriggerValues(values = {}) {
+  const price = (value) => {
+    if (String(value ?? '').trim() === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : `invalid:${String(value)}`;
+  };
+  const percentageText = String(values.reserve_percentage ?? '').trim();
+  const percentage = percentageText === '' ? 0 : Number(percentageText);
+  return {
+    buy_trigger_price: price(values.buy_trigger_price),
+    sell_trigger_price: price(values.sell_trigger_price),
+    sell_trigger_direction: ['at_or_above', 'at_or_below'].includes(values.sell_trigger_direction)
+      ? values.sell_trigger_direction : `invalid:${String(values.sell_trigger_direction)}`,
+    reserve_enabled: Boolean(values.reserve_enabled),
+    reserve_percentage: Number.isFinite(percentage) && percentage >= 0 && percentage <= 100
+      ? percentage : `invalid:${percentageText}`,
+  };
+}
+
+function manualTriggerContextKey(symbol) {
+  return JSON.stringify([selectedPortfolioAccountId, selectedSimulation?.id ?? null, String(symbol || '').toUpperCase()]);
+}
+
+function setManualTriggerEditorValues(values) {
+  if (!manualTriggerDetailEl) return;
+  const field = (name) => manualTriggerDetailEl.querySelector(`[data-trigger-field="${name}"]`);
+  field('buy_trigger_price').value = values.buy_trigger_price ?? '';
+  field('sell_trigger_price').value = values.sell_trigger_price ?? '';
+  field('sell_trigger_direction').value = values.sell_trigger_direction || 'at_or_above';
+  field('reserve_enabled').checked = Boolean(values.reserve_enabled);
+  field('reserve_percentage').value = values.reserve_percentage ?? 0;
+  const reserveLabel = manualTriggerDetailEl.querySelector('[data-reserve-percentage-label]');
+  if (reserveLabel) reserveLabel.hidden = !field('reserve_enabled').checked;
+}
+
+function setManualTriggerBaseline(symbol, values) {
+  manualTriggerBaseline = {
+    key: manualTriggerContextKey(symbol),
+    symbol: String(symbol || '').toUpperCase(),
+    values: normalizeManualTriggerValues(values),
+  };
+}
+
+function clearManualTriggerBaseline() {
+  manualTriggerBaseline = null;
+  manualTriggerEditRevision += 1;
+}
+
+function simulationTriggerDirty() {
+  if (!simulatorActive || !selectedSimulation || !manualTriggerBaseline) return false;
+  if (manualTriggerBaseline.key !== manualTriggerContextKey(manualTriggerBaseline.symbol)) return false;
+  try {
+    return JSON.stringify(normalizeManualTriggerValues(manualTriggerEditorValues()))
+      !== JSON.stringify(manualTriggerBaseline.values);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function noteManualTriggerEdit() {
+  manualTriggerEditRevision += 1;
+  const status = typeof manualTriggerDetailEl === 'undefined'
+    ? null : manualTriggerDetailEl?.querySelector('[data-trigger-status]');
+  if (simulatorActive && status) {
+    status.textContent = simulationTriggerDirty() ? 'Unsaved trigger changes.' : '';
+    status.className = simulationTriggerDirty() ? 'status warning' : 'status';
+  }
+}
+
+function restoreManualTriggerBaseline() {
+  if (!manualTriggerBaseline) return;
+  setManualTriggerEditorValues(manualTriggerBaseline.values);
+  noteManualTriggerEdit();
+}
 
 function scopedPlanPath(path, simulationId) {
   if (simulationId == null) return path;
@@ -3796,10 +3902,17 @@ function simulationCashDirty() {
 }
 
 function discardSimulationEdits() {
-  if (!simulationCashDirty()) return true;
-  if (!window.confirm('Discard your unsaved additional cash change?')) return false;
-  simulationEl('cash').value = selectedSimulation.additional_cash_usd;
-  simulationEl('status').textContent = '';
+  const cashDirty = simulationCashDirty();
+  const triggerDirty = simulationTriggerDirty();
+  if (!cashDirty && !triggerDirty) return true;
+  const description = cashDirty && triggerDirty ? 'additional cash and trigger changes'
+    : cashDirty ? 'additional cash change' : 'trigger changes';
+  if (!window.confirm(`Discard your unsaved ${description}?`)) return false;
+  if (cashDirty) {
+    simulationEl('cash').value = selectedSimulation.additional_cash_usd;
+    simulationEl('status').textContent = '';
+  }
+  if (triggerDirty) restoreManualTriggerBaseline();
   return true;
 }
 
@@ -3854,6 +3967,7 @@ function clearSimulationContext() {
   simulationEl('settings').open = false;
   simulationEl('status').textContent = '';
   simulationEl('cash').value = '';
+  clearManualTriggerBaseline();
   clearActionPlanDisplay('', 'status');
   renderSimulationControls();
 }
@@ -3872,6 +3986,7 @@ async function selectSimulation(id) {
   selectedSimulation = savedSimulations.find((sim) => String(sim.id) === String(id)) || null;
   previousSimulation.set(selectedPortfolioAccountId, selectedSimulation?.id);
   ++simulationGeneration;
+  clearManualTriggerBaseline();
   clearActionPlanDisplay('', 'status');
   restorePlanPreferences();
   simulationEl('cash').value = selectedSimulation?.additional_cash_usd ?? '';
@@ -3979,7 +4094,7 @@ simulationEl('refresh').addEventListener('click', () => {
   if (discardSimulationEdits()) refreshActionPlanFromButton();
 });
 window.addEventListener('beforeunload', (event) => {
-  if (simulationCashDirty()) {
+  if (simulationCashDirty() || simulationTriggerDirty()) {
     event.preventDefault();
     event.returnValue = '';
   }
@@ -7499,7 +7614,10 @@ actionPlanShowNonExecutableRecommendationsEl?.addEventListener('change', () => {
   setActionPlanShowNonExecutableRecommendations(actionPlanShowNonExecutableRecommendationsEl.checked);
 });
 actionPlanRefreshTriggerPricesBtn?.addEventListener('click', () => refreshTriggerPrices());
-actionPlanDetailBackBtn.addEventListener('click', showActionPlanList);
+actionPlanDetailBackBtn.addEventListener('click', () => {
+  if (simulatorActive && !discardSimulationEdits()) return;
+  showActionPlanList();
+});
 actionPlanOpenAnalysisBtn.addEventListener('click', () => {
   if (!selectedActionPlanDetail?.symbol || !discardSimulationEdits()) return;
   openAnalysisDetailForSymbol(selectedActionPlanDetail.symbol, { origin: 'action_plan' });

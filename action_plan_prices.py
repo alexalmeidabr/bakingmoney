@@ -48,8 +48,7 @@ def _source_kind(raw, source):
     delayed = bool(raw.get("delayed") or "delay" in lowered)
     closing = any(part in lowered for part in ("close", "prevclose", "previous_close"))
     frozen = bool(raw.get("frozen") or "frozen" in lowered or closing)
-    persisted = bool(raw.get("persisted"))
-    cached = persisted or raw.get("price_status") == "cached_stale" or lowered == "cached" or lowered.startswith("cached_")
+    cached = raw.get("price_status") == "cached_stale" or lowered == "cached" or lowered.startswith("cached_")
     if cached:
         return "cached", delayed, frozen
     if delayed and frozen:
@@ -86,6 +85,9 @@ def _observation(raw):
         retrieved_time = _time(raw.get("price_last_successful_at"))
     persisted_time = _time(raw.get("persisted_at"))
     source_kind, delayed, frozen = _source_kind(raw, source)
+    acquisition_kind = raw.get("acquisition_kind")
+    if acquisition_kind not in {"streaming_live", "streaming_delayed", "snapshot"}:
+        acquisition_kind = None
     market_iso = market_time.isoformat() if market_time else None
     retrieved_iso = retrieved_time.isoformat() if retrieved_time else None
     display_time = market_iso or retrieved_iso
@@ -93,6 +95,8 @@ def _observation(raw):
     return dict(
         price=price, price_source=source, source_kind=source_kind,
         source_quality=SOURCE_QUALITY[source_kind], contract_key=raw.get("contract_key"),
+        security_type=raw.get("security_type") or raw.get("sec_type"),
+        currency=raw.get("currency"), acquisition_kind=acquisition_kind,
         symbol=raw.get("symbol"), market_observed_at=market_iso, retrieved_at=retrieved_iso,
         persisted_at=persisted_time.isoformat() if persisted_time else None,
         price_timestamp_kind=timestamp_kind, price_last_successful_at=display_time,
@@ -105,9 +109,15 @@ def _observation(raw):
 
 def _rank(observation):
     market_time = observation.get("market_observed_at")
+    proxy_time = observation.get("retrieved_at") if (
+        market_time is None
+        and observation.get("acquisition_kind") in {"streaming_live", "streaming_delayed"}
+    ) else None
+    effective_time = market_time or proxy_time
     return (
+        effective_time is not None,
+        effective_time or "",
         market_time is not None,
-        market_time or "",
         observation.get("source_quality", 0),
         observation.get("bid") is not None,
         observation.get("retrieved_at") or "",
@@ -135,6 +145,14 @@ def _warning(item, now):
     if market_time is None:
         if retrieved_time is None:
             warnings.append("Market observation and retrieval times are unknown.")
+        elif item.get("acquisition_kind") == "streaming_live":
+            warnings.append(
+                f"Live market data was received at {retrieved_time.isoformat()}, but its exchange observation time is unknown; receipt time is used as a freshness proxy."
+            )
+        elif item.get("acquisition_kind") == "streaming_delayed":
+            warnings.append(
+                f"Delayed streaming market data was received at {retrieved_time.isoformat()}, but its exchange observation time is unknown; receipt time is used as a freshness proxy."
+            )
         else:
             warnings.append(f"Market observation time is unknown; quote retrieved at {retrieved_time.isoformat()}.")
     age_time = market_time or retrieved_time
@@ -190,7 +208,8 @@ def resolve_price(position, analysis, observations=()):
             price_last_successful_at=item["price_last_successful_at"],
             price_warning=warning,
             price_sizing_source="position_quote" if is_position else "market_observation",
-            contract_key=item["contract_key"], manual_quote_proof=item if item["bid"] else None,
+            contract_key=item["contract_key"], acquisition_kind=item["acquisition_kind"],
+            manual_quote_proof=item if item["bid"] else None,
         )
     price = _positive(analysis.get("current_price"))
     if price:
@@ -199,6 +218,7 @@ def resolve_price(position, analysis, observations=()):
             market_observed_at=None, retrieved_at=None, persisted_at=None,
             price_timestamp_kind="unknown", price_last_successful_at=None,
             price_sizing_source="analysis_price_fallback",
+            acquisition_kind=None,
             price_warning="Using saved analysis price because no usable IBKR market observation is available.",
         )
     return dict(
@@ -207,6 +227,7 @@ def resolve_price(position, analysis, observations=()):
         price_timestamp_kind="unknown", price_last_successful_at=None,
         price_warning="No usable market price is available for Action Plan sizing.",
         price_sizing_source="unavailable",
+        acquisition_kind=None,
     )
 
 
@@ -291,6 +312,7 @@ def _create_observation_table(conn):
             price_last_successful_at TEXT, market_observed_at TEXT, retrieved_at TEXT,
             persisted_at TEXT, bid REAL, ask REAL,
             bid_tick_at TEXT, ask_tick_at TEXT, delayed INTEGER NOT NULL,
+            security_type TEXT, currency TEXT, acquisition_kind TEXT,
             price_warning TEXT, PRIMARY KEY(account_id, symbol, contract_key)
         )
     """)
@@ -314,10 +336,11 @@ def _migrate_contract_identity_key(conn):
         conn.execute(f"""
             INSERT INTO action_plan_price_observations
             (account_id,symbol,contract_key,price,price_source,price_last_successful_at,
-             market_observed_at,retrieved_at,persisted_at,bid,ask,bid_tick_at,ask_tick_at,delayed,price_warning)
+             market_observed_at,retrieved_at,persisted_at,bid,ask,bid_tick_at,ask_tick_at,delayed,
+             security_type,currency,acquisition_kind,price_warning)
             SELECT account_id,symbol,COALESCE(NULLIF(TRIM(contract_key), ''), ''),price,price_source,
                    price_last_successful_at,market_observed_at,retrieved_at,persisted_at,
-                   bid,ask,bid_tick_at,ask_tick_at,delayed,price_warning
+                   bid,ask,bid_tick_at,ask_tick_at,delayed,security_type,currency,acquisition_kind,price_warning
             FROM {legacy_table}
         """)
         migrated_count = conn.execute("SELECT COUNT(*) FROM action_plan_price_observations").fetchone()[0]
@@ -340,6 +363,9 @@ def init_schema(conn):
     _ensure_column(conn, "market_observed_at", "TEXT")
     _ensure_column(conn, "retrieved_at", "TEXT")
     _ensure_column(conn, "persisted_at", "TEXT")
+    _ensure_column(conn, "security_type", "TEXT")
+    _ensure_column(conn, "currency", "TEXT")
+    _ensure_column(conn, "acquisition_kind", "TEXT")
     if _primary_key_columns(conn) != ["account_id", "symbol", "contract_key"]:
         _migrate_contract_identity_key(conn)
 
@@ -375,16 +401,20 @@ def persist_observation(conn, account_id, symbol, observation):
     conn.execute("""
         INSERT INTO action_plan_price_observations
         (account_id,symbol,contract_key,price,price_source,price_last_successful_at,
-         market_observed_at,retrieved_at,persisted_at,bid,ask,bid_tick_at,ask_tick_at,delayed,price_warning)
+         market_observed_at,retrieved_at,persisted_at,bid,ask,bid_tick_at,ask_tick_at,delayed,
+         security_type,currency,acquisition_kind,price_warning)
         VALUES (:account_id,:symbol,:contract_key,:price,:price_source,:price_last_successful_at,
-                :market_observed_at,:retrieved_at,:persisted_at,:bid,:ask,:bid_tick_at,:ask_tick_at,:delayed,:price_warning)
+                :market_observed_at,:retrieved_at,:persisted_at,:bid,:ask,:bid_tick_at,:ask_tick_at,:delayed,
+                :security_type,:currency,:acquisition_kind,:price_warning)
         ON CONFLICT(account_id,symbol,contract_key) DO UPDATE SET
             price=excluded.price, price_source=excluded.price_source,
             price_last_successful_at=excluded.price_last_successful_at,
             market_observed_at=excluded.market_observed_at, retrieved_at=excluded.retrieved_at,
             persisted_at=excluded.persisted_at, bid=excluded.bid, ask=excluded.ask,
             bid_tick_at=excluded.bid_tick_at, ask_tick_at=excluded.ask_tick_at,
-            delayed=excluded.delayed, price_warning=excluded.price_warning
+            delayed=excluded.delayed, security_type=excluded.security_type,
+            currency=excluded.currency, acquisition_kind=excluded.acquisition_kind,
+            price_warning=excluded.price_warning
     """, values)
     return True
 

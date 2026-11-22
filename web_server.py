@@ -2027,6 +2027,7 @@ class _ManualQuoteObservations:
     def __init__(self, required_contract_keys=None):
         self._active_tickers = {}
         self._latest_by_contract = {}
+        self._price_fields_by_contract = {}
         self._required_contract_keys = (
             None if required_contract_keys is None else frozenset(required_contract_keys)
         )
@@ -2041,13 +2042,21 @@ class _ManualQuoteObservations:
         for ticker in pending_tickers or ():
             active = self._active_tickers.get(id(ticker))
             if (not active or active[0] is not ticker
-                    or market_data_contract_key(getattr(ticker, "contract", None)) != active[1]
-                    or getattr(ticker, "marketDataType", None) != 1):
+                    or market_data_contract_key(getattr(ticker, "contract", None)) != active[1]):
                 continue
             sides = self._latest_by_contract.setdefault(active[1], {})
             for tick in getattr(ticker, "ticks", ()) or ():
-                side = {1: "bid", 2: "ask"}.get(getattr(tick, "tickType", None))
+                tick_type = getattr(tick, "tickType", None)
+                field = {
+                    1: "bid", 2: "ask", 4: "last", 9: "close",
+                    66: "bid", 67: "ask", 68: "last", 75: "close",
+                }.get(tick_type)
                 price = safe_number(getattr(tick, "price", None))
+                if field and is_valid_market_price(price):
+                    self._price_fields_by_contract.setdefault(active[1], set()).add(field)
+                if getattr(ticker, "marketDataType", None) != 1:
+                    continue
+                side = field if field in {"bid", "ask"} else None
                 size = safe_number(getattr(tick, "size", None))
                 tick_time = _manual_quote_time(getattr(tick, "time", None), now)
                 if not side or not is_valid_market_price(price) or size is None or size <= 0 or tick_time is None:
@@ -2055,6 +2064,25 @@ class _ManualQuoteObservations:
                 previous = sides.get(side)
                 if previous is None or tick_time >= previous["time"]:
                     sides[side] = {"price": price, "size": size, "time": tick_time}
+
+    def acquisition_kind(self, ticker, contract_key, price_source, diagnostic=None):
+        if not self.is_active(ticker, contract_key):
+            return None
+        source = str(price_source or "").lower()
+        data_type = getattr(ticker, "marketDataType", None)
+        delayed = data_type in {3, 4} or bool((diagnostic or {}).get("delayed"))
+        frozen = data_type in {2, 4} or "frozen" in source
+        if frozen or "close" in source:
+            return "snapshot"
+        fields = self._price_fields_by_contract.get(contract_key, set())
+        matched = bool(fields.intersection({"bid", "ask"})) if "marketprice" in source else (
+            "last" in fields if "last" in source else False
+        )
+        if not matched:
+            return None
+        if delayed:
+            return "streaming_delayed"
+        return "streaming_live" if data_type == 1 else None
 
     def for_contract(self, contract_key):
         return self._latest_by_contract.get(contract_key, {})
@@ -2109,6 +2137,9 @@ def _manual_quote_proof_from_ticker(ticker, contract_key, refresh_at, diagnostic
     bid, ask, bid_time, ask_time = sides
     return {
         "source": "live_bid_ask", "contract_key": contract_key,
+        "security_type": getattr(getattr(ticker, "contract", None), "secType", None),
+        "currency": getattr(getattr(ticker, "contract", None), "currency", None),
+        "acquisition_kind": "streaming_live",
         "bid": bid, "ask": ask,
         "bid_tick_at": bid_time.isoformat(), "ask_tick_at": ask_time.isoformat(),
         "refresh_at": refresh_time.isoformat(),
@@ -4471,6 +4502,7 @@ def _create_positions_cache_table(conn):
           market_observed_at TEXT,
           retrieved_at TEXT,
           persisted_at TEXT,
+          acquisition_kind TEXT,
           price_warning TEXT,
           updated_at TEXT NOT NULL,
           PRIMARY KEY (account_id, symbol)
@@ -5115,6 +5147,7 @@ def init_db():
         ensure_column_exists(conn, "positions_cache", "market_observed_at", "TEXT")
         ensure_column_exists(conn, "positions_cache", "retrieved_at", "TEXT")
         ensure_column_exists(conn, "positions_cache", "persisted_at", "TEXT")
+        ensure_column_exists(conn, "positions_cache", "acquisition_kind", "TEXT")
         ensure_column_exists(conn, "positions_cache", "price_warning", "TEXT")
         conn.execute(
             """
@@ -9240,8 +9273,8 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
               account_id, symbol, position, price, avg_cost, change_percent,
               market_value, unrealized_pnl, daily_pnl, currency, contract_key,
               price_status, price_source, price_last_successful_at,
-              market_observed_at, retrieved_at, persisted_at, price_warning, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              market_observed_at, retrieved_at, persisted_at, acquisition_kind, price_warning, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_id, symbol) DO UPDATE SET
               position = excluded.position,
               price = excluded.price,
@@ -9258,6 +9291,7 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
               market_observed_at = excluded.market_observed_at,
               retrieved_at = excluded.retrieved_at,
               persisted_at = excluded.persisted_at,
+              acquisition_kind = excluded.acquisition_kind,
               price_warning = excluded.price_warning,
               updated_at = excluded.updated_at
             """,
@@ -9279,6 +9313,7 @@ def save_positions_cache(conn, positions, account_id=None, commit=True, reconcil
                 row.get("market_observed_at"),
                 retrieved_at,
                 now,
+                row.get("acquisition_kind"),
                 row.get("price_warning"),
                 now,
             ),
@@ -9305,7 +9340,7 @@ def load_positions_cache(conn, account_id=None):
         SELECT symbol, position, price, avg_cost, change_percent,
                market_value, unrealized_pnl, daily_pnl, currency, contract_key,
                price_status, price_source, price_last_successful_at,
-               market_observed_at, retrieved_at, persisted_at, price_warning, updated_at
+               market_observed_at, retrieved_at, persisted_at, acquisition_kind, price_warning, updated_at
         FROM positions_cache
         WHERE account_id = ?
         ORDER BY symbol ASC
@@ -9334,6 +9369,7 @@ def load_positions_cache(conn, account_id=None):
                 row["price_last_successful_at"] if row["market_observed_at"] is None else None
             ),
             "persisted_at": row["persisted_at"] or row["updated_at"],
+            "acquisition_kind": row["acquisition_kind"],
             "price_warning": row["price_warning"],
         }
         for row in rows
@@ -12766,6 +12802,7 @@ def overlay_cached_market_fields(live_rows, cached_rows):
                     cached.get("price_last_successful_at") if not cached.get("market_observed_at") else None
                 ),
                 "persisted_at": cached.get("persisted_at"),
+                "acquisition_kind": cached.get("acquisition_kind"),
                 "price_warning": "Current TWS refresh did not supply a usable price; retained local cached price.",
             })
         else:
@@ -12809,7 +12846,8 @@ def _portfolio_data_unavailable_payload():
     }
 
 
-def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_at=None, diagnostics=None):
+def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_at=None,
+                              diagnostics=None, quote_observations=None):
     data = []
     for p in positions or []:
         contract = p.contract
@@ -12834,6 +12872,10 @@ def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_
             elif data_type == 2:
                 price_source = "frozen_" + (price_source or "marketPrice")
                 price_warning = "Frozen market data."
+        acquisition_kind = (
+            quote_observations.acquisition_kind(ticker, contract_key, price_source, diagnostic)
+            if price is not None and quote_observations is not None else None
+        )
 
         market_value = qty * price if qty is not None and price is not None else None
         unrealized_pnl = (
@@ -12868,6 +12910,7 @@ def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_
                 ),
                 "dailyPnL": daily_pnl,
                 "currency": getattr(contract, "currency", None),
+                "security_type": getattr(contract, "secType", None),
                 "contract_key": contract_key,
                 "price_status": "tws_received" if price is not None else "unavailable",
                 "price_source": price_source,
@@ -12877,6 +12920,7 @@ def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_
                 "market_observed_at": None,
                 "retrieved_at": quote_success_at if price is not None else None,
                 "price_timestamp_kind": "retrieval" if price is not None and quote_success_at else "unknown",
+                "acquisition_kind": acquisition_kind,
                 "price_warning": price_warning if price is not None else "Current TWS refresh did not supply a usable price.",
             }
         )
@@ -15138,6 +15182,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     tickers_by_contract_key,
                     quote_success_at=utc_now_iso(),
                     diagnostics=_diagnostics,
+                    quote_observations=quote_observations,
                 )
                 for refresh_account_id in account_ids_to_refresh
             }
@@ -16425,6 +16470,11 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                                  "price_source": source_prefix + source,
                                  "refresh_at": refresh_at, "retrieved_at": refresh_at,
                                  "market_observed_at": None, "delayed": delayed, "frozen": frozen,
+                                 "security_type": getattr(contract, "secType", None),
+                                 "currency": getattr(contract, "currency", None),
+                                 "acquisition_kind": observations.acquisition_kind(
+                                     ticker, contract_key, source_prefix + source, diagnostic,
+                                 ),
                                  "price_warning": "Delayed-frozen market data." if delayed and frozen else "Frozen market data." if frozen else None}
                         proof_store[symbol] = proof
                         results[symbol] = {"symbol": symbol, "status": "updated", "price": price,

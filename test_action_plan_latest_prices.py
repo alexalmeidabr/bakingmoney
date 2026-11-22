@@ -10,6 +10,7 @@ import action_plan_prices as prices
 OLD = "2024-01-02T10:00:00+00:00"
 NEW = "2024-01-03T10:00:00+00:00"
 LATER_RETRIEVAL = "2024-01-04T10:00:00+00:00"
+LATEST = "2024-01-05T10:00:00+00:00"
 POSITION = dict(symbol="ABC", contract_key="1", price=20, price_status="cached_stale",
                 price_source="last", market_observed_at=OLD, retrieved_at=OLD)
 QUOTE = dict(symbol="ABC", contract_key="1", bid=19, ask=21, source="live_bid_ask",
@@ -87,6 +88,67 @@ class PriceResolution(unittest.TestCase):
             selected["price"], selected["market_observed_at"], selected["retrieved_at"],
             selected["price_timestamp_kind"],
         ))
+
+    def test_evidenced_live_retrieval_beats_older_known_observation_and_persists(self):
+        old_known = dict(POSITION, persisted=True, price=100, market_observed_at=NEW,
+                         retrieved_at=NEW)
+        current_live = dict(POSITION, price=120, market_observed_at=None,
+                            retrieved_at=LATER_RETRIEVAL,
+                            acquisition_kind="streaming_live")
+        selected = prices.resolve_price({}, {}, [old_known, current_live])
+        self.assertEqual((120, None, LATER_RETRIEVAL, "streaming_live"), (
+            selected["price"], selected["market_observed_at"], selected["retrieved_at"],
+            selected["acquisition_kind"],
+        ))
+        self.assertIn("exchange observation time is unknown", selected["price_warning"].lower())
+
+        with sqlite3.connect(":memory:") as conn:
+            prices.init_schema(conn)
+            self.assertTrue(prices.persist_observation(conn, "A", "ABC", old_known))
+            self.assertTrue(prices.persist_observation(conn, "A", "ABC", current_live))
+            saved = prices.load_observations(conn, "A")["ABC"]
+            reopened = prices.resolve_price({}, {}, saved)
+            columns = {row[1] for row in conn.execute(
+                "PRAGMA table_info(action_plan_price_observations)"
+            )}
+        self.assertIn("acquisition_kind", columns)
+        self.assertEqual((120, "streaming_live"),
+                         (reopened["price"], reopened["acquisition_kind"]))
+
+    def test_retrieval_proxy_never_promotes_snapshots_or_unevidenced_prices(self):
+        known = dict(POSITION, persisted=True, price=100, market_observed_at=NEW,
+                     retrieved_at=NEW)
+        snapshots = (
+            dict(POSITION, price=95, price_source="close", market_observed_at=None,
+                 retrieved_at=LATER_RETRIEVAL, acquisition_kind="snapshot"),
+            dict(POSITION, price=96, price_source="frozen_last", market_observed_at=None,
+                 retrieved_at=LATER_RETRIEVAL, acquisition_kind="snapshot"),
+            dict(POSITION, price=97, price_source="delayed_frozen_last", market_observed_at=None,
+                 retrieved_at=LATER_RETRIEVAL, acquisition_kind="snapshot"),
+            dict(POSITION, price=120, price_source="last", market_observed_at=None,
+                 retrieved_at=LATER_RETRIEVAL, acquisition_kind=None),
+        )
+        for incoming in snapshots:
+            with self.subTest(source=incoming["price_source"]):
+                self.assertEqual(100, prices.resolve_price({}, {}, [known, incoming])["price"])
+                with sqlite3.connect(":memory:") as conn:
+                    prices.init_schema(conn)
+                    self.assertTrue(prices.persist_observation(conn, "A", "ABC", known))
+                    self.assertFalse(prices.persist_observation(conn, "A", "ABC", incoming))
+
+    def test_effective_freshness_orders_known_and_streaming_times_consistently(self):
+        earlier_live = dict(POSITION, price=110, market_observed_at=None,
+                            retrieved_at=LATER_RETRIEVAL, acquisition_kind="streaming_live")
+        later_known = dict(POSITION, price=115, market_observed_at=LATEST,
+                           retrieved_at=LATEST, price_source="delayed_last")
+        later_live = dict(POSITION, price=120, market_observed_at=None,
+                          retrieved_at=LATEST, acquisition_kind="streaming_live")
+        earlier_delayed = dict(POSITION, price=105, market_observed_at=None,
+                               retrieved_at=OLD, price_source="delayed_last",
+                               acquisition_kind="streaming_delayed")
+        self.assertEqual(115, prices.resolve_price({}, {}, [earlier_live, later_known])["price"])
+        self.assertEqual(120, prices.resolve_price({}, {}, [earlier_live, later_live])["price"])
+        self.assertEqual(110, prices.resolve_price({}, {}, [earlier_delayed, earlier_live])["price"])
 
     def test_newer_delayed_price_beats_older_live_sides(self):
         for items in ([QUOTE, DELAYED], [DELAYED, QUOTE]):

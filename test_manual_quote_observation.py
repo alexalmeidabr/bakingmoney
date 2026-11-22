@@ -132,6 +132,34 @@ class ManualQuoteObservationTests(unittest.TestCase):
         self.assertEqual(proof["bid_tick_at"], self.now.isoformat())
         self.assertEqual(proof["ask_tick_at"], self.now.isoformat())
 
+    def test_streaming_freshness_requires_matching_current_acquisition_tick(self):
+        cases = (
+            ([('last', 120, 1, self.now)], 1, 'last', 'streaming_live'),
+            ([('bid', 119, 10, self.now), ('ask', 121, 10, self.now)], 1,
+             'marketPrice', 'streaming_live'),
+            ([('last', 120, 1, self.now)], 3, 'delayed_last', 'streaming_delayed'),
+            ([('close', 100, 1, self.now)], 1, 'close', 'snapshot'),
+            ([('last', 100, 1, self.now)], 2, 'frozen_last', 'snapshot'),
+            ([('last', 100, 1, self.now)], 4, 'delayed_frozen_last', 'snapshot'),
+        )
+        for packets, data_type, source, expected in cases:
+            with self.subTest(source=source):
+                ib, _tickers, diagnostics, observations = self.collect(packets, data_type)
+                self.assertEqual(expected, observations.acquisition_kind(
+                    ib.ticker, self.key, source, diagnostics.get('NVDA') or {},
+                ))
+
+        ib, _tickers, diagnostics, observations = self.collect([])
+        ib.ticker.last = 120
+        self.assertIsNone(observations.acquisition_kind(
+            ib.ticker, self.key, 'last', diagnostics.get('NVDA') or {},
+        ))
+
+        ib, _tickers, diagnostics, observations = self.collect([('last', 120, 1, self.now)])
+        self.assertIsNone(observations.acquisition_kind(
+            ib.ticker, self.key, 'marketPrice', diagnostics.get('NVDA') or {},
+        ))
+
     def test_only_one_side_or_final_fields_without_events_cannot_verify(self):
         for packets in ([('bid', 78, 10, self.now)], [('ask', 79, 10, self.now)], []):
             with self.subTest(packets=packets):

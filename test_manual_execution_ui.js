@@ -410,7 +410,9 @@ test('save submits complete replacement and reports reload failure as persisted'
   const status = { textContent: '', className: '' };
   const calls = [];
   const context = {
-    selectedPortfolioAccountId: 'U_ACCOUNT_A', actionPlanDetailRequestId: 1,
+    selectedPortfolioAccountId: 'U_ACCOUNT_A', selectedSimulation: null, simulatorActive: false,
+    actionPlanDetailRequestId: 1, manualTriggerMutations: new Map(),
+    manualTriggerBaseline: { key: JSON.stringify(['U_ACCOUNT_A', null, 'NVDA']) },
     manualTriggerDetailEl: { querySelector: () => status },
     manualTriggerEditorValues: () => ({
       buy_trigger_price: '80', sell_trigger_price: '700', sell_trigger_direction: 'at_or_below',
@@ -420,7 +422,14 @@ test('save submits complete replacement and reports reload failure as persisted'
     fetch: async (url, options) => { calls.push({ url, options }); return { ok: true, json: async () => ({ trigger: {} }) }; },
     loadActionPlan: async () => false,
   };
-  await vm.runInNewContext(`${functionSource('validateManualTriggerForm')}\n${functionSource('saveManualTrigger')}\nsaveManualTrigger('NVDA')`, context);
+  await vm.runInNewContext(`${functionSource('manualTriggerContextKey')}
+${functionSource('setManualTriggerMutationControls')}
+${functionSource('beginManualTriggerMutation')}
+${functionSource('manualTriggerMutationContextIsActive')}
+${functionSource('finishManualTriggerMutation')}
+${functionSource('validateManualTriggerForm')}
+${functionSource('saveManualTrigger')}
+saveManualTrigger('NVDA')`, context);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.method, 'PUT');
   assert.deepEqual(JSON.parse(calls[0].options.body), {
@@ -631,14 +640,22 @@ test('Clear Triggers uses DELETE and reloads the plan once', async () => {
   const calls = [];
   let reloads = 0;
   const context = {
-    selectedPortfolioAccountId: 'U_ACCOUNT_A', actionPlanDetailRequestId: 1,
+    selectedPortfolioAccountId: 'U_ACCOUNT_A', selectedSimulation: null, simulatorActive: false,
+    actionPlanDetailRequestId: 1, manualTriggerEditRevision: 0, manualTriggerMutations: new Map(),
+    manualTriggerBaseline: { key: JSON.stringify(['U_ACCOUNT_A', null, 'NVDA']) },
     manualTriggerDetailEl: { querySelector: () => status },
     withSelectedPortfolioAccount: (url) => `${url}?account_id=U_ACCOUNT_A`,
     fetch: async (url, options) => { calls.push({ url, options }); return { ok: true, json: async () => ({ deleted: true }) }; },
     renderManualTriggerDetail: (_symbol, preference) => { assert.equal(preference, null); },
     loadActionPlan: async () => { reloads += 1; return true; },
   };
-  await vm.runInNewContext(`${functionSource('clearManualTrigger')}\nclearManualTrigger('NVDA')`, context);
+  await vm.runInNewContext(`${functionSource('manualTriggerContextKey')}
+${functionSource('setManualTriggerMutationControls')}
+${functionSource('beginManualTriggerMutation')}
+${functionSource('manualTriggerMutationContextIsActive')}
+${functionSource('finishManualTriggerMutation')}
+${functionSource('clearManualTrigger')}
+clearManualTrigger('NVDA')`, context);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.method, 'DELETE');
   assert.equal(reloads, 1);
@@ -650,7 +667,9 @@ test('manual trigger requests and quote refresh route to the selected account ac
   const loaded = [];
   const status = { textContent: '', className: '' };
   const context = {
-    selectedPortfolioAccountId: 'U_ACCOUNT_A', actionPlanDetailRequestId: 0, actionPlanQuoteRequestId: 0,
+    selectedPortfolioAccountId: 'U_ACCOUNT_A', selectedSimulation: null, simulatorActive: false,
+    actionPlanDetailRequestId: 0, actionPlanQuoteRequestId: 0, manualTriggerEditRevision: 0,
+    manualTriggerMutations: new Map(), manualTriggerBaseline: null,
     latestActionPlanDetailPayload: null, latestActionPlanPayload: {}, actionPlanExecutionMode: 'with',
     manualTriggerDetailEl: { innerHTML: '', querySelector: () => status },
     actionPlanDetailStatusEl: { textContent: '', className: '' },
@@ -674,14 +693,18 @@ test('manual trigger requests and quote refresh route to the selected account ac
       return { ok: true, json: async () => ({ action_detail: { symbol: 'BRK/B' }, trigger: {} }) };
     },
   };
-  const functions = ['openActionPlanDetail', 'validateManualTriggerForm', 'saveManualTrigger', 'clearManualTrigger', 'refreshTriggerPrices'];
+  const functions = ['manualTriggerContextKey', 'setManualTriggerMutationControls', 'beginManualTriggerMutation',
+    'manualTriggerMutationContextIsActive', 'finishManualTriggerMutation', 'openActionPlanDetail',
+    'validateManualTriggerForm', 'saveManualTrigger', 'clearManualTrigger', 'refreshTriggerPrices'];
   vm.runInNewContext(functions.map(functionSource).join('\n'), context);
   await context.openActionPlanDetail('BRK/B');
+  context.manualTriggerBaseline = { key: JSON.stringify(['U_ACCOUNT_A', null, 'BRK/B']) };
   await context.saveManualTrigger('BRK/B');
   await context.clearManualTrigger('BRK/B');
   await context.refreshTriggerPrices(['BRK/B']);
   context.selectedPortfolioAccountId = 'U_ACCOUNT_B';
   await context.openActionPlanDetail('BRK/B');
+  context.manualTriggerBaseline = { key: JSON.stringify(['U_ACCOUNT_B', null, 'BRK/B']) };
   await context.saveManualTrigger('BRK/B');
   await context.clearManualTrigger('BRK/B');
   await context.refreshTriggerPrices(['BRK/B']);

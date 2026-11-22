@@ -2698,6 +2698,7 @@ function renderManualTriggerDetail(symbol, trigger) {
   reserveToggle.addEventListener('change', syncReserve);
   syncReserve();
   setManualTriggerBaseline(symbol, saved);
+  setManualTriggerMutationControls(symbol, manualTriggerMutations.has(manualTriggerContextKey(symbol)));
   manualTriggerDetailEl.querySelectorAll('[data-trigger-field]').forEach((field) => {
     field.addEventListener('input', noteManualTriggerEdit);
     field.addEventListener('change', noteManualTriggerEdit);
@@ -2730,7 +2731,8 @@ async function saveManualTrigger(symbol) {
     statusEl.className = 'status error';
     return;
   }
-  const account = selectedPortfolioAccountId;
+  const mutation = beginManualTriggerMutation(symbol);
+  if (!mutation) return false;
   const detailId = actionPlanDetailRequestId;
   statusEl.textContent = 'Saving triggers…';
   try {
@@ -2738,13 +2740,13 @@ async function saveManualTrigger(symbol) {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(validation.value),
     });
     const payload = await response.json();
-    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    if (!manualTriggerMutationContextIsActive(mutation.key, symbol, detailId)) return;
     if (!response.ok) throw createPortfolioApiError(payload, 'Unable to save triggers');
     if (typeof setManualTriggerBaseline === 'function') setManualTriggerBaseline(symbol, validation.value);
     statusEl.textContent = 'Triggers saved. Updating Action Plan…';
     statusEl.className = 'status';
     const reloaded = await loadActionPlan({ preserveDetail: true });
-    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    if (!manualTriggerMutationContextIsActive(mutation.key, symbol, detailId)) return;
     const newerEditsRemain = typeof simulatorActive !== 'undefined' && simulatorActive
       && typeof simulationTriggerDirty === 'function' && simulationTriggerDirty();
     statusEl.textContent = newerEditsRemain
@@ -2752,21 +2754,24 @@ async function saveManualTrigger(symbol) {
       : reloaded ? 'Triggers saved.' : 'Triggers saved, but Action Plan reload failed. Refresh Action Plan to retry.';
     statusEl.className = newerEditsRemain || !reloaded ? 'status warning' : 'status success';
   } catch (error) {
-    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    if (!manualTriggerMutationContextIsActive(mutation.key, symbol, detailId)) return;
     statusEl.textContent = `Error: ${error.message}`;
     statusEl.className = 'status error';
+  } finally {
+    finishManualTriggerMutation(mutation, symbol);
   }
 }
 
 async function clearManualTrigger(symbol) {
+  const mutation = beginManualTriggerMutation(symbol);
+  if (!mutation) return false;
   const statusEl = manualTriggerDetailEl.querySelector('[data-trigger-status]');
-  const account = selectedPortfolioAccountId;
   const detailId = actionPlanDetailRequestId;
   const editRevision = typeof manualTriggerEditRevision === 'number' ? manualTriggerEditRevision : 0;
   try {
     const response = await fetch(withSelectedPortfolioAccount(`/api/manual-execution-triggers/${encodeURIComponent(symbol)}`), { method: 'DELETE' });
     const payload = await response.json();
-    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    if (!manualTriggerMutationContextIsActive(mutation.key, symbol, detailId)) return;
     if (!response.ok && response.status !== 404) throw createPortfolioApiError(payload, 'Unable to clear triggers');
     const cleared = {
       buy_trigger_price: null, sell_trigger_price: null, sell_trigger_direction: 'at_or_above',
@@ -2781,7 +2786,7 @@ async function clearManualTrigger(symbol) {
     const newStatus = manualTriggerDetailEl.querySelector('[data-trigger-status]');
     newStatus.textContent = 'Triggers cleared. Updating Action Plan…';
     const reloaded = await loadActionPlan({ preserveDetail: true });
-    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    if (!manualTriggerMutationContextIsActive(mutation.key, symbol, detailId)) return;
     const newerEditsRemain = typeof simulatorActive !== 'undefined' && simulatorActive
       && typeof simulationTriggerDirty === 'function' && simulationTriggerDirty();
     newStatus.textContent = newerEditsRemain
@@ -2789,9 +2794,11 @@ async function clearManualTrigger(symbol) {
       : reloaded ? 'Triggers cleared.' : 'Triggers cleared, but Action Plan reload failed. Refresh Action Plan to retry.';
     newStatus.className = newerEditsRemain || !reloaded ? 'status warning' : 'status success';
   } catch (error) {
-    if (account !== selectedPortfolioAccountId || detailId !== actionPlanDetailRequestId) return;
+    if (!manualTriggerMutationContextIsActive(mutation.key, symbol, detailId)) return;
     statusEl.textContent = `Error: ${error.message}`;
     statusEl.className = 'status error';
+  } finally {
+    finishManualTriggerMutation(mutation, symbol);
   }
 }
 
@@ -3806,6 +3813,7 @@ let simulationGeneration = 0;
 let simulationBusy = false;
 let manualTriggerBaseline = null;
 let manualTriggerEditRevision = 0;
+const manualTriggerMutations = new Map();
 const previousSimulation = new Map();
 const planPreferences = new Map();
 
@@ -3831,6 +3839,35 @@ function normalizeManualTriggerValues(values = {}) {
 
 function manualTriggerContextKey(symbol) {
   return JSON.stringify([selectedPortfolioAccountId, selectedSimulation?.id ?? null, String(symbol || '').toUpperCase()]);
+}
+
+function setManualTriggerMutationControls(symbol, disabled) {
+  if (!manualTriggerDetailEl || manualTriggerBaseline?.key !== manualTriggerContextKey(symbol)) return;
+  for (const action of ['save', 'clear']) {
+    const button = manualTriggerDetailEl.querySelector(`[data-trigger-action="${action}"]`);
+    if (button) button.disabled = disabled;
+  }
+}
+
+function beginManualTriggerMutation(symbol) {
+  const key = manualTriggerContextKey(symbol);
+  if (manualTriggerMutations.has(key)) return null;
+  const mutation = { key, token: Symbol('manual-trigger-mutation') };
+  manualTriggerMutations.set(key, mutation.token);
+  setManualTriggerMutationControls(symbol, true);
+  return mutation;
+}
+
+function manualTriggerMutationContextIsActive(key, symbol, detailId) {
+  return key === manualTriggerContextKey(symbol)
+    && detailId === actionPlanDetailRequestId
+    && manualTriggerBaseline?.key === key;
+}
+
+function finishManualTriggerMutation(mutation, symbol) {
+  if (manualTriggerMutations.get(mutation.key) !== mutation.token) return;
+  manualTriggerMutations.delete(mutation.key);
+  if (mutation.key === manualTriggerContextKey(symbol)) setManualTriggerMutationControls(symbol, false);
 }
 
 function setManualTriggerEditorValues(values) {

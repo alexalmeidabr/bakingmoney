@@ -178,16 +178,26 @@ test('applying new cash cannot silently discard unsaved trigger edits', () => {
 
 function triggerPersistenceHarness() {
   const status = { textContent: '', className: '' };
+  const saveButton = { disabled: false };
+  const clearButton = { disabled: false };
+  const inputField = { disabled: false };
   const requests = [];
+  let reloads = 0;
   const context = vm.createContext({
     selectedPortfolioAccountId: 'A', selectedSimulation: { id: 7 }, simulatorActive: true,
     actionPlanDetailRequestId: 1, manualTriggerEditRevision: 0,
-    currentTriggerValues: triggerValues(), manualTriggerDetailEl: { querySelector: () => status },
+    manualTriggerMutations: new Map(), currentTriggerValues: triggerValues(),
+    manualTriggerDetailEl: { querySelector(selector) {
+      if (selector === '[data-trigger-status]') return status;
+      if (selector === '[data-trigger-action="save"]') return saveButton;
+      if (selector === '[data-trigger-action="clear"]') return clearButton;
+      return inputField;
+    } },
     manualTriggerEditorValues() { return context.currentTriggerValues; },
     setManualTriggerEditorValues(values) { context.currentTriggerValues = { ...values }; },
     withSelectedPortfolioAccount: (url) => url + '?account_id=A',
     createPortfolioApiError: (payload) => Error(payload.error || 'request failed'),
-    loadActionPlan: async () => true,
+    loadActionPlan: async () => { reloads += 1; return true; },
     renderManualTriggerDetail() {},
     fetch: (url, options) => new Promise((resolve) => requests.push({
       url, options, finish(payload, ok = true, statusCode = ok ? 200 : 500) {
@@ -198,13 +208,97 @@ function triggerPersistenceHarness() {
   vm.runInContext(`let manualTriggerBaseline = null;
     ${functionSource('normalizeManualTriggerValues')}
     ${functionSource('manualTriggerContextKey')}
+    ${functionSource('setManualTriggerMutationControls')}
+    ${functionSource('beginManualTriggerMutation')}
+    ${functionSource('manualTriggerMutationContextIsActive')}
+    ${functionSource('finishManualTriggerMutation')}
     ${functionSource('setManualTriggerBaseline')}
     ${functionSource('simulationTriggerDirty')}
     ${functionSource('validateManualTriggerForm')}
     ${functionSource('saveManualTrigger')}
     ${functionSource('clearManualTrigger')}`, context);
-  return { context, requests, status, run: (code) => vm.runInContext(code, context) };
+  return {
+    context, requests, status, saveButton, clearButton, inputField,
+    reloads: () => reloads, run: (code) => vm.runInContext(code, context),
+  };
 }
+
+test('Save and Clear share one in-flight mutation slot for the editor context', async () => {
+  const h = triggerPersistenceHarness();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  const firstSave = h.run("saveManualTrigger('NVDA')");
+  const secondSave = h.run("saveManualTrigger('NVDA')");
+  const blockedClear = h.run("clearManualTrigger('NVDA')");
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.saveButton.disabled, true);
+  assert.equal(h.clearButton.disabled, true);
+  assert.equal(h.inputField.disabled, false);
+  h.requests[0].finish({ trigger: { buy_trigger_price: 80 } });
+  await Promise.all([firstSave, secondSave, blockedClear]);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.reloads(), 1);
+  assert.equal(h.saveButton.disabled, false);
+  assert.equal(h.clearButton.disabled, false);
+
+  const clear = h.run("clearManualTrigger('NVDA')");
+  const blockedSave = h.run("saveManualTrigger('NVDA')");
+  assert.equal(h.requests.length, 2);
+  h.requests[1].finish({ deleted: true });
+  await Promise.all([clear, blockedSave]);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.reloads(), 2);
+});
+
+test('successful Save keeps newer edits dirty and recalculates the submitted context once', async () => {
+  const h = triggerPersistenceHarness();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '81' });
+  const save = h.run("saveManualTrigger('NVDA')");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '82' });
+  h.context.manualTriggerEditRevision += 1;
+  h.requests[0].finish({ trigger: { buy_trigger_price: 81 } });
+  await save;
+  assert.equal(h.context.currentTriggerValues.buy_trigger_price, '82');
+  assert.equal(h.run('simulationTriggerDirty()'), true);
+  assert.equal(h.reloads(), 1);
+  assert.match(h.status.textContent, /newer trigger changes remain unsaved/);
+});
+
+test('failed Save keeps newer edits dirty, reports failure, and does not recalculate', async () => {
+  const h = triggerPersistenceHarness();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '81' });
+  const save = h.run("saveManualTrigger('NVDA')");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '82' });
+  h.context.manualTriggerEditRevision += 1;
+  h.requests[0].finish({ error: 'offline' }, false);
+  await save;
+  assert.equal(h.context.currentTriggerValues.buy_trigger_price, '82');
+  assert.equal(h.run('simulationTriggerDirty()'), true);
+  assert.equal(h.reloads(), 0);
+  assert.match(h.status.textContent, /offline/);
+  assert.equal(h.saveButton.disabled, false);
+  assert.equal(h.clearButton.disabled, false);
+});
+
+test('late Save response cannot update another account simulation or stock editor', async () => {
+  const h = triggerPersistenceHarness();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '81' });
+  const save = h.run("saveManualTrigger('NVDA')");
+  h.context.selectedPortfolioAccountId = 'B';
+  h.context.selectedSimulation = { id: 9 };
+  h.context.actionPlanDetailRequestId = 2;
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '95' });
+  h.run("setManualTriggerBaseline('MSFT', currentTriggerValues)");
+  h.status.textContent = 'New editor';
+  h.requests[0].finish({ trigger: { buy_trigger_price: 81 } });
+  await save;
+  assert.equal(h.context.currentTriggerValues.buy_trigger_price, '95');
+  assert.equal(h.run('simulationTriggerDirty()'), false);
+  assert.equal(h.reloads(), 0);
+  assert.equal(h.status.textContent, 'New editor');
+});
 
 test('saving clears dirty state while failed saving retains edited values', async () => {
   const h = triggerPersistenceHarness();

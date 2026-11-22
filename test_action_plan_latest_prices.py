@@ -66,6 +66,18 @@ class PriceResolution(unittest.TestCase):
         self.assertEqual(999, legacy["price"])
         self.assertIn("contract identity is unknown", legacy["price_warning"].lower())
 
+    def test_owned_position_without_contract_does_not_use_contract_specific_observation(self):
+        position = {
+            "symbol": "ABC", "position": 10, "price": None,
+            "contract_key": None, "price_status": "unavailable",
+        }
+        observations = [
+            dict(POSITION, contract_key="conid:111", price=100, market_observed_at=OLD),
+            dict(POSITION, contract_key="conid:222", price=105, market_observed_at=NEW),
+        ]
+        selected = prices.resolve_price(position, {"symbol": "ABC", "current_price": 90}, observations)
+        self.assertEqual((90, "analysis_fallback"), (selected["price"], selected["price_source"]))
+
     def test_newer_live_observation_beats_older_close_retrieved_later(self):
         live = dict(POSITION, price=100, market_observed_at=NEW, retrieved_at=NEW)
         close = dict(POSITION, price=95, price_source="close", market_observed_at=OLD,

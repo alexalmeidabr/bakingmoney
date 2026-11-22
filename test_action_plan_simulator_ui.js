@@ -213,6 +213,7 @@ function triggerPersistenceHarness() {
     ${functionSource('manualTriggerMutationContextIsActive')}
     ${functionSource('finishManualTriggerMutation')}
     ${functionSource('setManualTriggerBaseline')}
+    ${functionSource('manualTriggerDirty')}
     ${functionSource('simulationTriggerDirty')}
     ${functionSource('validateManualTriggerForm')}
     ${functionSource('saveManualTrigger')}
@@ -261,6 +262,24 @@ test('successful Save keeps newer edits dirty and recalculates the submitted con
   assert.equal(h.context.currentTriggerValues.buy_trigger_price, '82');
   assert.equal(h.run('simulationTriggerDirty()'), true);
   assert.equal(h.reloads(), 1);
+  assert.match(h.status.textContent, /newer trigger changes remain unsaved/);
+});
+
+test('real Action Plan Save labels newer edits unsaved without submitting them', async () => {
+  const h = triggerPersistenceHarness();
+  h.context.simulatorActive = false;
+  h.context.selectedSimulation = null;
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '81' });
+  const save = h.run("saveManualTrigger('NVDA')");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '82' });
+  h.context.manualTriggerEditRevision += 1;
+  h.requests[0].finish({ trigger: { buy_trigger_price: 81 } });
+  await save;
+  assert.equal(h.requests.length, 1);
+  assert.equal(JSON.parse(h.requests[0].options.body).buy_trigger_price, 81);
+  assert.equal(h.context.currentTriggerValues.buy_trigger_price, '82');
+  assert.equal(h.run('manualTriggerDirty()'), true);
   assert.match(h.status.textContent, /newer trigger changes remain unsaved/);
 });
 

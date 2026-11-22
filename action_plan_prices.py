@@ -147,8 +147,15 @@ def resolve_price(position, analysis, observations=()):
     position, analysis = position or {}, analysis or {}
     symbol = position.get("symbol") or analysis.get("symbol")
     contract = position.get("contract_key")
+    try:
+        position_quantity = float(position.get("position") or 0)
+    except (TypeError, ValueError, OverflowError):
+        position_quantity = 0
+    owned_without_contract = (
+        not contract and math.isfinite(position_quantity) and position_quantity != 0
+    )
     observations = list(observations or ())
-    known_contract_available = not contract and any(
+    known_contract_available = not contract and not owned_without_contract and any(
         raw and raw.get("contract_key") for raw in [position, *observations]
     )
     candidates = []
@@ -159,6 +166,8 @@ def resolve_price(position, analysis, observations=()):
             continue
         if contract and raw.get("contract_key") != contract:
             continue
+        if owned_without_contract and raw is not position:
+            continue
         if known_contract_available and not raw.get("contract_key"):
             continue
         item = _observation(raw)
@@ -168,7 +177,10 @@ def resolve_price(position, analysis, observations=()):
         item, is_position = max(candidates, key=lambda candidate: _rank(candidate[0]))
         status = item["price_status"] or ("cached_stale" if item["persisted"] else "tws_received")
         warning = _warning(item, datetime.now(timezone.utc))
-        if not contract and not item.get("contract_key"):
+        if owned_without_contract:
+            identity_warning = "Owned position contract identity is unknown; contract-specific saved prices were not used."
+            warning = " ".join(part for part in (warning, identity_warning) if part)
+        elif not contract and not item.get("contract_key"):
             identity_warning = "Contract identity is unknown; this saved price was selected without an owned-contract match."
             warning = " ".join(part for part in (warning, identity_warning) if part)
         return dict(

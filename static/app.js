@@ -2747,8 +2747,7 @@ async function saveManualTrigger(symbol) {
     statusEl.className = 'status';
     const reloaded = await loadActionPlan({ preserveDetail: true });
     if (!manualTriggerMutationContextIsActive(mutation.key, symbol, detailId)) return;
-    const newerEditsRemain = typeof simulatorActive !== 'undefined' && simulatorActive
-      && typeof simulationTriggerDirty === 'function' && simulationTriggerDirty();
+    const newerEditsRemain = typeof manualTriggerDirty === 'function' && manualTriggerDirty();
     statusEl.textContent = newerEditsRemain
       ? 'Triggers saved; newer trigger changes remain unsaved.'
       : reloaded ? 'Triggers saved.' : 'Triggers saved, but Action Plan reload failed. Refresh Action Plan to retry.';
@@ -2787,8 +2786,7 @@ async function clearManualTrigger(symbol) {
     newStatus.textContent = 'Triggers cleared. Updating Action Plan…';
     const reloaded = await loadActionPlan({ preserveDetail: true });
     if (!manualTriggerMutationContextIsActive(mutation.key, symbol, detailId)) return;
-    const newerEditsRemain = typeof simulatorActive !== 'undefined' && simulatorActive
-      && typeof simulationTriggerDirty === 'function' && simulationTriggerDirty();
+    const newerEditsRemain = typeof manualTriggerDirty === 'function' && manualTriggerDirty();
     newStatus.textContent = newerEditsRemain
       ? 'Triggers cleared; newer trigger changes remain unsaved.'
       : reloaded ? 'Triggers cleared.' : 'Triggers cleared, but Action Plan reload failed. Refresh Action Plan to retry.';
@@ -3895,8 +3893,8 @@ function clearManualTriggerBaseline() {
   manualTriggerEditRevision += 1;
 }
 
-function simulationTriggerDirty() {
-  if (!simulatorActive || !selectedSimulation || !manualTriggerBaseline) return false;
+function manualTriggerDirty() {
+  if (!manualTriggerBaseline) return false;
   if (manualTriggerBaseline.key !== manualTriggerContextKey(manualTriggerBaseline.symbol)) return false;
   try {
     return JSON.stringify(normalizeManualTriggerValues(manualTriggerEditorValues()))
@@ -3904,6 +3902,10 @@ function simulationTriggerDirty() {
   } catch (_error) {
     return false;
   }
+}
+
+function simulationTriggerDirty() {
+  return Boolean(simulatorActive && selectedSimulation && manualTriggerDirty());
 }
 
 function noteManualTriggerEdit() {

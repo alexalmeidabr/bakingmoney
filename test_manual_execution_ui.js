@@ -35,13 +35,9 @@ function helpers(...names) {
     escapeHtml: (value) => String(value),
     formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
   };
-  const needsExecutionVisibility = names.includes('getTriggerAwareVisibleRows');
-  const needsTriggerPriceReference = names.includes('getManualTriggerCurrentPriceReference');
-  const dependencies = names.some((name) => ['getManualTriggerPresentation', 'getActionPlanPriceDisplay', 'getLinearActionTableExecutionDisplay'].includes(name))
-    ? [functionSource('manualQuoteExpired')]
-    : needsExecutionVisibility || needsTriggerPriceReference
-      ? [functionSource('manualQuoteExpired'), functionSource('isUnderlyingTradeRecommendation'), functionSource('hasCurrentExecutableManualAction')]
-      : [];
+  const dependencies = [];
+  if (names.includes('getTriggerAwareVisibleRows')) dependencies.push(functionSource('isUnderlyingTradeRecommendation'), functionSource('hasCurrentExecutableManualAction'));
+  if (names.includes('getActionPlanPriceDisplay')) dependencies.push(functionSource('getManualTriggerCurrentPriceReference'));
   return vm.runInNewContext(`${dependencies.join('\n')}\n${names.map(functionSource).join('\n')}\n({${names.join(',')}})`, context);
 }
 
@@ -93,13 +89,13 @@ test('With Triggers hides blocked trade recommendations but retains eligible, pa
   assert.deepEqual(getTriggerAwareVisibleRows(rows, true).map((item) => item.symbol), rows.map((item) => item.symbol));
 });
 
-test('expired or outdated trigger-aware trades are never treated as executable', () => {
+test('usable older prices leave funded trades visible', () => {
   const { getTriggerAwareVisibleRows } = helpers('getTriggerAwareVisibleRows');
   const expired = {
     symbol: 'EXPIRED', recommended_action: 'Trim', suggested_share_count: 10, executable_action_amount: 1000,
     manual_verified_quote_expires_at: new Date(Date.now() - 1000).toISOString(),
   };
-  assert.deepEqual(getTriggerAwareVisibleRows([expired], false), []);
+  assert.equal(getTriggerAwareVisibleRows([expired], false)[0], expired);
 });
 
 test('showing non-executable recommendations preserves Action and Rating filters', () => {
@@ -118,7 +114,7 @@ test('showing non-executable recommendations preserves Action and Rating filters
     ACTION_PLAN_ACTION_FILTER_OPTIONS: [{ key: 'trim', label: 'Trim' }, { key: 'add', label: 'Add' }],
     getActionPlanActionFilterKey: (value) => String(value).toLowerCase(),
   };
-  const rendered = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('manualQuoteExpired')}\n${functionSource('isUnderlyingTradeRecommendation')}\n${functionSource('hasCurrentExecutableManualAction')}\n${functionSource('getTriggerAwareVisibleRows')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
+  const rendered = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('isUnderlyingTradeRecommendation')}\n${functionSource('hasCurrentExecutableManualAction')}\n${functionSource('getTriggerAwareVisibleRows')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
   assert.deepEqual(rendered.map((item) => item.symbol), ['CRWV', 'ELIGIBLE']);
 });
 
@@ -175,20 +171,20 @@ test('trigger-aware table keeps normal execution values for an action without a 
   });
 });
 
-test('expired verification is never presented as eligible or funded', () => {
+test('old verification timestamps preserve eligibility and funding', () => {
   const { getManualTriggerPresentation } = helpers('getManualTriggerPresentation');
   const expiredAt = new Date(Date.now() - 1000).toISOString();
   assert.equal(getManualTriggerPresentation({ manual_trigger_status: 'eligible', suggested_share_count: 3,
-    executable_action_amount: 237, manual_verified_quote_expires_at: expiredAt }).status, 'Price confirmation required');
+    executable_action_amount: 237, manual_verified_quote_expires_at: expiredAt }).status, 'Eligible, funded');
 });
 
-test('expired verified price is hidden instead of shown as a current sizing price', () => {
+test('older evaluation price remains visible with its observation time', () => {
   const { getActionPlanPriceDisplay } = helpers('getActionPlanPriceDisplay');
   const expired = { current_price: 79, manual_verified_price: 79, manual_verified_quote_at: 'old',
     manual_verified_quote_expires_at: new Date(Date.now() - 1000).toISOString() };
   const displayed = getActionPlanPriceDisplay(expired, true);
-  assert.equal(displayed.price, 'Expired');
-  assert.match(displayed.title, /expired/i);
+  assert.equal(displayed.price, '$79.00');
+  assert.match(displayed.title, /old/i);
   assert.equal(getActionPlanPriceDisplay(expired, false).price, '$79.00');
 });
 
@@ -199,15 +195,15 @@ test('Manual Execution Trigger price reference labels saved and refreshed quotes
     manual_verified_quote_expires_at: new Date(Date.now() + 60_000).toISOString(),
   });
   assert.equal(savedQuote.price, '$101.25');
-  assert.match(savedQuote.source, /Saved verified quote/);
+  assert.match(savedQuote.source, /Saved market price/);
   const refreshedQuote = getManualTriggerCurrentPriceReference({
     manual_verified_price: 102, manual_verified_quote_at: '2026-11-15T12:01:00Z',
   });
   assert.deepEqual(JSON.parse(JSON.stringify(refreshedQuote)), {
-    price: '$102.00', source: 'Saved verified quote from 2026-11-15T12:01:00Z.',
+    price: '$102.00', source: 'Saved market price at 2026-11-15T12:01:00Z',
   });
   const fallback = getManualTriggerCurrentPriceReference({ current_price: 88.5, price_source: 'analysis_fallback' });
-  assert.deepEqual(JSON.parse(JSON.stringify(fallback)), { price: '$88.50', source: 'Saved fallback price.' });
+  assert.deepEqual(JSON.parse(JSON.stringify(fallback)), { price: '$88.50', source: 'analysis fallback (time unknown)' });
 });
 
 test('Manual Execution Trigger price reference reports unavailable prices and preserves unsaved inputs on refresh', () => {
@@ -221,8 +217,8 @@ test('Manual Execution Trigger price reference reports unavailable prices and pr
     manualTriggerDetailEl: { querySelector: (selector) => selector === '[data-trigger-current-price]' ? priceReference : unsavedBuyInput },
     formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
   };
-  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\nupdateManualTriggerCurrentPriceReference({ manual_verified_price: 102, manual_verified_quote_at: '2026-11-15T12:01:00Z' })`, context);
-  assert.match(priceReference.textContent, /\$102\.00.*Saved verified quote/);
+  vm.runInNewContext(`${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\nupdateManualTriggerCurrentPriceReference({ manual_verified_price: 102, manual_verified_quote_at: '2026-11-15T12:01:00Z' })`, context);
+  assert.match(priceReference.textContent, /\$102\.00.*Saved market price/);
   assert.equal(unsavedBuyInput.value, '77.50');
 });
 
@@ -237,7 +233,7 @@ test('Manual Execution Trigger price reference uses the Action Summary mode row'
     renderActionPlanMetricList: () => '', escapeHtml: String, formatCurrencyValue: (value) => `$${Number(value).toFixed(2)}`,
     formatPercent: () => '', formatNumber: () => '',
   };
-  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({ action_detail: { symbol: 'NVDA', current_price: 90 } })`, context);
+  vm.runInNewContext(`${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({ action_detail: { symbol: 'NVDA', current_price: 90 } })`, context);
   assert.match(reference.textContent, /\$90\.00.*Saved Action Plan price/);
 });
 
@@ -287,7 +283,7 @@ test('blocked Buy returns under Add filter in manual mode when non-executable ro
     ACTION_PLAN_ACTION_FILTER_OPTIONS: ['add', 'watch'],
     getActionPlanActionFilterKey: (value) => value.toLowerCase(),
   };
-  const rows = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('manualQuoteExpired')}\n${functionSource('isUnderlyingTradeRecommendation')}\n${functionSource('hasCurrentExecutableManualAction')}\n${functionSource('getTriggerAwareVisibleRows')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
+  const rows = vm.runInNewContext(`${functionSource('getDisplayedLinearActionPlanItems')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('isUnderlyingTradeRecommendation')}\n${functionSource('hasCurrentExecutableManualAction')}\n${functionSource('getTriggerAwareVisibleRows')}\n${functionSource('getFilteredLinearActionPlanItems')}\ngetFilteredLinearActionPlanItems()`, context);
   assert.deepEqual(rows.map((row) => row.symbol), ['NVDA']);
 });
 
@@ -432,7 +428,7 @@ test('manual detail warns on blocked Sell and shows partial reservation', () => 
     formatPercent: (value) => `${Number(value || 0)}%`,
     formatNumber: (value) => String(value ?? 0),
   };
-  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({action_detail: {symbol: 'META', action: 'Strong Sell'}})`, context);
+  vm.runInNewContext(`${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('updateManualTriggerCurrentPriceReference')}\n${functionSource('getManualTriggerPresentation')}\n${functionSource('manualTriggerLabel')}\n${functionSource('renderSelectedActionPlanDetail')}\nrenderSelectedActionPlanDetail({action_detail: {symbol: 'META', action: 'Strong Sell'}})`, context);
   assert.match(explanation.innerHTML, /manual price condition currently prevents execution/);
   assert.match(explanation.innerHTML, /Requested Reservation: \$3000\.00/);
   assert.match(explanation.innerHTML, /Unfulfilled Reservation: \$800\.00/);
@@ -469,7 +465,7 @@ test('explicit quote refresh reports partial success and reloads once', async ()
   assert.equal(requests.length, 1);
   assert.deepEqual(JSON.parse(requests[0].options.body).symbols, ['NVDA', 'META']);
   assert.equal(reloads, 1);
-  assert.match(status.textContent, /1 live price verified; 1 require confirmation/);
+  assert.match(status.textContent, /1 price refreshed. 1 refresh failure/);
   assert.equal(button.disabled, false);
 });
 
@@ -495,7 +491,7 @@ test('an older account quote response cannot reload or overwrite the selected ac
   finish({ ok: true, json: async () => ({ results: [{ symbol: 'NVDA', status: 'verified' }] }) });
   await pending;
   assert.equal(reloads, 0);
-  assert.match(status.textContent, /Refreshing live prices/);
+  assert.match(status.textContent, /Refreshing market prices/);
 });
 
 test('a late verified quote for account A cannot replace account B confirmation state for the same symbol', async () => {
@@ -523,12 +519,12 @@ test('a late verified quote for account A cannot replace account B confirmation 
   const pendingA = context.refreshTriggerPrices();
   context.selectedPortfolioAccountId = 'U_ACCOUNT_B';
   await context.refreshTriggerPrices();
-  assert.match(status.textContent, /1 require confirmation/);
+  assert.match(status.textContent, /1 refresh failure/);
   finishA({ ok: true, json: async () => ({ results: [{ symbol: 'NVDA', status: 'verified' }] }) });
   await pendingA;
   assert.deepEqual(requests.map((url) => new URL(url, 'http://local').searchParams.get('account_id')), ['U_ACCOUNT_A', 'U_ACCOUNT_B']);
   assert.deepEqual(reloadAccounts, ['U_ACCOUNT_B']);
-  assert.match(status.textContent, /1 require confirmation/);
+  assert.match(status.textContent, /1 refresh failure/);
   assert.doesNotMatch(status.textContent, /1 live price verified/);
 });
 
@@ -735,119 +731,22 @@ function expiryHarness(old, fetch) {
     withSelectedPortfolioAccount: (url) => withPortfolioAccount(url, context.selectedPortfolioAccountId),
     fetch: async (url) => { requests.push(url); return fetch(url); },
   };
-  const names = ['getDisplayedLinearActionPlanItems', 'manualQuoteExpired', 'getManualTriggerCurrentPriceReference', 'updateManualTriggerCurrentPriceReference', 'getManualTriggerPresentation',
+  const names = ['getDisplayedLinearActionPlanItems', 'getManualTriggerCurrentPriceReference', 'updateManualTriggerCurrentPriceReference', 'getManualTriggerPresentation',
     'manualTriggerLabel', 'renderLinearActionPlanCommonSummary', 'renderManualReservationSummary', 'renderManualPlanSummary', 'renderActionPlan',
-    'renderSelectedActionPlanDetail', 'loadActionPlan', 'refreshOpenActionPlanDetailAfterExpiry',
-    'handleManualQuoteExpiry', 'refreshActionPlanFromButton'];
+    'renderSelectedActionPlanDetail', 'loadActionPlan', 'refreshOpenActionPlanDetail',
+    'refreshActionPlanFromButton'];
   vm.runInNewContext(names.map(functionSource).join('\n'), context);
   return { context, scheduled, requests, explanation, editor, advanceTo: (value) => { now = value; } };
 }
 
-test('one expired Sell quote recalculates all Buy funding without refreshing TWS or replacing an open editor', async () => {
-  const { expiresAt, old, fresh } = expiringPlanFixture();
-  const h = expiryHarness(old, async (url) => ({ ok: true, json: async () => url.includes('/api/action-plan/BUY')
-    ? { action_detail: { symbol: 'BUY', action: 'Add', rating: 'Buy' } } : fresh }));
-  h.context.renderActionPlan();
-  assert.equal(h.scheduled.length, 1);
-  h.advanceTo(Date.parse(expiresAt) + 1);
-  const first = h.scheduled[0].callback();
-  const duplicate = h.scheduled[0].callback();
-  assert.match(h.context.actionPlanSummaryEl.innerHTML, /Recalculating/);
-  assert.doesNotMatch(h.context.actionPlanSummaryEl.innerHTML, /\$10000\.00/);
-  assert.doesNotMatch(h.explanation.innerHTML, /\$10000\.00|\$3000\.00/);
-  await Promise.all([first, duplicate]);
-  assert.equal(h.context.manualExecutionCalculationState, 'current');
-  assert.equal(h.context.latestActionPlanPayload.manual_execution.summary.executable_sell_trim_proceeds, 0);
-  assert.equal(h.editor.value, 'unsaved 42');
-  assert.equal(h.context.actionPlanExecutionMode, 'with');
-  assert.deepEqual(h.requests.map((url) => new URL(url, 'http://local').pathname), ['/api/action-plan', '/api/action-plan/BUY']);
-  assert.ok(h.requests.every((url) => new URL(url, 'http://local').searchParams.get('account_id') === 'U_ACCOUNT_A'));
-  assert.doesNotMatch(h.requests.join(' '), /manual-execution-quotes|tws/i);
-});
-
-test('failed expiry recalculation hides stale funding and manual refresh retries without losing detail', async () => {
-  const { expiresAt, old, fresh } = expiringPlanFixture();
-  let attempts = 0;
-  const h = expiryHarness(old, async (url) => {
-    if (url.includes('/api/action-plan/BUY')) return { ok: true, json: async () => ({ action_detail: { symbol: 'BUY', rating: 'Buy' } }) };
-    attempts += 1;
-    return attempts === 1 ? { ok: false, json: async () => ({ error: 'temporary' }) }
-      : { ok: true, json: async () => fresh };
-  });
+test('older prices schedule no recalculation and retain funded actions', () => {
+  const { old, expiresAt } = expiringPlanFixture();
+  const h = expiryHarness(old, () => assert.fail('unexpected request'));
   h.context.renderActionPlan();
   h.advanceTo(Date.parse(expiresAt) + 1);
-  await h.scheduled[0].callback();
-  assert.equal(h.context.manualExecutionCalculationState, 'outdated');
-  assert.match(h.context.actionPlanSummaryEl.innerHTML, /outdated/i);
-  assert.doesNotMatch(h.context.actionPlanSummaryEl.innerHTML, /\$10000\.00|\$3000\.00/);
-  assert.match(h.explanation.innerHTML, /Outdated; refresh Action Plan/);
-  assert.match(h.explanation.innerHTML, /trigger price expired and the Action Plan could not be recalculated/i);
-  assert.doesNotMatch(h.explanation.innerHTML, /\$10000\.00|\$3000\.00/);
-  assert.equal(h.editor.value, 'unsaved 42');
-  assert.equal(h.scheduled.length, 1);
-  await h.context.refreshActionPlanFromButton();
-  assert.equal(h.context.manualExecutionCalculationState, 'current');
-  assert.equal(h.context.latestActionPlanPayload.manual_execution.summary.executable_sell_trim_proceeds, 0);
-  assert.equal(attempts, 2);
-  assert.equal(h.editor.value, 'unsaved 42');
-  assert.deepEqual(h.requests.map((url) => new URL(url, 'http://local').pathname),
-    ['/api/action-plan', '/api/action-plan', '/api/action-plan/BUY']);
-});
-
-test('late expiry recalculation for a prior account cannot replace the new account plan or detail', async () => {
-  const { expiresAt, old, fresh } = expiringPlanFixture();
-  let finish;
-  const h = expiryHarness(old, () => new Promise((resolve) => { finish = resolve; }));
   h.context.renderActionPlan();
-  h.advanceTo(Date.parse(expiresAt) + 1);
-  const pending = h.scheduled[0].callback();
-  assert.equal(h.requests.length, 1);
-  assert.equal(new URL(h.requests[0], 'http://local').searchParams.get('account_id'), 'U_ACCOUNT_A');
-  h.context.selectedPortfolioAccountId = 'U_ACCOUNT_B';
-  h.context.actionPlanRequestId += 1;
-  h.context.actionPlanDetailRequestId += 1;
-  h.context.latestActionPlanPayload = { linear_action_plan: [{ symbol: 'OTHER' }] };
-  h.context.manualExecutionCalculationState = 'current';
-  finish({ ok: true, json: async () => fresh });
-  await pending;
-  assert.equal(h.context.latestActionPlanPayload.linear_action_plan[0].symbol, 'OTHER');
-  assert.equal(h.context.manualExecutionCalculationState, 'current');
-  assert.equal(h.requests.length, 1);
-});
-
-test('quote expiry recalculates while Without Triggers is selected and preserves that mode', async () => {
-  const { expiresAt, old, fresh } = expiringPlanFixture();
-  const h = expiryHarness(old, async () => ({ ok: true, json: async () => fresh }));
-  h.context.actionPlanExecutionMode = 'without';
-  h.context.actionPlanDetailViewEl.classList.contains = () => true;
-  h.context.renderActionPlan();
-  assert.equal(h.scheduled.length, 1);
-  h.advanceTo(Date.parse(expiresAt) + 1);
-  await h.scheduled[0].callback();
-  assert.equal(h.context.actionPlanExecutionMode, 'without');
-  assert.equal(h.context.latestActionPlanPayload.manual_execution.summary.executable_sell_trim_proceeds, 0);
-  assert.deepEqual(h.requests.map((url) => new URL(url, 'http://local').pathname), ['/api/action-plan']);
-});
-
-test('late expiry detail response cannot overwrite a newly opened symbol', async () => {
-  const { expiresAt, old, fresh } = expiringPlanFixture();
-  let finishDetail;
-  let detailStarted;
-  const started = new Promise((resolve) => { detailStarted = resolve; });
-  const h = expiryHarness(old, (url) => url.includes('/api/action-plan/BUY')
-    ? new Promise((resolve) => { finishDetail = resolve; detailStarted(); })
-    : Promise.resolve({ ok: true, json: async () => fresh }));
-  h.context.renderActionPlan();
-  h.advanceTo(Date.parse(expiresAt) + 1);
-  const pending = h.scheduled[0].callback();
-  await started;
-  h.context.actionPlanDetailRequestId += 1;
-  h.context.selectedActionPlanDetail = { symbol: 'OTHER' };
-  h.context.latestActionPlanDetailPayload = { action_detail: { symbol: 'OTHER' } };
-  finishDetail({ ok: true, json: async () => ({ action_detail: { symbol: 'BUY' } }) });
-  await pending;
-  assert.equal(h.context.latestActionPlanDetailPayload.action_detail.symbol, 'OTHER');
-  assert.equal(h.context.selectedActionPlanDetail.symbol, 'OTHER');
+  assert.equal(h.scheduled.length, 0);
+  assert.equal(h.context.latestActionPlanPayload.manual_execution.summary.executable_sell_trim_proceeds, 10000);
 });
 
 test('an older detail reload for the same symbol cannot replace a newer Action Plan reload', async () => {
@@ -855,73 +754,14 @@ test('an older detail reload for the same symbol cannot replace a newer Action P
   const finish = [];
   const h = expiryHarness(old, () => new Promise((resolve) => { finish.push(resolve); }));
   h.context.actionPlanRequestId = 1;
-  const first = h.context.refreshOpenActionPlanDetailAfterExpiry('U_ACCOUNT_A', 'BUY', 0);
+  const first = h.context.refreshOpenActionPlanDetail('U_ACCOUNT_A', 'BUY', 0);
   h.context.actionPlanRequestId = 2;
-  const second = h.context.refreshOpenActionPlanDetailAfterExpiry('U_ACCOUNT_A', 'BUY', 0);
+  const second = h.context.refreshOpenActionPlanDetail('U_ACCOUNT_A', 'BUY', 0);
   finish[1]({ ok: true, json: async () => ({ action_detail: { symbol: 'BUY', rating: 'New' } }) });
   await second;
   finish[0]({ ok: true, json: async () => ({ action_detail: { symbol: 'BUY', rating: 'Old' } }) });
   await first;
   assert.equal(h.context.latestActionPlanDetailPayload.action_detail.rating, 'New');
-});
-
-test('a cleared expiry timer callback cannot reload a different account plan', async () => {
-  const { expiresAt, old, fresh } = expiringPlanFixture();
-  const h = expiryHarness(old, async () => ({ ok: true, json: async () => fresh }));
-  h.context.renderActionPlan();
-  h.advanceTo(Date.parse(expiresAt) + 1);
-  h.context.selectedPortfolioAccountId = 'U_ACCOUNT_B';
-  h.context.actionPlanRequestId += 1;
-  await h.scheduled[0].callback();
-  assert.equal(h.requests.length, 0);
-});
-
-test('a quote expiring during an ordinary Action Plan request still gets a fresh recalculation', async () => {
-  const { expiresAt, old, fresh } = expiringPlanFixture();
-  let finishFirst;
-  let calls = 0;
-  const h = expiryHarness(old, (url) => {
-    if (url.includes('/api/action-plan/BUY')) return Promise.resolve({ ok: true, json: async () => ({ action_detail: { symbol: 'BUY' } }) });
-    calls += 1;
-    return calls === 1 ? new Promise((resolve) => { finishFirst = resolve; })
-      : Promise.resolve({ ok: true, json: async () => fresh });
-  });
-  h.context.renderActionPlan();
-  const pending = h.context.loadActionPlan({ preserveDetail: true });
-  h.advanceTo(Date.parse(expiresAt) + 1);
-  await h.scheduled[0].callback();
-  assert.equal(h.context.manualExecutionCalculationState, 'recalculating');
-  assert.doesNotMatch(h.context.actionPlanSummaryEl.innerHTML, /\$10000\.00/);
-  assert.equal(calls, 1);
-  finishFirst({ ok: true, json: async () => old });
-  await pending;
-  assert.equal(calls, 2);
-  assert.equal(h.context.latestActionPlanPayload.manual_execution.summary.executable_sell_trim_proceeds, 0);
-  assert.equal(h.context.manualExecutionCalculationState, 'current');
-});
-
-test('a mode re-render during a pending reload does not issue a second request at expiry', async () => {
-  const { expiresAt, old, fresh } = expiringPlanFixture();
-  let finishFirst;
-  let calls = 0;
-  const h = expiryHarness(old, (url) => {
-    if (url.includes('/api/action-plan/BUY')) return Promise.resolve({ ok: true, json: async () => ({ action_detail: { symbol: 'BUY' } }) });
-    calls += 1;
-    return calls === 1 ? new Promise((resolve) => { finishFirst = resolve; })
-      : Promise.resolve({ ok: true, json: async () => fresh });
-  });
-  h.context.renderActionPlan();
-  const pending = h.context.loadActionPlan({ preserveDetail: true });
-  h.context.renderActionPlan();
-  h.advanceTo(Date.parse(expiresAt) + 1);
-  await h.scheduled[0].callback();
-  await h.scheduled[1].callback();
-  assert.equal(calls, 1);
-  assert.equal(h.context.manualExecutionCalculationState, 'recalculating');
-  finishFirst({ ok: true, json: async () => old });
-  await pending;
-  assert.equal(calls, 2);
-  assert.equal(h.context.latestActionPlanPayload.manual_execution.summary.executable_sell_trim_proceeds, 0);
 });
 
 test('manual allocation rows mask stale execution figures and then render backend recalculation', () => {
@@ -953,7 +793,7 @@ test('manual allocation rows mask stale execution figures and then render backen
     valueClass: () => '', escapeHtml: String, manualQuoteExpired: () => false,
     hasLinearTargetCap: () => false,
   };
-  vm.runInNewContext(`${functionSource('manualQuoteExpired')}\n${functionSource('getLinearActionTableExecutionDisplay')}\n${functionSource('renderLinearAllocationRows')}`, context);
+  vm.runInNewContext(`${functionSource('getManualTriggerCurrentPriceReference')}\n${functionSource('getLinearActionTableExecutionDisplay')}\n${functionSource('renderLinearAllocationRows')}`, context);
   context.renderLinearAllocationRows();
   assert.equal(rows.length, 2);
   for (const row of rows) {
@@ -969,7 +809,7 @@ test('manual allocation rows mask stale execution figures and then render backen
   assert.ok(rows.every((row) => row.innerHTML.includes('$0.00')));
 });
 
-test('clearing an account plan cancels its expiry timer and invalidates pending responses', () => {
+test('clearing an account plan invalidates pending responses', () => {
   const timer = {};
   let cleared;
   const context = {
@@ -982,10 +822,30 @@ test('clearing an account plan cancels its expiry timer and invalidates pending 
     actionPlanStatusEl: { textContent: '', className: '' },
   };
   vm.runInNewContext(`${functionSource('clearActionPlanDisplay')}\nclearActionPlanDisplay('Select account')`, context);
-  assert.equal(cleared, timer);
-  assert.equal(context.manualQuoteExpiryTimer, null);
   assert.equal(context.manualExecutionCalculationState, 'current');
   assert.equal(context.actionPlanPendingRequest, null);
   assert.deepEqual([context.actionPlanRequestId, context.actionPlanDetailRequestId, context.actionPlanQuoteRequestId], [4, 6, 8]);
   assert.equal(context.actionPlanStatusEl.textContent, 'Select account');
+});
+
+test('detail uses matching mode valuation, weights, execution and summary while retaining enriched variables', () => {
+  const baseline = {symbol:'ABC', current_price:101, current_position_market_value:1010, current_position_weight:10.1,
+    executable_action_amount:505, suggested_share_count:5, funding_status:'Funded', action:'Add',
+    action_relevant_key_variables:[{name:'Demand'}], summary:{available_buy_budget:505}};
+  const manualRow = {symbol:'ABC', current_price:103, manual_verified_price:103, current_position_market_value:1030,
+    current_position_weight:10.3, executable_action_amount:309, suggested_share_count:3, funding_status:'Partially funded', action:'Add'};
+  const context = {
+    latestActionPlanPayload:{linear_action_plan:[baseline], manual_execution:{linear_action_plan:[manualRow], summary:{available_buy_budget:309}}},
+    payload:{action_detail:baseline, manual_execution_detail:{...baseline,summary:{available_buy_budget:400}}},
+    actionPlanExecutionMode:'with', renderActionPlanDetail:row=>{ context.row = row; },
+    manualTriggerDetailEl:null, updateManualTriggerCurrentPriceReference() {},
+  };
+  vm.runInNewContext(functionSource('getDisplayedLinearActionPlanItems') + '\n' + functionSource('renderSelectedActionPlanDetail'),context);
+  context.renderSelectedActionPlanDetail(context.payload);
+  for (const [key,value] of Object.entries(manualRow)) assert.equal(context.row[key],value,key);
+  assert.equal(context.row.action_relevant_key_variables,baseline.action_relevant_key_variables);
+  assert.equal(context.row.summary.available_buy_budget,309);
+  context.actionPlanExecutionMode = 'without';
+  context.renderSelectedActionPlanDetail(context.payload);
+  for (const [key,value] of Object.entries(baseline)) assert.equal(context.row[key],value,key);
 });

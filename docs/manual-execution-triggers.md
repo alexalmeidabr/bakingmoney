@@ -8,7 +8,7 @@ Manual triggers delay execution of an existing Linear Allocation recommendation.
 2. Open a symbol. Enter an optional **Buy at or below** price and an optional shared **Sell/Trim trigger price** with direction. The Sell/Trim setting applies to Sell, Strong Sell, Trim, and Strong Trim recommendations.
 3. Enable **Reserve cash while waiting for Buy trigger** and choose 0–100% if desired. The requested amount is a planning earmark; it does not restrict IBKR cash. The editor retains this preference even while the current recommendation is Hold or Sell.
 4. Select **Save Triggers** to write the complete preference object, or **Clear Triggers** to delete it. A successful save reloads the dual-mode plan once. A reload failure is reported separately from persistence success.
-5. Select **Refresh Trigger Prices** to ask TWS for current bid and ask observations for applicable manual triggers. The detail editor also has **Refresh This Trigger Price**. Quote refresh is explicit; there is no polling or TWS request during Action Plan GET or mode switching.
+5. Select **Refresh Trigger Prices** to ask TWS for a newer usable market price for applicable manual triggers. The detail editor also has **Refresh This Trigger Price**. Quote refresh is explicit; there is no polling or TWS request during Action Plan GET or mode switching.
 
 The manual table keeps the original investment recommendation visible. Trigger status is separate from funded amount and whole shares. **Eligible, unfunded** means the price condition is satisfied but the trade has no funded whole shares. Guardrails remain visible. The manual summary separates Dynamic Reserve from requested, fulfilled, and unfulfilled manual reservations, including the portions backed by current cash-like funds and projected Sell/Trim proceeds.
 
@@ -28,13 +28,17 @@ Existing preference endpoints are `GET /api/manual-execution-triggers/{symbol}`,
 }
 ```
 
-`POST /api/manual-execution-quotes/refresh?account_id=...` accepts `{"symbols":["NVDA","META"]}`. It validates and deduplicates 1–25 symbols, checks that each has a saved analysis version, resolves the selected account, and returns one result per symbol. Statuses are `verified`, `confirmation_required`, `contract_unavailable`, `not_analyzed`, or `tws_unavailable`; verified results include bid, ask, and verification time. TWS connection failure returns HTTP 503 with per-symbol unavailable results. Partial market-data failures return HTTP 200 with mixed per-symbol statuses.
+`POST /api/manual-execution-quotes/refresh?account_id=...` accepts `{"symbols":["NVDA","META"]}`. It validates and deduplicates 1–25 symbols, checks that each has a saved analysis version, resolves the selected account, and returns one result per symbol. A result reports a usable quote or explains why the refresh failed. TWS connection failure returns HTTP 503 with per-symbol feedback. Partial market-data failures return HTTP 200 with results for each requested symbol. An unsuccessful refresh leaves the last usable planning price available.
 
-## Quote evidence and scope
+## Latest usable price
 
-The endpoint requests live market data mode for this explicit operation and restores the existing delayed mode afterward. Owned symbols use their account's TWS position contract when available. Unowned symbols use a uniquely qualified USD SMART stock contract. Contract qualification is batched, with per-symbol recovery only if the batch call fails. Ambiguous or mismatched contracts are rejected. The existing observation collector requires recent positive-size live bid and ask events for the same qualified contract, checks the ticker's current fields against those events, and rejects delayed, frozen, partial, and wrong-contract quotes. The endpoint cancels market subscriptions after the request.
+Both Action Plan workspaces select prices from the selected account's position market data and available contract-matched observations, including explicit quote refreshes saved in SQLite. An observation with a known time outranks one with unknown time. Newer usable observations win, including delayed observations that postdate a live quote. Bid/ask observations use the older side's timestamp when both side times are available. Other observations use the recorded market or retrieval time when available.
 
-Successful proof is held only in process memory under database path, portfolio account, and symbol. A failed refresh removes earlier proof for the requested symbol. The five-minute freshness check is enforced on every Action Plan calculation. The UI also stops displaying a cached quote as verified when its supplied expiry passes and asks for recalculation. The verified ask determines Buy eligibility and sizing; verified bid determines Sell/Trim eligibility. Owned positions retain their existing My Positions quote proof path; the newer valid proof wins if both paths have evidence. Neither explicit quote path writes analysis versions or portfolio positions.
+For equal or unknown times, a usable two-sided quote takes priority, then a non-delayed observation, then an in-session source over a saved explicit refresh. The position price breaks otherwise identical ties. Without usable market data, the plan labels a positive saved analysis price as a fallback. When all sources lack a positive finite price, the trigger shows **Price Unavailable**.
+
+A two-sided observation supplies its midpoint as the reference when it has no separate market price. Buy triggers compare the ask and Sell/Trim triggers compare the bid. The trigger detail identifies the side and the time used. A single-price observation supplies the same value for display and evaluation. The price condition is **Eligible** or **Waiting** regardless of quote age. A cached, delayed, older, or unknown-time price may differ from the price currently available in the market.
+
+Explicit refreshes collect market data only when requested. An owned symbol uses the account's position contract when available. An unowned symbol uses a uniquely qualified USD SMART stock contract. Usable explicit observations survive restart and are isolated by portfolio account. Refreshing market data leaves research inputs intact.
 
 ## Screenshots
 
@@ -52,9 +56,9 @@ Regenerate with `node tools/capture_manual_execution_screenshots.js` on a machin
 
 - Verify a live unowned Buy with ask below threshold becomes eligible, releases its reservation, and sizes whole shares at that ask.
 - Verify an ask above threshold remains waiting; check the same for Sell/Trim using bid and both direction choices.
-- Disconnect TWS and repeat refresh; confirm per-symbol unavailable feedback and no reuse of prior proof. Reconnect and repeat.
-- Request a symbol without live permissions, and a symbol with delayed/frozen or one-sided data; confirm price confirmation is required.
-- Switch between two managed accounts with the same symbol and distinct preferences; confirm proof and reservations do not cross accounts.
-- Wait more than five minutes, refresh the Action Plan, and confirm the old quote no longer makes a trigger eligible.
+- Disconnect TWS and repeat the refresh. Confirm the failure feedback and verify that an earlier usable price still evaluates the trigger.
+- Request a symbol with delayed data. Check the source and timestamp used for the trigger.
+- Switch between two accounts with the same symbol and distinct preferences. Check each account's price and reservations.
+- Reopen the application after more than five minutes. Verify that a last-known usable price can still satisfy a trigger.
 
-The implementation does not track whether a threshold crossed between refreshes. Unowned contract qualification is currently limited to USD SMART stocks. A TWS subscription and live bid/ask permissions are required for verification.
+The plan evaluates available observations when calculated. It does not track intraday threshold crossings between observations.

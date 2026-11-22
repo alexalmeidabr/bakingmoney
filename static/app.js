@@ -295,7 +295,6 @@ let actionPlanShowNonExecutableRecommendations = false;
 let actionPlanRequestId = 0;
 let actionPlanDetailRequestId = 0;
 let actionPlanQuoteRequestId = 0;
-let manualQuoteExpiryTimer = null;
 let manualExecutionCalculationState = 'current';
 let actionPlanPendingRequest = null;
 let portfolioAccounts = [];
@@ -1646,6 +1645,12 @@ function getPortfolioAccountOptionLabel(account) {
 }
 
 function withSelectedPortfolioAccount(url) {
+  if (simulatorActive) {
+    if (selectedSimulation == null && /^\/api\/(?:action-plan(?:[/?]|$)|manual-execution-triggers(?:[/?]|$))/.test(url)) {
+      throw new Error('Select a saved simulation first.');
+    }
+    url = scopedPlanPath(url, selectedSimulation?.id);
+  }
   if (typeof portfolioAccountSelector.withPortfolioAccount !== 'function') return url;
   return portfolioAccountSelector.withPortfolioAccount(url, selectedPortfolioAccountId);
 }
@@ -1691,8 +1696,6 @@ function clearActionPlanDisplay(message, className = 'status error') {
   actionPlanRequestId += 1;
   actionPlanDetailRequestId += 1;
   actionPlanQuoteRequestId += 1;
-  if (manualQuoteExpiryTimer) clearTimeout(manualQuoteExpiryTimer);
-  manualQuoteExpiryTimer = null;
   manualExecutionCalculationState = 'current';
   actionPlanPendingRequest = null;
   latestActionPlanPayload = { action_plan: [], linear_action_plan: [], summary: {} };
@@ -1777,6 +1780,8 @@ async function reloadPortfolioScopedViews() {
   const activeView = getActiveViewId();
   if (activeView === 'positions') {
     await loadPositions();
+  } else if (activeView === 'action-plan-simulator') {
+    await loadSimulations();
   } else if (activeView === 'action-plan') {
     await loadActionPlan();
   } else if (activeView === 'analysis') {
@@ -1823,6 +1828,7 @@ async function loadPortfolioAccounts(options = {}) {
 }
 
 async function handlePortfolioAccountNotFound() {
+  if (simulatorActive) clearSimulationContext();
   localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
   selectedPortfolioAccountId = null;
   clearPositionsDisplay('', 'status');
@@ -1833,6 +1839,14 @@ async function handlePortfolioAccountNotFound() {
 
 async function handlePortfolioAccountChange() {
   if (isUpdatingPortfolioAccountSelect) return;
+  if (simulatorActive && !discardSimulationEdits()) {
+    renderPortfolioAccountSelector();
+    return;
+  }
+  if (simulatorActive) {
+    rememberPlanPreferences();
+    clearSimulationContext();
+  }
   selectedPortfolioAccountId = normalizePortfolioAccountId(portfolioAccountSelectEl?.value);
   resetActionPlanExecutionMode();
   if (selectedPortfolioAccountId) localStorage.setItem(PORTFOLIO_ACCOUNT_STORAGE_KEY, selectedPortfolioAccountId);
@@ -2436,36 +2450,28 @@ function getDisplayedLinearActionPlanItems(payload, mode) {
     : (Array.isArray(payload?.linear_action_plan) ? payload.linear_action_plan : []);
 }
 
-function manualQuoteExpired(item, now = Date.now()) {
-  const expiry = Date.parse(item?.manual_verified_quote_expires_at || '');
-  return Number.isFinite(expiry) && now >= expiry;
-}
-
 function getActionPlanPriceDisplay(item, manualMode) {
-  const fallbackTitle = item.price_warning || (item.price_source === 'analysis_fallback'
-    ? 'Action Plan is using the saved analysis price.' : 'Current Action Plan sizing price.');
-  if (manualMode && manualQuoteExpired(item)) {
-    return { price: 'Expired', title: 'Verified live quote expired. Refresh trigger prices and the Action Plan.', warning: true };
+  const reference = getManualTriggerCurrentPriceReference(manualMode ? item : {...item, manual_verified_price: null, manual_trigger_status: null});
+  if (manualMode && item.manual_trigger_status === 'price_unavailable') {
+    return { price: 'Unavailable', title: item.manual_price_verification_reason || 'No usable price', warning: true };
   }
-  if (manualMode && item.manual_verified_price != null && item.manual_verified_quote_at) {
-    return { price: formatCurrencyValue(item.manual_verified_price, 'USD'),
-      title: `Verified live bid/ask at ${item.manual_verified_quote_at}`, warning: false };
+  if (manualMode && item.manual_verified_price != null) {
+    return { price: reference.price, title: reference.source, warning: Boolean(item.manual_price_verification_reason) };
   }
-  return { price: formatCurrencyValue(item.current_price, 'USD'), title: fallbackTitle, warning: Boolean(item.price_warning) };
+  return { price: formatCurrencyValue(item.current_price, 'USD'), title: reference.source, warning: Boolean(item.price_warning) };
 }
 
 function getManualTriggerCurrentPriceReference(item) {
-  if (manualQuoteExpired(item)) {
-    return { price: 'Price unavailable.', source: 'Saved verified quote expired; refresh trigger prices.' };
+  if (Number.isFinite(item?.manual_verified_price) && item.manual_verified_price > 0) {
+    const source = String(item.manual_price_source || item.price_source || 'Saved market price').replaceAll('_', ' ');
+    const time = item.manual_verified_quote_at ? ' at ' + item.manual_verified_quote_at : ' (time unknown)';
+    const warning = item.manual_price_verification_reason ? ' · ' + item.manual_price_verification_reason : '';
+    return { price: formatCurrencyValue(item.manual_verified_price, 'USD'), source: source + time + warning };
   }
-  if (item?.manual_verified_price != null && item?.manual_verified_quote_at) {
-    return { price: formatCurrencyValue(item.manual_verified_price, 'USD'), source: `Saved verified quote from ${item.manual_verified_quote_at}.` };
-  }
-  if (Number.isFinite(Number(item?.current_price)) && Number(item.current_price) > 0) {
-    if (item?.price_source === 'analysis_fallback' || item?.price_warning) {
-      return { price: formatCurrencyValue(item.current_price, 'USD'), source: 'Saved fallback price.' };
-    }
-    return { price: formatCurrencyValue(item.current_price, 'USD'), source: 'Saved Action Plan price.' };
+  if (item?.manual_trigger_status !== 'price_unavailable' && Number.isFinite(item?.current_price) && item.current_price > 0) {
+    const source = String(item.price_source || 'Saved Action Plan price').replaceAll('_', ' ');
+    const time = item.price_last_successful_at ? ' at ' + item.price_last_successful_at : ' (time unknown)';
+    return { price: formatCurrencyValue(item.current_price, 'USD'), source: source + time + (item.price_warning ? ' · ' + item.price_warning : '') };
   }
   return { price: 'Price unavailable.', source: 'No usable saved price is available.' };
 }
@@ -2479,7 +2485,7 @@ function updateManualTriggerCurrentPriceReference(item) {
 
 function getManualTriggerPresentation(item) {
   const status = item?.manual_trigger_status;
-  if (manualQuoteExpired(item)) return { status: 'Price confirmation required', tone: 'confirmation' };
+  if (status === 'price_unavailable') return { status: 'Price unavailable', tone: 'confirmation' };
   if (status === 'waiting') return { status: 'Waiting', tone: 'waiting' };
   if (status === 'price_confirmation_required') return { status: 'Price confirmation required', tone: 'confirmation' };
   if (status === 'eligible') {
@@ -2498,7 +2504,6 @@ function isUnderlyingTradeRecommendation(item) {
 }
 
 function hasCurrentExecutableManualAction(item) {
-  if (manualQuoteExpired(item)) return false;
   if (typeof manualExecutionCalculationState !== 'undefined' && manualExecutionCalculationState !== 'current') return false;
   const shares = Number(item?.suggested_share_count);
   return Number.isInteger(shares) && shares >= 1 && Number(item?.executable_action_amount) > 0;
@@ -2510,13 +2515,12 @@ function getTriggerAwareVisibleRows(items, showNonExecutable) {
 }
 
 function getLinearActionTableExecutionDisplay(item, manualMode) {
-  const unavailable = manualMode && (manualQuoteExpired(item)
-    || ['waiting', 'price_confirmation_required'].includes(item?.manual_trigger_status));
+  const unavailable = manualMode && ['waiting', 'price_unavailable', 'price_confirmation_required'].includes(item?.manual_trigger_status);
   if (unavailable) {
     return {
       actionAmount: '—',
       shares: '—',
-      funding: manualQuoteExpired(item) || item?.manual_trigger_status === 'price_confirmation_required'
+      funding: item?.manual_trigger_status === 'price_unavailable' ? 'Price unavailable' : item?.manual_trigger_status === 'price_confirmation_required'
         ? 'Price confirmation required'
         : 'Manual trigger waiting',
     };
@@ -2598,9 +2602,13 @@ function manualTriggerLabel(item) {
 function renderSelectedActionPlanDetail(payload) {
   const baseline = payload?.action_detail;
   if (!baseline) return;
-  renderActionPlanDetail(baseline);
-  const manual = getDisplayedLinearActionPlanItems(latestActionPlanPayload, actionPlanExecutionMode)
-    .find((item) => item.symbol === baseline.symbol) || payload.manual_execution_detail || baseline;
+  const withTriggers = actionPlanExecutionMode === 'with';
+  const cachedRow = getDisplayedLinearActionPlanItems(latestActionPlanPayload, actionPlanExecutionMode)
+    .find((item) => item.symbol === baseline.symbol);
+  const detail = withTriggers ? payload.manual_execution_detail : baseline;
+  const summary = withTriggers ? latestActionPlanPayload?.manual_execution?.summary : latestActionPlanPayload?.summary?.linear_summary;
+  const manual = { ...baseline, ...detail, ...cachedRow, summary: summary ?? detail?.summary ?? baseline.summary };
+  renderActionPlanDetail(manual);
   updateManualTriggerCurrentPriceReference(manual);
   const explanation = manualTriggerDetailEl?.querySelector('#manual-execution-explanation');
   if (!explanation) return;
@@ -2608,28 +2616,27 @@ function renderSelectedActionPlanDetail(payload) {
     explanation.innerHTML = '';
     return;
   }
-  if (!manual) return;
   const calculationUnavailable = manualExecutionCalculationState !== 'current';
   const calculationLabel = manualExecutionCalculationState === 'recalculating' ? 'Recalculating' : 'Outdated; refresh Action Plan';
   const presentation = getManualTriggerPresentation(manual);
-  const quoteExpired = manualQuoteExpired(manual);
   const sellBlocked = ['Sell', 'Strong Sell'].includes(manual.recommended_action)
-    && ['waiting', 'price_confirmation_required'].includes(manual.manual_trigger_status);
+    && ['waiting', 'price_unavailable', 'price_confirmation_required'].includes(manual.manual_trigger_status);
   const reservationText = calculationUnavailable
     ? (manualExecutionCalculationState === 'recalculating' ? 'Manual execution funding is being recalculated.' : 'Manual execution funding is outdated. Refresh Action Plan to retry.')
     : manual.reserve_enabled
     ? 'A waiting Buy reserves only the funded portion shown below. When its trigger is reached, the reservation is released into normal trade funding.'
     : 'Reservation is off; available capital may be allocated to other eligible companies.';
   explanation.innerHTML = `<section class="detail-card"><h4>Manual Execution</h4>
-    ${manualExecutionCalculationState === 'outdated' ? '<p class="status warning">Verified trigger price expired and the Action Plan could not be recalculated. Manual execution funding is outdated. Refresh Action Plan to retry.</p>' : ''}
+    ${manualExecutionCalculationState === 'outdated' ? '<p class="status warning">The Action Plan could not be recalculated. Manual execution funding is outdated. Refresh Action Plan to retry.</p>' : ''}
     ${renderActionPlanMetricList([
       ['Investment Recommendation', escapeHtml(manual.recommended_action || baseline.action || 'Hold')],
       ['Original Planned Amount', formatCurrencyValue(manual.planned_action_amount, 'USD')],
       ['Original Suggested Shares', formatNumber(manual.planned_share_count, 0)],
       ['Manual Trigger', escapeHtml(manualTriggerLabel(manual))],
       ['Trigger Status', calculationUnavailable ? calculationLabel : escapeHtml(presentation.status)],
-      ['Verified Price', manual.manual_verified_price == null || quoteExpired ? 'Verification required' : formatCurrencyValue(manual.manual_verified_price, 'USD')],
-      ['Verified At', escapeHtml(quoteExpired ? 'Expired; refresh trigger prices' : (manual.manual_verified_quote_at || '—'))],
+      ['Evaluation Price', manual.manual_verified_price == null ? (manual.manual_trigger_status === 'price_unavailable' ? 'Unavailable' : '—') : formatCurrencyValue(manual.manual_verified_price, 'USD')],
+      ['Price Source', escapeHtml(String(manual.manual_price_source || manual.price_source || '—').replaceAll('_', ' '))],
+      ['Price As Of', escapeHtml(manual.manual_verified_quote_at || 'Unknown')],
       ['Executable Action', calculationUnavailable ? calculationLabel : escapeHtml(manual.executable_action || manual.action || 'Hold')],
       ['Funded Amount', calculationUnavailable ? calculationLabel : formatCurrencyValue(manual.executable_action_amount, 'USD')],
       ['Funded Shares', calculationUnavailable ? calculationLabel : formatNumber(manual.suggested_share_count, 0)],
@@ -2654,7 +2661,7 @@ function renderSelectedActionPlanDetail(payload) {
 function renderManualTriggerDetail(symbol, trigger) {
   if (!manualTriggerDetailEl) return;
   const saved = trigger || {};
-  manualTriggerDetailEl.innerHTML = `<section class="detail-card"><h4>Manual Execution Triggers</h4>
+  manualTriggerDetailEl.innerHTML = `<section class="detail-card"><h4>${simulatorActive ? 'Simulation Triggers' : 'Manual Execution Triggers'}</h4>
     <div class="manual-trigger-editor">
       <p class="manual-trigger-price-reference" data-trigger-current-price aria-live="polite">Current Price: Price unavailable. — Loading saved price reference.</p>
       <label>Buy at or below<input data-trigger-field="buy_trigger_price" type="number" min="0" step="any" inputmode="decimal" value="${escapeHtml(saved.buy_trigger_price ?? '')}"></label>
@@ -2764,7 +2771,7 @@ async function refreshTriggerPrices(onlySymbols = null) {
     setStatus('No applicable manual trigger prices to refresh.');
     return;
   }
-  setStatus(`Refreshing live prices for ${unique.length} trigger ${unique.length === 1 ? 'symbol' : 'symbols'}…`);
+  setStatus(`Refreshing market prices for ${unique.length} trigger ${unique.length === 1 ? 'symbol' : 'symbols'}…`);
   actionPlanRefreshTriggerPricesBtn.disabled = true;
   try {
     const results = [];
@@ -2778,10 +2785,10 @@ async function refreshTriggerPrices(onlySymbols = null) {
       if (!response.ok && !Array.isArray(payload.results)) throw createPortfolioApiError(payload, 'Unable to refresh trigger prices');
       results.push(...(payload.results || []));
     }
-    const verified = results.filter((item) => item.status === 'verified').length;
-    const failed = results.filter((item) => item.status !== 'verified');
+    const refreshed = results.filter((item) => ['verified', 'updated'].includes(item.status)).length;
+    const failed = results.filter((item) => !['verified', 'updated'].includes(item.status));
     const details = failed.length ? ` ${failed.map((item) => `${item.symbol}: ${item.reason || item.status}`).join('; ')}.` : '';
-    setStatus(`${verified} live ${verified === 1 ? 'price' : 'prices'} verified; ${failed.length} require confirmation.${details}`, failed.length ? 'status warning' : 'status success');
+    setStatus(`${refreshed} ${refreshed === 1 ? 'price' : 'prices'} refreshed. ${failed.length} refresh ${failed.length === 1 ? 'failure' : 'failures'}.${details}`, failed.length ? 'status warning' : 'status success');
     const reloaded = await loadActionPlan({ preserveDetail: !actionPlanDetailViewEl.classList.contains('hidden') });
     if (requestId !== actionPlanQuoteRequestId || account !== selectedPortfolioAccountId) return;
     if (!reloaded) setStatus('Quote refresh completed, but Action Plan reload failed. Refresh Action Plan to retry.', 'status warning');
@@ -2964,7 +2971,10 @@ async function openActionPlanDetail(symbol) {
     renderManualTriggerDetail(symbol, triggerPayload.trigger || null);
   } catch (error) {
     if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId) return;
-    if (error.code === 'account_not_found') await handlePortfolioAccountNotFound();
+    if (error.code === 'account_not_found') {
+      await handlePortfolioAccountNotFound();
+      return;
+    }
     if (isPortfolioAccountBlockingError(error)) {
       actionPlanDetailContentEl.innerHTML = '';
       selectedActionPlanDetail = null;
@@ -2986,7 +2996,6 @@ async function loadActionPlan(options = {}) {
   actionPlanPendingRequest = { id: requestId, account: requestAccount };
   actionPlanStatusEl.textContent = 'Loading Action Plan…';
   actionPlanStatusEl.className = 'status';
-  const requestStartedAt = Date.now();
   try {
     const response = await fetch(withSelectedPortfolioAccount('/api/action-plan?execution_modes=both'));
     const payload = await response.json();
@@ -2994,40 +3003,33 @@ async function loadActionPlan(options = {}) {
     actionPlanPendingRequest = null;
     if (!response.ok) throw createPortfolioApiError(payload, 'Unable to load Action Plan');
     latestActionPlanPayload = payload || { action_plan: [], summary: {} };
-    const quoteExpiredDuringRequest = getDisplayedLinearActionPlanItems(latestActionPlanPayload, 'with').some((item) => {
-      const expiry = Date.parse(item.manual_verified_quote_expires_at || '');
-      return Number.isFinite(expiry) && expiry > requestStartedAt && expiry <= Date.now();
-    });
     manualExecutionCalculationState = 'current';
     renderActionPlan();
     if (options.preserveDetail && latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
     actionPlanStatusEl.textContent = `Loaded ${payload.linear_action_plan?.length || 0} Linear Allocation rows.`;
     actionPlanStatusEl.className = 'status';
-    if (quoteExpiredDuringRequest) return handleManualQuoteExpiry();
     return true;
   } catch (error) {
     if (requestId !== actionPlanRequestId || requestAccount !== selectedPortfolioAccountId) return false;
     actionPlanPendingRequest = null;
-    if (error.code === 'account_not_found') await handlePortfolioAccountNotFound();
+    if (error.code === 'account_not_found') {
+      await handlePortfolioAccountNotFound();
+      return;
+    }
     if (isPortfolioAccountBlockingError(error)) {
       clearActionPlanDisplay(error.message);
       return false;
     }
-    if (options.expirationRecalculation || manualExecutionCalculationState === 'recalculating'
-      || getDisplayedLinearActionPlanItems(latestActionPlanPayload, 'with').some((item) => manualQuoteExpired(item))) {
-      manualExecutionCalculationState = 'outdated';
-      renderActionPlan();
-      if (latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
-    } else {
-      renderActionPlan();
-    }
+    manualExecutionCalculationState = 'outdated';
+    renderActionPlan();
+    if (latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
     actionPlanStatusEl.textContent = `Error: ${error.message}`;
     actionPlanStatusEl.className = 'status error';
     return false;
   }
 }
 
-async function refreshOpenActionPlanDetailAfterExpiry(account, symbol, detailRequestId) {
+async function refreshOpenActionPlanDetail(account, symbol, detailRequestId) {
   if (!symbol || account !== selectedPortfolioAccountId || detailRequestId !== actionPlanDetailRequestId) return;
   const planRequestId = actionPlanRequestId;
   try {
@@ -3047,27 +3049,12 @@ async function refreshOpenActionPlanDetailAfterExpiry(account, symbol, detailReq
   }
 }
 
-async function handleManualQuoteExpiry() {
-  if (manualExecutionCalculationState !== 'current') return false;
-  const account = selectedPortfolioAccountId;
-  const symbol = actionPlanDetailViewEl.classList.contains('hidden') ? null : selectedActionPlanDetail?.symbol;
-  const detailRequestId = actionPlanDetailRequestId;
-  manualExecutionCalculationState = 'recalculating';
-  renderActionPlan();
-  if (latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
-  const reloaded = await loadActionPlan({ preserveDetail: true, expirationRecalculation: true });
-  if (reloaded && account === selectedPortfolioAccountId && detailRequestId === actionPlanDetailRequestId) {
-    await refreshOpenActionPlanDetailAfterExpiry(account, symbol, detailRequestId);
-  }
-  return reloaded;
-}
-
 async function refreshActionPlanFromButton() {
   const account = selectedPortfolioAccountId;
   const symbol = actionPlanDetailViewEl.classList.contains('hidden') ? null : selectedActionPlanDetail?.symbol;
   const detailRequestId = actionPlanDetailRequestId;
   const reloaded = await loadActionPlan({ preserveDetail: Boolean(symbol) });
-  if (reloaded && symbol) await refreshOpenActionPlanDetailAfterExpiry(account, symbol, detailRequestId);
+  if (reloaded && symbol) await refreshOpenActionPlanDetail(account, symbol, detailRequestId);
 }
 
 function getFilteredActionPlanItems() {
@@ -3618,43 +3605,10 @@ function renderActionPlan() {
   const summary = manualMode
     ? (latestActionPlanPayload?.manual_execution?.summary || latestActionPlanPayload?.summary?.linear_summary || {})
     : (latestActionPlanPayload?.summary?.linear_summary || {});
-  const manualRows = getDisplayedLinearActionPlanItems(latestActionPlanPayload, 'with');
-  const expired = manualMode && manualRows.some((item) => manualQuoteExpired(item));
-  const calculationUnavailable = manualMode && manualExecutionCalculationState !== 'current';
-  const calculationWarning = manualExecutionCalculationState === 'recalculating'
-    ? 'Verified trigger price expired. Recalculating manual execution funding…'
-    : 'Verified trigger price expired and the Action Plan could not be recalculated. Manual execution funding is outdated. Refresh Action Plan to retry.';
-  actionPlanSummaryEl.innerHTML = (calculationUnavailable
-    ? `<p class="status warning">${calculationWarning}</p>`
-    : expired ? '<p class="status warning">Verified trigger prices expired; execution requires new live verification.</p>' : '')
-    + (manualMode ? renderManualPlanSummary(summary, !calculationUnavailable,
-      calculationUnavailable ? (manualExecutionCalculationState === 'recalculating' ? 'Recalculating' : 'Outdated') : null)
-      : renderActionPlanSummaryCards(summary, 'Linear Allocation'));
-  if (manualQuoteExpiryTimer) clearTimeout(manualQuoteExpiryTimer);
-  manualQuoteExpiryTimer = null;
-  if (manualExecutionCalculationState === 'current') {
-    const now = Date.now();
-    const nextExpiry = Math.min(...manualRows.map((item) => Date.parse(item.manual_verified_quote_expires_at || ''))
-      .filter((timestamp) => Number.isFinite(timestamp) && timestamp > now));
-    if (Number.isFinite(nextExpiry)) {
-      const timerAccount = selectedPortfolioAccountId;
-      const timerRequestId = actionPlanRequestId;
-      const timer = setTimeout(() => {
-        if (manualQuoteExpiryTimer !== timer || timerAccount !== selectedPortfolioAccountId) return false;
-        manualQuoteExpiryTimer = null;
-        if (actionPlanPendingRequest?.id === actionPlanRequestId
-          && actionPlanPendingRequest.account === timerAccount) {
-          manualExecutionCalculationState = 'recalculating';
-          renderActionPlan();
-          if (latestActionPlanDetailPayload) renderSelectedActionPlanDetail(latestActionPlanDetailPayload);
-          return false;
-        }
-        if (timerRequestId !== actionPlanRequestId) return false;
-        return handleManualQuoteExpiry();
-      }, nextExpiry - now);
-      manualQuoteExpiryTimer = timer;
-    }
-  }
+  actionPlanSummaryEl.innerHTML = manualMode
+    ? renderManualPlanSummary(summary, manualExecutionCalculationState === 'current',
+      manualExecutionCalculationState === 'current' ? null : 'Outdated')
+    : renderActionPlanSummaryCards(summary, 'Linear Allocation');
   renderLinearAllocationRows();
   return;
   if (actionPlanBucketActionsTableWrapEl) actionPlanBucketActionsTableWrapEl.classList.toggle('hidden', actionPlanActiveTab !== 'actions' || actionPlanActionMode !== 'bucket');
@@ -3685,7 +3639,7 @@ function updateAnalysisBackButton() {
   if (analysisDetailOrigin === 'positions') {
     analysisBackBtn.textContent = '← Back to My Positions';
   } else if (analysisDetailOrigin === 'action_plan') {
-    analysisBackBtn.textContent = '← Back to Action Plan';
+    analysisBackBtn.textContent = simulatorActive ? '← Back to Simulator' : '← Back to Action Plan';
   } else if (analysisDetailOrigin === 'earnings_review') {
     analysisBackBtn.textContent = '← Back to Earnings Review';
   } else {
@@ -3700,7 +3654,7 @@ function showAnalysisDetailFromPositionsOrigin() {
   showAnalysisDetailFromOriginMenu('positions');
 }
 function showAnalysisDetailFromActionPlanOrigin() {
-  showAnalysisDetailFromOriginMenu('action-plan');
+  showAnalysisDetailFromOriginMenu(simulatorActive ? 'action-plan-simulator' : 'action-plan');
 }
 function showAnalysisDetailFromEarningsReviewOrigin() {
   showAnalysisDetailFromOriginMenu('earnings-review');
@@ -3797,7 +3751,227 @@ async function exportBackupFile() {
   }
 }
 
+const simulationEl = (name) => document.getElementById('simulation-' + name);
+let simulatorActive = false;
+let savedSimulations = [];
+let selectedSimulation = null;
+let simulationGeneration = 0;
+let simulationBusy = false;
+const previousSimulation = new Map();
+const planPreferences = new Map();
+
+function scopedPlanPath(path, simulationId) {
+  if (simulationId == null) return path;
+  const base = '/api/action-plan-simulations/' + encodeURIComponent(simulationId);
+  if (/^\/api\/action-plan(?:[/?]|$)/.test(path)) return base + path.slice(4);
+  if (/^\/api\/manual-execution-triggers(?:[/?]|$)/.test(path)) {
+    return base + '/triggers' + path.slice('/api/manual-execution-triggers'.length);
+  }
+  return path;
+}
+
+function simulationCashDirty() {
+  if (!simulatorActive || !selectedSimulation) return false;
+  const field = simulationEl('cash');
+  return !field.validity.valid || Number(field.value) !== selectedSimulation.additional_cash_usd;
+}
+
+function discardSimulationEdits() {
+  if (!simulationCashDirty()) return true;
+  if (!window.confirm('Discard your unsaved additional cash change?')) return false;
+  simulationEl('cash').value = selectedSimulation.additional_cash_usd;
+  simulationEl('status').textContent = '';
+  return true;
+}
+
+function planPreferenceKey() {
+  return JSON.stringify([selectedPortfolioAccountId, simulatorActive, selectedSimulation?.id]);
+}
+
+function rememberPlanPreferences() {
+  planPreferences.set(planPreferenceKey(), {
+    mode: actionPlanExecutionMode, show: actionPlanShowNonExecutableRecommendations,
+    ratings: new Set(actionPlanRatingFilters), actions: new Set(actionPlanActionFilters), sort: {...actionPlanLinearSort},
+  });
+}
+
+function restorePlanPreferences() {
+  const prefs = planPreferences.get(planPreferenceKey());
+  actionPlanExecutionMode = prefs?.mode || 'with';
+  actionPlanShowNonExecutableRecommendations = prefs?.show || false;
+  actionPlanLinearSort = prefs?.sort || { key: 'linear_allocation_score', direction: 'desc' };
+  setSelectedActionPlanRatings(prefs?.ratings || getAllRatingFilterKeys());
+  setSelectedActionPlanActions(prefs?.actions || getAllActionPlanActionFilterKeys());
+  updateActionPlanSortHeaderState();
+  updateActionPlanModeButtons();
+}
+
+function renderSimulationControls() {
+  const selector = simulationEl('select');
+  selector.replaceChildren();
+  for (const sim of savedSimulations) {
+    selector.add(new Option(sim.name + ' — +' + formatCurrencyValue(sim.additional_cash_usd, 'USD'), sim.id));
+  }
+  selector.value = selectedSimulation?.id ?? '';
+  selector.disabled = simulationBusy || !savedSimulations.length;
+  for (const key of ['rename','duplicate','delete','refresh','apply','cash']) {
+    simulationEl(key).disabled = simulationBusy || !selectedSimulation;
+  }
+  simulationEl('new').disabled = simulationBusy || !selectedPortfolioAccountId;
+  simulationEl('create').disabled = simulationBusy;
+  simulationEl('settings').hidden = !selectedSimulation;
+  simulationEl('results').hidden = !selectedSimulation;
+  simulationEl('summary').textContent = selectedSimulation
+    ? selectedSimulation.name + ' · +' + formatCurrencyValue(selectedSimulation.additional_cash_usd, 'USD') + ' · Simulation Triggers'
+    : '';
+}
+
+function clearSimulationContext() {
+  ++simulationGeneration;
+  selectedSimulation = null;
+  savedSimulations = [];
+  simulationBusy = false;
+  if (simulationEl('dialog').open) simulationEl('dialog').close();
+  simulationEl('settings').open = false;
+  simulationEl('status').textContent = '';
+  simulationEl('cash').value = '';
+  clearActionPlanDisplay('', 'status');
+  renderSimulationControls();
+}
+
+function changePlanWorkspace(active) {
+  rememberPlanPreferences();
+  simulatorActive = active;
+  clearSimulationContext();
+  const host = active ? simulationEl('results') : document.getElementById('action-plan');
+  host.appendChild(document.getElementById('action-plan-workspace'));
+  restorePlanPreferences();
+}
+
+async function selectSimulation(id) {
+  if (selectedSimulation) rememberPlanPreferences();
+  selectedSimulation = savedSimulations.find((sim) => String(sim.id) === String(id)) || null;
+  previousSimulation.set(selectedPortfolioAccountId, selectedSimulation?.id);
+  ++simulationGeneration;
+  clearActionPlanDisplay('', 'status');
+  restorePlanPreferences();
+  simulationEl('cash').value = selectedSimulation?.additional_cash_usd ?? '';
+  simulationEl('status').textContent = selectedSimulation ? '' : 'No simulations yet. Create a simulation to get started.';
+  renderSimulationControls();
+  if (selectedSimulation) await loadActionPlan();
+}
+
+async function simulationRequest(suffix, method = 'GET', body) {
+  const response = await fetch(withSelectedPortfolioAccount('/api/action-plan-simulations' + suffix), {
+    method, headers: body ? {'Content-Type':'application/json'} : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const payload = await response.json();
+  if (!response.ok) throw createPortfolioApiError(payload, 'Simulation request failed');
+  return payload;
+}
+
+async function loadSimulations() {
+  clearSimulationContext();
+  if (!selectedPortfolioAccountId) {
+    simulationEl('status').textContent = PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE;
+    return;
+  }
+  const generation = simulationGeneration;
+  const account = selectedPortfolioAccountId;
+  simulationBusy = true;
+  renderSimulationControls();
+  simulationEl('status').textContent = 'Loading simulations…';
+  try {
+    const { simulations } = await simulationRequest('');
+    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId) return;
+    savedSimulations = simulations;
+    simulationBusy = false;
+    const id = previousSimulation.get(account);
+    await selectSimulation(simulations.find((s) => s.id === id)?.id ?? simulations[0]?.id);
+  } catch (error) {
+    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId) return;
+    simulationBusy = false;
+    renderSimulationControls();
+    simulationEl('status').textContent = error.message;
+  }
+}
+
+async function mutateSimulation(suffix, method, body) {
+  if (simulationBusy || !simulatorActive || !selectedPortfolioAccountId) return;
+  const generation = simulationGeneration;
+  const account = selectedPortfolioAccountId;
+  simulationBusy = true;
+  renderSimulationControls();
+  try {
+    const result = await simulationRequest(suffix, method, body);
+    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId) return;
+    const changed = result.simulation;
+    if (method === 'DELETE') savedSimulations = savedSimulations.filter((s) => s.id !== selectedSimulation.id);
+    else if (savedSimulations.some((s) => s.id === changed.id)) {
+      savedSimulations = savedSimulations.map((s) => s.id === changed.id ? changed : s);
+    } else savedSimulations.push(changed);
+    simulationBusy = false;
+    if (simulationEl('dialog').open) simulationEl('dialog').close();
+    await selectSimulation(changed?.id ?? savedSimulations[0]?.id);
+  } catch (error) {
+    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId) return;
+    simulationBusy = false;
+    renderSimulationControls();
+    simulationEl(simulationEl('dialog').open ? 'dialog-status' : 'status').textContent = error.message;
+  }
+}
+
+simulationEl('select').addEventListener('change', (event) => {
+  if (discardSimulationEdits()) selectSimulation(event.target.value);
+  else event.target.value = selectedSimulation.id;
+});
+simulationEl('new').addEventListener('click', () => {
+  if (!discardSimulationEdits()) return;
+  simulationEl('create-form').reset();
+  simulationEl('dialog-status').textContent = '';
+  simulationEl('dialog').showModal();
+});
+simulationEl('cancel').addEventListener('click', () => simulationEl('dialog').close());
+simulationEl('create-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  mutateSimulation('', 'POST', { name: simulationEl('name').value.trim(), additional_cash_usd: simulationEl('new-cash').valueAsNumber, copy_current_triggers: simulationEl('copy').checked });
+});
+simulationEl('settings-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  mutateSimulation('/' + selectedSimulation.id, 'PUT', { additional_cash_usd: simulationEl('cash').valueAsNumber });
+});
+simulationEl('cash').addEventListener('input', () => {
+  simulationEl('status').textContent = simulationCashDirty() ? 'Unsaved changes. Results use the saved additional cash amount.' : '';
+});
+simulationEl('rename').addEventListener('click', () => {
+  const name = window.prompt('Simulation name', selectedSimulation.name);
+  if (name !== null && discardSimulationEdits()) mutateSimulation('/' + selectedSimulation.id, 'PUT', { name });
+});
+simulationEl('delete').addEventListener('click', () => {
+  if (window.confirm('Delete “' + selectedSimulation.name + '” and its simulation triggers?') && discardSimulationEdits()) {
+    mutateSimulation('/' + selectedSimulation.id, 'DELETE');
+  }
+});
+simulationEl('duplicate').addEventListener('click', () => {
+  if (discardSimulationEdits()) mutateSimulation('/' + selectedSimulation.id + '/duplicate', 'POST', {});
+});
+simulationEl('refresh').addEventListener('click', () => {
+  if (discardSimulationEdits()) refreshActionPlanFromButton();
+});
+window.addEventListener('beforeunload', (event) => {
+  if (simulationCashDirty()) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
+
 function setView(targetView, options = {}) {
+  const enteringSimulator = targetView === 'action-plan-simulator';
+  if (simulatorActive && !options.skipLoad && !discardSimulationEdits()) return false;
+  if (enteringSimulator !== simulatorActive) changePlanWorkspace(enteringSimulator);
+  else if (enteringSimulator && !options.skipLoad && selectedSimulation) rememberPlanPreferences();
+  if (enteringSimulator && (!options.skipLoad || !selectedSimulation)) loadSimulations();
   const skipLoad = options.skipLoad === true;
   menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === targetView));
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
@@ -3812,6 +3986,7 @@ function setView(targetView, options = {}) {
 menuItems.forEach((item) => item.addEventListener('click', () => {
   const target = item.dataset.view;
   setView(target);
+  if (getActiveViewId() !== target) return;
   if (target === 'earnings-review') {
     setEarningsReviewTab('calendar');
     loadEarningsReview();
@@ -7069,7 +7244,7 @@ analysisBackBtn.addEventListener('click', () => {
     return;
   }
   if (analysisDetailOrigin === 'action_plan') {
-    setView('action-plan', { skipLoad: true });
+    setView(simulatorActive ? 'action-plan-simulator' : 'action-plan', { skipLoad: true });
     return;
   }
   if (analysisDetailOrigin === 'earnings_review') {
@@ -7307,7 +7482,7 @@ actionPlanShowNonExecutableRecommendationsEl?.addEventListener('change', () => {
 actionPlanRefreshTriggerPricesBtn?.addEventListener('click', () => refreshTriggerPrices());
 actionPlanDetailBackBtn.addEventListener('click', showActionPlanList);
 actionPlanOpenAnalysisBtn.addEventListener('click', () => {
-  if (!selectedActionPlanDetail?.symbol) return;
+  if (!selectedActionPlanDetail?.symbol || !discardSimulationEdits()) return;
   openAnalysisDetailForSymbol(selectedActionPlanDetail.symbol, { origin: 'action_plan' });
 });
 configActionPlanInputs.forEach((input) => input.addEventListener('input', updateActionPlanBucketTotal));

@@ -59,7 +59,7 @@ class ManualExecutionEvaluationTests(unittest.TestCase):
         self.assertEqual(web_server.evaluate_manual_execution_trigger(verified_row(action="Hold"), {"buy_trigger_price": 80}, NOW)["status"], "no_manual_trigger")
         self.assertEqual(web_server.evaluate_manual_execution_trigger(verified_row(action="Sell"), {"buy_trigger_price": 80}, NOW)["status"], "no_manual_trigger")
 
-    def test_stale_cached_delayed_and_unowned_prices_require_confirmation(self):
+    def test_stale_cached_delayed_and_unowned_prices_evaluate_without_live_sides(self):
         preference = {"buy_trigger_price": 120}
         cases = (
             {"position_price_status": "cached_stale"},
@@ -72,15 +72,16 @@ class ManualExecutionEvaluationTests(unittest.TestCase):
         )
         for changes in cases:
             with self.subTest(changes=changes):
-                result = web_server.evaluate_manual_execution_trigger(verified_row(**changes), preference, NOW)
-                self.assertEqual(result["status"], "price_confirmation_required")
-                self.assertIsNone(result["verified_price"])
+                result = web_server.evaluate_manual_execution_trigger(verified_row(manual_quote_proof=None, **changes), preference, NOW)
+                self.assertEqual(result["status"], "eligible")
+                self.assertEqual(result["verified_price"], 100)
+                self.assertIsNone(result["verified_quote_expires_at"])
         boundary = web_server.evaluate_manual_execution_trigger(
             verified_row(current_price=120, price_last_successful_at="2026-01-01T09:55:00+00:00"), preference, NOW,
         )
         self.assertEqual(boundary["status"], "eligible")
 
-    def test_delayed_position_quote_is_marked_unverified_for_manual_triggers(self):
+    def test_delayed_position_price_is_usable_without_verified_sides(self):
         contract = SimpleNamespace(symbol="NVDA", secType="STK", currency="USD", exchange="SMART", conId=123)
         ticks = [
             SimpleNamespace(tickType=1, price=99.0, time=NOW),
@@ -99,9 +100,10 @@ class ManualExecutionEvaluationTests(unittest.TestCase):
             ticker, contract_key, "2026-01-01T10:00:00+00:00", {"delayed": True}, now=NOW,
         )
         self.assertIsNone(proof)
-        result = web_server.evaluate_manual_execution_trigger(verified_row(manual_quote_proof=proof),
+        result = web_server.evaluate_manual_execution_trigger(verified_row(manual_quote_proof=proof, price_source="delayed_market_data"),
                                                                {"buy_trigger_price": 120}, NOW)
-        self.assertEqual(result["status"], "price_confirmation_required")
+        self.assertEqual(result["status"], "eligible")
+        self.assertEqual(result["price_source"], "delayed_market_data")
 
     def test_fresh_bid_and_ask_ticks_create_proof_but_old_ticks_do_not(self):
         contract = SimpleNamespace(symbol="NVDA", secType="STK", currency="USD", exchange="SMART", conId=123)
@@ -335,7 +337,8 @@ class ManualExecutionFundingTests(unittest.TestCase):
         self.assertTrue(baseline["summary"]["bootstrap_execution_active"])
         self.assertEqual(manual["summary"]["bootstrap_candidate_count"], 0)
         self.assertEqual(manual["rows"][0]["suggested_share_count"], 0)
-        self.assertEqual(manual["rows"][0]["manual_trigger_status"], "price_confirmation_required")
+        self.assertEqual(manual["rows"][0]["manual_trigger_status"], "waiting")
+        self.assertEqual(manual["rows"][0]["manual_verified_price"], 100)
 
     def test_eligible_buy_releases_reservation_and_uses_verified_current_price(self):
         candidate = linear_candidate("AAA", current_price=75.0, current_position_market_value=75.0,

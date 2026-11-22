@@ -145,7 +145,7 @@ class ManualQuoteObservationTests(unittest.TestCase):
                     ]
                 proof = self.proof(ib, diagnostics, observations)
                 self.assertIsNone(proof)
-                self.assertEqual(self.buy_status(proof), "price_confirmation_required")
+                self.assertEqual(self.buy_status(proof), "waiting")
 
     def test_stale_or_nonlive_side_cannot_verify(self):
         stale = self.now - timedelta(minutes=6)
@@ -159,7 +159,7 @@ class ManualQuoteObservationTests(unittest.TestCase):
                 ib, _tickers, diagnostics, observations = self.collect(packets, data_type)
                 proof = self.proof(ib, diagnostics, observations)
                 self.assertIsNone(proof)
-                self.assertEqual(self.buy_status(proof), "price_confirmation_required")
+                self.assertEqual(self.buy_status(proof), "waiting")
 
     def test_failed_requests_remove_handlers_and_do_not_accumulate(self):
         for _ in range(2):
@@ -258,12 +258,13 @@ class ManualQuoteObservationTests(unittest.TestCase):
             current_position_weight=0.08, price_last_successful_at=self.now.isoformat(),
             manual_quote_proof=proof,
         )
-        preference = {"buy_trigger_price": 80, "reserve_enabled": True, "reserve_percentage": 100}
+        preference = {"buy_trigger_price": 79, "reserve_enabled": True, "reserve_percentage": 100}
         blocked = web_server.compute_linear_action_plan(
             [dict(candidate, manual_quote_proof=None)], 100_000, 20_000,
             linear_settings(), manual_triggers={"NVDA": preference},
         )["manual_execution"]
-        self.assertEqual(blocked["rows"][0]["manual_trigger_status"], "price_confirmation_required")
+        self.assertEqual(blocked["rows"][0]["manual_trigger_status"], "waiting")
+        self.assertEqual(blocked["rows"][0]["manual_verified_price"], 80)
         self.assertGreater(blocked["rows"][0]["requested_reservation"], 0)
         self.assertEqual(blocked["rows"][0]["executable_action_amount"], 0)
         payload = web_server.compute_linear_action_plan(
@@ -287,13 +288,13 @@ class ManualQuoteObservationTests(unittest.TestCase):
         blocked_sell = web_server.compute_linear_action_plan(
             [dict(sell_candidate, manual_quote_proof=None)], 100_000, 0,
             linear_settings(action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
-            manual_triggers={"NVDA": {"sell_trigger_price": 120}},
+            manual_triggers={"NVDA": {"sell_trigger_price": 121}},
         )["manual_execution"]
         self.assertEqual(blocked_sell["summary"]["executable_sell_trim_proceeds"], 0)
         sell_payload = web_server.compute_linear_action_plan(
             [sell_candidate], 100_000, 0,
             linear_settings(action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
-            manual_triggers={"NVDA": {"sell_trigger_price": 120}},
+            manual_triggers={"NVDA": {"sell_trigger_price": 121}},
         )["manual_execution"]
         self.assertEqual(sell_payload["rows"][0]["manual_trigger_status"], "eligible")
         self.assertEqual(sell_payload["summary"]["executable_sell_trim_proceeds"], 1_210)
@@ -355,7 +356,7 @@ class ManualQuoteObservationTests(unittest.TestCase):
         self.assertEqual(clock.value, 1)
         self.assertEqual(web_server.extract_price(tickers[0]), 100)
         self.assertIsNone(self.proof(ib, diagnostics, observations))
-        self.assertEqual(self.buy_status(None), "price_confirmation_required")
+        self.assertEqual(self.buy_status(None), "waiting")
         self.assertEqual(ib.cancelled, [self.contract])
         self.assertEqual(len(ib.pendingTickersEvent.handlers), 0)
 

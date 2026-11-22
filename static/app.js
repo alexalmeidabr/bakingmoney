@@ -3885,6 +3885,13 @@ function restoreManualTriggerBaseline() {
   noteManualTriggerEdit();
 }
 
+function discardSimulationTriggerEdits() {
+  if (!simulationTriggerDirty()) return true;
+  if (!window.confirm('Discard your unsaved trigger changes?')) return false;
+  restoreManualTriggerBaseline();
+  return true;
+}
+
 function scopedPlanPath(path, simulationId) {
   if (simulationId == null) return path;
   const base = '/api/action-plan-simulations/' + encodeURIComponent(simulationId);
@@ -4073,6 +4080,7 @@ simulationEl('create-form').addEventListener('submit', (event) => {
 });
 simulationEl('settings-form').addEventListener('submit', (event) => {
   event.preventDefault();
+  if (!discardSimulationTriggerEdits()) return;
   mutateSimulation('/' + selectedSimulation.id, 'PUT', { additional_cash_usd: simulationEl('cash').valueAsNumber });
 });
 simulationEl('cash').addEventListener('input', () => {

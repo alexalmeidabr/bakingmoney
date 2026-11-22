@@ -157,6 +157,25 @@ test('delete duplicate and refresh are blocked by unsaved trigger edits until di
   assert.equal(h.plans.length, 0);
 });
 
+test('applying new cash cannot silently discard unsaved trigger edits', () => {
+  const h = simulatorHarness();
+  h.run("selectedSimulation = {id:7,name:'Saved',additional_cash_usd:10}; savedSimulations=[selectedSimulation]");
+  h.el('cash').value = '20';
+  h.context.currentTriggerValues = triggerValues();
+  h.run("setManualTriggerEditorValues = (values) => { currentTriggerValues = {...values}; }");
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ sell_trigger_price: '710' });
+  h.el('settings-form').fire('submit');
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.context.currentTriggerValues.sell_trigger_price, '710');
+
+  h.context.window.confirm = () => true;
+  h.el('settings-form').fire('submit');
+  assert.equal(h.requests.length, 1);
+  assert.equal(JSON.parse(h.requests[0].options.body).additional_cash_usd, 20);
+  assert.equal(h.context.currentTriggerValues.sell_trigger_price, 700);
+});
+
 function triggerPersistenceHarness() {
   const status = { textContent: '', className: '' };
   const requests = [];
@@ -243,6 +262,29 @@ test('account switching and opening another symbol are cancelled when trigger di
   const opened = await h.run("openActionPlanDetail('MSFT')");
   assert.equal(opened, false);
   assert.equal(h.context.currentTriggerValues.sell_trigger_price, '710');
+});
+
+test('sidebar navigation and leaving Action Detail are protected by the trigger discard guard', () => {
+  const h = simulatorHarness();
+  h.run("selectedSimulation = {id:7,additional_cash_usd:0}");
+  h.context.currentTriggerValues = triggerValues();
+  h.run("setManualTriggerBaseline('NVDA', currentTriggerValues)");
+  h.context.currentTriggerValues = triggerValues({ buy_trigger_price: '81' });
+  let listShows = 0;
+  Object.assign(h.context, {
+    actionPlanDetailBackBtn: h.el('test-detail-back'),
+    showActionPlanList() { listShows += 1; },
+  });
+  const backStart = app.indexOf("actionPlanDetailBackBtn.addEventListener('click'");
+  h.run(app.slice(backStart, app.indexOf('\n});', backStart) + 4));
+  h.el('test-detail-back').fire('click');
+  assert.equal(listShows, 0);
+
+  h.run(functionSource('setView'));
+  assert.equal(h.run("setView('positions')"), false);
+  h.context.window.confirm = () => true;
+  h.el('test-detail-back').fire('click');
+  assert.equal(listShows, 1);
 });
 
 test('late list and mutation results cannot replace a different account or simulation', async () => {

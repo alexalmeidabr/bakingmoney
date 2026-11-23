@@ -151,6 +151,52 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(actual_row['manual_trigger_status'], simulated_row['manual_trigger_status'])
         self.assertEqual(actual_row['suggested_share_count'], simulated_row['suggested_share_count'])
 
+    def test_zero_quantity_position_uses_selected_contract_in_both_workspaces_after_restart(self):
+        import action_plan_prices
+        zero_position = {
+            'symbol': 'MSFT', 'position': -0.0, 'avgCost': 90, 'contract_key': 'conid:111',
+            'price': 95, 'price_status': 'cached_stale', 'price_source': 'last',
+            'market_observed_at': '2026-11-21T10:00:00+00:00',
+        }
+        app.save_manual_execution_trigger(self.conn, 'A', 'MSFT', {'buy_trigger_price': 80})
+        simulation = self.create(additional_cash_usd=0)
+        with self.conn:
+            action_plan_prices.persist_observation(self.conn, 'A', 'MSFT', {
+                'symbol': 'MSFT', 'contract_key': 'conid:222', 'security_type': 'STK',
+                'currency': 'USD', 'price': 75, 'price_source': 'last',
+                'market_observed_at': '2026-11-22T10:00:00+00:00',
+            })
+            action_plan_prices.save_contract_selection(
+                self.conn, 'A', 'MSFT', 'conid:222', 'STK', 'USD',
+                '2026-11-22T11:00:00+00:00',
+            )
+
+        def selected_rows(conn):
+            with mock.patch.object(app, 'load_positions_cache', return_value=[zero_position]):
+                actual = app.build_action_plan(conn, 'A', include_manual_execution=True)
+                simulated = app.build_simulation_action_plan(conn, 'A', simulation['id'])
+            actual_row = next(row for row in actual['manual_execution']['linear_action_plan']
+                              if row['symbol'] == 'MSFT')
+            simulated_row = next(row for row in simulated['manual_execution']['linear_action_plan']
+                                 if row['symbol'] == 'MSFT')
+            return actual_row, simulated_row
+
+        actual_row, simulated_row = selected_rows(self.conn)
+        self.assertEqual((75, 'eligible'),
+                         (actual_row['current_price'], actual_row['manual_trigger_status']))
+        self.assertEqual(actual_row['current_price'], simulated_row['current_price'])
+        self.assertEqual(actual_row['manual_trigger_status'], simulated_row['manual_trigger_status'])
+        self.assertEqual(actual_row['suggested_share_count'], simulated_row['suggested_share_count'])
+
+        self.conn.close()
+        self.conn = app.get_db_connection()
+        actual_row, simulated_row = selected_rows(self.conn)
+        self.assertEqual((75, 'eligible'),
+                         (actual_row['current_price'], actual_row['manual_trigger_status']))
+        self.assertEqual(actual_row['current_price'], simulated_row['current_price'])
+        self.assertEqual(actual_row['manual_trigger_status'], simulated_row['manual_trigger_status'])
+        self.assertEqual(actual_row['suggested_share_count'], simulated_row['suggested_share_count'])
+
     def test_position_refresh_preserves_delayed_and_frozen_provenance(self):
         import action_plan_prices
         contract = SimpleNamespace(symbol='NVDA', conId=123, currency='USD')

@@ -59,7 +59,9 @@ class PriceResolution(unittest.TestCase):
             dict(POSITION, contract_key="conid:222", price=105, market_observed_at=NEW),
             dict(POSITION, contract_key=None, price=999, market_observed_at=LATER_RETRIEVAL, persisted=True),
         ]
-        owned = prices.resolve_price({"symbol": "ABC", "contract_key": "conid:111"}, {}, observations)
+        owned = prices.resolve_price({
+            "symbol": "ABC", "position": 1, "contract_key": "conid:111",
+        }, {}, observations)
         unowned = prices.resolve_price({}, {"symbol": "ABC", "current_price": 90}, observations)
         legacy = prices.resolve_price({}, {"symbol": "ABC"}, [observations[-1]])
         self.assertEqual((100, "conid:111"), (owned["price"], owned["contract_key"]))
@@ -105,6 +107,52 @@ class PriceResolution(unittest.TestCase):
         self.assertEqual((90, "analysis_fallback"),
                          (missing_selected["price"], missing_selected["price_source"]))
         self.assertIn("qualified contract", missing_selected["price_warning"].lower())
+
+    def test_contract_authority_requires_finite_nonzero_ownership(self):
+        position = dict(
+            POSITION, contract_key="conid:111", price=95,
+            market_observed_at=OLD, security_type="STK", currency="USD",
+        )
+        selected_observation = dict(
+            POSITION, contract_key="conid:222", price=110,
+            market_observed_at=NEW, security_type="STK", currency="USD",
+        )
+        selection = {
+            "contract_key": "conid:222", "security_type": "STK", "currency": "USD",
+        }
+
+        for quantity in (0, 0.0, -0.0, None, False, True, "invalid", float("nan"), float("inf")):
+            with self.subTest(quantity=quantity):
+                resolved = prices.resolve_price(
+                    dict(position, position=quantity), {"symbol": "ABC", "current_price": 90},
+                    [selected_observation], selected_contract=selection,
+                )
+                self.assertEqual((110, "conid:222"),
+                                 (resolved["price"], resolved["contract_key"]))
+
+        for quantity in (1, -1):
+            with self.subTest(quantity=quantity):
+                resolved = prices.resolve_price(
+                    dict(position, position=quantity), {"symbol": "ABC", "current_price": 90},
+                    [selected_observation], selected_contract=selection,
+                )
+                self.assertEqual((95, "conid:111"),
+                                 (resolved["price"], resolved["contract_key"]))
+
+        missing_selected = prices.resolve_price(
+            dict(position, position=0), {"symbol": "ABC", "current_price": 90}, [],
+            selected_contract=selection,
+        )
+        self.assertEqual((90, "analysis_fallback"),
+                         (missing_selected["price"], missing_selected["price_source"]))
+
+        ambiguous = prices.resolve_price(
+            dict(position, position=0), {"symbol": "ABC", "current_price": 90},
+            [selected_observation],
+        )
+        self.assertEqual((90, "analysis_fallback"),
+                         (ambiguous["price"], ambiguous["price_source"]))
+        self.assertIn("multiple contract", ambiguous["price_warning"].lower())
 
     def test_contract_selection_persists_transitions_and_account_isolation(self):
         with sqlite3.connect(":memory:") as conn:
@@ -285,11 +333,13 @@ class PriceResolution(unittest.TestCase):
 
     def test_identity(self):
         for mismatched in (dict(DELAYED, contract_key="2"), dict(DELAYED, symbol="OTHER")):
-            self.assertEqual(20, prices.resolve_price(POSITION, {}, [mismatched])["price"])
+            self.assertEqual(20, prices.resolve_price(dict(POSITION, position=1), {}, [mismatched])["price"])
 
     def test_unknown_contract_or_wrong_account_cannot_supply_owned_price(self):
         for raw in (dict(DELAYED, contract_key=None), dict(DELAYED, account_id="B")):
-            self.assertEqual(20, prices.resolve_price(dict(POSITION, account_id="A"), {}, [raw])["price"])
+            self.assertEqual(20, prices.resolve_price(
+                dict(POSITION, position=1, account_id="A"), {}, [raw],
+            )["price"])
 
     def test_fresh_live_sides_display_source_and_warn_when_contract_is_inferred(self):
         now = datetime.now(timezone.utc)

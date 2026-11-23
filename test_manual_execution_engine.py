@@ -95,7 +95,7 @@ class ManualExecutionEvaluationTests(unittest.TestCase):
         rows = web_server._build_live_position_rows(
             [position], {contract_key: ticker}, quote_success_at="2026-01-01T09:59:00+00:00",
         )
-        self.assertEqual(rows[0]["price_source"], "marketPrice")
+        self.assertEqual(rows[0]["price_source"], "last")
         proof = web_server._manual_quote_proof_from_ticker(
             ticker, contract_key, "2026-01-01T10:00:00+00:00", {"delayed": True}, now=NOW,
         )

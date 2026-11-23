@@ -172,16 +172,20 @@ def _instrument_metadata_matches(observation, expected_currency):
 def resolve_price(position, analysis, observations=(), selected_contract=None):
     position, analysis = position or {}, analysis or {}
     symbol = position.get("symbol") or analysis.get("symbol")
-    contract = position.get("contract_key")
+    position_contract = position.get("contract_key")
     try:
-        position_quantity = float(position.get("position") or 0)
+        raw_position_quantity = position.get("position")
+        position_quantity = (
+            0 if isinstance(raw_position_quantity, bool)
+            else float(raw_position_quantity or 0)
+        )
     except (TypeError, ValueError, OverflowError):
         position_quantity = 0
-    owned_without_contract = (
-        not contract and math.isfinite(position_quantity) and position_quantity != 0
-    )
+    owned = math.isfinite(position_quantity) and position_quantity != 0
+    contract = position_contract if owned else None
+    owned_without_contract = owned and not contract
     selected_contract = selected_contract or {}
-    selected_contract_key = selected_contract.get("contract_key") if not contract else None
+    selected_contract_key = selected_contract.get("contract_key") if not owned else None
     expected_currency = str(
         selected_contract.get("currency") or analysis.get("currency") or "USD"
     ).strip().upper()

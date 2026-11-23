@@ -2028,7 +2028,7 @@ class _ManualQuoteObservations:
 
     def __init__(self, required_contract_keys=None):
         self._active_tickers = {}
-        self._latest_by_contract = {}
+        self._latest_by_ticker = {}
         self._price_evidence_by_ticker = {}
         self._required_contract_keys = (
             None if required_contract_keys is None else frozenset(required_contract_keys)
@@ -2046,7 +2046,7 @@ class _ManualQuoteObservations:
             if (not active or active[0] is not ticker
                     or market_data_contract_key(getattr(ticker, "contract", None)) != active[1]):
                 continue
-            sides = self._latest_by_contract.setdefault(active[1], {})
+            sides = self._latest_by_ticker.setdefault(id(ticker), {})
             for tick in getattr(ticker, "ticks", ()) or ():
                 tick_type = getattr(tick, "tickType", None)
                 field = {
@@ -2055,9 +2055,14 @@ class _ManualQuoteObservations:
                 }.get(tick_type)
                 price = safe_number(getattr(tick, "price", None))
                 if field and is_valid_market_price(price):
-                    self._price_evidence_by_ticker.setdefault(id(ticker), set()).add(
-                        (field, getattr(ticker, "marketDataType", None))
-                    )
+                    data_type = getattr(ticker, "marketDataType", None)
+                    self._price_evidence_by_ticker.setdefault(id(ticker), {})[
+                        (field, data_type)
+                    ] = {
+                        "price": price,
+                        "tick_time": getattr(tick, "time", None),
+                        "received_at": now,
+                    }
                 if getattr(ticker, "marketDataType", None) != 1:
                     continue
                 side = field if field in {"bid", "ask"} else None
@@ -2069,7 +2074,8 @@ class _ManualQuoteObservations:
                 if previous is None or tick_time >= previous["time"]:
                     sides[side] = {"price": price, "size": size, "time": tick_time}
 
-    def acquisition_kind(self, ticker, contract_key, price_source, diagnostic=None):
+    def acquisition_kind(self, ticker, contract_key, price_source, diagnostic=None,
+                         selected_price=None):
         if not self.is_active(ticker, contract_key):
             return None
         source = str(price_source or "").lower()
@@ -2078,19 +2084,39 @@ class _ManualQuoteObservations:
         frozen = data_type in {2, 4} or "frozen" in source
         if frozen or "close" in source:
             return "snapshot"
-        fields = {field for field, observed_data_type in self._price_evidence_by_ticker.get(id(ticker), set())
-                  if observed_data_type == data_type}
-        matched = bool(fields.intersection({"bid", "ask"})) if "marketprice" in source else (
-            "last" in fields if "last" in source else False
+        selected_price = normalize_market_price(
+            extract_price(ticker) if selected_price is None else selected_price
         )
+        evidence = self._price_evidence_by_ticker.get(id(ticker), {})
+
+        def matches(field, value):
+            detail = evidence.get((field, data_type)) or {}
+            return normalize_market_price(detail.get("price")) == normalize_market_price(value)
+
+        if "last" in source:
+            current_last = normalize_market_price(getattr(ticker, "last", None))
+            matched = (
+                current_last is not None and selected_price == current_last
+                and matches("last", current_last)
+            )
+        elif "marketprice" in source:
+            bid = normalize_market_price(getattr(ticker, "bid", None))
+            ask = normalize_market_price(getattr(ticker, "ask", None))
+            midpoint = (bid + ask) / 2 if bid is not None and ask is not None and ask >= bid else None
+            matched = (midpoint is not None and selected_price == midpoint
+                       and matches("bid", bid) and matches("ask", ask))
+        else:
+            matched = False
         if not matched:
             return None
         if delayed:
             return "streaming_delayed"
         return "streaming_live" if data_type == 1 else None
 
-    def for_contract(self, contract_key):
-        return self._latest_by_contract.get(contract_key, {})
+    def for_ticker(self, ticker, contract_key):
+        if not self.is_active(ticker, contract_key):
+            return {}
+        return self._latest_by_ticker.get(id(ticker), {})
 
     def requires(self, contract_key):
         return bool(contract_key) and (
@@ -2112,7 +2138,7 @@ def _manual_live_quote_sides(ticker, contract_key, observations, now):
             or getattr(ticker, "marketDataType", None) != 1
             or market_data_contract_key(getattr(ticker, "contract", None)) != contract_key):
         return None
-    sides = observations.for_contract(contract_key)
+    sides = observations.for_ticker(ticker, contract_key)
     bid_observation = sides.get("bid") or {}
     ask_observation = sides.get("ask") or {}
     bid = safe_number(bid_observation.get("price"))
@@ -3533,17 +3559,30 @@ def make_price_skip_detail(symbol, warning=None):
     }
 
 
-def _ticker_price_source(ticker):
+def _ticker_price_source(ticker, selected_price=None):
     if not ticker:
+        return None
+    selected_price = normalize_market_price(
+        extract_price(ticker) if selected_price is None else selected_price
+    )
+    if selected_price is None:
         return None
     bid = normalize_market_price(getattr(ticker, "bid", None))
     ask = normalize_market_price(getattr(ticker, "ask", None))
-    if bid is not None and ask is not None and ask >= bid:
-        return "marketPrice"
+    last = normalize_market_price(getattr(ticker, "last", None))
+    market_price = (
+        normalize_market_price(ticker.marketPrice())
+        if hasattr(ticker, "marketPrice") else None
+    )
+    if market_price is not None and selected_price == market_price:
+        if last is not None and selected_price == last:
+            return "last"
+        if bid is not None and ask is not None and ask >= bid and selected_price == (bid + ask) / 2:
+            return "marketPrice"
     for field in ("last", "close", "prevClose"):
-        if normalize_market_price(getattr(ticker, field, None)) is not None:
+        if normalize_market_price(getattr(ticker, field, None)) == selected_price:
             return field
-    if hasattr(ticker, "marketPrice") and normalize_market_price(ticker.marketPrice()) is not None:
+    if market_price is not None and selected_price == market_price:
         return "marketPrice"
     return None
 
@@ -5572,7 +5611,7 @@ def fetch_ib_prices(symbols, return_details=False):
                     if isinstance(request_diagnostics.get(symbol), dict) and request_diagnostics[symbol].get("delayed"):
                         price_sources[symbol] = "delayed_market_data"
                     else:
-                        price_sources[symbol] = _ticker_price_source(ticker) or "market_data"
+                        price_sources[symbol] = _ticker_price_source(ticker, price) or "market_data"
                 elif symbol in request_diagnostics:
                     warnings[symbol] = request_diagnostics[symbol]
                 if price is None:
@@ -12877,7 +12916,7 @@ def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_
         avg_cost = safe_number(p.avgCost)
         price = extract_price(ticker)
         close = extract_close(ticker)
-        price_source = _ticker_price_source(ticker) if price is not None else None
+        price_source = _ticker_price_source(ticker, price) if price is not None else None
         price_warning = None
         if price is not None:
             data_type = getattr(ticker, "marketDataType", None)
@@ -12892,7 +12931,9 @@ def _build_live_position_rows(positions, tickers_by_contract_key, quote_success_
                 price_source = "frozen_" + (price_source or "marketPrice")
                 price_warning = "Frozen market data."
         acquisition_kind = (
-            quote_observations.acquisition_kind(ticker, contract_key, price_source, diagnostic)
+            quote_observations.acquisition_kind(
+                ticker, contract_key, price_source, diagnostic, selected_price=price,
+            )
             if price is not None and quote_observations is not None else None
         )
 
@@ -16494,7 +16535,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                     ticker = tickers.get(contract_key)
                     price = extract_price(ticker)
                     if is_valid_market_price(price):
-                        source = _ticker_price_source(ticker) or "marketPrice"
+                        source = _ticker_price_source(ticker, price) or "marketPrice"
                         data_type = getattr(ticker, "marketDataType", None)
                         delayed = data_type in (3, 4) or bool(diagnostic.get("delayed"))
                         frozen = data_type in (2, 4)
@@ -16508,6 +16549,7 @@ class BakingMoneyHandler(SimpleHTTPRequestHandler):
                                  "currency": getattr(contract, "currency", None),
                                  "acquisition_kind": observations.acquisition_kind(
                                      ticker, contract_key, source_prefix + source, diagnostic,
+                                     selected_price=price,
                                  ),
                                  "price_warning": "Delayed-frozen market data." if delayed and frozen else "Frozen market data." if frozen else None}
                         proof_store[symbol] = proof

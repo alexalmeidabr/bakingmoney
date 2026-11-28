@@ -337,6 +337,8 @@ let earningsCalendarFiscalYearFilters = new Set();
 let earningsCalendarFiscalQuarterFilters = new Set();
 let earningsCalendarReleaseDateSortDirection = 'asc';
 let earningsCalendarAddFormDefaultsApplied = false;
+let browserNavigationController = null;
+let navigationRenderGeneration = 0;
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
   hybrid_ai_weight: 0.70,
@@ -2204,7 +2206,9 @@ function renderPositions() {
     row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(symbol)}">${escapeHtml(symbol)}</button></td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td class="${expectedCagrClass}">${expectedCagrValue}</td><td>${confidenceValue}</td><td>${potentialConfidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.costBasis, position.currency)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.unrealizedPnLPercent)}">${formatPercent(position.unrealizedPnLPercent)}</td><td>${formatPositionPriceCell(position)}</td><td>${formatNumber(position.avgCost)}</td><td>${formatDate(position.latest_release_date)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>`;
     positionsTableBody.appendChild(row);
   });
-  positionsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailFromPositions(btn.dataset.symbol)));
+  positionsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: 'positions', detail: { kind: 'analysis', symbol: btn.dataset.symbol },
+  })));
 }
 
 function getFilteredPositions() {
@@ -2315,7 +2319,9 @@ function renderAnalysisList() {
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
-  analysisTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'analysis' })));
+  analysisTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: 'analysis', detail: { kind: 'analysis', symbol: btn.dataset.symbol },
+  })));
   analysisTableBody.querySelectorAll('.analysis-row-select').forEach((checkbox) => {
     checkbox.addEventListener('change', () => {
       const symbol = checkbox.dataset.symbol;
@@ -3441,7 +3447,10 @@ function renderActionPlanBuckets() {
   ];
   const bucketPanels = ['Strong Buy', 'Buy', 'Speculative Buy', 'Hold', 'Sell / Strong Sell'].map(renderActionPlanBucketPanel).join('');
   actionPlanBucketsContentEl.innerHTML = `<section class="detail-card action-plan-bucket-total"><h4>Bucket Reconciliation</h4><div class="summary-grid action-plan-bucket-summary">${totals.map(([label, value]) => `<div class="summary-item"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`).join('')}</div>${warning}</section>${bucketPanels}${renderActionPlanCashBucketPanel(summary)}`;
-  actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+  actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-symbol').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+    detail: { kind: 'action', symbol: btn.dataset.symbol },
+  })));
   actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-sortable').forEach((header) => header.addEventListener('click', () => {
     const bucket = header.dataset.bucket;
     const key = header.dataset.sortKey;
@@ -3554,7 +3563,10 @@ function renderLinearAllocationRows() {
         if (targetBandRange) targetBandRange.after(warningButton);
       }
     });
-    actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+    actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+      view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+      detail: { kind: 'action', symbol: btn.dataset.symbol },
+    })));
     actionPlanLinearActionsTableBody.querySelectorAll('.cap-warning-button').forEach((btn) => btn.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -3596,7 +3608,10 @@ function renderLinearAllocationRows() {
       }
       actionPlanLinearDetailTableBody.appendChild(row);
     });
-    actionPlanLinearDetailTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+    actionPlanLinearDetailTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+      view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+      detail: { kind: 'action', symbol: btn.dataset.symbol },
+    })));
   }
 }
 
@@ -3673,7 +3688,10 @@ function renderActionPlan() {
     row.innerHTML = `<td class="symbol-cell"><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action)}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="reason-cell">${escapeHtml(item.reason)}</td>`;
     actionPlanTableBody.appendChild(row);
   });
-  actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+  actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+    detail: { kind: 'action', symbol: btn.dataset.symbol },
+  })));
   if (actionPlanActiveTab === 'buckets') renderActionPlanBuckets();
 }
 
@@ -4149,10 +4167,10 @@ window.addEventListener('beforeunload', (event) => {
 
 function setView(targetView, options = {}) {
   const enteringSimulator = targetView === 'action-plan-simulator';
-  if (simulatorActive && !options.skipLoad && !discardSimulationEdits()) return false;
+  if (simulatorActive && !options.skipDiscard && !options.skipLoad && !discardSimulationEdits()) return false;
   if (enteringSimulator !== simulatorActive) changePlanWorkspace(enteringSimulator);
   else if (enteringSimulator && !options.skipLoad && selectedSimulation) rememberPlanPreferences();
-  if (enteringSimulator && (!options.skipLoad || !selectedSimulation)) loadSimulations();
+  if (enteringSimulator && !options.skipLoad) loadSimulations();
   const skipLoad = options.skipLoad === true;
   menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === targetView));
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
@@ -4163,15 +4181,71 @@ function setView(targetView, options = {}) {
   if (targetView === 'prompt') loadPromptConfiguration();
   if (targetView === 'configuration') loadGeneralConfiguration();
   if (targetView === 'backup') loadBackupView();
+  return true;
 }
+
+async function renderNavigationScreen(screen) {
+  const generation = ++navigationRenderGeneration;
+  const detail = screen.detail;
+  const viewOptions = detail
+    ? { skipDiscard: true, skipLoad: true }
+    : { skipDiscard: true };
+  if (setView(screen.view, viewOptions) === false) return false;
+
+  if (!detail) {
+    if (screen.view === 'earnings-review') {
+      setEarningsReviewTab('calendar');
+      await loadEarningsReview();
+    }
+    return true;
+  }
+
+  if (screen.view === 'action-plan-simulator' && !selectedSimulation) await loadSimulations();
+  const restoreOptions = { skipNavigation: true, navigationGeneration: generation };
+  if (detail.kind === 'analysis') {
+    const origin = screen.view === 'positions' ? 'positions'
+      : ['action-plan', 'action-plan-simulator'].includes(screen.view) ? 'action_plan'
+        : screen.view === 'earnings-review' ? 'earnings_review' : 'analysis';
+    await openAnalysisDetailForSymbol(detail.symbol, {
+      origin,
+      ...restoreOptions,
+      ...(detail.versionId ? { versionId: detail.versionId } : {}),
+    });
+  } else if (detail.kind === 'action') {
+    await openActionPlanDetail(detail.symbol, restoreOptions);
+  } else if (detail.kind === 'alert') {
+    await openAlertDetail(detail.alertId, restoreOptions);
+  } else if (detail.kind === 'earnings-symbol') {
+    await openEarningsReviewSymbolHistory(detail.symbol, restoreOptions);
+  } else if (detail.kind === 'earnings-review') {
+    await openEarningsReviewRecordDetail(detail.symbol, detail.reviewId, restoreOptions);
+  }
+  return true;
+}
+
+function navigateToScreen(screen) {
+  if (!browserNavigationController) return renderNavigationScreen(screen);
+  return browserNavigationController.navigate(screen);
+}
+
+function navigateBack(fallback) {
+  if (!browserNavigationController) return navigateToScreen(fallback);
+  return browserNavigationController.back(fallback);
+}
+
+function initializeBrowserNavigation() {
+  browserNavigationController = BakingMoneyNavigation.createController({
+    history: window.history,
+    eventTarget: window,
+    render: renderNavigationScreen,
+    fallbackScreen: { view: 'analysis' },
+  });
+  return browserNavigationController.initialize();
+}
+
 menuItems.forEach((item) => item.addEventListener('click', () => {
   const target = item.dataset.view;
-  setView(target);
-  if (getActiveViewId() !== target) return;
-  if (target === 'earnings-review') {
-    setEarningsReviewTab('calendar');
-    loadEarningsReview();
-  }
+  navigateToScreen({ view: target });
 }));
 
 function showEarningsReviewList() {
@@ -5023,10 +5097,10 @@ async function openAnalysisDetailForSymbol(symbol, options = {}) {
   } else if (origin === 'earnings_review') {
     showAnalysisDetailFromEarningsReviewOrigin();
   } else {
-    setView('analysis');
+    setView('analysis', options.skipNavigation ? { skipLoad: true, skipDiscard: true } : {});
   }
 
-  await loadAnalysisDetail(symbol);
+  await loadAnalysisDetail(symbol, options.versionId ?? null, options);
 }
 
 async function openAnalysisDetailFromPositions(symbol) {
@@ -5947,7 +6021,9 @@ function renderAlertsList() {
   });
   alertsTableBody.querySelectorAll('.alert-review-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Reviewed')));
   alertsTableBody.querySelectorAll('.alert-dismiss-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Dismissed')));
-  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAlertDetail(btn.dataset.alertId)));
+  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: 'alerts', detail: { kind: 'alert', alertId: btn.dataset.alertId },
+  })));
 }
 
 async function openAlertDetail(alertId) {
@@ -6075,7 +6151,9 @@ function renderEarningsReviewList() {
     earningsReviewTableBody.appendChild(row);
   });
   earningsReviewTableBody.querySelectorAll('.earnings-select-btn').forEach((btn) => {
-    btn.addEventListener('click', () => openEarningsReviewSymbolHistory(btn.dataset.symbol));
+    btn.addEventListener('click', () => navigateToScreen({
+      view: 'earnings-review', detail: { kind: 'earnings-symbol', symbol: btn.dataset.symbol },
+    }));
   });
   if (earningsReviewItems.length) {
     earningsReviewStatusEl.textContent = `Showing ${earningsReviewItems.length} symbol(s).`;
@@ -6278,7 +6356,9 @@ function renderEarningsCalendarTable() {
     });
   });
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-symbol-link').forEach((btn) => {
-    btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'earnings_review' }));
+    btn.addEventListener('click', () => navigateToScreen({
+      view: 'earnings-review', detail: { kind: 'analysis', symbol: btn.dataset.symbol },
+    }));
   });
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-remove-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -6588,7 +6668,10 @@ function renderEarningsReviewSymbolHistoryTable(records) {
     earningsReviewSymbolTableBody.appendChild(row);
   });
   earningsReviewSymbolTableBody.querySelectorAll('.earnings-record-open-btn').forEach((btn) => {
-    btn.addEventListener('click', () => openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, Number(btn.dataset.reviewId)));
+    btn.addEventListener('click', () => navigateToScreen({
+      view: 'earnings-review',
+      detail: { kind: 'earnings-review', symbol: earningsReviewSelectedSymbol, reviewId: Number(btn.dataset.reviewId) },
+    }));
   });
   earningsReviewSymbolTableBody.querySelectorAll('.earnings-record-delete-btn').forEach((btn) => {
     btn.addEventListener('click', () => deleteEarningsReviewRecord({
@@ -7421,20 +7504,20 @@ analysisCheckEventsBtn.addEventListener('click', checkRecentEventsForSelected);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', () => {
   if (analysisDetailOrigin === 'positions') {
-    setView('positions');
+    navigateBack({ view: 'positions' });
     return;
   }
   if (analysisDetailOrigin === 'action_plan') {
-    setView(simulatorActive ? 'action-plan-simulator' : 'action-plan', { skipLoad: true });
+    navigateBack({ view: simulatorActive ? 'action-plan-simulator' : 'action-plan' });
     return;
   }
   if (analysisDetailOrigin === 'earnings_review') {
-    setView('earnings-review', { skipLoad: true });
+    navigateBack({ view: 'earnings-review' });
     return;
   }
-  showAnalysisList();
+  navigateBack({ view: 'analysis' });
 });
-alertDetailBackBtn.addEventListener('click', backToAlertsFromDetail);
+alertDetailBackBtn.addEventListener('click', () => navigateBack({ view: 'alerts' }));
 alertDetailReviewBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Reviewed', { stayOnDetail: true, advanceAfterUpdate: true }); });
 alertDetailDismissBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Dismissed', { stayOnDetail: true, advanceAfterUpdate: true }); });
 alertDetailPrevBtn.addEventListener('click', () => openPreviousAlertDetail());
@@ -7453,7 +7536,7 @@ alertDetailAddVarBtn.addEventListener('click', () => {
 alertDetailSaveVarsBtn.addEventListener('click', saveAlertDetailVariables);
 alertDetailOpenAnalysisBtn.addEventListener('click', () => {
   if (!currentAlertDetailSymbol) return;
-  openAnalysisDetailForSymbol(currentAlertDetailSymbol, { origin: 'analysis' });
+  navigateToScreen({ view: 'analysis', detail: { kind: 'analysis', symbol: currentAlertDetailSymbol } });
 });
 alertDetailCancelVarsBtn.addEventListener('click', () => {
   alertDetailIsEditingVariables = false;
@@ -7607,16 +7690,11 @@ promptPreviewBtn.addEventListener('click', previewPromptConfiguration);
 promptPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') previewPromptConfiguration(); });
 earningsReviewGenerateBtn.addEventListener('click', generateEarningsWatchpoints);
 earningsReviewAnalyseBtn.addEventListener('click', analyseEarningsWatchpoints);
-earningsReviewBackBtn.addEventListener('click', async () => {
-  if (earningsReviewSelectedSymbol) {
-    await openEarningsReviewSymbolHistory(earningsReviewSelectedSymbol);
-  } else {
-    await loadEarningsReview();
-  }
-});
-earningsReviewSymbolBackBtn.addEventListener('click', async () => {
-  await loadEarningsReview();
-});
+earningsReviewBackBtn.addEventListener('click', () => navigateBack({
+  view: 'earnings-review',
+  detail: { kind: 'earnings-symbol', symbol: earningsReviewSelectedSymbol },
+}));
+earningsReviewSymbolBackBtn.addEventListener('click', () => navigateBack({ view: 'earnings-review' }));
 earningsReviewAddBtn.addEventListener('click', addEarningsReviewSymbol);
 earningsReviewTabWorkflowBtn.addEventListener('click', async () => {
   setEarningsReviewTab('workflow');
@@ -7662,12 +7740,14 @@ actionPlanShowNonExecutableRecommendationsEl?.addEventListener('change', () => {
 });
 actionPlanRefreshTriggerPricesBtn?.addEventListener('click', () => refreshTriggerPrices());
 actionPlanDetailBackBtn.addEventListener('click', () => {
-  if (simulatorActive && !discardSimulationEdits()) return;
-  showActionPlanList();
+  navigateBack({ view: simulatorActive ? 'action-plan-simulator' : 'action-plan' });
 });
 actionPlanOpenAnalysisBtn.addEventListener('click', () => {
   if (!selectedActionPlanDetail?.symbol || !discardSimulationEdits()) return;
-  openAnalysisDetailForSymbol(selectedActionPlanDetail.symbol, { origin: 'action_plan' });
+  navigateToScreen({
+    view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+    detail: { kind: 'analysis', symbol: selectedActionPlanDetail.symbol },
+  });
 });
 configActionPlanInputs.forEach((input) => input.addEventListener('input', updateActionPlanBucketTotal));
 portfolioAccountSelectEl?.addEventListener('change', handlePortfolioAccountChange);
@@ -7690,4 +7770,4 @@ setActionPlanRatingFilterOpen(false);
 setActionPlanActionFilterOpen(false);
 setEarningsCalendarDateFilterOpen(false);
 initializeConfigHelpIcons();
-loadPortfolioAccounts({ preserveCurrent: false }).finally(() => setView('analysis'));
+loadPortfolioAccounts({ preserveCurrent: false }).finally(initializeBrowserNavigation);

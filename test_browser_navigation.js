@@ -1,10 +1,47 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const {
   createController,
   normalizeScreen,
 } = require('./static/navigation_history.js');
+
+const appSource = fs.readFileSync('static/app.js', 'utf8');
+
+function functionSource(name) {
+  const marker = `function ${name}(`;
+  const start = appSource.indexOf(marker);
+  assert.notEqual(start, -1, `${name} exists`);
+  const declarationStart = appSource.slice(start - 6, start) === 'async ' ? start - 6 : start;
+  const opening = appSource.indexOf('{', appSource.indexOf(')', start));
+  let depth = 0;
+  for (let index = opening; index < appSource.length; index += 1) {
+    if (appSource[index] === '{') depth += 1;
+    if (appSource[index] === '}') depth -= 1;
+    if (depth === 0) return appSource.slice(declarationStart, index + 1);
+  }
+  throw new Error(`${name} is incomplete`);
+}
+
+function appNavigationHarness() {
+  const calls = [];
+  const context = vm.createContext({
+    navigationRenderGeneration: 0,
+    selectedSimulation: { id: 1 },
+    setView(view, options) { calls.push(['view', view, options]); return true; },
+    setEarningsReviewTab(tab) { calls.push(['earnings-tab', tab]); },
+    async loadEarningsReview() { calls.push(['earnings-list']); },
+    async openAnalysisDetailForSymbol(symbol, options) { calls.push(['analysis-detail', symbol, options]); },
+    async openActionPlanDetail(symbol, options) { calls.push(['action-detail', symbol, options]); },
+    async openAlertDetail(alertId, options) { calls.push(['alert-detail', alertId, options]); },
+    async openEarningsReviewSymbolHistory(symbol, options) { calls.push(['earnings-symbol', symbol, options]); },
+    async openEarningsReviewRecordDetail(symbol, reviewId, options) { calls.push(['earnings-review', symbol, reviewId, options]); },
+  });
+  vm.runInContext(`${functionSource('renderNavigationScreen')}; this.renderNavigationScreen = renderNavigationScreen;`, context);
+  return { calls, render: context.renderNavigationScreen };
+}
 
 class MemoryHistory {
   constructor(entries = [{ state: null }], index = entries.length - 1) {
@@ -267,4 +304,81 @@ test('browser Back beyond the first application entry remains outside BakingMone
   assert.equal(h.history.state, null);
   assert.equal(h.history.replaceCount, 0);
   assert.deepEqual(h.history.goCalls, [-1]);
+});
+
+test('application adapter restores every main screen and Earnings Review list', async () => {
+  const h = appNavigationHarness();
+  for (const view of ['analysis', 'positions', 'action-plan', 'action-plan-simulator', 'alerts', 'prompt', 'configuration', 'backup']) {
+    h.calls.length = 0;
+    assert.equal(await h.render({ view }), true);
+    assert.deepEqual(JSON.parse(JSON.stringify(h.calls)), [['view', view, { skipDiscard: true }]]);
+  }
+  h.calls.length = 0;
+  assert.equal(await h.render({ view: 'earnings-review' }), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls)), [
+    ['view', 'earnings-review', { skipDiscard: true }],
+    ['earnings-tab', 'calendar'],
+    ['earnings-list'],
+  ]);
+});
+
+test('application adapter restores nested screens with their source sidebar', async () => {
+  const cases = [
+    [
+      { view: 'analysis', detail: { kind: 'analysis', symbol: 'AMD' } },
+      ['analysis-detail', 'AMD', { origin: 'analysis', skipNavigation: true, navigationGeneration: 1 }],
+    ],
+    [
+      { view: 'positions', detail: { kind: 'analysis', symbol: 'NVDA' } },
+      ['analysis-detail', 'NVDA', { origin: 'positions', skipNavigation: true, navigationGeneration: 1 }],
+    ],
+    [
+      { view: 'action-plan', detail: { kind: 'action', symbol: 'MSFT' } },
+      ['action-detail', 'MSFT', { skipNavigation: true, navigationGeneration: 1 }],
+    ],
+    [
+      { view: 'action-plan-simulator', detail: { kind: 'action', symbol: 'MSFT' } },
+      ['action-detail', 'MSFT', { skipNavigation: true, navigationGeneration: 1 }],
+    ],
+    [
+      { view: 'action-plan-simulator', detail: { kind: 'analysis', symbol: 'META' } },
+      ['analysis-detail', 'META', { origin: 'action_plan', skipNavigation: true, navigationGeneration: 1 }],
+    ],
+    [
+      { view: 'alerts', detail: { kind: 'alert', alertId: '7' } },
+      ['alert-detail', '7', { skipNavigation: true, navigationGeneration: 1 }],
+    ],
+    [
+      { view: 'earnings-review', detail: { kind: 'earnings-symbol', symbol: 'AMD' } },
+      ['earnings-symbol', 'AMD', { skipNavigation: true, navigationGeneration: 1 }],
+    ],
+    [
+      { view: 'earnings-review', detail: { kind: 'earnings-review', symbol: 'AMD', reviewId: 9 } },
+      ['earnings-review', 'AMD', 9, { skipNavigation: true, navigationGeneration: 1 }],
+    ],
+  ];
+
+  for (const [screen, expectedDetailCall] of cases) {
+    const h = appNavigationHarness();
+    assert.equal(await h.render(screen), true);
+    assert.deepEqual(JSON.parse(JSON.stringify(h.calls[0])), ['view', screen.view, { skipDiscard: true, skipLoad: true }]);
+    assert.deepEqual(JSON.parse(JSON.stringify(h.calls.at(-1))), expectedDetailCall);
+  }
+});
+
+test('application adapter returns false when the existing view guard rejects navigation', async () => {
+  const context = vm.createContext({
+    navigationRenderGeneration: 0,
+    setView: () => false,
+  });
+  vm.runInContext(`${functionSource('renderNavigationScreen')}; this.renderNavigationScreen = renderNavigationScreen;`, context);
+  assert.equal(await context.renderNavigationScreen({ view: 'positions' }), false);
+});
+
+test('application entry points use the centralized controller instead of pushing on refresh', () => {
+  assert.match(appSource, /function navigateToScreen\(screen\)/);
+  assert.match(appSource, /function navigateBack\(fallback\)/);
+  assert.match(appSource, /loadPortfolioAccounts\(\{ preserveCurrent: false \}\)\.finally\(initializeBrowserNavigation\)/);
+  assert.match(appSource, /menuItems\.forEach[\s\S]*navigateToScreen\(\{ view: target \}\)/);
+  assert.doesNotMatch(functionSource('refreshActionPlanFromButton'), /navigateToScreen|pushState/);
 });

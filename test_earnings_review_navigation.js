@@ -39,8 +39,8 @@ test('Earnings Review navigation has no browser hash behavior', () => {
 test('Earnings Review menu item uses the same internal view pattern as other sections', () => {
   assert.match(indexHtml, /<button class="menu-item" data-view="earnings-review">Earnings Review<\/button>/);
   assert.doesNotMatch(indexHtml, /href="#earnings-review"/);
-  assert.match(appJs, /const target = item\.dataset\.view;\s*setView\(target\);/);
-  assert.match(appJs, /if \(target === 'earnings-review'\) \{\s*setEarningsReviewTab\('calendar'\);\s*loadEarningsReview\(\);/);
+  assert.match(appJs, /const target = item\.dataset\.view;\s*navigateToScreen\(\{ view: target \}\);/);
+  assert.match(functionBody('renderNavigationScreen'), /if \(screen\.view === 'earnings-review'\) \{\s*setEarningsReviewTab\('calendar'\);\s*await loadEarningsReview\(\);/);
 });
 
 test('Earnings Review symbol and detail views render through internal state only', () => {
@@ -57,9 +57,9 @@ test('Earnings Review symbol and detail views render through internal state only
   assert.doesNotMatch(recordDetailBody, /location\.hash|setEarningsReviewHash/);
 });
 
-test('Earnings Review back navigation remains internal', () => {
-  assert.match(appJs, /earningsReviewBackBtn\.addEventListener\('click', async \(\) => \{\s*if \(earningsReviewSelectedSymbol\) \{\s*await openEarningsReviewSymbolHistory\(earningsReviewSelectedSymbol\);/);
-  assert.match(appJs, /earningsReviewSymbolBackBtn\.addEventListener\('click', async \(\) => \{\s*await loadEarningsReview\(\);/);
+test('Earnings Review back navigation uses browser history with logical fallbacks', () => {
+  assert.match(appJs, /earningsReviewBackBtn\.addEventListener\('click', \(\) => navigateBack\(\{\s*view: 'earnings-review',\s*detail: \{ kind: 'earnings-symbol', symbol: earningsReviewSelectedSymbol \},?\s*\}\)\);/);
+  assert.match(appJs, /earningsReviewSymbolBackBtn\.addEventListener\('click', \(\) => navigateBack\(\{ view: 'earnings-review' \}\)\);/);
   assert.doesNotMatch(appJs, /earningsReviewBackBtn[\s\S]*location\.hash/);
 });
 
@@ -69,7 +69,7 @@ test('Other main navigation and Earnings Review company-detail return paths stil
   }
   assert.match(appJs, /if \(targetView === 'analysis'\) \{ showAnalysisList\(\); if \(!skipLoad\) loadAnalysis\(\); \}/);
   assert.match(appJs, /if \(targetView === 'action-plan' && !skipLoad\) loadActionPlan\(\);/);
-  assert.match(appJs, /if \(analysisDetailOrigin === 'earnings_review'\) \{\s*setView\('earnings-review', \{ skipLoad: true \}\);/);
+  assert.match(appJs, /if \(analysisDetailOrigin === 'earnings_review'\) \{\s*navigateBack\(\{ view: 'earnings-review' \}\);/);
   assert.match(appJs, /showAnalysisDetailFromOriginMenu\('earnings-review'\);/);
 });
 

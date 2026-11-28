@@ -9,7 +9,8 @@ const indexHtml = fs.readFileSync(path.join(__dirname, 'static', 'index.html'), 
 function functionBody(name) {
   const start = appJs.indexOf(`function ${name}`);
   assert.notEqual(start, -1, `Expected ${name} to exist`);
-  const bodyStart = appJs.indexOf('{', start);
+  const signatureEnd = appJs.indexOf(') {', start);
+  const bodyStart = signatureEnd === -1 ? appJs.indexOf('{', start) : signatureEnd + 2;
   let depth = 0;
   for (let index = bodyStart; index < appJs.length; index += 1) {
     const char = appJs[index];

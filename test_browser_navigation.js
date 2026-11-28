@@ -43,6 +43,29 @@ function appNavigationHarness() {
   return { calls, render: context.renderNavigationScreen };
 }
 
+function fakeElement() {
+  return {
+    textContent: '', className: '', innerHTML: '', disabled: false, value: '',
+    classList: { add() {}, remove() {}, toggle() {} },
+  };
+}
+
+function deferredJsonResponse(payload) {
+  let finish;
+  const promise = new Promise((resolve) => { finish = resolve; });
+  return {
+    fetch: () => promise,
+    finish: () => finish({ ok: true, json: async () => payload }),
+  };
+}
+
+function installNavigationAwareFunction(context, name) {
+  vm.runInContext(
+    `${functionSource('navigationRequestCurrent')}; ${functionSource(name)}; this.${name} = ${name};`,
+    context,
+  );
+}
+
 class MemoryHistory {
   constructor(entries = [{ state: null }], index = entries.length - 1) {
     this.entries = entries.map((entry) => ({ state: entry.state ?? null }));
@@ -381,4 +404,181 @@ test('application entry points use the centralized controller instead of pushing
   assert.match(appSource, /loadPortfolioAccounts\(\{ preserveCurrent: false \}\)\.finally\(initializeBrowserNavigation\)/);
   assert.match(appSource, /menuItems\.forEach[\s\S]*navigateToScreen\(\{ view: target \}\)/);
   assert.doesNotMatch(functionSource('refreshActionPlanFromButton'), /navigateToScreen|pushState/);
+});
+
+test('Simulator dirty cash and trigger values survive rejected rapid Back navigation', async () => {
+  const dirty = { cash: '25000', trigger: '81' };
+  let confirmDiscard = false;
+  const canLeaveNavigation = vm.runInNewContext(
+    `${functionSource('canLeaveNavigation')}; canLeaveNavigation`,
+    {
+      discardSimulationEdits() {
+        if (!confirmDiscard) return false;
+        dirty.cash = '20000';
+        dirty.trigger = '80';
+        return true;
+      },
+    },
+  );
+  const h = harness({ canLeave: canLeaveNavigation });
+  await h.controller.initialize();
+  await h.controller.navigate({ view: 'positions' });
+  await h.controller.navigate({ view: 'action-plan-simulator' });
+
+  h.history.back();
+  h.history.back();
+  await settle();
+  assert.equal(h.history.state.sequence, 2);
+  assert.deepEqual(dirty, { cash: '25000', trigger: '81' });
+  assert.deepEqual(h.controller.currentScreen(), { view: 'action-plan-simulator' });
+
+  confirmDiscard = true;
+  h.history.back();
+  await settle();
+  assert.equal(h.history.state.sequence, 1);
+  assert.deepEqual(dirty, { cash: '20000', trigger: '80' });
+  assert.deepEqual(h.controller.currentScreen(), { view: 'positions' });
+});
+
+test('Simulator dirty trigger value survives rejected Forward navigation', async () => {
+  let trigger = '80';
+  let confirmDiscard = true;
+  const canLeaveNavigation = vm.runInNewContext(
+    `${functionSource('canLeaveNavigation')}; canLeaveNavigation`,
+    {
+      discardSimulationEdits() {
+        if (!confirmDiscard) return false;
+        trigger = '80';
+        return true;
+      },
+    },
+  );
+  const h = harness({ canLeave: canLeaveNavigation });
+  await h.controller.initialize();
+  await h.controller.navigate({ view: 'action-plan-simulator' });
+  await h.controller.navigate({ view: 'positions' });
+  h.history.back();
+  await settle();
+  trigger = '99';
+  confirmDiscard = false;
+
+  h.history.forward();
+  await settle();
+
+  assert.equal(h.history.state.sequence, 1);
+  assert.equal(trigger, '99');
+  assert.deepEqual(h.controller.currentScreen(), { view: 'action-plan-simulator' });
+});
+
+test('browser navigation controller delegates Simulator leave checks to the existing discard guard', () => {
+  const initializeSource = functionSource('initializeBrowserNavigation');
+  assert.match(initializeSource, /canLeave: canLeaveNavigation/);
+  const guardCalls = [];
+  const guard = vm.runInNewContext(`${functionSource('canLeaveNavigation')}; canLeaveNavigation`, {
+    discardSimulationEdits() { guardCalls.push('discard'); return false; },
+  });
+  assert.equal(guard({ view: 'positions' }, { view: 'analysis' }), true);
+  assert.equal(guard({ view: 'action-plan-simulator' }, { view: 'positions' }), false);
+  assert.equal(guard({ view: 'action-plan-simulator', detail: { kind: 'action', symbol: 'NVDA' } }, { view: 'analysis' }), false);
+  assert.deepEqual(guardCalls, ['discard', 'discard']);
+});
+
+test('an older Analysis detail response cannot overwrite a newer navigation generation', async () => {
+  const deferred = deferredJsonResponse({ analysis: { symbol: 'OLD' } });
+  let renders = 0;
+  const context = vm.createContext({
+    navigationRenderGeneration: 1,
+    analysisDetailStatus: fakeElement(), analysisSummary: fakeElement(),
+    analysisListView: fakeElement(), analysisDetailView: fakeElement(),
+    analysisDetailOrigin: 'analysis', analysisDetailState: null,
+    showAnalysisDetailFromPositionsOrigin() {}, showAnalysisDetailFromActionPlanOrigin() {},
+    showAnalysisDetailFromEarningsReviewOrigin() {}, updateAnalysisBackButton() {},
+    isEditingVariables: false, activeAnalysisVariableCategory: 'Core Driver',
+    editableAnalysisVariables: null, isEditingBusinessModel: false, isEditingBusinessSummary: false,
+    activeScenarioOverlayTab: 'bakingmoney', fetch: deferred.fetch,
+    extractErrorMessage: () => 'error', hasExternalScenarioOverlay: () => false,
+    renderAnalysisDetail() { renders += 1; },
+  });
+  installNavigationAwareFunction(context, 'loadAnalysisDetail');
+  const pending = context.loadAnalysisDetail('OLD', null, { navigationGeneration: 1 });
+  context.navigationRenderGeneration = 2;
+  deferred.finish();
+  await pending;
+  assert.equal(context.analysisDetailState, null);
+  assert.equal(renders, 0);
+});
+
+test('an older Alert detail response cannot overwrite a newer navigation generation', async () => {
+  const deferred = deferredJsonResponse({ alert: { symbol: 'OLD', status: 'New' } });
+  const context = vm.createContext({
+    navigationRenderGeneration: 1, currentAlertDetailId: null, currentAlertDetailSymbol: null,
+    currentAlertNavigationIds: [], alertsListView: fakeElement(), alertDetailView: fakeElement(),
+    alertDetailStatusEl: fakeElement(), alertDetailPanelsEl: fakeElement(), alertDetailTitleEl: fakeElement(),
+    alertDetailTypeEl: fakeElement(), alertDetailAffectedEl: fakeElement(), alertDetailEventEl: fakeElement(),
+    alertDetailDateEl: fakeElement(), alertDetailSuggestedEl: fakeElement(), alertDetailReviewBtn: fakeElement(),
+    alertDetailDismissBtn: fakeElement(), alertDetailPrevBtn: fakeElement(), alertDetailNextBtn: fakeElement(),
+    alertDetailOpenAnalysisBtn: fakeElement(), alertDetailKeyvarsStatusEl: fakeElement(),
+    getFilteredAlerts: () => [{ id: '1' }], getCurrentAlertIndexWithinFiltered: () => 0,
+    fetch: deferred.fetch, extractErrorMessage: () => 'error', formatDate: String, formatDateTime: String,
+    renderAlertSources() {}, loadAlertDetailAnalysis: async () => {},
+  });
+  installNavigationAwareFunction(context, 'openAlertDetail');
+  const pending = context.openAlertDetail('1', { navigationGeneration: 1 });
+  context.navigationRenderGeneration = 2;
+  context.currentAlertDetailId = '2';
+  deferred.finish();
+  await pending;
+  assert.equal(context.currentAlertDetailId, '2');
+  assert.equal(context.currentAlertDetailSymbol, null);
+  assert.equal(context.alertDetailTitleEl.textContent, '');
+});
+
+test('an older Earnings company-history response cannot overwrite a newer navigation generation', async () => {
+  const deferred = deferredJsonResponse({ item: { symbol: 'OLD', company_name: 'Old Co', records: [] } });
+  let renders = 0;
+  const context = vm.createContext({
+    navigationRenderGeneration: 1, earningsReviewSelectedSymbol: null,
+    earningsReviewSelectedRecordId: null, earningsReviewSymbolHistory: null,
+    earningsReviewSymbolTitleEl: fakeElement(), earningsReviewSymbolHeaderEl: fakeElement(),
+    earningsReviewSymbolStatusEl: fakeElement(), earningsReviewSymbolTableBody: fakeElement(),
+    setEarningsReviewTab() {}, showEarningsReviewSymbolHistoryView() {}, fetch: deferred.fetch,
+    extractErrorMessage: () => 'error', renderEarningsReviewSymbolHistoryTable() { renders += 1; },
+  });
+  installNavigationAwareFunction(context, 'openEarningsReviewSymbolHistory');
+  const pending = context.openEarningsReviewSymbolHistory('OLD', { navigationGeneration: 1 });
+  context.navigationRenderGeneration = 2;
+  context.earningsReviewSelectedSymbol = 'NEW';
+  deferred.finish();
+  await pending;
+  assert.equal(context.earningsReviewSelectedSymbol, 'NEW');
+  assert.equal(context.earningsReviewSymbolHistory, null);
+  assert.equal(renders, 0);
+});
+
+test('an older Earnings review response cannot overwrite a newer navigation generation', async () => {
+  const deferred = deferredJsonResponse({ item: { symbol: 'OLD', fiscal_year: 2026, fiscal_quarter: 'Q1', documents: [] } });
+  let renders = 0;
+  const context = vm.createContext({
+    navigationRenderGeneration: 1, earningsReviewSelectedSymbol: null, earningsReviewSelectedRecordId: null,
+    earningsReviewDetailTitleEl: fakeElement(), earningsReviewDetailHeaderEl: fakeElement(),
+    earningsReviewDetailMetaEl: fakeElement(), earningsReviewGenerateBtn: fakeElement(),
+    earningsReviewAnalyseBtn: fakeElement(), earningsReviewKeyVariablesBody: fakeElement(),
+    earningsReviewWatchpointsEl: fakeElement(), earningsReviewSnapshotSummaryEl: fakeElement(),
+    earningsReviewDocumentsTableBody: fakeElement(), earningsReviewDocumentsStatusEl: fakeElement(),
+    earningsReviewDocumentFileEl: fakeElement(), earningsReviewDocumentFileNameEl: fakeElement(),
+    setEarningsReviewTab() {}, showEarningsReviewDetail() {}, fetch: deferred.fetch,
+    extractErrorMessage: () => 'error', formatDate: String, formatDateTime: String,
+    renderEarningsSnapshotSummary() { renders += 1; }, renderEarningsKeyVariables() { renders += 1; },
+    renderEarningsWatchpoints() { renders += 1; }, renderEarningsReviewDocuments() { renders += 1; },
+  });
+  installNavigationAwareFunction(context, 'openEarningsReviewRecordDetail');
+  const pending = context.openEarningsReviewRecordDetail('OLD', 1, { navigationGeneration: 1 });
+  context.navigationRenderGeneration = 2;
+  context.earningsReviewSelectedSymbol = 'NEW';
+  context.earningsReviewSelectedRecordId = 2;
+  deferred.finish();
+  await pending;
+  assert.equal(context.earningsReviewSelectedSymbol, 'NEW');
+  assert.equal(context.earningsReviewSelectedRecordId, 2);
+  assert.equal(renders, 0);
 });

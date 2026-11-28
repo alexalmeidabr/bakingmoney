@@ -4223,6 +4223,11 @@ async function renderNavigationScreen(screen) {
   return true;
 }
 
+function navigationRequestCurrent(options = {}) {
+  return options.navigationGeneration == null
+    || options.navigationGeneration === navigationRenderGeneration;
+}
+
 function navigateToScreen(screen) {
   if (!browserNavigationController) return renderNavigationScreen(screen);
   return browserNavigationController.navigate(screen);
@@ -4233,11 +4238,17 @@ function navigateBack(fallback) {
   return browserNavigationController.back(fallback);
 }
 
+function canLeaveNavigation(currentScreen) {
+  if (currentScreen?.view !== 'action-plan-simulator') return true;
+  return discardSimulationEdits();
+}
+
 function initializeBrowserNavigation() {
   browserNavigationController = BakingMoneyNavigation.createController({
     history: window.history,
     eventTarget: window,
     render: renderNavigationScreen,
+    canLeave: canLeaveNavigation,
     fallbackScreen: { view: 'analysis' },
   });
   return browserNavigationController.initialize();
@@ -5109,7 +5120,7 @@ async function openAnalysisDetailFromPositions(symbol) {
   await loadAnalysisDetail(symbol);
 }
 
-async function loadAnalysisDetail(symbol, versionId = null) {
+async function loadAnalysisDetail(symbol, versionId = null, options = {}) {
   analysisDetailStatus.textContent = `Loading ${symbol} detail…`;
   analysisDetailStatus.className = 'status';
   analysisSummary.classList.add('hidden');
@@ -5129,13 +5140,16 @@ async function loadAnalysisDetail(symbol, versionId = null) {
     const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : '';
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}${query}`);
     const payload = await response.json();
+    if (!navigationRequestCurrent(options)) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load details'));
     analysisDetailState = payload.analysis;
     analysisDetailState.selected_release_index = 0;
     activeScenarioOverlayTab = hasExternalScenarioOverlay() ? 'final' : 'bakingmoney';
     renderAnalysisDetail();
     analysisDetailStatus.textContent = `Loaded ${symbol} detail.`;
+    return true;
   } catch (error) {
+    if (!navigationRequestCurrent(options)) return false;
     const noAnalysisMessage = 'No analysis found for this symbol.';
     analysisDetailStatus.textContent = /not found/i.test(error.message || '') ? noAnalysisMessage : `Error: ${error.message}`;
     analysisDetailStatus.className = 'status error';
@@ -6026,7 +6040,7 @@ function renderAlertsList() {
   })));
 }
 
-async function openAlertDetail(alertId) {
+async function openAlertDetail(alertId, options = {}) {
   currentAlertDetailId = alertId;
   currentAlertNavigationIds = getFilteredAlerts().map((item) => String(item.id));
   alertsListView.classList.add('hidden');
@@ -6037,6 +6051,7 @@ async function openAlertDetail(alertId) {
   try {
     const response = await fetch(`/api/alerts/${encodeURIComponent(alertId)}`);
     const payload = await response.json();
+    if (!navigationRequestCurrent(options)) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load alert detail'));
     const alert = payload.alert || {};
     currentAlertDetailSymbol = alert.symbol || null;
@@ -6058,7 +6073,9 @@ async function openAlertDetail(alertId) {
       alertDetailKeyvarsStatusEl.textContent = `Error: ${error.message}`;
       alertDetailKeyvarsStatusEl.className = 'status error';
     });
+    return true;
   } catch (error) {
+    if (!navigationRequestCurrent(options)) return false;
     currentAlertDetailSymbol = null;
     alertDetailStatusEl.textContent = `Error: ${error.message}`;
     alertDetailStatusEl.className = 'status error';
@@ -6688,7 +6705,7 @@ function showEarningsReviewSymbolHistoryView() {
   earningsReviewDetailView.classList.add('hidden');
 }
 
-async function openEarningsReviewSymbolHistory(symbol) {
+async function openEarningsReviewSymbolHistory(symbol, options = {}) {
   const normalized = (symbol || '').trim().toUpperCase();
   if (!normalized) return;
   setEarningsReviewTab('workflow');
@@ -6703,6 +6720,7 @@ async function openEarningsReviewSymbolHistory(symbol) {
   try {
     const response = await fetch(`/api/earnings-review/${encodeURIComponent(normalized)}`);
     const payload = await response.json();
+    if (!navigationRequestCurrent(options)) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings history.'));
     const item = payload.item || {};
     earningsReviewSymbolHistory = item;
@@ -6711,7 +6729,9 @@ async function openEarningsReviewSymbolHistory(symbol) {
     earningsReviewSymbolStatusEl.textContent = (item.records || []).length
       ? `Showing ${(item.records || []).length} earnings review record(s).`
       : 'No earnings reviews created yet. Create the first one to begin this symbol history.';
+    return true;
   } catch (error) {
+    if (!navigationRequestCurrent(options)) return false;
     earningsReviewSymbolStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewSymbolStatusEl.className = 'status error';
   }
@@ -6832,7 +6852,7 @@ function renderEarningsSnapshotSummary(snapshot, detail) {
   `;
 }
 
-async function openEarningsReviewRecordDetail(symbol, reviewId) {
+async function openEarningsReviewRecordDetail(symbol, reviewId, options = {}) {
   const normalized = (symbol || '').trim().toUpperCase();
   if (!normalized || !Number.isFinite(reviewId)) return;
   setEarningsReviewTab('workflow');
@@ -6856,6 +6876,7 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
   try {
     const response = await fetch(`/api/earnings-review/${encodeURIComponent(normalized)}/${encodeURIComponent(earningsReviewSelectedRecordId)}`);
     const payload = await response.json();
+    if (!navigationRequestCurrent(options)) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review record.'));
     const item = payload.item || {};
     const snapshot = item.thesis_snapshot || {};
@@ -6873,7 +6894,9 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
     renderEarningsKeyVariables(item.key_variables_snapshot || []);
     renderEarningsWatchpoints(item.watchpoints_by_variable || [], item.watchpoint_results || []);
     renderEarningsReviewDocuments(item.documents || []);
+    return true;
   } catch (error) {
+    if (!navigationRequestCurrent(options)) return false;
     earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
     earningsReviewDetailMetaEl.className = 'status error';
     earningsReviewDocumentsStatusEl.textContent = `Error: ${error.message}`;
@@ -7743,7 +7766,7 @@ actionPlanDetailBackBtn.addEventListener('click', () => {
   navigateBack({ view: simulatorActive ? 'action-plan-simulator' : 'action-plan' });
 });
 actionPlanOpenAnalysisBtn.addEventListener('click', () => {
-  if (!selectedActionPlanDetail?.symbol || !discardSimulationEdits()) return;
+  if (!selectedActionPlanDetail?.symbol) return;
   navigateToScreen({
     view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
     detail: { kind: 'analysis', symbol: selectedActionPlanDetail.symbol },

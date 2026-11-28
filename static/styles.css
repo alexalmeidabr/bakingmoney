@@ -1674,3 +1674,18 @@ th.sortable[data-sort-direction='desc']::after {
 #action-plan-linear-detail-table td:nth-child(20) {
   text-align: left;
 }
+
+.simulation-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+#simulation-settings { margin-top: .8rem; }
+#simulation-settings summary { cursor: pointer; }
+#simulation-settings form { margin-top: .7rem; }
+#simulation-dialog { color: inherit; background: var(--surface); border: 1px solid #9da5ae; border-radius: .6rem; width: min(90vw, 27rem); }
+#simulation-dialog::backdrop { background: rgba(0,0,0,.45); }
+#simulation-create-form, #simulation-create-form fieldset { display: grid; gap: .75rem; }
+#simulation-create-form > label { display: grid; gap: .3rem; }
+.simulation-toolbar label { min-width: 0; }
+#simulation-select { max-width: min(100%, 32rem); }
+@media (max-width: 600px) {
+  .simulation-toolbar > label { flex-basis: 100%; }
+  #simulation-select { display: block; width: 100%; }
+}

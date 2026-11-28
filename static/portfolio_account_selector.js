@@ -64,6 +64,8 @@
     return parsed.pathname === '/api/positions'
       || parsed.pathname === '/api/action-plan'
       || parsed.pathname.startsWith('/api/action-plan/')
+      || parsed.pathname === '/api/action-plan-simulations'
+      || parsed.pathname.startsWith('/api/action-plan-simulations/')
       || parsed.pathname === '/api/manual-execution-triggers'
       || parsed.pathname.startsWith('/api/manual-execution-triggers/')
       || parsed.pathname === '/api/manual-execution-quotes/refresh';

@@ -14,6 +14,7 @@
           <button class="menu-item active" data-view="analysis">Analysis</button>
           <button class="menu-item" data-view="positions">My Positions</button>
           <button class="menu-item" data-view="action-plan">Action Plan</button>
+          <button class="menu-item" data-view="action-plan-simulator">Action Plan Simulator</button>
           <button class="menu-item" data-view="earnings-review">Earnings Review</button>
           <button class="menu-item" data-view="alerts">Alerts</button>
           <button class="menu-item" data-view="prompt">Prompt</button>
@@ -816,6 +817,7 @@
               <button id="action-plan-refresh-btn">Refresh Action Plan</button>
             </div>
           </div>
+          <div id="action-plan-workspace">
           <div id="action-plan-list-view">
           <p class="status">Linear Allocation uses dynamic reserve, whole-share sizing, and funding-aware actions.</p>
           <div class="manual-plan-toolbar">
@@ -914,6 +916,39 @@
             <div id="manual-trigger-detail"></div>
             <div id="action-plan-detail-content"></div>
           </div>
+          </div>
+        </section>
+
+        <section id="action-plan-simulator" class="view">
+          <div class="view-header"><h2>Action Plan Simulator</h2><button id="simulation-refresh">Refresh Action Plan</button></div>
+          <div class="table-actions simulation-toolbar">
+            <label>Saved simulation <select id="simulation-select"></select></label>
+            <button id="simulation-new">New Simulation</button><button id="simulation-rename">Rename</button>
+            <button id="simulation-duplicate">Duplicate</button><button id="simulation-delete">Delete</button>
+          </div>
+          <details id="simulation-settings">
+            <summary>Simulation Settings · <span id="simulation-summary"></span></summary>
+            <form id="simulation-settings-form" class="simulation-toolbar">
+              <label>Additional Cash (USD) <input id="simulation-cash" type="number" required min="0" max="1000000000" step="any"></label>
+              <button type="submit" id="simulation-apply">Apply &amp; Recalculate</button>
+            </form>
+          </details>
+          <p class="status" id="simulation-status" role="status"></p>
+          <div id="simulation-results"></div>
+          <dialog id="simulation-dialog" aria-labelledby="simulation-dialog-title">
+            <form id="simulation-create-form">
+              <h3 id="simulation-dialog-title">New Simulation</h3>
+              <label>Simulation Name <input id="simulation-name" maxlength="200" required></label>
+              <label>Additional Cash (USD) <input id="simulation-new-cash" type="number" required min="0" max="1000000000" step="any" value="0"></label>
+              <fieldset><legend>Initial Triggers</legend>
+                <label><input type="radio" id="simulation-copy" name="initial-triggers" checked> Copy current Action Plan triggers</label>
+                <label><input type="radio" name="initial-triggers"> Start without triggers</label>
+              </fieldset>
+              <p id="simulation-dialog-status" class="status error" role="status"></p>
+              <div class="table-actions"><button type="button" id="simulation-cancel">Cancel</button>
+                <button type="submit" id="simulation-create">Create &amp; Run</button></div>
+            </form>
+          </dialog>
         </section>
 
         <div id="linear-cap-explanation-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="linear-cap-explanation-title">

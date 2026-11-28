@@ -1,9 +1,11 @@
+import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
 import web_server
+import action_plan_prices
 from test_manual_execution_engine import linear_candidate, linear_settings, verified_row
 
 
@@ -33,9 +35,12 @@ class PacketTicker:
         self.ticks = []
 
     def marketPrice(self):
-        if self.bid is not None and self.ask is not None:
+        if (self.bid is not None and self.ask is not None
+                and self.bidSize > 0 and self.askSize > 0 and self.ask >= self.bid):
+            if self.last is not None and self.bid <= self.last <= self.ask:
+                return self.last
             return (self.bid + self.ask) / 2
-        return None
+        return self.last
 
 
 class PacketIB:
@@ -119,6 +124,34 @@ class ManualQuoteObservationTests(unittest.TestCase):
         )
         return web_server.evaluate_manual_execution_trigger(row, {"buy_trigger_price": 80}, self.now)["status"]
 
+    def observed_ticker(self, market_data_type=1, **values):
+        ticker = PacketTicker(self.contract, market_data_type)
+        for field, value in values.items():
+            setattr(ticker, field, value)
+        observations = web_server._ManualQuoteObservations()
+        observations.register(ticker, self.contract)
+        return ticker, observations
+
+    def emit_price_tick(self, ticker, observations, field, price, size=10):
+        tick_type = {"bid": 1, "ask": 2, "last": 4, "close": 9}[field]
+        setattr(ticker, field, price)
+        if field in {"bid", "ask"}:
+            setattr(ticker, field + "Size", size)
+        if field == "close":
+            ticker.prevClose = price
+        ticker.ticks = [SimpleNamespace(
+            tickType=tick_type, price=price, size=size, time=self.now,
+        )]
+        observations.observe([ticker])
+        ticker.ticks = []
+
+    def position_row(self, ticker, observations):
+        position = SimpleNamespace(contract=self.contract, position=1, avgCost=80)
+        return web_server._build_live_position_rows(
+            [position], {self.key: ticker}, self.now.isoformat(),
+            quote_observations=observations,
+        )[0]
+
     def test_separate_bid_and_ask_packets_survive_transient_tick_clearing(self):
         ib, tickers, diagnostics, observations = self.collect([
             ("bid", 78, 10, self.now), ("ask", 79, 10, self.now),
@@ -131,6 +164,176 @@ class ManualQuoteObservationTests(unittest.TestCase):
         self.assertEqual((proof["bid"], proof["ask"]), (78, 79))
         self.assertEqual(proof["bid_tick_at"], self.now.isoformat())
         self.assertEqual(proof["ask_tick_at"], self.now.isoformat())
+
+    def test_streaming_freshness_requires_matching_current_acquisition_tick(self):
+        cases = (
+            ([('last', 120, 1, self.now)], 1, 'last', 'streaming_live'),
+            ([('bid', 119, 10, self.now), ('ask', 121, 10, self.now)], 1,
+             'marketPrice', 'streaming_live'),
+            ([('last', 120, 1, self.now)], 3, 'delayed_last', 'streaming_delayed'),
+            ([('close', 100, 1, self.now)], 1, 'close', 'snapshot'),
+            ([('last', 100, 1, self.now)], 2, 'frozen_last', 'snapshot'),
+            ([('last', 100, 1, self.now)], 4, 'delayed_frozen_last', 'snapshot'),
+        )
+        for packets, data_type, source, expected in cases:
+            with self.subTest(source=source):
+                ib, _tickers, diagnostics, observations = self.collect(packets, data_type)
+                self.assertEqual(expected, observations.acquisition_kind(
+                    ib.ticker, self.key, source, diagnostics.get('NVDA') or {},
+                ))
+
+        ib, _tickers, diagnostics, observations = self.collect([])
+        ib.ticker.last = 120
+        self.assertIsNone(observations.acquisition_kind(
+            ib.ticker, self.key, 'last', diagnostics.get('NVDA') or {},
+        ))
+
+        ib, _tickers, diagnostics, observations = self.collect([('last', 120, 1, self.now)])
+        self.assertIsNone(observations.acquisition_kind(
+            ib.ticker, self.key, 'marketPrice', diagnostics.get('NVDA') or {},
+        ))
+
+    def test_streaming_evidence_belongs_to_the_ticker_and_feed_that_emitted_it(self):
+        observations = web_server._ManualQuoteObservations()
+        ticked = PacketTicker(self.contract, market_data_type=1)
+        unevidenced = PacketTicker(self.contract, market_data_type=1)
+        observations.register(ticked, self.contract)
+        observations.register(unevidenced, self.contract)
+        ticked.last = 120
+        ticked.ticks = [SimpleNamespace(tickType=4, price=120, size=1, time=self.now)]
+        observations.observe([ticked])
+        unevidenced.last = 120
+        self.assertEqual("streaming_live", observations.acquisition_kind(
+            ticked, self.key, "last", {},
+        ))
+        self.assertIsNone(observations.acquisition_kind(
+            unevidenced, self.key, "last", {},
+        ))
+
+        first_side = PacketTicker(self.contract, market_data_type=1)
+        second_side = PacketTicker(self.contract, market_data_type=1)
+        observations = web_server._ManualQuoteObservations()
+        observations.register(first_side, self.contract)
+        observations.register(second_side, self.contract)
+        self.emit_price_tick(first_side, observations, "bid", 99)
+        second_side.bid, second_side.bidSize = 99, 10
+        self.emit_price_tick(second_side, observations, "ask", 101)
+        self.assertIsNone(web_server._manual_quote_proof_from_ticker(
+            second_side, self.key, self.now.isoformat(), {}, observations, self.now,
+        ))
+
+        frozen = PacketTicker(self.contract, market_data_type=2)
+        observations.register(frozen, self.contract)
+        frozen.last = 120
+        frozen.ticks = [SimpleNamespace(tickType=4, price=120, size=1, time=self.now)]
+        observations.observe([frozen])
+        frozen.marketDataType = 1
+        self.assertIsNone(observations.acquisition_kind(
+            frozen, self.key, "last", {},
+        ))
+
+    def test_selected_last_requires_matching_current_last_tick_value(self):
+        ticker, observations = self.observed_ticker()
+        self.emit_price_tick(ticker, observations, "last", 120)
+        row = self.position_row(ticker, observations)
+        self.assertEqual((120, "last", "streaming_live"),
+                         (row["price"], row["price_source"], row["acquisition_kind"]))
+
+        with sqlite3.connect(":memory:") as conn:
+            action_plan_prices.init_schema(conn)
+            self.assertTrue(action_plan_prices.persist_observation(conn, "A", "NVDA", row))
+            saved = action_plan_prices.load_observations(conn, "A")["NVDA"][0]
+        self.assertEqual((120, "streaming_live"),
+                         (saved["price"], saved["acquisition_kind"]))
+
+        ticker.last = 100
+        row = self.position_row(ticker, observations)
+        self.assertEqual((100, "last", None),
+                         (row["price"], row["price_source"], row["acquisition_kind"]))
+
+        for fresh_side in ("bid", "ask"):
+            with self.subTest(fresh_side=fresh_side):
+                ticker, observations = self.observed_ticker(
+                    last=100, bid=99, ask=101, bidSize=10, askSize=10,
+                )
+                self.emit_price_tick(ticker, observations, fresh_side,
+                                     99 if fresh_side == "bid" else 101)
+                row = self.position_row(ticker, observations)
+                self.assertEqual((100, "last", None),
+                                 (row["price"], row["price_source"], row["acquisition_kind"]))
+
+    def test_new_last_keeps_its_receipt_when_accompanying_sides_are_older(self):
+        ticker, observations = self.observed_ticker()
+        side_time = self.now - timedelta(minutes=2)
+        for side, price, tick_type in (("bid", 119, 1), ("ask", 121, 2)):
+            setattr(ticker, side, price)
+            setattr(ticker, side + "Size", 10)
+            ticker.ticks = [SimpleNamespace(tickType=tick_type, price=price,
+                                            size=10, time=side_time)]
+            observations.observe([ticker])
+            ticker.ticks = []
+        self.emit_price_tick(ticker, observations, "last", 120)
+        row = self.position_row(ticker, observations)
+        proof = web_server._manual_quote_proof_from_ticker(
+            ticker, self.key, self.now.isoformat(), {}, observations, self.now,
+        )
+        self.assertIsNotNone(proof)
+        observation = {**row, **{key: proof[key] for key in
+                                 ("bid", "ask", "bid_tick_at", "ask_tick_at")}}
+        saved = {**row, "price": 115, "market_observed_at":
+                 (self.now - timedelta(minutes=1)).isoformat(), "acquisition_kind": None}
+        self.assertEqual((120, "last", "streaming_live"),
+                         (observation["price"], observation["price_source"],
+                          observation["acquisition_kind"]))
+        selected = action_plan_prices.resolve_price(row, {}, [saved, observation])
+        self.assertEqual((120, None, self.now.isoformat()),
+                         (selected["price"], selected["market_observed_at"], selected["retrieved_at"]))
+
+    def test_selected_midpoint_requires_both_matching_current_side_values(self):
+        ticker, observations = self.observed_ticker(ask=121, askSize=10)
+        self.emit_price_tick(ticker, observations, "bid", 119)
+        row = self.position_row(ticker, observations)
+        self.assertEqual((120, "marketPrice", None),
+                         (row["price"], row["price_source"], row["acquisition_kind"]))
+
+        ticker, observations = self.observed_ticker()
+        self.emit_price_tick(ticker, observations, "bid", 119)
+        self.emit_price_tick(ticker, observations, "ask", 121)
+        row = self.position_row(ticker, observations)
+        self.assertEqual((120, "marketPrice", "streaming_live"),
+                         (row["price"], row["price_source"], row["acquisition_kind"]))
+
+        ticker.bid = 117
+        row = self.position_row(ticker, observations)
+        self.assertEqual((119, "marketPrice", None),
+                         (row["price"], row["price_source"], row["acquisition_kind"]))
+
+    def test_matching_delayed_values_stream_but_closes_and_feed_transitions_do_not(self):
+        delayed, observations = self.observed_ticker(market_data_type=3)
+        self.emit_price_tick(delayed, observations, "last", 120)
+        row = self.position_row(delayed, observations)
+        self.assertEqual((120, "delayed_last", "streaming_delayed"),
+                         (row["price"], row["price_source"], row["acquisition_kind"]))
+
+        delayed.marketDataType = 1
+        row = self.position_row(delayed, observations)
+        self.assertEqual((120, "last", None),
+                         (row["price"], row["price_source"], row["acquisition_kind"]))
+
+        frozen, observations = self.observed_ticker(market_data_type=2)
+        self.emit_price_tick(frozen, observations, "last", 120)
+        self.assertEqual("snapshot", self.position_row(frozen, observations)["acquisition_kind"])
+
+        closing, observations = self.observed_ticker()
+        self.emit_price_tick(closing, observations, "close", 98)
+        row = self.position_row(closing, observations)
+        self.assertEqual((98, "close", "snapshot"),
+                         (row["price"], row["price_source"], row["acquisition_kind"]))
+
+        previous, observations = self.observed_ticker(prevClose=97)
+        row = self.position_row(previous, observations)
+        self.assertEqual((97, "prevClose", "snapshot"),
+                         (row["price"], row["price_source"], row["acquisition_kind"]))
 
     def test_only_one_side_or_final_fields_without_events_cannot_verify(self):
         for packets in ([('bid', 78, 10, self.now)], [('ask', 79, 10, self.now)], []):
@@ -145,7 +348,7 @@ class ManualQuoteObservationTests(unittest.TestCase):
                     ]
                 proof = self.proof(ib, diagnostics, observations)
                 self.assertIsNone(proof)
-                self.assertEqual(self.buy_status(proof), "price_confirmation_required")
+                self.assertEqual(self.buy_status(proof), "waiting")
 
     def test_stale_or_nonlive_side_cannot_verify(self):
         stale = self.now - timedelta(minutes=6)
@@ -159,7 +362,7 @@ class ManualQuoteObservationTests(unittest.TestCase):
                 ib, _tickers, diagnostics, observations = self.collect(packets, data_type)
                 proof = self.proof(ib, diagnostics, observations)
                 self.assertIsNone(proof)
-                self.assertEqual(self.buy_status(proof), "price_confirmation_required")
+                self.assertEqual(self.buy_status(proof), "waiting")
 
     def test_failed_requests_remove_handlers_and_do_not_accumulate(self):
         for _ in range(2):
@@ -258,12 +461,13 @@ class ManualQuoteObservationTests(unittest.TestCase):
             current_position_weight=0.08, price_last_successful_at=self.now.isoformat(),
             manual_quote_proof=proof,
         )
-        preference = {"buy_trigger_price": 80, "reserve_enabled": True, "reserve_percentage": 100}
+        preference = {"buy_trigger_price": 79, "reserve_enabled": True, "reserve_percentage": 100}
         blocked = web_server.compute_linear_action_plan(
             [dict(candidate, manual_quote_proof=None)], 100_000, 20_000,
             linear_settings(), manual_triggers={"NVDA": preference},
         )["manual_execution"]
-        self.assertEqual(blocked["rows"][0]["manual_trigger_status"], "price_confirmation_required")
+        self.assertEqual(blocked["rows"][0]["manual_trigger_status"], "waiting")
+        self.assertEqual(blocked["rows"][0]["manual_verified_price"], 80)
         self.assertGreater(blocked["rows"][0]["requested_reservation"], 0)
         self.assertEqual(blocked["rows"][0]["executable_action_amount"], 0)
         payload = web_server.compute_linear_action_plan(
@@ -287,13 +491,13 @@ class ManualQuoteObservationTests(unittest.TestCase):
         blocked_sell = web_server.compute_linear_action_plan(
             [dict(sell_candidate, manual_quote_proof=None)], 100_000, 0,
             linear_settings(action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
-            manual_triggers={"NVDA": {"sell_trigger_price": 120}},
+            manual_triggers={"NVDA": {"sell_trigger_price": 121}},
         )["manual_execution"]
         self.assertEqual(blocked_sell["summary"]["executable_sell_trim_proceeds"], 0)
         sell_payload = web_server.compute_linear_action_plan(
             [sell_candidate], 100_000, 0,
             linear_settings(action_min_cash_unallocated_target=0, linear_max_reserve_pct=0),
-            manual_triggers={"NVDA": {"sell_trigger_price": 120}},
+            manual_triggers={"NVDA": {"sell_trigger_price": 121}},
         )["manual_execution"]
         self.assertEqual(sell_payload["rows"][0]["manual_trigger_status"], "eligible")
         self.assertEqual(sell_payload["summary"]["executable_sell_trim_proceeds"], 1_210)
@@ -355,7 +559,7 @@ class ManualQuoteObservationTests(unittest.TestCase):
         self.assertEqual(clock.value, 1)
         self.assertEqual(web_server.extract_price(tickers[0]), 100)
         self.assertIsNone(self.proof(ib, diagnostics, observations))
-        self.assertEqual(self.buy_status(None), "price_confirmation_required")
+        self.assertEqual(self.buy_status(None), "waiting")
         self.assertEqual(ib.cancelled, [self.contract])
         self.assertEqual(len(ib.pendingTickersEvent.handlers), 0)
 

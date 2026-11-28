@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import web_server
+import action_plan_prices
 from test_manual_execution_engine import linear_settings
 from test_multi_account_portfolio_db import FakeIB, FakePosition, FakeSummaryItem
 from test_manual_quote_observation import PacketIB
@@ -80,6 +81,64 @@ class ManualExecutionApiTests(unittest.TestCase):
         with mock.patch.object(web_server, "list_analysis_symbols", return_value=self.analysis_items):
             return web_server.build_action_plan(self.conn, account_id=account, include_manual_execution=both)
 
+    def test_qualified_contract_selection_updates_before_quote_and_rejects_ambiguous_transitions(self):
+        action_plan_prices.save_contract_selection(
+            self.conn, "U_ACCOUNT_A", "BBB", "conid:111", "STK", "USD",
+            "2026-11-22T10:00:00+00:00",
+        )
+        action_plan_prices.save_contract_selection(
+            self.conn, "U_ACCOUNT_B", "BBB", "conid:222", "STK", "USD",
+            "2026-11-22T10:00:00+00:00",
+        )
+        self.conn.commit()
+
+        def refresh(qualification):
+            ib = SimpleNamespace(
+                managedAccounts=lambda: ["U_ACCOUNT_A", "U_ACCOUNT_B"],
+                positions=lambda: [],
+                qualifyContracts=mock.Mock(side_effect=qualification),
+                reqMarketDataType=mock.Mock(),
+            )
+            handler = SimpleNamespace()
+            handler._read_json_body = lambda: {"symbols": ["BBB"]}
+            handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
+            with mock.patch.object(web_server, "get_ib_connection", return_value=ib), \
+                 mock.patch.object(web_server, "request_ib_tickers_with_retry", return_value=({}, {}, None)):
+                web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(
+                    handler, account_id="U_ACCOUNT_A",
+                )
+            return handler.response
+
+        transitioned = SimpleNamespace(symbol="BBB", conId=333, secType="STK", currency="USD")
+        response = refresh(lambda *_contracts: [transitioned])
+        self.assertEqual(response[1]["results"][0]["status"], "unavailable")
+        self.assertEqual(
+            action_plan_prices.load_contract_selections(self.conn, "U_ACCOUNT_A")["BBB"]["contract_key"],
+            "conid:333",
+        )
+        self.assertEqual(
+            action_plan_prices.load_contract_selections(self.conn, "U_ACCOUNT_B")["BBB"]["contract_key"],
+            "conid:222",
+        )
+
+        ambiguous = [
+            SimpleNamespace(symbol="BBB", conId=444, secType="STK", currency="USD"),
+            SimpleNamespace(symbol="BBB", conId=555, secType="STK", currency="USD"),
+        ]
+        response = refresh(lambda *_contracts: ambiguous)
+        self.assertEqual(response[1]["results"][0]["status"], "contract_unavailable")
+        self.assertEqual(
+            action_plan_prices.load_contract_selections(self.conn, "U_ACCOUNT_A")["BBB"]["contract_key"],
+            "conid:333",
+        )
+
+        response = refresh(RuntimeError("qualification failed"))
+        self.assertEqual(response[1]["results"][0]["status"], "contract_unavailable")
+        self.assertEqual(
+            action_plan_prices.load_contract_selections(self.conn, "U_ACCOUNT_A")["BBB"]["contract_key"],
+            "conid:333",
+        )
+
     def test_opt_in_keeps_default_payload_exact_and_reuses_one_analysis_list(self):
         web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "AAA", {
             "buy_trigger_price": 80, "reserve_enabled": True, "reserve_percentage": 60,
@@ -117,7 +176,7 @@ class ManualExecutionApiTests(unittest.TestCase):
         self.assertGreater(a_row["requested_reservation"], 0)
         self.assertEqual(b_row["requested_reservation"], 0)
 
-    def test_unowned_analysis_price_requires_confirmation_without_tws_request(self):
+    def test_unowned_analysis_price_funds_eligible_trigger_without_tws_request(self):
         web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "BBB", {
             "buy_trigger_price": 120, "reserve_enabled": True, "reserve_percentage": 50,
         })
@@ -125,13 +184,14 @@ class ManualExecutionApiTests(unittest.TestCase):
              mock.patch.object(web_server, "get_ib_connection", side_effect=AssertionError("Action Plan GET must not connect")):
             payload = self.build("U_ACCOUNT_A", both=True)
         row = next(row for row in payload["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
-        self.assertEqual(row["manual_trigger_status"], "price_confirmation_required")
-        self.assertIsNone(row["manual_verified_price"])
-        self.assertEqual(row["executable_action_amount"], 0)
-        self.assertGreater(row["requested_reservation"], 0)
-        self.assertIn("BBB", payload["manual_execution"]["price_verification"]["confirmation_required_symbols"])
+        self.assertEqual(row["manual_trigger_status"], "eligible")
+        self.assertEqual(row["manual_verified_price"], 100)
+        self.assertEqual(row["manual_price_source"], "analysis_fallback")
+        self.assertIn("analysis", row["manual_price_verification_reason"])
+        self.assertGreater(row["executable_action_amount"], 0)
+        self.assertEqual(row["requested_reservation"], 0)
 
-    def test_explicit_unowned_quote_releases_reservation_and_keeps_baseline(self):
+    def test_explicit_unowned_quote_releases_reservation_and_updates_both_views(self):
         web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "BBB", {
             "buy_trigger_price": 80, "reserve_enabled": True, "reserve_percentage": 60,
         })
@@ -154,7 +214,10 @@ class ManualExecutionApiTests(unittest.TestCase):
         self.assertEqual(len(ib.requests), 1)
         self.assertEqual(ib.reqMarketDataType.call_args_list, [mock.call(1), mock.call(3)])
         after = self.build("U_ACCOUNT_A", both=True)
-        self.assertEqual(after["linear_action_plan"], before["linear_action_plan"])
+        baseline = next(row for row in after["linear_action_plan"] if row["symbol"] == "BBB")
+        original = next(row for row in before["linear_action_plan"] if row["symbol"] == "BBB")
+        self.assertEqual((original["current_price"], baseline["current_price"]), (100, 78.5))
+        self.assertEqual(self.build("U_ACCOUNT_A")["linear_action_plan"], after["linear_action_plan"])
         row = next(row for row in after["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
         self.assertEqual(row["manual_trigger_status"], "eligible")
         self.assertEqual(row["manual_verified_price"], 79)
@@ -163,25 +226,30 @@ class ManualExecutionApiTests(unittest.TestCase):
         other = next(row for row in self.build("U_ACCOUNT_B", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
         self.assertEqual(other["manual_trigger_status"], "no_manual_trigger")
 
-    def test_failed_explicit_refresh_invalidates_old_unowned_quote(self):
-        web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "BBB", {"buy_trigger_price": 80})
-        now = web_server.utc_now_iso()
-        web_server._session_manual_explicit_quotes[(self.db_path, "U_ACCOUNT_A")] = {"BBB": {
-            "source": "live_bid_ask", "contract_key": "conid:302", "bid": 78, "ask": 79,
-            "bid_tick_at": now, "ask_tick_at": now, "refresh_at": now,
-        }}
-        self.addCleanup(web_server._session_manual_explicit_quotes.pop, (self.db_path, "U_ACCOUNT_A"), None)
+        # Simulate restart: remove process-local observations and open a new SQLite connection.
+        web_server._session_manual_explicit_quotes.pop((self.db_path, "U_ACCOUNT_A"), None)
+        self.conn.close()
+        web_server.init_db()
+        self.conn = web_server.get_db_connection()
+        reloaded = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"]
+                        if row["symbol"] == "BBB")
+        self.assertEqual((reloaded["manual_verified_price"], reloaded["manual_verified_quote_at"]),
+                         (79, tick_at.isoformat()))
+        self.assertIn("saved", reloaded["manual_price_verification_reason"].lower())
         handler = SimpleNamespace()
         handler._read_json_body = lambda: {"symbols": ["BBB"]}
         handler._send_json = lambda payload, status=200: setattr(handler, "response", (status, payload))
         with mock.patch.object(web_server, "get_ib_connection", side_effect=RuntimeError("offline")), \
              mock.patch.object(web_server, "list_analysis_symbols", return_value=self.analysis_items):
             web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(handler, account_id="U_ACCOUNT_A")
-        self.assertNotIn("BBB", web_server._session_manual_explicit_quotes[(self.db_path, "U_ACCOUNT_A")])
+        self.assertEqual(handler.response[0], 503)
+        self.assertEqual(handler.response[1]["results"][0]["status"], "tws_unavailable")
         row = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
-        self.assertEqual(row["manual_trigger_status"], "price_confirmation_required")
+        self.assertEqual(row["manual_trigger_status"], "eligible")
+        self.assertEqual(row["manual_verified_price"], 79)
+        self.assertEqual(row["manual_verified_quote_at"], tick_at.isoformat())
 
-    def test_explicit_quote_requires_live_matching_bid_and_ask(self):
+    def test_explicit_refresh_accepts_usable_nonlive_market_prices_and_rejects_wrong_contract(self):
         web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "BBB", {"buy_trigger_price": 80})
         contract = SimpleNamespace(symbol="BBB", conId=302, secType="STK", currency="USD")
         foreign = SimpleNamespace(symbol="BBB", conId=999, secType="STK", currency="USD")
@@ -213,15 +281,34 @@ class ManualExecutionApiTests(unittest.TestCase):
                      mock.patch.object(web_server, "get_ib_delayed_price_extra_wait_seconds", return_value=0), \
                      mock.patch.object(web_server, "list_analysis_symbols", return_value=self.analysis_items):
                     web_server.BakingMoneyHandler.handle_manual_execution_quotes_refresh(handler, account_id="U_ACCOUNT_A")
-                self.assertEqual(handler.response[1]["results"][0]["status"], "confirmation_required")
+                result = handler.response[1]["results"][0]
                 self.assertEqual(len(ib.pendingTickersEvent.handlers), 0)
                 row = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
-                self.assertEqual(row["manual_trigger_status"], "price_confirmation_required")
+                if len(packets) == 1:
+                    self.assertEqual(result["status"], "unavailable")
+                    self.assertEqual(row["manual_price_source"], "analysis_fallback")
+                    self.assertEqual(row["manual_trigger_status"], "waiting")
+                elif qualified is foreign:
+                    self.assertEqual(result["status"], "unavailable")
+                    self.assertEqual(row["manual_verified_price"], 100)
+                    self.assertEqual(row["manual_price_source"], "analysis_fallback")
+                    self.assertIn("qualified contract", row["manual_price_verification_reason"].lower())
+                else:
+                    self.assertEqual(result["status"], "updated")
+                    self.assertEqual(row["manual_verified_price"], result["price"])
+                    if data_type == 4:
+                        self.assertNotEqual(row["manual_verified_quote_at"], result["retrieved_at"])
+                    else:
+                        self.assertEqual(row["manual_verified_quote_at"], result["retrieved_at"])
+                    self.assertEqual(row["manual_trigger_status"], "eligible")
+                    if data_type in (3, 4):
+                        self.assertIn("delayed", result["source"])
+                        self.assertIn("delayed", row["manual_price_verification_reason"].lower())
 
-    def test_explicit_quote_waiting_expiration_and_account_isolation(self):
+    def test_previous_session_quote_stays_usable_and_account_scoped(self):
         for account in ("U_ACCOUNT_A", "U_ACCOUNT_B"):
             web_server.save_manual_execution_trigger(self.conn, account, "BBB", {"buy_trigger_price": 80})
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc) - timedelta(days=1)
         proof = {
             "source": "live_bid_ask", "symbol": "BBB", "contract_key": "conid:302",
             "bid": 98, "ask": 99, "bid_tick_at": now.isoformat(),
@@ -232,12 +319,12 @@ class ManualExecutionApiTests(unittest.TestCase):
         a = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
         b = next(row for row in self.build("U_ACCOUNT_B", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
         self.assertEqual(a["manual_trigger_status"], "waiting")
-        self.assertEqual(b["manual_trigger_status"], "price_confirmation_required")
-        with mock.patch.object(web_server, "datetime") as clock:
-            clock.now.return_value = now + timedelta(minutes=6)
-            clock.fromisoformat.side_effect = datetime.fromisoformat
-            expired = next(row for row in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"] if row["symbol"] == "BBB")
-        self.assertEqual(expired["manual_trigger_status"], "price_confirmation_required")
+        self.assertEqual(b["manual_trigger_status"], "waiting")
+        self.assertEqual((a["manual_verified_price"], b["manual_verified_price"]), (99, 100))
+        self.assertIn("ask", a["manual_price_source"])
+        self.assertEqual(b["manual_price_source"], "analysis_fallback")
+        self.assertIsNone(a["manual_verified_quote_expires_at"])
+        self.assertTrue(a["manual_price_verification_reason"])
 
     def test_newer_owned_position_proof_survives_older_explicit_quote(self):
         web_server.save_manual_execution_trigger(self.conn, "U_ACCOUNT_A", "AAA", {"buy_trigger_price": 102})
@@ -360,12 +447,22 @@ class ManualExecutionApiTests(unittest.TestCase):
                    if item["symbol"] == "AAA")
         self.assertEqual(row["manual_trigger_status"], "eligible")
         self.assertEqual(row["manual_verified_price"], 101)
+        # Restart discards process evidence, but the snapshot's executable sides
+        # must survive alongside its saved market reference.
+        web_server._session_manual_verified_quotes.pop((self.db_path, "U_ACCOUNT_A"), None)
+        web_server._session_received_quotes.pop((self.db_path, "U_ACCOUNT_A"), None)
+        restarted = next(item for item in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"]
+                         if item["symbol"] == "AAA")
+        self.assertEqual(restarted["manual_verified_price"], 101)
         with mock.patch.object(web_server, "ensure_event_loop", return_value=None), \
              mock.patch.object(web_server, "get_ib_connection", side_effect=RuntimeError("TWS offline")), \
              mock.patch.object(web_server, "list_analysis_symbols", return_value=[]):
             web_server.BakingMoneyHandler.handle_positions_api(handler, refresh=True, account_id="U_ACCOUNT_A")
         self.assertNotIn((self.db_path, "U_ACCOUNT_A"), web_server._session_manual_verified_quotes)
         self.assertIn("AAA", web_server._session_manual_verified_quotes[(self.db_path, "U_ACCOUNT_B")])
+        retained = next(item for item in self.build("U_ACCOUNT_A", both=True)["manual_execution"]["linear_action_plan"]
+                        if item["symbol"] == "AAA")
+        self.assertEqual(retained["manual_verified_price"], 101)
 
     def _refresh_with_early_last(self):
         position = FakePosition("U_ACCOUNT_A", "AAA", 1, 80, 1)

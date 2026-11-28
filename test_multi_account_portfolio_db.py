@@ -511,6 +511,46 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_position_cache_preserves_explicit_timestamp_meaning_across_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "position-times.db")
+            market_time = "2026-11-22T10:00:00+00:00"
+            retrieval_time = "2026-11-22T10:01:00+00:00"
+            legacy_time = "2026-11-22T10:02:00+00:00"
+            rows = [
+                {"symbol": "BOTH", "position": 1, "price": 10, "market_observed_at": market_time,
+                 "retrieved_at": retrieval_time, "price_last_successful_at": legacy_time},
+                {"symbol": "MARKET", "position": 1, "price": 10, "market_observed_at": market_time,
+                 "price_last_successful_at": legacy_time},
+                {"symbol": "RETRIEVED", "position": 1, "price": 10, "retrieved_at": retrieval_time,
+                 "price_last_successful_at": legacy_time},
+                {"symbol": "LEGACY", "position": 1, "price": 10,
+                 "price_last_successful_at": legacy_time},
+                {"symbol": "NONE", "position": 1, "price": 10},
+            ]
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+                conn = web_server.get_db_connection()
+                try:
+                    web_server.save_positions_cache(conn, rows, account_id="U1111111")
+                finally:
+                    conn.close()
+                conn = web_server.get_db_connection()
+                try:
+                    saved = {row["symbol"]: row for row in web_server.load_positions_cache(conn, "U1111111")}
+                finally:
+                    conn.close()
+            self.assertEqual((market_time, retrieval_time),
+                             (saved["BOTH"]["market_observed_at"], saved["BOTH"]["retrieved_at"]))
+            self.assertEqual((market_time, None),
+                             (saved["MARKET"]["market_observed_at"], saved["MARKET"]["retrieved_at"]))
+            self.assertEqual((None, retrieval_time),
+                             (saved["RETRIEVED"]["market_observed_at"], saved["RETRIEVED"]["retrieved_at"]))
+            self.assertEqual((None, legacy_time),
+                             (saved["LEGACY"]["market_observed_at"], saved["LEGACY"]["retrieved_at"]))
+            self.assertEqual((None, None),
+                             (saved["NONE"]["market_observed_at"], saved["NONE"]["retrieved_at"]))
+
     def test_position_cleanup_is_account_scoped(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "cleanup.db")
@@ -1506,6 +1546,11 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                         {"net_liquidation": 100000, "actual_cash": 10000},
                         account_id=web_server.LEGACY_IB_ACCOUNT_ID,
                     )
+                    web_server.action_plan_prices.save_contract_selection(
+                        conn, web_server.LEGACY_IB_ACCOUNT_ID, "NVDA", "conid:123",
+                        "STK", "USD", "2026-11-22T10:00:00+00:00",
+                    )
+                    conn.commit()
                     web_server.save_portfolio_summary_cache(
                         conn,
                         {"net_liquidation": 100000, "actual_cash": 10000},
@@ -1519,6 +1564,10 @@ class MultiAccountPortfolioDatabaseTests(unittest.TestCase):
                     self.assertEqual(rows[1]["market_value"], 10000)
                     self.assertIsNone(web_server.load_portfolio_summary_cache(conn, web_server.LEGACY_IB_ACCOUNT_ID))
                     self.assertEqual(web_server.load_portfolio_summary_cache(conn, "U1111111")["actual_cash"], 10000)
+                    self.assertEqual(
+                        web_server.action_plan_prices.load_contract_selections(conn, "U1111111")["NVDA"]["contract_key"],
+                        "conid:123",
+                    )
                 finally:
                     conn.close()
 

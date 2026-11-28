@@ -18,6 +18,11 @@
   function normalizeScreen(value) {
     if (!value || typeof value !== 'object' || !MAIN_VIEWS.has(value.view)) return null;
     const screen = { view: value.view };
+    if (value.view === 'action-plan-simulator' && value.simulationId != null) {
+      const simulationId = String(value.simulationId).trim();
+      if (!simulationId) return null;
+      screen.simulationId = simulationId;
+    }
     if (value.detail == null) return screen;
     const detail = value.detail;
     if (!detail || typeof detail !== 'object') return null;
@@ -73,6 +78,8 @@
     let activeScreen = null;
     let activeSequence = null;
     let popQueue = Promise.resolve();
+    let pendingScreen = null;
+    let navigationRevision = 0;
 
     const entry = (sequence, screen) => ({ bakingMoneyNavigation: 1, sequence, screen });
 
@@ -81,7 +88,12 @@
     }
 
     async function apply(target, sequence) {
-      if ((await render(target)) === false) return false;
+      const revision = ++navigationRevision;
+      pendingScreen = target;
+      const rendered = await render(target);
+      if (revision !== navigationRevision) return null;
+      pendingScreen = null;
+      if (rendered === false) return false;
       activeScreen = target;
       activeSequence = sequence;
       return true;
@@ -89,8 +101,16 @@
 
     async function onPopState(event) {
       const target = parseEntry(event.state);
-      if (!target || (target.sequence === activeSequence && screensEqual(target.screen, activeScreen))) return;
-      if (!(await allowed(target.screen)) || !(await apply(target.screen, target.sequence))) {
+      if (!target || (target.sequence === activeSequence && screensEqual(target.screen, activeScreen) && !pendingScreen)) return;
+      if (!(await allowed(target.screen))) {
+        const browserEntry = parseEntry(history.state);
+        if (!browserEntry) return;
+        const correction = activeSequence - browserEntry.sequence;
+        if (correction) history.go(correction);
+        return;
+      }
+      const applied = await apply(target.screen, target.sequence);
+      if (applied === false) {
         const browserEntry = parseEntry(history.state);
         if (!browserEntry) return;
         const correction = activeSequence - browserEntry.sequence;
@@ -115,10 +135,13 @@
       async navigate(value) {
         const target = normalizeScreen(value);
         if (!target) return false;
-        if (screensEqual(target, activeScreen)) return true;
+        const alreadyActive = screensEqual(target, activeScreen);
+        if (alreadyActive && !pendingScreen) return true;
         if (!(await allowed(target))) return false;
-        const nextSequence = (activeSequence ?? -1) + 1;
-        if (!(await apply(target, nextSequence))) return false;
+        const nextSequence = alreadyActive ? activeSequence : (activeSequence ?? -1) + 1;
+        const applied = await apply(target, nextSequence);
+        if (applied !== true) return false;
+        if (alreadyActive) return true;
         history.pushState(entry(nextSequence, target), '');
         return true;
       },

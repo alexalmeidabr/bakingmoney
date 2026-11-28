@@ -3449,6 +3449,7 @@ function renderActionPlanBuckets() {
   actionPlanBucketsContentEl.innerHTML = `<section class="detail-card action-plan-bucket-total"><h4>Bucket Reconciliation</h4><div class="summary-grid action-plan-bucket-summary">${totals.map(([label, value]) => `<div class="summary-item"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`).join('')}</div>${warning}</section>${bucketPanels}${renderActionPlanCashBucketPanel(summary)}`;
   actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-symbol').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
     view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+    simulationId: selectedSimulation?.id,
     detail: { kind: 'action', symbol: btn.dataset.symbol },
   })));
   actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-sortable').forEach((header) => header.addEventListener('click', () => {
@@ -3565,6 +3566,7 @@ function renderLinearAllocationRows() {
     });
     actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
       view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+      simulationId: selectedSimulation?.id,
       detail: { kind: 'action', symbol: btn.dataset.symbol },
     })));
     actionPlanLinearActionsTableBody.querySelectorAll('.cap-warning-button').forEach((btn) => btn.addEventListener('click', (event) => {
@@ -3610,6 +3612,7 @@ function renderLinearAllocationRows() {
     });
     actionPlanLinearDetailTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
       view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+      simulationId: selectedSimulation?.id,
       detail: { kind: 'action', symbol: btn.dataset.symbol },
     })));
   }
@@ -3690,6 +3693,7 @@ function renderActionPlan() {
   });
   actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
     view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+    simulationId: selectedSimulation?.id,
     detail: { kind: 'action', symbol: btn.dataset.symbol },
   })));
   if (actionPlanActiveTab === 'buckets') renderActionPlanBuckets();
@@ -4200,7 +4204,12 @@ async function renderNavigationScreen(screen) {
     return true;
   }
 
-  if (screen.view === 'action-plan-simulator' && !selectedSimulation) await loadSimulations();
+  if (screen.view === 'action-plan-simulator') {
+    if (!selectedSimulation) await loadSimulations();
+    if (screen.simulationId != null && String(selectedSimulation?.id) !== String(screen.simulationId)) {
+      await selectSimulation(screen.simulationId);
+    }
+  }
   const restoreOptions = { skipNavigation: true, navigationGeneration: generation };
   if (detail.kind === 'analysis') {
     const origin = screen.view === 'positions' ? 'positions'
@@ -7769,6 +7778,7 @@ actionPlanOpenAnalysisBtn.addEventListener('click', () => {
   if (!selectedActionPlanDetail?.symbol) return;
   navigateToScreen({
     view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+    simulationId: selectedSimulation?.id,
     detail: { kind: 'analysis', symbol: selectedActionPlanDetail.symbol },
   });
 });

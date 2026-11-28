@@ -150,6 +150,62 @@ test('normalizes every supported main and nested application screen', () => {
   assert.equal(normalizeScreen({ view: 'unknown' }), null);
 });
 
+test('Simulator nested states keep simulation identity distinct for the same symbol', async () => {
+  const first = {
+    view: 'action-plan-simulator', simulationId: 1,
+    detail: { kind: 'action', symbol: 'ABC' },
+  };
+  const second = {
+    view: 'action-plan-simulator', simulationId: 2,
+    detail: { kind: 'action', symbol: 'ABC' },
+  };
+  assert.deepEqual(normalizeScreen(first), { ...first, simulationId: '1' });
+  assert.deepEqual(normalizeScreen(second), { ...second, simulationId: '2' });
+  const h = harness({ entries: [applicationEntry(0, first)] });
+  await h.controller.initialize();
+  await h.controller.navigate(second);
+  assert.equal(h.history.pushCount, 1);
+  assert.equal(h.history.state.screen.simulationId, '2');
+});
+
+test('navigation back to the rendered screen supersedes a different in-flight render', async () => {
+  const simulationDetail = (id) => ({
+    view: 'action-plan-simulator', simulationId: String(id),
+    detail: { kind: 'action', symbol: 'ABC' },
+  });
+  const history = new MemoryHistory([applicationEntry(0, simulationDetail(2))]);
+  const rendered = [];
+  let releaseFirst;
+  let initialized = false;
+  const controller = createController({
+    history,
+    eventTarget: history,
+    render: async (screen) => {
+      rendered.push(screen.simulationId);
+      if (initialized && screen.simulationId === '1') {
+        await new Promise((resolve) => { releaseFirst = resolve; });
+      }
+      return true;
+    },
+  });
+  await controller.initialize();
+  initialized = true;
+  const first = controller.navigate(simulationDetail(1));
+  await settle();
+  assert.equal(typeof releaseFirst, 'function');
+
+  const second = controller.navigate(simulationDetail(2));
+  await second;
+  assert.deepEqual(rendered, ['2', '1', '2']);
+  assert.equal(history.pushCount, 0);
+  assert.deepEqual(controller.currentScreen(), simulationDetail(2));
+
+  releaseFirst();
+  await first;
+  assert.equal(history.pushCount, 0);
+  assert.deepEqual(controller.currentScreen(), simulationDetail(2));
+});
+
 test('initializes a missing or invalid entry with Analysis using replaceState', async () => {
   const h = harness();
   assert.equal(await h.controller.initialize(), true);
@@ -389,6 +445,25 @@ test('application adapter restores nested screens with their source sidebar', as
   }
 });
 
+test('application adapter selects the simulation stored in a restored nested screen', async () => {
+  const calls = [];
+  const context = vm.createContext({
+    navigationRenderGeneration: 0,
+    selectedSimulation: { id: 1 },
+    setView: () => true,
+    async selectSimulation(id) { calls.push(['simulation', id]); context.selectedSimulation = { id }; },
+    async openActionPlanDetail(symbol, options) { calls.push(['detail', symbol, options]); },
+  });
+  vm.runInContext(`${functionSource('renderNavigationScreen')}; this.renderNavigationScreen = renderNavigationScreen;`, context);
+  await context.renderNavigationScreen({
+    view: 'action-plan-simulator', simulationId: '2', detail: { kind: 'action', symbol: 'ABC' },
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['simulation', '2'],
+    ['detail', 'ABC', { skipNavigation: true, navigationGeneration: 1 }],
+  ]);
+});
+
 test('application adapter returns false when the existing view guard rejects navigation', async () => {
   const context = vm.createContext({
     navigationRenderGeneration: 0,
@@ -403,6 +478,7 @@ test('application entry points use the centralized controller instead of pushing
   assert.match(appSource, /function navigateBack\(fallback\)/);
   assert.match(appSource, /loadPortfolioAccounts\(\{ preserveCurrent: false \}\)\.finally\(initializeBrowserNavigation\)/);
   assert.match(appSource, /menuItems\.forEach[\s\S]*navigateToScreen\(\{ view: target \}\)/);
+  assert.match(appSource, /simulationId: selectedSimulation\?\.id/);
   assert.doesNotMatch(functionSource('refreshActionPlanFromButton'), /navigateToScreen|pushState/);
 });
 

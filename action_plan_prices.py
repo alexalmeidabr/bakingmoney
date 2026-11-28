@@ -66,16 +66,19 @@ def _observation(raw):
     if bid is None or ask is None or ask < bid:
         bid = ask = None
     price = _positive(raw.get("price"))
-    if price is None and bid is not None:
+    derived_midpoint = price is None and bid is not None
+    if derived_midpoint:
         price = bid + (ask - bid) / 2
     if price is None:
         return None
 
     bid_at, ask_at = _time(raw.get("bid_tick_at")), _time(raw.get("ask_tick_at"))
     explicit_market_time = _time(raw.get("market_observed_at")) or _time(raw.get("observed_at"))
-    # A coherent pair is only as new as its older side. Never promote request
-    # completion or a legacy success timestamp to an exchange observation.
-    market_time = min(bid_at, ask_at) if bid is not None and bid_at and ask_at else explicit_market_time
+    # Side times describe a midpoint, never an independently selected Last.
+    reference_source = str(raw.get("price_source") or source).lower()
+    midpoint_source = derived_midpoint or "marketprice" in reference_source or "bid_ask" in reference_source
+    market_time = (min(bid_at, ask_at) if midpoint_source and bid is not None and bid_at and ask_at
+                   else explicit_market_time)
     retrieved_time = (
         _time(raw.get("retrieved_at"))
         or _time(raw.get("price_retrieved_at"))
@@ -315,6 +318,20 @@ def evaluate_trigger(row, preference, now=None):
     }) if price is not None else None
     if selected is None or row_observation is None:
         current_proof = selected is not None
+    elif selected.get("bid_tick_at") and selected.get("ask_tick_at"):
+        side_time = min(_time(selected["bid_tick_at"]), _time(selected["ask_tick_at"]))
+        reference_market = _time(row_observation.get("market_observed_at"))
+        reference_receipt = _time(row_observation.get("retrieved_at")) if (
+            row_observation.get("acquisition_kind") in {"streaming_live", "streaming_delayed"}
+        ) else None
+        # A Last's own market time does not date its accompanying bid/ask.
+        # Receipt can lag current-acquisition side events by milliseconds.
+        if reference_market:
+            current_proof = side_time >= reference_market
+        elif reference_receipt:
+            current_proof = side_time >= reference_receipt - timedelta(seconds=1)
+        else:
+            current_proof = True
     elif selected.get("market_observed_at") and row_observation.get("market_observed_at"):
         current_proof = selected["market_observed_at"] >= row_observation["market_observed_at"]
     elif row_observation.get("market_observed_at"):

@@ -20,6 +20,85 @@ DELAYED = dict(symbol="ABC", contract_key="1", price=22, price_source="delayed_l
 
 
 class PriceResolution(unittest.TestCase):
+    def test_last_with_older_sides_uses_streaming_receipt_and_survives_restart(self):
+        side_time = "2024-01-03T10:00:00+00:00"
+        saved_time = "2024-01-03T10:01:00+00:00"
+        receipt = "2024-01-03T10:02:00+00:00"
+        saved = dict(POSITION, price=115, price_source="last", market_observed_at=saved_time)
+        last = dict(POSITION, price=120, price_source="last", acquisition_kind="streaming_live",
+                    market_observed_at=None, retrieved_at=receipt, bid=119, ask=121,
+                    bid_tick_at=side_time, ask_tick_at=side_time)
+        selected = prices.resolve_price({}, {}, [saved, last])
+        self.assertEqual((120, None, receipt, "retrieval"),
+                         (selected["price"], selected["market_observed_at"],
+                          selected["retrieved_at"], selected["price_timestamp_kind"]))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prices.db"
+            with sqlite3.connect(path) as conn:
+                prices.init_schema(conn)
+                self.assertTrue(prices.persist_observation(conn, "A", "ABC", saved))
+                self.assertTrue(prices.persist_observation(conn, "A", "ABC", last))
+                self.assertFalse(prices.persist_observation(conn, "A", "ABC", saved))
+            conn.close()
+            with sqlite3.connect(path) as conn:
+                reopened = prices.resolve_price({}, {}, prices.load_observations(conn, "A")["ABC"])
+            conn.close()
+        self.assertEqual((120, None, "streaming_live"),
+                         (reopened["price"], reopened["market_observed_at"], reopened["acquisition_kind"]))
+
+    def test_midpoint_and_last_same_value_keep_distinct_timestamp_sources(self):
+        side_time = "2024-01-03T10:00:00+00:00"
+        fields = dict(symbol="ABC", contract_key="1", price=120, bid=119, ask=121,
+                      bid_tick_at=side_time, ask_tick_at=side_time,
+                      retrieved_at="2024-01-03T10:02:00+00:00")
+        midpoint = prices.resolve_price({}, {}, [dict(fields, price_source="marketPrice")])
+        last = prices.resolve_price({}, {}, [dict(fields, price_source="last",
+                                                    acquisition_kind="streaming_live")])
+        self.assertEqual(side_time, midpoint["market_observed_at"])
+        self.assertIsNone(last["market_observed_at"])
+        self.assertEqual(fields["retrieved_at"], last["retrieved_at"])
+        reliable_last = prices.resolve_price({}, {}, [dict(fields, price_source="last",
+                                                             market_observed_at="2024-01-03T10:01:00+00:00")])
+        self.assertEqual("2024-01-03T10:01:00+00:00", reliable_last["market_observed_at"])
+        evaluated = prices.evaluate_trigger(
+            dict(reliable_last, current_price=120, action="Add"), {"buy_trigger_price": 120.5},
+        )
+        self.assertEqual((120, "eligible", "last"),
+                         (evaluated["verified_price"], evaluated["status"], evaluated["price_source"]))
+        explicit_source = prices.resolve_price({}, {}, [dict(fields, price_source="last",
+                                                               market_data_source="live")])
+        self.assertIsNone(explicit_source["market_observed_at"])
+
+    def test_older_sides_do_not_replace_newer_last_for_trigger(self):
+        sides = "2024-01-03T10:00:00+00:00"
+        last = dict(symbol="ABC", contract_key="1", price=120, price_source="last",
+                    bid=119, ask=121, bid_tick_at=sides, ask_tick_at=sides,
+                    retrieved_at="2024-01-03T10:02:00+00:00", acquisition_kind="streaming_live")
+        reference = prices.resolve_price({}, {}, [last])
+        for action, preference in (("Add", {"buy_trigger_price": 120.5}),
+                                   ("Trim", {"sell_trigger_price": 119.5})):
+            with self.subTest(action=action):
+                evaluated = prices.evaluate_trigger(dict(reference, current_price=120, action=action), preference)
+                self.assertEqual((120, "eligible", "last"),
+                                 (evaluated["verified_price"], evaluated["status"],
+                                  evaluated["price_source"]))
+
+    def test_current_sides_can_still_supply_executable_prices_with_last_reference(self):
+        last = dict(symbol="ABC", contract_key="1", price=120, price_source="last",
+                    bid=119, ask=121, bid_tick_at="2024-01-03T10:02:00+00:00",
+                    ask_tick_at="2024-01-03T10:02:00+00:00",
+                    retrieved_at="2024-01-03T10:02:00.500000+00:00",
+                    acquisition_kind="streaming_live")
+        reference = prices.resolve_price({}, {}, [last])
+        for action, preference, expected_price, expected_source in (
+                ("Add", {"buy_trigger_price": 121}, 121, "last (ask)"),
+                ("Trim", {"sell_trigger_price": 119}, 119, "last (bid)")):
+            with self.subTest(action=action):
+                evaluated = prices.evaluate_trigger(dict(reference, current_price=120, action=action), preference)
+                self.assertEqual((expected_price, "eligible", expected_source),
+                                 (evaluated["verified_price"], evaluated["status"],
+                                  evaluated["price_source"]))
+
     def test_persistence_isolated_by_contract_and_account(self):
         with sqlite3.connect(":memory:") as conn:
             prices.init_schema(conn)

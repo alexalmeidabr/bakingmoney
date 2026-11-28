@@ -92,6 +92,46 @@ class SimulationTests(unittest.TestCase):
         self.assertFalse(row['manual_trigger_blocked'])
         self.assertIn('Delayed', row['manual_price_verification_reason'])
 
+    def test_new_last_with_older_sides_is_shared_after_restart(self):
+        import action_plan_prices
+
+        side_time = '2024-01-03T10:00:00+00:00'
+        saved_time = '2024-01-03T10:01:00+00:00'
+        received_time = '2024-01-03T10:02:00+00:00'
+        base = {'symbol': 'MSFT', 'contract_key': 'conid:111', 'security_type': 'STK',
+                'currency': 'USD', 'price_source': 'last'}
+        app.save_manual_execution_trigger(self.conn, 'A', 'MSFT', {'buy_trigger_price': 120.5})
+        simulation = self.create(additional_cash_usd=0)
+        with self.conn:
+            action_plan_prices.save_contract_selection(
+                self.conn, 'A', 'MSFT', 'conid:111', 'STK', 'USD', received_time,
+            )
+            self.assertTrue(action_plan_prices.persist_observation(
+                self.conn, 'A', 'MSFT', {**base, 'price': 115, 'market_observed_at': saved_time},
+            ))
+            self.assertTrue(action_plan_prices.persist_observation(
+                self.conn, 'A', 'MSFT', {**base, 'price': 120, 'acquisition_kind': 'streaming_live',
+                                        'retrieved_at': received_time, 'bid': 119, 'ask': 121,
+                                        'bid_tick_at': side_time, 'ask_tick_at': side_time},
+            ))
+
+        self.conn.close()
+        self.conn = app.get_db_connection()
+        actual = app.build_action_plan(self.conn, 'A', include_manual_execution=True)
+        simulated = app.build_simulation_action_plan(self.conn, 'A', simulation['id'])
+        actual_row = next(row for row in actual['manual_execution']['linear_action_plan']
+                          if row['symbol'] == 'MSFT')
+        simulated_row = next(row for row in simulated['manual_execution']['linear_action_plan']
+                             if row['symbol'] == 'MSFT')
+        for row in (actual_row, simulated_row):
+            self.assertEqual((120, None, received_time),
+                             (row['current_price'], row['market_observed_at'], row['retrieved_at']))
+            self.assertEqual(('streaming_live', 'eligible', 120, 'last'),
+                             (row['acquisition_kind'], row['manual_trigger_status'],
+                              row['manual_verified_price'], row['manual_price_source']))
+        self.assertEqual(actual_row['manual_trigger_status'], simulated_row['manual_trigger_status'])
+        self.assertEqual(actual_row['suggested_share_count'], simulated_row['suggested_share_count'])
+
     def test_owned_action_plan_uses_only_its_persisted_contract_observation(self):
         import action_plan_prices
         app.save_positions_cache(self.conn, [{

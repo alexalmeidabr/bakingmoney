@@ -262,6 +262,33 @@ class ManualQuoteObservationTests(unittest.TestCase):
                 self.assertEqual((100, "last", None),
                                  (row["price"], row["price_source"], row["acquisition_kind"]))
 
+    def test_new_last_keeps_its_receipt_when_accompanying_sides_are_older(self):
+        ticker, observations = self.observed_ticker()
+        side_time = self.now - timedelta(minutes=2)
+        for side, price, tick_type in (("bid", 119, 1), ("ask", 121, 2)):
+            setattr(ticker, side, price)
+            setattr(ticker, side + "Size", 10)
+            ticker.ticks = [SimpleNamespace(tickType=tick_type, price=price,
+                                            size=10, time=side_time)]
+            observations.observe([ticker])
+            ticker.ticks = []
+        self.emit_price_tick(ticker, observations, "last", 120)
+        row = self.position_row(ticker, observations)
+        proof = web_server._manual_quote_proof_from_ticker(
+            ticker, self.key, self.now.isoformat(), {}, observations, self.now,
+        )
+        self.assertIsNotNone(proof)
+        observation = {**row, **{key: proof[key] for key in
+                                 ("bid", "ask", "bid_tick_at", "ask_tick_at")}}
+        saved = {**row, "price": 115, "market_observed_at":
+                 (self.now - timedelta(minutes=1)).isoformat(), "acquisition_kind": None}
+        self.assertEqual((120, "last", "streaming_live"),
+                         (observation["price"], observation["price_source"],
+                          observation["acquisition_kind"]))
+        selected = action_plan_prices.resolve_price(row, {}, [saved, observation])
+        self.assertEqual((120, None, self.now.isoformat()),
+                         (selected["price"], selected["market_observed_at"], selected["retrieved_at"]))
+
     def test_selected_midpoint_requires_both_matching_current_side_values(self):
         ticker, observations = self.observed_ticker(ask=121, askSize=10)
         self.emit_price_tick(ticker, observations, "bid", 119)

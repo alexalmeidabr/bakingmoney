@@ -25,6 +25,9 @@ async function main(){
  let hold=null, release=null, releaseCompleted=false;
  const server=http.createServer(async(req,res)=>{
   const u=new URL(req.url,'http://localhost'), path=u.pathname;
+  if(path==='/outside'){
+   res.setHeader('content-type','text/html');res.end('<!doctype html><p id="outside-page">Outside BakingMoney</p>');return;
+  }
   if(path==='/' || path.startsWith('/static/')){
    const name=path==='/'?'static/index.html':path.slice(1);
    res.setHeader('content-type',path==='/'?'text/html':path.endsWith('.css')?'text/css':'text/javascript');
@@ -83,7 +86,11 @@ async function main(){
  const send=(method,params={})=>new Promise((resolve,reject)=>{const id=++seq;const detail=method==='Runtime.evaluate'?' '+String(params.expression).slice(0,160):'';const timer=setTimeout(()=>{pending.delete(id);reject(Error('CDP timeout: '+method+detail));},5000);pending.set(id,msg=>{clearTimeout(timer);resolve(msg);});ws.send(JSON.stringify({id,method,params}));});
  const run=async(expression)=>{const msg=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(msg.result?.exceptionDetails)throw Error(msg.result.exceptionDetails.exception?.description);return msg.result.result.value;};
  const until=async(exp)=>{for(let i=0;i<75;i++){if(await run(exp))return;await sleep(50);}throw Error('timeout '+exp+' '+JSON.stringify(errors)+' '+JSON.stringify(calls));};
- await send('Runtime.enable');await send('Page.navigate',{url:'http://127.0.0.1:'+server.address().port});
+ const baseUrl='http://127.0.0.1:'+server.address().port;
+ await send('Runtime.enable');
+ await send('Page.navigate',{url:baseUrl+'/outside'});
+ await until("document.querySelector('#outside-page')?.textContent === 'Outside BakingMoney'");
+ await send('Page.navigate',{url:baseUrl+'/'});
  await until("document.querySelector('#portfolio-account-select')?.options.length >= 2");
  const choose=async(selector,value)=>run(`{const el=document.querySelector(${JSON.stringify(selector)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('change'));}`);
  const click=async(selector)=>run(`document.querySelector(${JSON.stringify(selector)}).click()`);
@@ -105,9 +112,51 @@ async function main(){
  await click('#action-plan-with-triggers');
  await contains('#simulation-results .action-amount-cell','$309.00');
  assert.equal(calls.length,modeBefore,'mode changes must use cached rows');
+
+ // Native history follows Action Plan -> Simulator -> action detail in both directions.
+ await click('[data-view=action-plan]');
+ await until("document.querySelector('#action-plan').classList.contains('active') && document.querySelector('#action-plan .linear-allocation-symbol')?.textContent === 'ABC'");
+ const actionSequence=await run('history.state.sequence');
+ await click('[data-view=action-plan-simulator]');
+ await until("document.querySelector('#action-plan-simulator').classList.contains('active') && document.querySelector('#simulation-results .linear-allocation-symbol')?.textContent === 'ABC'");
+ assert.equal(await run('history.state.sequence'),actionSequence+1);
  await click('#simulation-results .linear-allocation-symbol');
  await contains('#manual-trigger-detail','Simulation Triggers');
  await until(`document.querySelector('${field}')?.value === '90'`);
+ const detailSequence=await run('history.state.sequence');
+ await run('history.back()');
+ await until("history.state.sequence === "+(detailSequence-1)+" && document.querySelector('#action-plan-detail-view').classList.contains('hidden')");
+ await run('history.back()');
+ await until("history.state.sequence === "+(detailSequence-2)+" && document.querySelector('#action-plan').classList.contains('active')");
+ await run('history.forward()');
+ await until("history.state.sequence === "+(detailSequence-1)+" && document.querySelector('#action-plan-simulator').classList.contains('active')");
+ await run('history.forward()');
+ await until("history.state.sequence === "+detailSequence+" && !document.querySelector('#action-plan-detail-view').classList.contains('hidden')");
+
+ // Internal Back uses the same entry; active-sidebar selection and refresh add nothing.
+ await click('#action-plan-detail-back-btn');
+ await until("history.state.sequence === "+(detailSequence-1)+" && document.querySelector('#action-plan-detail-view').classList.contains('hidden')");
+ const stableHistory=await run('({length:history.length,sequence:history.state.sequence})');
+ await click('[data-view=action-plan-simulator]');
+ await sleep(100);
+ assert.deepEqual(await run('({length:history.length,sequence:history.state.sequence})'),stableHistory);
+ await click('#simulation-refresh');
+ await until("document.querySelector('#action-plan-status').textContent.includes('Loaded')");
+ assert.deepEqual(await run('({length:history.length,sequence:history.state.sequence})'),stableHistory);
+
+ // A rejected dirty Back is compensated without losing the edit; accepting later traverses once.
+ await click('#simulation-results .linear-allocation-symbol');
+ await until(`document.querySelector('${field}')?.value === '90'`);
+ await run(`document.querySelector('${field}').value=111;document.querySelector('${field}').dispatchEvent(new Event('input'));window.__historyConfirmations=0;window.confirm=()=>{window.__historyConfirmations+=1;return false};history.back()`);
+ await until("window.__historyConfirmations === 1 && history.state.screen.detail?.kind === 'action' && !document.querySelector('#action-plan-detail-view').classList.contains('hidden')");
+ assert.equal(await run(`document.querySelector('${field}').value`),'111');
+ assert.equal(await run('window.__historyConfirmations'),1);
+ await run('window.confirm=()=>{window.__historyConfirmations+=1;return true};history.back()');
+ await until("history.state.screen.view === 'action-plan-simulator' && !history.state.screen.detail && document.querySelector('#action-plan-detail-view').classList.contains('hidden')");
+ assert.equal(await run('window.__historyConfirmations'),2);
+ await run('history.forward()');
+ await until(`history.state.screen.detail?.kind === 'action' && document.querySelector('${field}')?.value === '90'`);
+
  await run(`document.querySelector('${field}').value=110;document.querySelector('[data-trigger-field=reserve_enabled]').click();document.querySelector('[data-trigger-field=reserve_percentage]').value=60`);
  await click('[data-trigger-action=save]');
  await contains('[data-trigger-status]','Triggers saved.');
@@ -140,6 +189,7 @@ async function main(){
  for(let i=0;i<100&&!release;i++)await sleep(20);
  assert.ok(release,'mock did not receive delayed detail request');
  await choose('#simulation-select','2');
+ await contains('#simulation-summary','Independent duplicate');
  await until("document.querySelector('#simulation-results .linear-allocation-symbol')?.textContent === 'ABC'");
  await click('#simulation-results .linear-allocation-symbol');
  await contains('#action-plan-detail-content','DUPLICATE');
@@ -181,8 +231,16 @@ async function main(){
   const writes=calls.filter(c=>c[0]===method&&c[1].includes('/'+id+'/triggers/ABC'));assert.equal(writes.length,1);
   const i=calls.indexOf(writes[0]);assert.ok(calls[i+1][1].startsWith('/api/action-plan-simulations/'+id+'/action-plan?execution_modes=both'));
  }
+
+ // Sequence zero remains the first app entry; one more Back reaches the earlier page.
+ await run('history.go(-history.state.sequence)');
+ await until("history.state?.sequence === 0 && document.querySelector('#analysis').classList.contains('active')");
+ await run('history.back()');
+ await until("location.pathname === '/outside' && document.querySelector('#outside-page')");
+ await run('history.forward()');
+ await until("location.pathname === '/' && history.state?.sequence === 0 && document.querySelector('#analysis').classList.contains('active')");
  assert.equal(errors.length,0,JSON.stringify(errors));
- console.log('Browser checks passed: cash creation/apply; cached modes; scoped trigger save and recalculation; real trigger unchanged; saved trigger re-open; independent duplicate and clear/recalculation; delayed detail after simulation switch; delayed plan after account switch; deletion selects surviving duplicate. No browser exceptions or real trigger writes.');
+ console.log('Browser checks passed: native Back/Forward; internal Back; duplicate suppression; refresh stability; dirty-navigation rejection and acceptance; outside-site Back; cash creation/apply; cached modes; scoped trigger save and recalculation; real trigger unchanged; saved trigger re-open; independent duplicate and clear/recalculation; delayed detail after simulation switch; delayed plan after account switch; deletion selects surviving duplicate. No browser exceptions or real trigger writes.');
  console.log('Observed scoped requests:',calls.filter(c=>c[1].includes('/api/action-plan')||c[1].includes('/api/manual-execution-triggers')).length);
  }finally{
   if(ws){ws.send(JSON.stringify({id:9999,method:'Browser.close'}));ws.close();}

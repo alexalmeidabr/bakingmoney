@@ -491,7 +491,7 @@ test('Linear Target Calculation sources backend Linear score diagnostics', () =>
 test('Action Detail omits Decision Path and Action-Relevant Key Variables sections', () => {
   const detailRenderer = appJs.slice(
     appJs.indexOf('function renderActionPlanDetail(item)'),
-    appJs.indexOf('async function openActionPlanDetail(symbol)'),
+    appJs.indexOf('async function openActionPlanDetail(symbol, options = {})'),
   );
   for (const obsolete of [
     '<h4>Decision Path</h4>',
@@ -650,7 +650,7 @@ test('Linear Target Calculation omits bucket, trigger, and old allocation fields
 test('Linear Score Breakdown section is replaced by Target Band Calculation', () => {
   const detailRenderer = appJs.slice(
     appJs.indexOf('function renderActionPlanDetail(item)'),
-    appJs.indexOf('async function openActionPlanDetail(symbol)'),
+    appJs.indexOf('async function openActionPlanDetail(symbol, options = {})'),
   );
   assert.ok(!detailRenderer.includes('<h4>Linear Score Breakdown</h4>'));
   assert.ok(detailRenderer.includes('<h4>Target Band Calculation</h4>'));
@@ -769,7 +769,7 @@ test('Target Band Calculation omits score, bucket, trigger, and action labels', 
 test('Linear Action Plan Detail omits obsolete trigger and bucket UI', () => {
   const detailRenderer = appJs.slice(
     appJs.indexOf('function renderActionPlanDetail(item)'),
-    appJs.indexOf('async function openActionPlanDetail(symbol)'),
+    appJs.indexOf('async function openActionPlanDetail(symbol, options = {})'),
   );
   for (const obsolete of [
     'Trigger Prices',

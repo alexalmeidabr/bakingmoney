@@ -58,6 +58,7 @@ function simulatorHarness() {
     manualTriggerDetailEl: null,
     setSelectedActionPlanRatings() {}, setSelectedActionPlanActions() {}, updateActionPlanSortHeaderState() {}, updateActionPlanModeButtons() {},
     clearActionPlanDisplay() {}, formatCurrencyValue: (value) => '$' + value,
+    navigateBack() {}, navigateToScreen() {},
     loadActionPlan() { plans.push(vm.runInContext('selectedSimulation?.id', context)); },
     refreshActionPlanFromButton() {}, createPortfolioApiError: (p) => Error(p.error),
     currentTriggerValues: null,
@@ -377,7 +378,7 @@ test('account switching and opening another symbol are cancelled when trigger di
   assert.equal(h.context.currentTriggerValues.sell_trigger_price, '710');
 });
 
-test('sidebar navigation and leaving Action Detail are protected by the trigger discard guard', () => {
+test('Action Detail Back delegates to browser history while direct sidebar rendering retains its guard', () => {
   const h = simulatorHarness();
   h.run("selectedSimulation = {id:7,additional_cash_usd:0}");
   h.context.currentTriggerValues = triggerValues();
@@ -387,6 +388,10 @@ test('sidebar navigation and leaving Action Detail are protected by the trigger 
   Object.assign(h.context, {
     actionPlanDetailBackBtn: h.el('test-detail-back'),
     showActionPlanList() { listShows += 1; },
+    navigateBack(fallback) {
+      assert.equal(fallback.view, 'action-plan-simulator');
+      if (h.run('discardSimulationEdits()')) listShows += 1;
+    },
   });
   const backStart = app.indexOf("actionPlanDetailBackBtn.addEventListener('click'");
   h.run(app.slice(backStart, app.indexOf('\n});', backStart) + 4));
@@ -522,6 +527,12 @@ test('opening full analysis and returning retains the simulator, stock detail, e
   h.run("actionPlanExecutionMode = 'without'");
   const functions = ['setView','showAnalysisDetailFromOriginMenu','showAnalysisDetailFromActionPlanOrigin','openAnalysisDetailForSymbol'];
   for (const name of functions) h.run(app.match(new RegExp('(?:async )?function ' + name + '\\([^]*?\\n}'))[0]);
+  h.context.navigateToScreen = (screen) => {
+    if (!h.run('discardSimulationEdits()')) return false;
+    if (screen.detail?.kind === 'analysis') return h.run(`openAnalysisDetailForSymbol(${JSON.stringify(screen.detail.symbol)}, {origin:'action_plan'})`);
+    return false;
+  };
+  h.context.navigateBack = (fallback) => h.run(`setView(${JSON.stringify(fallback.view)}, {skipLoad:true})`);
   for (const source of ['actionPlanOpenAnalysisBtn','analysisBackBtn']) {
     const start = app.indexOf(source + ".addEventListener('click'");
     h.run(app.slice(start, app.indexOf('\n});', start) + 4));

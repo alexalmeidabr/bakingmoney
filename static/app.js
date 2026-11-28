@@ -337,6 +337,10 @@ let earningsCalendarFiscalYearFilters = new Set();
 let earningsCalendarFiscalQuarterFilters = new Set();
 let earningsCalendarReleaseDateSortDirection = 'asc';
 let earningsCalendarAddFormDefaultsApplied = false;
+let browserNavigationController = null;
+let navigationRenderGeneration = 0;
+let portfolioAccountChangeRequestId = 0;
+let earningsReviewRefreshRequestId = 0;
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
   hybrid_ai_weight: 0.70,
@@ -1839,6 +1843,8 @@ async function handlePortfolioAccountNotFound() {
 
 async function handlePortfolioAccountChange() {
   if (isUpdatingPortfolioAccountSelect) return;
+  const navigationController = typeof browserNavigationController === 'undefined' ? null : browserNavigationController;
+  const navigationScreenBeforeAccountChange = navigationController?.currentScreen();
   if (simulatorActive && !discardSimulationEdits()) {
     renderPortfolioAccountSelector();
     return;
@@ -1847,7 +1853,10 @@ async function handlePortfolioAccountChange() {
     rememberPlanPreferences();
     clearSimulationContext();
   }
+  const accountChangeRequestId = ++portfolioAccountChangeRequestId;
+  const navigationContextBeforeAccountChange = navigationController?.captureContext();
   selectedPortfolioAccountId = normalizePortfolioAccountId(portfolioAccountSelectEl?.value);
+  const accountId = selectedPortfolioAccountId;
   resetActionPlanExecutionMode();
   if (selectedPortfolioAccountId) localStorage.setItem(PORTFOLIO_ACCOUNT_STORAGE_KEY, selectedPortfolioAccountId);
   else localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
@@ -1857,6 +1866,16 @@ async function handlePortfolioAccountChange() {
   clearPositionsDisplay('', 'status');
   clearActionPlanDisplay('', 'status');
   await reloadPortfolioScopedViews();
+  if (accountChangeRequestId === portfolioAccountChangeRequestId
+      && accountId === selectedPortfolioAccountId
+      && navigationController?.isCurrentContext(navigationContextBeforeAccountChange)
+      && navigationScreenBeforeAccountChange?.detail?.kind === 'action') {
+    const navigationListScreen = { view: navigationScreenBeforeAccountChange.view };
+    if (navigationListScreen.view === 'action-plan-simulator' && selectedSimulation?.id != null) {
+      navigationListScreen.simulationId = selectedSimulation.id;
+    }
+    navigationController?.synchronize(navigationListScreen);
+  }
 }
 
 latestPositions = loadCachedPositions();
@@ -2204,7 +2223,9 @@ function renderPositions() {
     row.innerHTML = `<td><button class="symbol-link" data-symbol="${escapeHtml(symbol)}">${escapeHtml(symbol)}</button></td><td>${rating}</td><td class="${upsideClass}">${upsideValue}</td><td class="${expectedCagrClass}">${expectedCagrValue}</td><td>${confidenceValue}</td><td>${potentialConfidenceValue}</td><td>${formatCurrencyValue(position.marketValue, position.currency)}</td><td>${formatCurrencyValue(position.costBasis, position.currency)}</td><td class="${valueClass(position.unrealizedPnL)}">${formatNumber(position.unrealizedPnL)}</td><td class="${valueClass(position.unrealizedPnLPercent)}">${formatPercent(position.unrealizedPnLPercent)}</td><td>${formatPositionPriceCell(position)}</td><td>${formatNumber(position.avgCost)}</td><td>${formatDate(position.latest_release_date)}</td><td class="${valueClass(position.dailyPnL)}">${formatNumber(position.dailyPnL)}</td><td class="${valueClass(position.changePercent)}">${formatPercent(position.changePercent)}</td>`;
     positionsTableBody.appendChild(row);
   });
-  positionsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailFromPositions(btn.dataset.symbol)));
+  positionsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: 'positions', detail: { kind: 'analysis', symbol: btn.dataset.symbol },
+  })));
 }
 
 function getFilteredPositions() {
@@ -2315,7 +2336,9 @@ function renderAnalysisList() {
     analysisTableBody.appendChild(row);
   });
   analysisTableBody.querySelectorAll('.remove-btn').forEach((btn) => btn.addEventListener('click', async () => deleteAnalysis(btn.dataset.symbol)));
-  analysisTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'analysis' })));
+  analysisTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: 'analysis', detail: { kind: 'analysis', symbol: btn.dataset.symbol },
+  })));
   analysisTableBody.querySelectorAll('.analysis-row-select').forEach((checkbox) => {
     checkbox.addEventListener('change', () => {
       const symbol = checkbox.dataset.symbol;
@@ -2993,7 +3016,8 @@ function renderActionPlanDetail(item) {
   showActionPlanDetailView();
 }
 
-async function openActionPlanDetail(symbol) {
+async function openActionPlanDetail(symbol, options = {}) {
+  if (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration) return false;
   if (typeof simulatorActive !== 'undefined' && simulatorActive
       && simulationTriggerDirty() && !discardSimulationEdits()) return false;
   if (isPortfolioAccountSelectionRequired()) {
@@ -3014,14 +3038,16 @@ async function openActionPlanDetail(symbol) {
     ]);
     const payload = await response.json();
     const triggerPayload = await triggerResponse.json();
-    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId) return;
+    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId
+        || (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration)) return false;
     if (!response.ok) throw createPortfolioApiError(payload, 'Unable to load Action Detail');
     if (!triggerResponse.ok && triggerResponse.status !== 404) throw createPortfolioApiError(triggerPayload, 'Unable to load manual triggers');
     latestActionPlanDetailPayload = payload;
     renderSelectedActionPlanDetail(payload);
     renderManualTriggerDetail(symbol, triggerPayload.trigger || null);
   } catch (error) {
-    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId) return;
+    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId
+        || (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration)) return false;
     if (error.code === 'account_not_found') {
       await handlePortfolioAccountNotFound();
       return;
@@ -3441,7 +3467,11 @@ function renderActionPlanBuckets() {
   ];
   const bucketPanels = ['Strong Buy', 'Buy', 'Speculative Buy', 'Hold', 'Sell / Strong Sell'].map(renderActionPlanBucketPanel).join('');
   actionPlanBucketsContentEl.innerHTML = `<section class="detail-card action-plan-bucket-total"><h4>Bucket Reconciliation</h4><div class="summary-grid action-plan-bucket-summary">${totals.map(([label, value]) => `<div class="summary-item"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`).join('')}</div>${warning}</section>${bucketPanels}${renderActionPlanCashBucketPanel(summary)}`;
-  actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+  actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-symbol').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+    simulationId: selectedSimulation?.id,
+    detail: { kind: 'action', symbol: btn.dataset.symbol },
+  })));
   actionPlanBucketsContentEl.querySelectorAll('.action-plan-bucket-sortable').forEach((header) => header.addEventListener('click', () => {
     const bucket = header.dataset.bucket;
     const key = header.dataset.sortKey;
@@ -3554,7 +3584,11 @@ function renderLinearAllocationRows() {
         if (targetBandRange) targetBandRange.after(warningButton);
       }
     });
-    actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+    actionPlanLinearActionsTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+      view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+      simulationId: selectedSimulation?.id,
+      detail: { kind: 'action', symbol: btn.dataset.symbol },
+    })));
     actionPlanLinearActionsTableBody.querySelectorAll('.cap-warning-button').forEach((btn) => btn.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -3596,7 +3630,11 @@ function renderLinearAllocationRows() {
       }
       actionPlanLinearDetailTableBody.appendChild(row);
     });
-    actionPlanLinearDetailTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+    actionPlanLinearDetailTableBody.querySelectorAll('.linear-allocation-symbol').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+      view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+      simulationId: selectedSimulation?.id,
+      detail: { kind: 'action', symbol: btn.dataset.symbol },
+    })));
   }
 }
 
@@ -3673,7 +3711,11 @@ function renderActionPlan() {
     row.innerHTML = `<td class="symbol-cell"><button class="symbol-link" data-symbol="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}</button></td><td class="action-cell">${escapeHtml(item.action)}</td><td class="target-gap-cell">${formatCurrencyValue(item.target_gap_amount, 'USD')}</td><td class="action-amount-cell">${escapeHtml(item.action_amount_label || '—')}</td><td class="shares-cell">${formatSuggestedShareCount(item)}</td><td class="funding-cell">${escapeHtml(item.funding_status || 'No funding needed')}</td><td class="trigger-price-cell">${formatCurrencyValue(item.trigger_price, 'USD')}</td><td class="current-price-cell">${formatCurrencyValue(item.current_price, 'USD')}</td><td class="distance-cell ${valueClass(item.distance_to_trigger_percent)}">${formatPercent(item.distance_to_trigger_percent)}</td><td class="rating-cell">${escapeHtml(item.rating || 'Hold')}</td><td class="upside-cell ${valueClass(item.upside)}">${formatPercent(item.upside)}</td><td class="core-confidence-cell">${formatConfidenceDiffDisplay(item.core_confidence_diff, item.core_bullish_confidence, item.core_bearish_confidence)}</td><td class="potential-confidence-cell">${formatConfidenceDiffDisplay(item.potential_confidence_diff, item.potential_bullish_confidence, item.potential_bearish_confidence)}</td><td class="current-weight-cell">${formatPercent(item.current_position_weight)}</td><td class="target-band-cell">${targetBand}</td><td class="gap-cell ${valueClass(item.position_gap_to_mid)}">${formatPercent(item.position_gap_to_mid)}</td><td class="reason-cell">${escapeHtml(item.reason)}</td>`;
     actionPlanTableBody.appendChild(row);
   });
-  actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openActionPlanDetail(btn.dataset.symbol)));
+  actionPlanTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+    simulationId: selectedSimulation?.id,
+    detail: { kind: 'action', symbol: btn.dataset.symbol },
+  })));
   if (actionPlanActiveTab === 'buckets') renderActionPlanBuckets();
 }
 
@@ -4027,7 +4069,8 @@ function changePlanWorkspace(active) {
   restorePlanPreferences();
 }
 
-async function selectSimulation(id) {
+async function selectSimulation(id, options = {}) {
+  if (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration) return false;
   if (selectedSimulation) rememberPlanPreferences();
   selectedSimulation = savedSimulations.find((sim) => String(sim.id) === String(id)) || null;
   previousSimulation.set(selectedPortfolioAccountId, selectedSimulation?.id);
@@ -4038,7 +4081,9 @@ async function selectSimulation(id) {
   simulationEl('cash').value = selectedSimulation?.additional_cash_usd ?? '';
   simulationEl('status').textContent = selectedSimulation ? '' : 'No simulations yet. Create a simulation to get started.';
   renderSimulationControls();
-  if (selectedSimulation) await loadActionPlan();
+  if (!selectedSimulation) return false;
+  await loadActionPlan();
+  return options.navigationGeneration == null || options.navigationGeneration === navigationRenderGeneration;
 }
 
 async function simulationRequest(suffix, method = 'GET', body) {
@@ -4051,7 +4096,7 @@ async function simulationRequest(suffix, method = 'GET', body) {
   return payload;
 }
 
-async function loadSimulations() {
+async function loadSimulations(options = {}) {
   clearSimulationContext();
   if (!selectedPortfolioAccountId) {
     simulationEl('status').textContent = PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE;
@@ -4064,16 +4109,20 @@ async function loadSimulations() {
   simulationEl('status').textContent = 'Loading simulations…';
   try {
     const { simulations } = await simulationRequest('');
-    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId) return;
+    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId
+        || (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration)) return false;
     savedSimulations = simulations;
     simulationBusy = false;
     const id = previousSimulation.get(account);
-    await selectSimulation(simulations.find((s) => s.id === id)?.id ?? simulations[0]?.id);
+    const selected = await selectSimulation(simulations.find((s) => s.id === id)?.id ?? simulations[0]?.id, options);
+    return simulations.length ? selected !== false : true;
   } catch (error) {
-    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId) return;
+    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId
+        || (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration)) return false;
     simulationBusy = false;
     renderSimulationControls();
     simulationEl('status').textContent = error.message;
+    return false;
   }
 }
 
@@ -4149,29 +4198,126 @@ window.addEventListener('beforeunload', (event) => {
 
 function setView(targetView, options = {}) {
   const enteringSimulator = targetView === 'action-plan-simulator';
-  if (simulatorActive && !options.skipLoad && !discardSimulationEdits()) return false;
+  if (simulatorActive && !options.skipDiscard && !options.skipLoad && !discardSimulationEdits()) return false;
   if (enteringSimulator !== simulatorActive) changePlanWorkspace(enteringSimulator);
   else if (enteringSimulator && !options.skipLoad && selectedSimulation) rememberPlanPreferences();
-  if (enteringSimulator && (!options.skipLoad || !selectedSimulation)) loadSimulations();
+  if (enteringSimulator && !options.skipLoad) loadSimulations();
   const skipLoad = options.skipLoad === true;
   menuItems.forEach((item) => item.classList.toggle('active', item.dataset.view === targetView));
   views.forEach((view) => view.classList.toggle('active', view.id === targetView));
   if (targetView === 'analysis') { showAnalysisList(); if (!skipLoad) loadAnalysis(); }
   if (targetView === 'positions' && !skipLoad) loadPositions();
   if (targetView === 'action-plan' && !skipLoad) loadActionPlan();
-  if (targetView === 'alerts') loadAlerts();
+  if (targetView === 'alerts' && !skipLoad) loadAlerts();
   if (targetView === 'prompt') loadPromptConfiguration();
   if (targetView === 'configuration') loadGeneralConfiguration();
   if (targetView === 'backup') loadBackupView();
+  return true;
 }
+
+async function renderNavigationScreen(screen) {
+  const generation = ++navigationRenderGeneration;
+  const detail = screen.detail;
+  const restoreOptions = { skipNavigation: true, navigationGeneration: generation };
+  const viewOptions = detail
+    ? { skipDiscard: true, skipLoad: true }
+    : { skipDiscard: true };
+  if (setView(screen.view, viewOptions) === false) return false;
+
+  if (!detail) {
+    if (screen.view === 'earnings-review') {
+      setEarningsReviewTab(screen.tab || 'calendar');
+      await loadEarningsReview();
+      if (generation !== navigationRenderGeneration) return false;
+    }
+    return true;
+  }
+
+  if (screen.view === 'action-plan-simulator') {
+    if (!selectedSimulation) {
+      await loadSimulations(restoreOptions);
+      if (generation !== navigationRenderGeneration) return false;
+    }
+    if (screen.simulationId != null && String(selectedSimulation?.id) !== String(screen.simulationId)) {
+      const selected = await selectSimulation(screen.simulationId, restoreOptions);
+      if (selected === false || generation !== navigationRenderGeneration) return false;
+    }
+    if (screen.simulationId != null && String(selectedSimulation?.id) !== String(screen.simulationId)) return false;
+  }
+  if (detail.kind === 'analysis') {
+    const origin = screen.view === 'positions' ? 'positions'
+      : ['action-plan', 'action-plan-simulator'].includes(screen.view) ? 'action_plan'
+        : screen.view === 'earnings-review' ? 'earnings_review' : 'analysis';
+    await openAnalysisDetailForSymbol(detail.symbol, {
+      origin,
+      ...restoreOptions,
+      ...(detail.versionId ? { versionId: detail.versionId } : {}),
+    });
+  } else if (detail.kind === 'action') {
+    await openActionPlanDetail(detail.symbol, restoreOptions);
+  } else if (detail.kind === 'alert') {
+    await openAlertDetail(detail.alertId, restoreOptions);
+  } else if (detail.kind === 'earnings-symbol') {
+    await openEarningsReviewSymbolHistory(detail.symbol, restoreOptions);
+  } else if (detail.kind === 'earnings-review') {
+    await openEarningsReviewRecordDetail(detail.symbol, detail.reviewId, restoreOptions);
+  }
+  return generation === navigationRenderGeneration;
+}
+
+function navigationRequestCurrent(options = {}) {
+  return (options.navigationGeneration == null
+      || options.navigationGeneration === navigationRenderGeneration)
+    && (typeof options.requestCurrent !== 'function' || options.requestCurrent());
+}
+
+function navigateToScreen(screen) {
+  if (!browserNavigationController) return renderNavigationScreen(screen);
+  return browserNavigationController.navigate(screen);
+}
+
+function navigateBack(fallback) {
+  if (!browserNavigationController) return navigateToScreen(fallback);
+  return browserNavigationController.back(fallback);
+}
+
+function navigateAnalysisVersion(versionId) {
+  if (!analysisDetailState?.symbol || versionId == null) return false;
+  const current = browserNavigationController?.currentScreen();
+  if (current?.detail?.kind === 'analysis') {
+    return navigateToScreen({
+      ...current,
+      detail: { ...current.detail, symbol: analysisDetailState.symbol, versionId },
+    });
+  }
+  const view = analysisDetailOrigin === 'positions' ? 'positions'
+    : analysisDetailOrigin === 'action_plan' ? (simulatorActive ? 'action-plan-simulator' : 'action-plan')
+      : analysisDetailOrigin === 'earnings_review' ? 'earnings-review' : 'analysis';
+  const screen = { view, detail: { kind: 'analysis', symbol: analysisDetailState.symbol, versionId } };
+  if (view === 'action-plan-simulator' && selectedSimulation?.id != null) screen.simulationId = selectedSimulation.id;
+  if (view === 'earnings-review') screen.tab = 'workflow';
+  return navigateToScreen(screen);
+}
+
+function canLeaveNavigation(currentScreen) {
+  if (currentScreen?.view !== 'action-plan-simulator') return true;
+  return discardSimulationEdits();
+}
+
+function initializeBrowserNavigation() {
+  browserNavigationController = BakingMoneyNavigation.createController({
+    history: window.history,
+    eventTarget: window,
+    render: renderNavigationScreen,
+    canLeave: canLeaveNavigation,
+    fallbackScreen: { view: 'analysis' },
+  });
+  return browserNavigationController.initialize();
+}
+
 menuItems.forEach((item) => item.addEventListener('click', () => {
   const target = item.dataset.view;
-  setView(target);
-  if (getActiveViewId() !== target) return;
-  if (target === 'earnings-review') {
-    setEarningsReviewTab('calendar');
-    loadEarningsReview();
-  }
+  navigateToScreen({ view: target });
 }));
 
 function showEarningsReviewList() {
@@ -5023,10 +5169,10 @@ async function openAnalysisDetailForSymbol(symbol, options = {}) {
   } else if (origin === 'earnings_review') {
     showAnalysisDetailFromEarningsReviewOrigin();
   } else {
-    setView('analysis');
+    setView('analysis', options.skipNavigation ? { skipLoad: true, skipDiscard: true } : {});
   }
 
-  await loadAnalysisDetail(symbol);
+  await loadAnalysisDetail(symbol, options.versionId ?? null, options);
 }
 
 async function openAnalysisDetailFromPositions(symbol) {
@@ -5035,7 +5181,7 @@ async function openAnalysisDetailFromPositions(symbol) {
   await loadAnalysisDetail(symbol);
 }
 
-async function loadAnalysisDetail(symbol, versionId = null) {
+async function loadAnalysisDetail(symbol, versionId = null, options = {}) {
   analysisDetailStatus.textContent = `Loading ${symbol} detail…`;
   analysisDetailStatus.className = 'status';
   analysisSummary.classList.add('hidden');
@@ -5055,13 +5201,16 @@ async function loadAnalysisDetail(symbol, versionId = null) {
     const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : '';
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}${query}`);
     const payload = await response.json();
+    if (!navigationRequestCurrent(options)) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load details'));
     analysisDetailState = payload.analysis;
     analysisDetailState.selected_release_index = 0;
     activeScenarioOverlayTab = hasExternalScenarioOverlay() ? 'final' : 'bakingmoney';
     renderAnalysisDetail();
     analysisDetailStatus.textContent = `Loaded ${symbol} detail.`;
+    return true;
   } catch (error) {
+    if (!navigationRequestCurrent(options)) return false;
     const noAnalysisMessage = 'No analysis found for this symbol.';
     analysisDetailStatus.textContent = /not found/i.test(error.message || '') ? noAnalysisMessage : `Error: ${error.message}`;
     analysisDetailStatus.className = 'status error';
@@ -5757,7 +5906,7 @@ async function openNextAlertDetail() {
     alertDetailStatusEl.className = 'status';
     return;
   }
-  await openAlertDetail(next.id);
+  await navigateToScreen({ view: 'alerts', detail: { kind: 'alert', alertId: next.id } });
 }
 
 async function openPreviousAlertDetail() {
@@ -5772,7 +5921,7 @@ async function openPreviousAlertDetail() {
     alertDetailStatusEl.className = 'status';
     return;
   }
-  await openAlertDetail(prev.id);
+  await navigateToScreen({ view: 'alerts', detail: { kind: 'alert', alertId: prev.id } });
 }
 
 async function refreshAlertsData() {
@@ -5859,7 +6008,12 @@ function collectEditedAlertDetailVariables() {
   }));
 }
 
-async function loadAlertDetailAnalysis(symbol) {
+async function loadAlertDetailAnalysis(symbol, options = {}) {
+  const expectedAlertId = String(options.alertId ?? currentAlertDetailId ?? '');
+  const requestIsCurrent = () => navigationRequestCurrent(options)
+    && String(currentAlertDetailId ?? '') === expectedAlertId
+    && currentAlertDetailSymbol === symbol;
+  if (!requestIsCurrent()) return false;
   if (!symbol) {
     alertDetailKeyvarsStatusEl.textContent = 'Error: Missing symbol for this alert.';
     alertDetailKeyvarsStatusEl.className = 'status error';
@@ -5873,11 +6027,13 @@ async function loadAlertDetailAnalysis(symbol) {
   try {
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`);
     const payload = await response.json();
+    if (!requestIsCurrent()) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load analysis detail'));
     alertDetailAnalysisState = payload.analysis;
     renderAlertDetailVariablesTable();
     alertDetailKeyvarsStatusEl.textContent = `Loaded ${getAlertDetailEffectiveVariables().length} key variable(s) from version ${alertDetailAnalysisState.version.version_number}.`;
   } catch (error) {
+    if (!requestIsCurrent()) return false;
     alertDetailKeyvarsStatusEl.textContent = `Error: ${error.message}`;
     alertDetailKeyvarsStatusEl.className = 'status error';
   }
@@ -5934,7 +6090,7 @@ async function rerunAlertDetailScenarios() {
 }
 
 async function backToAlertsFromDetail() {
-  await loadAlerts();
+  await navigateBack({ view: 'alerts' });
 }
 
 function renderAlertsList() {
@@ -5947,10 +6103,12 @@ function renderAlertsList() {
   });
   alertsTableBody.querySelectorAll('.alert-review-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Reviewed')));
   alertsTableBody.querySelectorAll('.alert-dismiss-btn').forEach((btn) => btn.addEventListener('click', async () => updateAlertStatus(btn.dataset.id, 'Dismissed')));
-  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', async () => openAlertDetail(btn.dataset.alertId)));
+  alertsTableBody.querySelectorAll('.symbol-link').forEach((btn) => btn.addEventListener('click', () => navigateToScreen({
+    view: 'alerts', detail: { kind: 'alert', alertId: btn.dataset.alertId },
+  })));
 }
 
-async function openAlertDetail(alertId) {
+async function openAlertDetail(alertId, options = {}) {
   currentAlertDetailId = alertId;
   currentAlertNavigationIds = getFilteredAlerts().map((item) => String(item.id));
   alertsListView.classList.add('hidden');
@@ -5961,6 +6119,7 @@ async function openAlertDetail(alertId) {
   try {
     const response = await fetch(`/api/alerts/${encodeURIComponent(alertId)}`);
     const payload = await response.json();
+    if (!navigationRequestCurrent(options)) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load alert detail'));
     const alert = payload.alert || {};
     currentAlertDetailSymbol = alert.symbol || null;
@@ -5978,11 +6137,10 @@ async function openAlertDetail(alertId) {
     renderAlertSources(alert.event_sources || []);
     alertDetailPanelsEl.classList.remove('hidden');
     alertDetailStatusEl.textContent = `Status: ${alert.status || 'New'}`;
-    loadAlertDetailAnalysis(alert.symbol || '').catch((error) => {
-      alertDetailKeyvarsStatusEl.textContent = `Error: ${error.message}`;
-      alertDetailKeyvarsStatusEl.className = 'status error';
-    });
+    loadAlertDetailAnalysis(alert.symbol || '', { ...options, alertId });
+    return true;
   } catch (error) {
+    if (!navigationRequestCurrent(options)) return false;
     currentAlertDetailSymbol = null;
     alertDetailStatusEl.textContent = `Error: ${error.message}`;
     alertDetailStatusEl.className = 'status error';
@@ -6040,7 +6198,7 @@ async function updateAlertStatus(alertId, status, options = {}) {
       if (advanceAfterUpdate) {
         const next = nextAlertIdBefore && getFilteredAlerts().find((item) => String(item.id) === String(nextAlertIdBefore));
         if (next) {
-          await openAlertDetail(next.id);
+          await navigateToScreen({ view: 'alerts', detail: { kind: 'alert', alertId: next.id } });
         } else {
           await backToAlertsFromDetail();
         }
@@ -6075,7 +6233,9 @@ function renderEarningsReviewList() {
     earningsReviewTableBody.appendChild(row);
   });
   earningsReviewTableBody.querySelectorAll('.earnings-select-btn').forEach((btn) => {
-    btn.addEventListener('click', () => openEarningsReviewSymbolHistory(btn.dataset.symbol));
+    btn.addEventListener('click', () => navigateToScreen({
+      view: 'earnings-review', detail: { kind: 'earnings-symbol', symbol: btn.dataset.symbol },
+    }));
   });
   if (earningsReviewItems.length) {
     earningsReviewStatusEl.textContent = `Showing ${earningsReviewItems.length} symbol(s).`;
@@ -6278,7 +6438,9 @@ function renderEarningsCalendarTable() {
     });
   });
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-symbol-link').forEach((btn) => {
-    btn.addEventListener('click', async () => openAnalysisDetailForSymbol(btn.dataset.symbol, { origin: 'earnings_review' }));
+    btn.addEventListener('click', () => navigateToScreen({
+      view: 'earnings-review', detail: { kind: 'analysis', symbol: btn.dataset.symbol },
+    }));
   });
   earningsCalendarTableBody.querySelectorAll('.earnings-calendar-remove-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -6446,6 +6608,52 @@ function renderEarningsReviewDocuments(documents) {
   earningsReviewDocumentsStatusEl.className = 'status';
 }
 
+function captureEarningsReviewScreenContext() {
+  return {
+    navigationGeneration: navigationRenderGeneration,
+    navigationContext: browserNavigationController?.captureContext() || null,
+  };
+}
+
+function earningsReviewScreenContextIsCurrent(context) {
+  if (!context || context.navigationGeneration !== navigationRenderGeneration) return false;
+  if (!context.navigationContext) return true;
+  return browserNavigationController?.isCurrentContext(context.navigationContext) === true;
+}
+
+function captureEarningsReviewOperationContext(symbol, reviewId) {
+  return {
+    ...captureEarningsReviewScreenContext(),
+    symbol: String(symbol || '').trim().toUpperCase(),
+    reviewId: Number(reviewId),
+  };
+}
+
+function earningsReviewOperationContextIsCurrent(context) {
+  if (!earningsReviewScreenContextIsCurrent(context)
+      || context.symbol !== String(earningsReviewSelectedSymbol || '').trim().toUpperCase()
+      || context.reviewId !== Number(earningsReviewSelectedRecordId)) return false;
+  if (!context.navigationContext) return true;
+  const screen = context.navigationContext.screen;
+  return screen?.view === 'earnings-review'
+    && screen.detail?.kind === 'earnings-review'
+    && screen.detail.symbol === context.symbol
+    && screen.detail.reviewId === context.reviewId;
+}
+
+async function refreshEarningsReviewOperationContext(context) {
+  if (!earningsReviewOperationContextIsCurrent(context)) return false;
+  const refreshRequestId = ++earningsReviewRefreshRequestId;
+  const requestCurrent = () => refreshRequestId === earningsReviewRefreshRequestId
+    && earningsReviewOperationContextIsCurrent(context);
+  await refreshEarningsReviewListOnly({ requestCurrent });
+  if (!requestCurrent()) return false;
+  return openEarningsReviewRecordDetail(context.symbol, context.reviewId, {
+    navigationGeneration: context.navigationGeneration,
+    requestCurrent,
+  });
+}
+
 async function uploadEarningsReviewDocument() {
   if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId) return;
   const file = earningsReviewDocumentFileEl.files && earningsReviewDocumentFileEl.files[0];
@@ -6454,6 +6662,10 @@ async function uploadEarningsReviewDocument() {
     earningsReviewDocumentsStatusEl.className = 'status error';
     return;
   }
+  const operationContext = captureEarningsReviewOperationContext(
+    earningsReviewSelectedSymbol,
+    earningsReviewSelectedRecordId,
+  );
   const formData = new FormData();
   formData.append('document_type', earningsReviewDocumentTypeEl.value);
   formData.append('file', file);
@@ -6461,22 +6673,23 @@ async function uploadEarningsReviewDocument() {
   earningsReviewDocumentsStatusEl.textContent = 'Uploading document…';
   earningsReviewDocumentsStatusEl.className = 'status';
   try {
-    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(earningsReviewSelectedRecordId)}/documents`, {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(operationContext.symbol)}/${encodeURIComponent(operationContext.reviewId)}/documents`, {
       method: 'POST',
       body: formData,
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to upload earnings document.'));
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDocumentFileEl.value = '';
     earningsReviewDocumentFileNameEl.textContent = 'No file chosen';
     earningsReviewDocumentsStatusEl.textContent = 'Document uploaded successfully.';
-    await refreshEarningsReviewListOnly();
-    await openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, earningsReviewSelectedRecordId);
+    await refreshEarningsReviewOperationContext(operationContext);
   } catch (error) {
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDocumentsStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewDocumentsStatusEl.className = 'status error';
   } finally {
-    earningsReviewDocumentUploadBtn.disabled = false;
+    if (earningsReviewOperationContextIsCurrent(operationContext)) earningsReviewDocumentUploadBtn.disabled = false;
   }
 }
 
@@ -6486,18 +6699,23 @@ async function deleteEarningsReviewDocument(documentId, fileName) {
     `Delete Earnings Document\n\nAre you sure you want to delete this document${fileName ? ` (${fileName})` : ''}? This action cannot be undone.`
   );
   if (!confirmed) return;
+  const operationContext = captureEarningsReviewOperationContext(
+    earningsReviewSelectedSymbol,
+    earningsReviewSelectedRecordId,
+  );
   earningsReviewDocumentsStatusEl.textContent = 'Deleting document…';
   earningsReviewDocumentsStatusEl.className = 'status';
   try {
-    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(earningsReviewSelectedRecordId)}/documents/${encodeURIComponent(documentId)}`, {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(operationContext.symbol)}/${encodeURIComponent(operationContext.reviewId)}/documents/${encodeURIComponent(documentId)}`, {
       method: 'DELETE',
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to delete earnings document.'));
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDocumentsStatusEl.textContent = 'Document deleted successfully.';
-    await refreshEarningsReviewListOnly();
-    await openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, earningsReviewSelectedRecordId);
+    await refreshEarningsReviewOperationContext(operationContext);
   } catch (error) {
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDocumentsStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewDocumentsStatusEl.className = 'status error';
   }
@@ -6588,7 +6806,10 @@ function renderEarningsReviewSymbolHistoryTable(records) {
     earningsReviewSymbolTableBody.appendChild(row);
   });
   earningsReviewSymbolTableBody.querySelectorAll('.earnings-record-open-btn').forEach((btn) => {
-    btn.addEventListener('click', () => openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, Number(btn.dataset.reviewId)));
+    btn.addEventListener('click', () => navigateToScreen({
+      view: 'earnings-review',
+      detail: { kind: 'earnings-review', symbol: earningsReviewSelectedSymbol, reviewId: Number(btn.dataset.reviewId) },
+    }));
   });
   earningsReviewSymbolTableBody.querySelectorAll('.earnings-record-delete-btn').forEach((btn) => {
     btn.addEventListener('click', () => deleteEarningsReviewRecord({
@@ -6605,7 +6826,7 @@ function showEarningsReviewSymbolHistoryView() {
   earningsReviewDetailView.classList.add('hidden');
 }
 
-async function openEarningsReviewSymbolHistory(symbol) {
+async function openEarningsReviewSymbolHistory(symbol, options = {}) {
   const normalized = (symbol || '').trim().toUpperCase();
   if (!normalized) return;
   setEarningsReviewTab('workflow');
@@ -6616,10 +6837,12 @@ async function openEarningsReviewSymbolHistory(symbol) {
   earningsReviewSymbolHeaderEl.textContent = `Loading ${normalized} earnings history…`;
   earningsReviewSymbolStatusEl.textContent = 'Loading earnings history…';
   earningsReviewSymbolStatusEl.className = 'status';
+  earningsReviewCreateSubmitBtn.disabled = false;
   earningsReviewSymbolTableBody.innerHTML = '';
   try {
     const response = await fetch(`/api/earnings-review/${encodeURIComponent(normalized)}`);
     const payload = await response.json();
+    if (!navigationRequestCurrent(options)) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings history.'));
     const item = payload.item || {};
     earningsReviewSymbolHistory = item;
@@ -6628,18 +6851,22 @@ async function openEarningsReviewSymbolHistory(symbol) {
     earningsReviewSymbolStatusEl.textContent = (item.records || []).length
       ? `Showing ${(item.records || []).length} earnings review record(s).`
       : 'No earnings reviews created yet. Create the first one to begin this symbol history.';
+    return true;
   } catch (error) {
+    if (!navigationRequestCurrent(options)) return false;
     earningsReviewSymbolStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewSymbolStatusEl.className = 'status error';
   }
 }
 
-async function refreshEarningsReviewListOnly() {
+async function refreshEarningsReviewListOnly(options = {}) {
   const response = await fetch('/api/earnings-review');
   const payload = await response.json();
+  if (typeof options.requestCurrent === 'function' && !options.requestCurrent()) return false;
   if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review list.'));
   earningsReviewItems = Array.isArray(payload.items) ? payload.items : [];
   renderEarningsReviewList();
+  return true;
 }
 
 async function loadEarningsReview() {
@@ -6680,6 +6907,8 @@ function toggleEarningsReviewCreateForm(show) {
 
 async function createEarningsReviewRecord() {
   if (!earningsReviewSelectedSymbol) return;
+  const targetSymbol = earningsReviewSelectedSymbol;
+  const operationContext = captureEarningsReviewScreenContext();
   const payload = {
     fiscal_year: Number(earningsReviewCreateYearEl.value),
     fiscal_quarter: earningsReviewCreateQuarterEl.value,
@@ -6689,39 +6918,57 @@ async function createEarningsReviewRecord() {
   earningsReviewSymbolStatusEl.className = 'status';
   earningsReviewCreateSubmitBtn.disabled = true;
   try {
-    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}`, {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(targetSymbol)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(result, 'Unable to create earnings review record.'));
+    if (!earningsReviewScreenContextIsCurrent(operationContext)
+        || earningsReviewSelectedSymbol !== targetSymbol) return;
     toggleEarningsReviewCreateForm(false);
-    await openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, Number(result.item?.id));
+    earningsReviewCreateSubmitBtn.disabled = false;
+    await navigateToScreen({
+      view: 'earnings-review',
+      detail: { kind: 'earnings-review', symbol: targetSymbol, reviewId: Number(result.item?.id) },
+    });
   } catch (error) {
+    if (!earningsReviewScreenContextIsCurrent(operationContext)
+        || earningsReviewSelectedSymbol !== targetSymbol) return;
     earningsReviewSymbolStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewSymbolStatusEl.className = 'status error';
   } finally {
-    earningsReviewCreateSubmitBtn.disabled = false;
+    if (earningsReviewScreenContextIsCurrent(operationContext)
+        && earningsReviewSelectedSymbol === targetSymbol) earningsReviewCreateSubmitBtn.disabled = false;
   }
 }
 
 async function deleteEarningsReviewRecord({ reviewId, fiscalYear, fiscalQuarter }) {
   if (!earningsReviewSelectedSymbol || !Number.isFinite(reviewId)) return;
+  const targetSymbol = earningsReviewSelectedSymbol;
   const confirmed = window.confirm(
     `Delete Earnings Review\n\nAre you sure you want to delete this earnings review for FY${fiscalYear} ${fiscalQuarter}? This action cannot be undone.`
   );
   if (!confirmed) return;
+  const operationContext = captureEarningsReviewScreenContext();
   earningsReviewSymbolStatusEl.textContent = 'Deleting earnings review record…';
   earningsReviewSymbolStatusEl.className = 'status';
   try {
-    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(reviewId)}`, {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(targetSymbol)}/${encodeURIComponent(reviewId)}`, {
       method: 'DELETE',
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Failed to delete earnings review. Please try again.'));
-    await openEarningsReviewSymbolHistory(earningsReviewSelectedSymbol);
+    if (!earningsReviewScreenContextIsCurrent(operationContext)
+        || earningsReviewSelectedSymbol !== targetSymbol) return;
+    await navigateBack({
+      view: 'earnings-review',
+      detail: { kind: 'earnings-symbol', symbol: targetSymbol },
+    });
   } catch (_error) {
+    if (!earningsReviewScreenContextIsCurrent(operationContext)
+        || earningsReviewSelectedSymbol !== targetSymbol) return;
     earningsReviewSymbolStatusEl.textContent = 'Failed to delete earnings review. Please try again.';
     earningsReviewSymbolStatusEl.className = 'status error';
   }
@@ -6749,7 +6996,7 @@ function renderEarningsSnapshotSummary(snapshot, detail) {
   `;
 }
 
-async function openEarningsReviewRecordDetail(symbol, reviewId) {
+async function openEarningsReviewRecordDetail(symbol, reviewId, options = {}) {
   const normalized = (symbol || '').trim().toUpperCase();
   if (!normalized || !Number.isFinite(reviewId)) return;
   setEarningsReviewTab('workflow');
@@ -6770,10 +7017,13 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
   earningsReviewDocumentsStatusEl.className = 'status';
   earningsReviewDocumentFileEl.value = '';
   earningsReviewDocumentFileNameEl.textContent = 'No file chosen';
+  earningsReviewDocumentUploadBtn.disabled = true;
   try {
     const response = await fetch(`/api/earnings-review/${encodeURIComponent(normalized)}/${encodeURIComponent(earningsReviewSelectedRecordId)}`);
     const payload = await response.json();
+    if (!navigationRequestCurrent(options)) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review record.'));
+    earningsReviewDocumentUploadBtn.disabled = false;
     const item = payload.item || {};
     const snapshot = item.thesis_snapshot || {};
     earningsReviewDetailTitleEl.textContent = `Earnings Review: ${item.symbol} ${item.fiscal_year} ${item.fiscal_quarter}`;
@@ -6790,7 +7040,9 @@ async function openEarningsReviewRecordDetail(symbol, reviewId) {
     renderEarningsKeyVariables(item.key_variables_snapshot || []);
     renderEarningsWatchpoints(item.watchpoints_by_variable || [], item.watchpoint_results || []);
     renderEarningsReviewDocuments(item.documents || []);
+    return true;
   } catch (error) {
+    if (!navigationRequestCurrent(options)) return false;
     earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
     earningsReviewDetailMetaEl.className = 'status error';
     earningsReviewDocumentsStatusEl.textContent = `Error: ${error.message}`;
@@ -6802,6 +7054,7 @@ async function generateEarningsWatchpoints() {
   if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId) return;
   const targetSymbol = earningsReviewSelectedSymbol;
   const targetReviewId = earningsReviewSelectedRecordId;
+  const operationContext = captureEarningsReviewOperationContext(targetSymbol, targetReviewId);
   earningsReviewGenerateBtn.disabled = true;
   earningsReviewDetailMetaEl.textContent = `Generating earnings watchpoints for ${targetSymbol} ${targetReviewId}…`;
   earningsReviewDetailMetaEl.className = 'status';
@@ -6811,10 +7064,11 @@ async function generateEarningsWatchpoints() {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to generate earnings watchpoints.'));
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDetailMetaEl.textContent = 'Earnings watchpoints generated successfully.';
-    await refreshEarningsReviewListOnly();
-    await openEarningsReviewRecordDetail(targetSymbol, targetReviewId);
+    await refreshEarningsReviewOperationContext(operationContext);
   } catch (error) {
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
     earningsReviewDetailMetaEl.className = 'status error';
     earningsReviewGenerateBtn.disabled = false;
@@ -6825,6 +7079,7 @@ async function analyseEarningsWatchpoints() {
   if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId) return;
   const targetSymbol = earningsReviewSelectedSymbol;
   const targetReviewId = earningsReviewSelectedRecordId;
+  const operationContext = captureEarningsReviewOperationContext(targetSymbol, targetReviewId);
   earningsReviewAnalyseBtn.disabled = true;
   earningsReviewDetailMetaEl.textContent = `Analysing earnings watchpoints for ${targetSymbol} ${targetReviewId}…`;
   earningsReviewDetailMetaEl.className = 'status';
@@ -6834,10 +7089,11 @@ async function analyseEarningsWatchpoints() {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to analyse earnings watchpoints.'));
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDetailMetaEl.textContent = 'Earnings watchpoints analysed successfully.';
-    await refreshEarningsReviewListOnly();
-    await openEarningsReviewRecordDetail(targetSymbol, targetReviewId);
+    await refreshEarningsReviewOperationContext(operationContext);
   } catch (error) {
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
     earningsReviewDetailMetaEl.className = 'status error';
     earningsReviewAnalyseBtn.disabled = false;
@@ -7421,20 +7677,20 @@ analysisCheckEventsBtn.addEventListener('click', checkRecentEventsForSelected);
 analysisSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnalysisSymbol(); });
 analysisBackBtn.addEventListener('click', () => {
   if (analysisDetailOrigin === 'positions') {
-    setView('positions');
+    navigateBack({ view: 'positions' });
     return;
   }
   if (analysisDetailOrigin === 'action_plan') {
-    setView(simulatorActive ? 'action-plan-simulator' : 'action-plan', { skipLoad: true });
+    navigateBack({ view: simulatorActive ? 'action-plan-simulator' : 'action-plan' });
     return;
   }
   if (analysisDetailOrigin === 'earnings_review') {
-    setView('earnings-review', { skipLoad: true });
+    navigateBack({ view: 'earnings-review' });
     return;
   }
-  showAnalysisList();
+  navigateBack({ view: 'analysis' });
 });
-alertDetailBackBtn.addEventListener('click', backToAlertsFromDetail);
+alertDetailBackBtn.addEventListener('click', () => navigateBack({ view: 'alerts' }));
 alertDetailReviewBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Reviewed', { stayOnDetail: true, advanceAfterUpdate: true }); });
 alertDetailDismissBtn.addEventListener('click', () => { if (currentAlertDetailId) updateAlertStatus(currentAlertDetailId, 'Dismissed', { stayOnDetail: true, advanceAfterUpdate: true }); });
 alertDetailPrevBtn.addEventListener('click', () => openPreviousAlertDetail());
@@ -7453,7 +7709,7 @@ alertDetailAddVarBtn.addEventListener('click', () => {
 alertDetailSaveVarsBtn.addEventListener('click', saveAlertDetailVariables);
 alertDetailOpenAnalysisBtn.addEventListener('click', () => {
   if (!currentAlertDetailSymbol) return;
-  openAnalysisDetailForSymbol(currentAlertDetailSymbol, { origin: 'analysis' });
+  navigateToScreen({ view: 'analysis', detail: { kind: 'analysis', symbol: currentAlertDetailSymbol } });
 });
 alertDetailCancelVarsBtn.addEventListener('click', () => {
   alertDetailIsEditingVariables = false;
@@ -7594,12 +7850,12 @@ analysisCancelVariablesBtn.addEventListener('click', () => {
 analysisSaveVariablesBtn.addEventListener('click', saveEditedVariables);
 analysisRerunBtn.addEventListener('click', rerunScenarios);
 analysisVersionPrevBtn.addEventListener('click', () => {
-  const idx = selectedVersionIndex(); const prev = analysisDetailState.versions[idx - 1]; if (prev) loadAnalysisDetail(analysisDetailState.symbol, prev.id);
+  const idx = selectedVersionIndex(); const prev = analysisDetailState.versions[idx - 1]; if (prev) navigateAnalysisVersion(prev.id);
 });
 analysisVersionNextBtn.addEventListener('click', () => {
-  const idx = selectedVersionIndex(); const next = analysisDetailState.versions[idx + 1]; if (next) loadAnalysisDetail(analysisDetailState.symbol, next.id);
+  const idx = selectedVersionIndex(); const next = analysisDetailState.versions[idx + 1]; if (next) navigateAnalysisVersion(next.id);
 });
-analysisVersionSelect.addEventListener('change', () => loadAnalysisDetail(analysisDetailState.symbol, analysisVersionSelect.value));
+analysisVersionSelect.addEventListener('change', () => navigateAnalysisVersion(analysisVersionSelect.value));
 
 promptSaveBtn.addEventListener('click', savePromptConfiguration);
 promptResetBtn.addEventListener('click', resetPromptConfiguration);
@@ -7607,25 +7863,14 @@ promptPreviewBtn.addEventListener('click', previewPromptConfiguration);
 promptPreviewSymbolInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') previewPromptConfiguration(); });
 earningsReviewGenerateBtn.addEventListener('click', generateEarningsWatchpoints);
 earningsReviewAnalyseBtn.addEventListener('click', analyseEarningsWatchpoints);
-earningsReviewBackBtn.addEventListener('click', async () => {
-  if (earningsReviewSelectedSymbol) {
-    await openEarningsReviewSymbolHistory(earningsReviewSelectedSymbol);
-  } else {
-    await loadEarningsReview();
-  }
-});
-earningsReviewSymbolBackBtn.addEventListener('click', async () => {
-  await loadEarningsReview();
-});
+earningsReviewBackBtn.addEventListener('click', () => navigateBack({
+  view: 'earnings-review',
+  detail: { kind: 'earnings-symbol', symbol: earningsReviewSelectedSymbol },
+}));
+earningsReviewSymbolBackBtn.addEventListener('click', () => navigateBack({ view: 'earnings-review', tab: 'workflow' }));
 earningsReviewAddBtn.addEventListener('click', addEarningsReviewSymbol);
-earningsReviewTabWorkflowBtn.addEventListener('click', async () => {
-  setEarningsReviewTab('workflow');
-  await loadEarningsReview();
-});
-earningsReviewTabCalendarBtn.addEventListener('click', async () => {
-  setEarningsReviewTab('calendar');
-  await loadEarningsReview();
-});
+earningsReviewTabWorkflowBtn.addEventListener('click', () => navigateToScreen({ view: 'earnings-review', tab: 'workflow' }));
+earningsReviewTabCalendarBtn.addEventListener('click', () => navigateToScreen({ view: 'earnings-review', tab: 'calendar' }));
 earningsCalendarAddBtn.addEventListener('click', createEarningsCalendarEntry);
 [earningsCalendarAddSymbolEl, earningsCalendarAddFiscalYearEl, earningsCalendarAddReleaseDateEl].forEach((input) => {
   input.addEventListener('keydown', (event) => {
@@ -7662,12 +7907,15 @@ actionPlanShowNonExecutableRecommendationsEl?.addEventListener('change', () => {
 });
 actionPlanRefreshTriggerPricesBtn?.addEventListener('click', () => refreshTriggerPrices());
 actionPlanDetailBackBtn.addEventListener('click', () => {
-  if (simulatorActive && !discardSimulationEdits()) return;
-  showActionPlanList();
+  navigateBack({ view: simulatorActive ? 'action-plan-simulator' : 'action-plan' });
 });
 actionPlanOpenAnalysisBtn.addEventListener('click', () => {
-  if (!selectedActionPlanDetail?.symbol || !discardSimulationEdits()) return;
-  openAnalysisDetailForSymbol(selectedActionPlanDetail.symbol, { origin: 'action_plan' });
+  if (!selectedActionPlanDetail?.symbol) return;
+  navigateToScreen({
+    view: simulatorActive ? 'action-plan-simulator' : 'action-plan',
+    simulationId: selectedSimulation?.id,
+    detail: { kind: 'analysis', symbol: selectedActionPlanDetail.symbol },
+  });
 });
 configActionPlanInputs.forEach((input) => input.addEventListener('input', updateActionPlanBucketTotal));
 portfolioAccountSelectEl?.addEventListener('change', handlePortfolioAccountChange);
@@ -7690,4 +7938,4 @@ setActionPlanRatingFilterOpen(false);
 setActionPlanActionFilterOpen(false);
 setEarningsCalendarDateFilterOpen(false);
 initializeConfigHelpIcons();
-loadPortfolioAccounts({ preserveCurrent: false }).finally(() => setView('analysis'));
+loadPortfolioAccounts({ preserveCurrent: false }).finally(initializeBrowserNavigation);

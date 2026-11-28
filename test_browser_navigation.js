@@ -146,6 +146,9 @@ test('normalizes every supported main and nested application screen', () => {
     { view: 'earnings-review', detail: { kind: 'earnings-symbol', symbol: 'AMD' } });
   assert.deepEqual(normalizeScreen({ view: 'earnings-review', detail: { kind: 'earnings-review', symbol: 'amd', reviewId: 9 } }),
     { view: 'earnings-review', detail: { kind: 'earnings-review', symbol: 'AMD', reviewId: 9 } });
+  assert.deepEqual(normalizeScreen({ view: 'earnings-review', tab: 'workflow' }),
+    { view: 'earnings-review', tab: 'workflow' });
+  assert.equal(normalizeScreen({ view: 'earnings-review', tab: 'unknown' }), null);
   assert.equal(normalizeScreen({ view: 'backup', detail: { kind: 'alert', alertId: 1 } }), null);
   assert.equal(normalizeScreen({ view: 'unknown' }), null);
 });
@@ -204,6 +207,39 @@ test('navigation back to the rendered screen supersedes a different in-flight re
   await first;
   assert.equal(history.pushCount, 0);
   assert.deepEqual(controller.currentScreen(), simulationDetail(2));
+});
+
+test('sidebar navigation during a delayed Back uses the physical browser sequence', async () => {
+  const history = new MemoryHistory();
+  let releaseBack;
+  let delayPositions = false;
+  const controller = createController({
+    history,
+    eventTarget: history,
+    render: async (screen) => {
+      if (delayPositions && screen.view === 'positions') {
+        await new Promise((resolve) => { releaseBack = resolve; });
+      }
+      return true;
+    },
+  });
+  await controller.initialize();
+  await controller.navigate({ view: 'positions' });
+  await controller.navigate({ view: 'backup' });
+  delayPositions = true;
+  history.back();
+  await settle();
+  assert.equal(typeof releaseBack, 'function');
+
+  await controller.navigate({ view: 'action-plan-simulator' });
+  assert.deepEqual(history.entries.map((item) => item.state?.sequence), [0, 1, 2]);
+  assert.deepEqual(controller.currentScreen(), { view: 'action-plan-simulator' });
+  assert.equal(history.state.sequence, 2);
+
+  releaseBack();
+  await settle();
+  assert.deepEqual(controller.currentScreen(), { view: 'action-plan-simulator' });
+  assert.equal(history.state.sequence, 2);
 });
 
 test('initializes a missing or invalid entry with Analysis using replaceState', async () => {
@@ -346,6 +382,41 @@ test('two rapid rejected Back traversals reconcile to one rendered entry', async
   ]);
 });
 
+test('rapid rejected Back traversal asks once while compensation is in progress', async () => {
+  let permit = true;
+  let checks = 0;
+  const h = harness({ canLeave: () => { checks += 1; return permit; } });
+  await h.controller.initialize();
+  await h.controller.navigate({ view: 'positions' });
+  await h.controller.navigate({ view: 'action-plan-simulator' });
+  checks = 0;
+  permit = false;
+
+  h.history.back();
+  h.history.back();
+  await settle();
+
+  assert.equal(checks, 1);
+  assert.equal(h.history.state.sequence, 2);
+  assert.deepEqual(h.controller.currentScreen(), { view: 'action-plan-simulator' });
+});
+
+test('synchronize replaces the current logical entry after an external app-state change', async () => {
+  const h = harness();
+  await h.controller.initialize();
+  await h.controller.navigate({ view: 'action-plan', detail: { kind: 'action', symbol: 'ABC' } });
+  const length = h.history.length;
+
+  assert.equal(h.controller.synchronize({ view: 'action-plan' }), true);
+  assert.equal(h.history.length, length);
+  assert.deepEqual(h.history.state.screen, { view: 'action-plan' });
+  assert.deepEqual(h.controller.currentScreen(), { view: 'action-plan' });
+
+  await h.controller.navigate({ view: 'action-plan', detail: { kind: 'action', symbol: 'ABC' } });
+  assert.equal(h.history.length, length + 1);
+  assert.deepEqual(h.controller.currentScreen(), { view: 'action-plan', detail: { kind: 'action', symbol: 'ABC' } });
+});
+
 test('internal Back traverses history when an earlier application entry exists', async () => {
   const h = harness();
   await h.controller.initialize();
@@ -464,6 +535,33 @@ test('application adapter selects the simulation stored in a restored nested scr
   ]);
 });
 
+test('superseded Simulator restoration stops after its delayed list load', async () => {
+  const calls = [];
+  let release;
+  const context = vm.createContext({
+    navigationRenderGeneration: 0,
+    selectedSimulation: null,
+    setView(view) { calls.push(['view', view]); return true; },
+    async loadSimulations() {
+      await new Promise((resolve) => { release = resolve; });
+      context.selectedSimulation = { id: 1 };
+    },
+    async selectSimulation(id) { calls.push(['simulation', id]); context.selectedSimulation = { id }; },
+    async openActionPlanDetail(symbol) { calls.push(['detail', symbol]); },
+  });
+  vm.runInContext(`${functionSource('renderNavigationScreen')}; this.renderNavigationScreen = renderNavigationScreen;`, context);
+  const stale = context.renderNavigationScreen({
+    view: 'action-plan-simulator', simulationId: '2', detail: { kind: 'action', symbol: 'ABC' },
+  });
+  await settle();
+  await context.renderNavigationScreen({ view: 'action-plan' });
+  release();
+  assert.equal(await stale, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['view', 'action-plan-simulator'], ['view', 'action-plan'],
+  ]);
+});
+
 test('application adapter returns false when the existing view guard rejects navigation', async () => {
   const context = vm.createContext({
     navigationRenderGeneration: 0,
@@ -473,13 +571,52 @@ test('application adapter returns false when the existing view guard rejects nav
   assert.equal(await context.renderNavigationScreen({ view: 'positions' }), false);
 });
 
+test('a failed target render restores the last committed screen', async () => {
+  const history = new MemoryHistory();
+  const rendered = [];
+  const controller = createController({
+    history,
+    eventTarget: history,
+    render: async (screen) => {
+      rendered.push(screen);
+      return screen.view !== 'action-plan-simulator';
+    },
+  });
+  await controller.initialize();
+  assert.equal(await controller.navigate({
+    view: 'action-plan-simulator', simulationId: 'deleted',
+    detail: { kind: 'action', symbol: 'ABC' },
+  }), false);
+  assert.deepEqual(rendered, [
+    { view: 'analysis' },
+    { view: 'action-plan-simulator', simulationId: 'deleted', detail: { kind: 'action', symbol: 'ABC' } },
+    { view: 'analysis' },
+  ]);
+  assert.deepEqual(controller.currentScreen(), { view: 'analysis' });
+  assert.equal(history.pushCount, 0);
+});
+
 test('application entry points use the centralized controller instead of pushing on refresh', () => {
   assert.match(appSource, /function navigateToScreen\(screen\)/);
   assert.match(appSource, /function navigateBack\(fallback\)/);
   assert.match(appSource, /loadPortfolioAccounts\(\{ preserveCurrent: false \}\)\.finally\(initializeBrowserNavigation\)/);
   assert.match(appSource, /menuItems\.forEach[\s\S]*navigateToScreen\(\{ view: target \}\)/);
   assert.match(appSource, /simulationId: selectedSimulation\?\.id/);
+  assert.match(functionSource('setView'), /targetView === 'alerts' && !skipLoad/);
   assert.doesNotMatch(functionSource('refreshActionPlanFromButton'), /navigateToScreen|pushState/);
+});
+
+test('secondary nested navigation stays in the centralized history controller', () => {
+  assert.match(functionSource('openNextAlertDetail'), /navigateToScreen\(\{\s*view: 'alerts', detail: \{ kind: 'alert', alertId: next\.id \}/);
+  assert.match(functionSource('openPreviousAlertDetail'), /navigateToScreen\(\{\s*view: 'alerts', detail: \{ kind: 'alert', alertId: prev\.id \}/);
+  assert.match(functionSource('updateAlertStatus'), /navigateToScreen\(\{\s*view: 'alerts', detail: \{ kind: 'alert', alertId: next\.id \}/);
+  assert.match(functionSource('createEarningsReviewRecord'), /navigateToScreen\(\{\s*view: 'earnings-review'/);
+  assert.match(appSource, /function navigateAnalysisVersion\(versionId\)/);
+  assert.match(appSource, /analysisVersionPrevBtn[\s\S]*navigateAnalysisVersion\(prev\.id\)/);
+});
+
+test('account changes synchronize a cleared Action Detail entry with its visible list', () => {
+  assert.match(functionSource('handlePortfolioAccountChange'), /navigationController\?\.synchronize\(navigationListScreen\)/);
 });
 
 test('Simulator dirty cash and trigger values survive rejected rapid Back navigation', async () => {
@@ -607,6 +744,27 @@ test('an older Alert detail response cannot overwrite a newer navigation generat
   assert.equal(context.currentAlertDetailId, '2');
   assert.equal(context.currentAlertDetailSymbol, null);
   assert.equal(context.alertDetailTitleEl.textContent, '');
+});
+
+test('an older Alert key-variable response cannot overwrite the next alert', async () => {
+  const deferred = deferredJsonResponse({ analysis: { symbol: 'OLD', version: { version_number: 1 } } });
+  const context = vm.createContext({
+    navigationRenderGeneration: 1,
+    currentAlertDetailId: '1', currentAlertDetailSymbol: 'OLD',
+    alertDetailAnalysisState: null, alertDetailIsEditingVariables: false,
+    alertDetailKeyvarsStatusEl: fakeElement(), fetch: deferred.fetch,
+    renderAlertDetailVariablesTable() {}, getAlertDetailEffectiveVariables: () => [],
+    extractErrorMessage: () => 'error',
+  });
+  installNavigationAwareFunction(context, 'loadAlertDetailAnalysis');
+  const pending = context.loadAlertDetailAnalysis('OLD', { navigationGeneration: 1, alertId: '1' });
+  context.navigationRenderGeneration = 2;
+  context.currentAlertDetailId = '2';
+  context.currentAlertDetailSymbol = 'NEW';
+  deferred.finish();
+  await pending;
+  assert.equal(context.alertDetailAnalysisState, null);
+  assert.equal(context.alertDetailKeyvarsStatusEl.textContent, 'Loading key variables for OLD…');
 });
 
 test('an older Earnings company-history response cannot overwrite a newer navigation generation', async () => {

@@ -1841,6 +1841,8 @@ async function handlePortfolioAccountNotFound() {
 
 async function handlePortfolioAccountChange() {
   if (isUpdatingPortfolioAccountSelect) return;
+  const navigationController = typeof browserNavigationController === 'undefined' ? null : browserNavigationController;
+  const navigationScreenBeforeAccountChange = navigationController?.currentScreen();
   if (simulatorActive && !discardSimulationEdits()) {
     renderPortfolioAccountSelector();
     return;
@@ -1859,6 +1861,13 @@ async function handlePortfolioAccountChange() {
   clearPositionsDisplay('', 'status');
   clearActionPlanDisplay('', 'status');
   await reloadPortfolioScopedViews();
+  if (navigationScreenBeforeAccountChange?.detail?.kind === 'action') {
+    const navigationListScreen = { view: navigationScreenBeforeAccountChange.view };
+    if (navigationListScreen.view === 'action-plan-simulator' && selectedSimulation?.id != null) {
+      navigationListScreen.simulationId = selectedSimulation.id;
+    }
+    navigationController?.synchronize(navigationListScreen);
+  }
 }
 
 latestPositions = loadCachedPositions();
@@ -2999,7 +3008,8 @@ function renderActionPlanDetail(item) {
   showActionPlanDetailView();
 }
 
-async function openActionPlanDetail(symbol) {
+async function openActionPlanDetail(symbol, options = {}) {
+  if (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration) return false;
   if (typeof simulatorActive !== 'undefined' && simulatorActive
       && simulationTriggerDirty() && !discardSimulationEdits()) return false;
   if (isPortfolioAccountSelectionRequired()) {
@@ -3020,14 +3030,16 @@ async function openActionPlanDetail(symbol) {
     ]);
     const payload = await response.json();
     const triggerPayload = await triggerResponse.json();
-    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId) return;
+    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId
+        || (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration)) return false;
     if (!response.ok) throw createPortfolioApiError(payload, 'Unable to load Action Detail');
     if (!triggerResponse.ok && triggerResponse.status !== 404) throw createPortfolioApiError(triggerPayload, 'Unable to load manual triggers');
     latestActionPlanDetailPayload = payload;
     renderSelectedActionPlanDetail(payload);
     renderManualTriggerDetail(symbol, triggerPayload.trigger || null);
   } catch (error) {
-    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId) return;
+    if (requestId !== actionPlanDetailRequestId || requestAccount !== selectedPortfolioAccountId
+        || (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration)) return false;
     if (error.code === 'account_not_found') {
       await handlePortfolioAccountNotFound();
       return;
@@ -4049,7 +4061,8 @@ function changePlanWorkspace(active) {
   restorePlanPreferences();
 }
 
-async function selectSimulation(id) {
+async function selectSimulation(id, options = {}) {
+  if (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration) return false;
   if (selectedSimulation) rememberPlanPreferences();
   selectedSimulation = savedSimulations.find((sim) => String(sim.id) === String(id)) || null;
   previousSimulation.set(selectedPortfolioAccountId, selectedSimulation?.id);
@@ -4060,7 +4073,9 @@ async function selectSimulation(id) {
   simulationEl('cash').value = selectedSimulation?.additional_cash_usd ?? '';
   simulationEl('status').textContent = selectedSimulation ? '' : 'No simulations yet. Create a simulation to get started.';
   renderSimulationControls();
-  if (selectedSimulation) await loadActionPlan();
+  if (!selectedSimulation) return false;
+  await loadActionPlan();
+  return options.navigationGeneration == null || options.navigationGeneration === navigationRenderGeneration;
 }
 
 async function simulationRequest(suffix, method = 'GET', body) {
@@ -4073,7 +4088,7 @@ async function simulationRequest(suffix, method = 'GET', body) {
   return payload;
 }
 
-async function loadSimulations() {
+async function loadSimulations(options = {}) {
   clearSimulationContext();
   if (!selectedPortfolioAccountId) {
     simulationEl('status').textContent = PORTFOLIO_ACCOUNT_SELECTION_REQUIRED_MESSAGE;
@@ -4086,16 +4101,20 @@ async function loadSimulations() {
   simulationEl('status').textContent = 'Loading simulations…';
   try {
     const { simulations } = await simulationRequest('');
-    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId) return;
+    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId
+        || (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration)) return false;
     savedSimulations = simulations;
     simulationBusy = false;
     const id = previousSimulation.get(account);
-    await selectSimulation(simulations.find((s) => s.id === id)?.id ?? simulations[0]?.id);
+    const selected = await selectSimulation(simulations.find((s) => s.id === id)?.id ?? simulations[0]?.id, options);
+    return simulations.length ? selected !== false : true;
   } catch (error) {
-    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId) return;
+    if (generation !== simulationGeneration || account !== selectedPortfolioAccountId
+        || (options.navigationGeneration != null && options.navigationGeneration !== navigationRenderGeneration)) return false;
     simulationBusy = false;
     renderSimulationControls();
     simulationEl('status').textContent = error.message;
+    return false;
   }
 }
 
@@ -4181,7 +4200,7 @@ function setView(targetView, options = {}) {
   if (targetView === 'analysis') { showAnalysisList(); if (!skipLoad) loadAnalysis(); }
   if (targetView === 'positions' && !skipLoad) loadPositions();
   if (targetView === 'action-plan' && !skipLoad) loadActionPlan();
-  if (targetView === 'alerts') loadAlerts();
+  if (targetView === 'alerts' && !skipLoad) loadAlerts();
   if (targetView === 'prompt') loadPromptConfiguration();
   if (targetView === 'configuration') loadGeneralConfiguration();
   if (targetView === 'backup') loadBackupView();
@@ -4191,6 +4210,7 @@ function setView(targetView, options = {}) {
 async function renderNavigationScreen(screen) {
   const generation = ++navigationRenderGeneration;
   const detail = screen.detail;
+  const restoreOptions = { skipNavigation: true, navigationGeneration: generation };
   const viewOptions = detail
     ? { skipDiscard: true, skipLoad: true }
     : { skipDiscard: true };
@@ -4198,19 +4218,24 @@ async function renderNavigationScreen(screen) {
 
   if (!detail) {
     if (screen.view === 'earnings-review') {
-      setEarningsReviewTab('calendar');
+      setEarningsReviewTab(screen.tab || 'calendar');
       await loadEarningsReview();
+      if (generation !== navigationRenderGeneration) return false;
     }
     return true;
   }
 
   if (screen.view === 'action-plan-simulator') {
-    if (!selectedSimulation) await loadSimulations();
-    if (screen.simulationId != null && String(selectedSimulation?.id) !== String(screen.simulationId)) {
-      await selectSimulation(screen.simulationId);
+    if (!selectedSimulation) {
+      await loadSimulations(restoreOptions);
+      if (generation !== navigationRenderGeneration) return false;
     }
+    if (screen.simulationId != null && String(selectedSimulation?.id) !== String(screen.simulationId)) {
+      const selected = await selectSimulation(screen.simulationId, restoreOptions);
+      if (selected === false || generation !== navigationRenderGeneration) return false;
+    }
+    if (screen.simulationId != null && String(selectedSimulation?.id) !== String(screen.simulationId)) return false;
   }
-  const restoreOptions = { skipNavigation: true, navigationGeneration: generation };
   if (detail.kind === 'analysis') {
     const origin = screen.view === 'positions' ? 'positions'
       : ['action-plan', 'action-plan-simulator'].includes(screen.view) ? 'action_plan'
@@ -4229,7 +4254,7 @@ async function renderNavigationScreen(screen) {
   } else if (detail.kind === 'earnings-review') {
     await openEarningsReviewRecordDetail(detail.symbol, detail.reviewId, restoreOptions);
   }
-  return true;
+  return generation === navigationRenderGeneration;
 }
 
 function navigationRequestCurrent(options = {}) {
@@ -4245,6 +4270,24 @@ function navigateToScreen(screen) {
 function navigateBack(fallback) {
   if (!browserNavigationController) return navigateToScreen(fallback);
   return browserNavigationController.back(fallback);
+}
+
+function navigateAnalysisVersion(versionId) {
+  if (!analysisDetailState?.symbol || versionId == null) return false;
+  const current = browserNavigationController?.currentScreen();
+  if (current?.detail?.kind === 'analysis') {
+    return navigateToScreen({
+      ...current,
+      detail: { ...current.detail, symbol: analysisDetailState.symbol, versionId },
+    });
+  }
+  const view = analysisDetailOrigin === 'positions' ? 'positions'
+    : analysisDetailOrigin === 'action_plan' ? (simulatorActive ? 'action-plan-simulator' : 'action-plan')
+      : analysisDetailOrigin === 'earnings_review' ? 'earnings-review' : 'analysis';
+  const screen = { view, detail: { kind: 'analysis', symbol: analysisDetailState.symbol, versionId } };
+  if (view === 'action-plan-simulator' && selectedSimulation?.id != null) screen.simulationId = selectedSimulation.id;
+  if (view === 'earnings-review') screen.tab = 'workflow';
+  return navigateToScreen(screen);
 }
 
 function canLeaveNavigation(currentScreen) {
@@ -5854,7 +5897,7 @@ async function openNextAlertDetail() {
     alertDetailStatusEl.className = 'status';
     return;
   }
-  await openAlertDetail(next.id);
+  await navigateToScreen({ view: 'alerts', detail: { kind: 'alert', alertId: next.id } });
 }
 
 async function openPreviousAlertDetail() {
@@ -5869,7 +5912,7 @@ async function openPreviousAlertDetail() {
     alertDetailStatusEl.className = 'status';
     return;
   }
-  await openAlertDetail(prev.id);
+  await navigateToScreen({ view: 'alerts', detail: { kind: 'alert', alertId: prev.id } });
 }
 
 async function refreshAlertsData() {
@@ -5956,7 +5999,12 @@ function collectEditedAlertDetailVariables() {
   }));
 }
 
-async function loadAlertDetailAnalysis(symbol) {
+async function loadAlertDetailAnalysis(symbol, options = {}) {
+  const expectedAlertId = String(options.alertId ?? currentAlertDetailId ?? '');
+  const requestIsCurrent = () => navigationRequestCurrent(options)
+    && String(currentAlertDetailId ?? '') === expectedAlertId
+    && currentAlertDetailSymbol === symbol;
+  if (!requestIsCurrent()) return false;
   if (!symbol) {
     alertDetailKeyvarsStatusEl.textContent = 'Error: Missing symbol for this alert.';
     alertDetailKeyvarsStatusEl.className = 'status error';
@@ -5970,11 +6018,13 @@ async function loadAlertDetailAnalysis(symbol) {
   try {
     const response = await fetch(`/api/analysis/${encodeURIComponent(symbol)}`);
     const payload = await response.json();
+    if (!requestIsCurrent()) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load analysis detail'));
     alertDetailAnalysisState = payload.analysis;
     renderAlertDetailVariablesTable();
     alertDetailKeyvarsStatusEl.textContent = `Loaded ${getAlertDetailEffectiveVariables().length} key variable(s) from version ${alertDetailAnalysisState.version.version_number}.`;
   } catch (error) {
+    if (!requestIsCurrent()) return false;
     alertDetailKeyvarsStatusEl.textContent = `Error: ${error.message}`;
     alertDetailKeyvarsStatusEl.className = 'status error';
   }
@@ -6031,7 +6081,7 @@ async function rerunAlertDetailScenarios() {
 }
 
 async function backToAlertsFromDetail() {
-  await loadAlerts();
+  await navigateBack({ view: 'alerts' });
 }
 
 function renderAlertsList() {
@@ -6078,10 +6128,7 @@ async function openAlertDetail(alertId, options = {}) {
     renderAlertSources(alert.event_sources || []);
     alertDetailPanelsEl.classList.remove('hidden');
     alertDetailStatusEl.textContent = `Status: ${alert.status || 'New'}`;
-    loadAlertDetailAnalysis(alert.symbol || '').catch((error) => {
-      alertDetailKeyvarsStatusEl.textContent = `Error: ${error.message}`;
-      alertDetailKeyvarsStatusEl.className = 'status error';
-    });
+    loadAlertDetailAnalysis(alert.symbol || '', { ...options, alertId });
     return true;
   } catch (error) {
     if (!navigationRequestCurrent(options)) return false;
@@ -6142,7 +6189,7 @@ async function updateAlertStatus(alertId, status, options = {}) {
       if (advanceAfterUpdate) {
         const next = nextAlertIdBefore && getFilteredAlerts().find((item) => String(item.id) === String(nextAlertIdBefore));
         if (next) {
-          await openAlertDetail(next.id);
+          await navigateToScreen({ view: 'alerts', detail: { kind: 'alert', alertId: next.id } });
         } else {
           await backToAlertsFromDetail();
         }
@@ -6809,7 +6856,10 @@ async function createEarningsReviewRecord() {
     const result = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(result, 'Unable to create earnings review record.'));
     toggleEarningsReviewCreateForm(false);
-    await openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, Number(result.item?.id));
+    await navigateToScreen({
+      view: 'earnings-review',
+      detail: { kind: 'earnings-review', symbol: earningsReviewSelectedSymbol, reviewId: Number(result.item?.id) },
+    });
   } catch (error) {
     earningsReviewSymbolStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewSymbolStatusEl.className = 'status error';
@@ -6832,7 +6882,10 @@ async function deleteEarningsReviewRecord({ reviewId, fiscalYear, fiscalQuarter 
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Failed to delete earnings review. Please try again.'));
-    await openEarningsReviewSymbolHistory(earningsReviewSelectedSymbol);
+    await navigateBack({
+      view: 'earnings-review',
+      detail: { kind: 'earnings-symbol', symbol: earningsReviewSelectedSymbol },
+    });
   } catch (_error) {
     earningsReviewSymbolStatusEl.textContent = 'Failed to delete earnings review. Please try again.';
     earningsReviewSymbolStatusEl.className = 'status error';
@@ -7709,12 +7762,12 @@ analysisCancelVariablesBtn.addEventListener('click', () => {
 analysisSaveVariablesBtn.addEventListener('click', saveEditedVariables);
 analysisRerunBtn.addEventListener('click', rerunScenarios);
 analysisVersionPrevBtn.addEventListener('click', () => {
-  const idx = selectedVersionIndex(); const prev = analysisDetailState.versions[idx - 1]; if (prev) loadAnalysisDetail(analysisDetailState.symbol, prev.id);
+  const idx = selectedVersionIndex(); const prev = analysisDetailState.versions[idx - 1]; if (prev) navigateAnalysisVersion(prev.id);
 });
 analysisVersionNextBtn.addEventListener('click', () => {
-  const idx = selectedVersionIndex(); const next = analysisDetailState.versions[idx + 1]; if (next) loadAnalysisDetail(analysisDetailState.symbol, next.id);
+  const idx = selectedVersionIndex(); const next = analysisDetailState.versions[idx + 1]; if (next) navigateAnalysisVersion(next.id);
 });
-analysisVersionSelect.addEventListener('change', () => loadAnalysisDetail(analysisDetailState.symbol, analysisVersionSelect.value));
+analysisVersionSelect.addEventListener('change', () => navigateAnalysisVersion(analysisVersionSelect.value));
 
 promptSaveBtn.addEventListener('click', savePromptConfiguration);
 promptResetBtn.addEventListener('click', resetPromptConfiguration);
@@ -7726,16 +7779,10 @@ earningsReviewBackBtn.addEventListener('click', () => navigateBack({
   view: 'earnings-review',
   detail: { kind: 'earnings-symbol', symbol: earningsReviewSelectedSymbol },
 }));
-earningsReviewSymbolBackBtn.addEventListener('click', () => navigateBack({ view: 'earnings-review' }));
+earningsReviewSymbolBackBtn.addEventListener('click', () => navigateBack({ view: 'earnings-review', tab: 'workflow' }));
 earningsReviewAddBtn.addEventListener('click', addEarningsReviewSymbol);
-earningsReviewTabWorkflowBtn.addEventListener('click', async () => {
-  setEarningsReviewTab('workflow');
-  await loadEarningsReview();
-});
-earningsReviewTabCalendarBtn.addEventListener('click', async () => {
-  setEarningsReviewTab('calendar');
-  await loadEarningsReview();
-});
+earningsReviewTabWorkflowBtn.addEventListener('click', () => navigateToScreen({ view: 'earnings-review', tab: 'workflow' }));
+earningsReviewTabCalendarBtn.addEventListener('click', () => navigateToScreen({ view: 'earnings-review', tab: 'calendar' }));
 earningsCalendarAddBtn.addEventListener('click', createEarningsCalendarEntry);
 [earningsCalendarAddSymbolEl, earningsCalendarAddFiscalYearEl, earningsCalendarAddReleaseDateEl].forEach((input) => {
   input.addEventListener('keydown', (event) => {

@@ -41,7 +41,7 @@ test('Earnings Review menu item uses the same internal view pattern as other sec
   assert.match(indexHtml, /<button class="menu-item" data-view="earnings-review">Earnings Review<\/button>/);
   assert.doesNotMatch(indexHtml, /href="#earnings-review"/);
   assert.match(appJs, /const target = item\.dataset\.view;\s*navigateToScreen\(\{ view: target \}\);/);
-  assert.match(functionBody('renderNavigationScreen'), /if \(screen\.view === 'earnings-review'\) \{\s*setEarningsReviewTab\('calendar'\);\s*await loadEarningsReview\(\);/);
+  assert.match(functionBody('renderNavigationScreen'), /setEarningsReviewTab\(screen\.tab \|\| 'calendar'\);\s*await loadEarningsReview\(\);/);
 });
 
 test('Earnings Review symbol and detail views render through internal state only', () => {
@@ -60,8 +60,13 @@ test('Earnings Review symbol and detail views render through internal state only
 
 test('Earnings Review back navigation uses browser history with logical fallbacks', () => {
   assert.match(appJs, /earningsReviewBackBtn\.addEventListener\('click', \(\) => navigateBack\(\{\s*view: 'earnings-review',\s*detail: \{ kind: 'earnings-symbol', symbol: earningsReviewSelectedSymbol \},?\s*\}\)\);/);
-  assert.match(appJs, /earningsReviewSymbolBackBtn\.addEventListener\('click', \(\) => navigateBack\(\{ view: 'earnings-review' \}\)\);/);
+  assert.match(appJs, /earningsReviewSymbolBackBtn\.addEventListener\('click', \(\) => navigateBack\(\{ view: 'earnings-review', tab: 'workflow' \}\)\);/);
   assert.doesNotMatch(appJs, /earningsReviewBackBtn[\s\S]*location\.hash/);
+});
+
+test('Earnings Review tabs are logical history screens', () => {
+  assert.match(appJs, /earningsReviewTabWorkflowBtn\.addEventListener\('click', \(\) => navigateToScreen\(\{ view: 'earnings-review', tab: 'workflow' \}\)\);/);
+  assert.match(appJs, /earningsReviewTabCalendarBtn\.addEventListener\('click', \(\) => navigateToScreen\(\{ view: 'earnings-review', tab: 'calendar' \}\)\);/);
 });
 
 test('Other main navigation and Earnings Review company-detail return paths still exist', () => {

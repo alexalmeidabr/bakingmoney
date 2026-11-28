@@ -235,7 +235,8 @@ Push `codex/browser-history-navigation`, create a PR targeting `main` titled `Su
 
 - `node --check static/navigation_history.js` — passed.
 - `node --check static/app.js` — passed.
-- Complete JavaScript suite — 200 tests passed, 0 failed.
+- Complete JavaScript suite — 209 tests passed, 0 failed.
 - Complete Python suite — 481 tests passed, 0 failed.
 - Headless Edge smoke — passed all browser-history, Simulator isolation, cancellation, stale-response, and outside-site navigation checks; 57 scoped requests observed and no browser exceptions.
 - `git diff --check origin/main` — passed (Git emitted only line-ending conversion notices for two new JavaScript files).
+- Whole-branch review — all seven Important findings resolved: mixed pop/sidebar sequencing, one-shot cancellation recovery, stale Simulator and Alert subrequests, account-entry synchronization, controller-backed secondary navigation, and Earnings workflow restoration. The Edge cancellation timing Minor was also fixed.

@@ -147,11 +147,13 @@ async function main(){
  // A rejected dirty Back is compensated without losing the edit; accepting later traverses once.
  await click('#simulation-results .linear-allocation-symbol');
  await until(`document.querySelector('${field}')?.value === '90'`);
- await run(`document.querySelector('${field}').value=111;document.querySelector('${field}').dispatchEvent(new Event('input'));window.confirm=()=>false;history.back()`);
- await until("history.state.screen.detail?.kind === 'action' && !document.querySelector('#action-plan-detail-view').classList.contains('hidden')");
+ await run(`document.querySelector('${field}').value=111;document.querySelector('${field}').dispatchEvent(new Event('input'));window.__historyConfirmations=0;window.confirm=()=>{window.__historyConfirmations+=1;return false};history.back()`);
+ await until("window.__historyConfirmations === 1 && history.state.screen.detail?.kind === 'action' && !document.querySelector('#action-plan-detail-view').classList.contains('hidden')");
  assert.equal(await run(`document.querySelector('${field}').value`),'111');
- await run('window.confirm=()=>true;history.back()');
+ assert.equal(await run('window.__historyConfirmations'),1);
+ await run('window.confirm=()=>{window.__historyConfirmations+=1;return true};history.back()');
  await until("history.state.screen.view === 'action-plan-simulator' && !history.state.screen.detail && document.querySelector('#action-plan-detail-view').classList.contains('hidden')");
+ assert.equal(await run('window.__historyConfirmations'),2);
  await run('history.forward()');
  await until(`history.state.screen.detail?.kind === 'action' && document.querySelector('${field}')?.value === '90'`);
 

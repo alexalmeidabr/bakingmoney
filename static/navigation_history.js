@@ -23,6 +23,10 @@
       if (!simulationId) return null;
       screen.simulationId = simulationId;
     }
+    if (value.view === 'earnings-review' && value.tab != null) {
+      if (!['calendar', 'workflow'].includes(value.tab)) return null;
+      screen.tab = value.tab;
+    }
     if (value.detail == null) return screen;
     const detail = value.detail;
     if (!detail || typeof detail !== 'object') return null;
@@ -77,57 +81,95 @@
   function createController({ history, eventTarget, render, canLeave = () => true, fallbackScreen = { view: 'analysis' } }) {
     let activeScreen = null;
     let activeSequence = null;
-    let popQueue = Promise.resolve();
     let pendingScreen = null;
     let navigationRevision = 0;
+    let recoverySequence = null;
+    let leaveDecision = null;
 
     const entry = (sequence, screen) => ({ bakingMoneyNavigation: 1, sequence, screen });
 
     async function allowed(target) {
-      return (await canLeave(activeScreen, target)) !== false;
+      if (!leaveDecision || !screensEqual(leaveDecision.from, activeScreen)) {
+        const from = activeScreen;
+        const promise = Promise.resolve()
+          .then(() => canLeave(from, target))
+          .then((result) => result !== false, () => false);
+        leaveDecision = { from, promise };
+      }
+      return leaveDecision.promise;
     }
 
-    async function apply(target, sequence) {
-      const revision = ++navigationRevision;
+    async function apply(target, sequence, revision) {
+      if (revision !== navigationRevision) return null;
       pendingScreen = target;
       const rendered = await render(target);
       if (revision !== navigationRevision) return null;
       pendingScreen = null;
-      if (rendered === false) return false;
+      if (rendered === false) {
+        if (activeScreen) {
+          pendingScreen = activeScreen;
+          await render(activeScreen);
+          if (revision === navigationRevision) pendingScreen = null;
+        }
+        return false;
+      }
       activeScreen = target;
       activeSequence = sequence;
+      leaveDecision = null;
       return true;
+    }
+
+    function compensateToActiveEntry() {
+      if (recoverySequence != null || activeSequence == null) return;
+      recoverySequence = activeSequence;
+      pendingScreen = null;
+      const browserEntry = parseEntry(history.state);
+      if (!browserEntry) return;
+      const correction = recoverySequence - browserEntry.sequence;
+      if (correction) history.go(correction);
+      else {
+        recoverySequence = null;
+        leaveDecision = null;
+      }
     }
 
     async function onPopState(event) {
       const target = parseEntry(event.state);
-      if (!target || (target.sequence === activeSequence && screensEqual(target.screen, activeScreen) && !pendingScreen)) return;
-      if (!(await allowed(target.screen))) {
+      if (!target) return;
+      const revision = ++navigationRevision;
+      if (recoverySequence != null) {
+        pendingScreen = null;
+        if (target.sequence === recoverySequence) {
+          recoverySequence = null;
+          leaveDecision = null;
+          return;
+        }
         const browserEntry = parseEntry(history.state);
-        if (!browserEntry) return;
-        const correction = activeSequence - browserEntry.sequence;
-        if (correction) history.go(correction);
+        if (browserEntry) {
+          const correction = recoverySequence - browserEntry.sequence;
+          if (correction) history.go(correction);
+        }
         return;
       }
-      const applied = await apply(target.screen, target.sequence);
-      if (applied === false) {
-        const browserEntry = parseEntry(history.state);
-        if (!browserEntry) return;
-        const correction = activeSequence - browserEntry.sequence;
-        if (correction) history.go(correction);
+      if (target.sequence === activeSequence && screensEqual(target.screen, activeScreen) && !pendingScreen) return;
+      if (!(await allowed(target.screen))) {
+        compensateToActiveEntry();
+        return;
       }
+      if (revision !== navigationRevision) return;
+      const applied = await apply(target.screen, target.sequence, revision);
+      if (applied === false) compensateToActiveEntry();
     }
 
-    eventTarget.addEventListener('popstate', (event) => {
-      popQueue = popQueue.then(() => onPopState(event));
-    });
+    eventTarget.addEventListener('popstate', onPopState);
 
     return {
       async initialize() {
         const restored = parseEntry(history.state);
-        if (restored) return apply(restored.screen, restored.sequence);
+        const revision = ++navigationRevision;
+        if (restored) return apply(restored.screen, restored.sequence, revision);
         const initial = normalizeScreen(fallbackScreen) || { view: 'analysis' };
-        if (!(await apply(initial, 0))) return false;
+        if (!(await apply(initial, 0, revision))) return false;
         history.replaceState(entry(0, initial), '');
         return true;
       },
@@ -135,14 +177,37 @@
       async navigate(value) {
         const target = normalizeScreen(value);
         if (!target) return false;
+        const revision = ++navigationRevision;
         const alreadyActive = screensEqual(target, activeScreen);
         if (alreadyActive && !pendingScreen) return true;
-        if (!(await allowed(target))) return false;
-        const nextSequence = alreadyActive ? activeSequence : (activeSequence ?? -1) + 1;
-        const applied = await apply(target, nextSequence);
+        if (!(await allowed(target))) {
+          leaveDecision = null;
+          return false;
+        }
+        if (revision !== navigationRevision) return false;
+        const browserEntry = parseEntry(history.state);
+        const nextSequence = alreadyActive
+          ? activeSequence
+          : (browserEntry?.sequence ?? activeSequence ?? -1) + 1;
+        const applied = await apply(target, nextSequence, revision);
         if (applied !== true) return false;
         if (alreadyActive) return true;
         history.pushState(entry(nextSequence, target), '');
+        return true;
+      },
+
+      synchronize(value) {
+        const target = normalizeScreen(value);
+        if (!target) return false;
+        navigationRevision += 1;
+        pendingScreen = null;
+        recoverySequence = null;
+        leaveDecision = null;
+        const browserEntry = parseEntry(history.state);
+        const sequence = browserEntry?.sequence ?? activeSequence ?? 0;
+        activeScreen = target;
+        activeSequence = sequence;
+        history.replaceState(entry(sequence, target), '');
         return true;
       },
 
@@ -151,7 +216,9 @@
           history.back();
           return true;
         }
-        return this.navigate(fallback);
+        const target = normalizeScreen(fallback);
+        if (!target) return false;
+        return this.navigate(target);
       },
       currentScreen: () => activeScreen,
       currentSequence: () => activeSequence,

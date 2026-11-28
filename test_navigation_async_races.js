@@ -237,6 +237,94 @@ function installEarningsOperation(context, name) {
   vm.runInContext(`${helpers}\n${functionSource(name)}; this.operation = ${name};`, context);
 }
 
+test('fresh Earnings screens reset controls disabled by an operation on the previous screen', async () => {
+  const detailRequest = deferredResponse({ item: {
+    symbol: 'BBB', fiscal_year: 2026, fiscal_quarter: 'Q4', documents: [],
+    key_variables_snapshot: [], watchpoints_by_variable: [], watchpoint_results: [],
+  } });
+  const detailContext = vm.createContext({
+    navigationRenderGeneration: 1,
+    earningsReviewSelectedSymbol: null,
+    earningsReviewSelectedRecordId: null,
+    earningsReviewDetailTitleEl: fakeElement(), earningsReviewDetailHeaderEl: fakeElement(),
+    earningsReviewDetailMetaEl: fakeElement(), earningsReviewGenerateBtn: fakeElement(),
+    earningsReviewAnalyseBtn: fakeElement(), earningsReviewKeyVariablesBody: fakeElement(),
+    earningsReviewWatchpointsEl: fakeElement(), earningsReviewSnapshotSummaryEl: fakeElement(),
+    earningsReviewDocumentsTableBody: fakeElement(), earningsReviewDocumentsStatusEl: fakeElement(),
+    earningsReviewDocumentFileEl: fakeElement(), earningsReviewDocumentFileNameEl: fakeElement(),
+    earningsReviewDocumentUploadBtn: fakeElement({ disabled: true }),
+    setEarningsReviewTab() {}, showEarningsReviewDetail() {}, fetch: detailRequest.fetch,
+    extractErrorMessage: () => 'error', formatDate: String, formatDateTime: String,
+    renderEarningsSnapshotSummary() {}, renderEarningsKeyVariables() {},
+    renderEarningsWatchpoints() {}, renderEarningsReviewDocuments() {},
+  });
+  vm.runInContext(`${functionSource('navigationRequestCurrent')}; ${functionSource('openEarningsReviewRecordDetail')}; this.open = openEarningsReviewRecordDetail;`, detailContext);
+  const detailPending = detailContext.open('BBB', 2, { navigationGeneration: 1 });
+  assert.equal(detailContext.earningsReviewDocumentUploadBtn.disabled, true);
+  detailRequest.succeed();
+  await detailPending;
+  assert.equal(detailContext.earningsReviewDocumentUploadBtn.disabled, false);
+
+  const symbolRequest = deferredResponse({ item: { symbol: 'BBB', records: [] } });
+  const symbolContext = vm.createContext({
+    navigationRenderGeneration: 1,
+    earningsReviewSelectedSymbol: null, earningsReviewSelectedRecordId: null,
+    earningsReviewSymbolHistory: null, earningsReviewSymbolTitleEl: fakeElement(),
+    earningsReviewSymbolHeaderEl: fakeElement(), earningsReviewSymbolStatusEl: fakeElement(),
+    earningsReviewSymbolTableBody: fakeElement(), earningsReviewCreateSubmitBtn: fakeElement({ disabled: true }),
+    setEarningsReviewTab() {}, showEarningsReviewSymbolHistoryView() {}, fetch: symbolRequest.fetch,
+    extractErrorMessage: () => 'error', renderEarningsReviewSymbolHistoryTable() {},
+  });
+  vm.runInContext(`${functionSource('navigationRequestCurrent')}; ${functionSource('openEarningsReviewSymbolHistory')}; this.open = openEarningsReviewSymbolHistory;`, symbolContext);
+  const symbolPending = symbolContext.open('BBB', { navigationGeneration: 1 });
+  assert.equal(symbolContext.earningsReviewCreateSubmitBtn.disabled, false);
+  symbolRequest.succeed();
+  await symbolPending;
+});
+
+test('newer same-record follow-up refresh wins when secondary responses resolve out of order', async () => {
+  const detail = { view: 'earnings-review', detail: { kind: 'earnings-review', symbol: 'AAA', reviewId: 1 } };
+  const { controller } = await controllerAt(detail);
+  const refreshes = [];
+  const rendered = { list: null, detail: null };
+  const context = vm.createContext({
+    browserNavigationController: controller,
+    navigationRenderGeneration: 30,
+    earningsReviewRefreshRequestId: 0,
+    earningsReviewSelectedSymbol: 'AAA',
+    earningsReviewSelectedRecordId: 1,
+    refreshEarningsReviewListOnly(options) {
+      let resolve;
+      const promise = new Promise((finish) => { resolve = finish; });
+      refreshes.push({
+        resolve(value) {
+          if (!options?.requestCurrent || options.requestCurrent()) rendered.list = value;
+          resolve();
+        },
+      });
+      return promise;
+    },
+    openEarningsReviewRecordDetail(_symbol, _reviewId, options) {
+      if (!options?.requestCurrent || options.requestCurrent()) rendered.detail = rendered.list;
+      return true;
+    },
+  });
+  const helpers = [
+    'captureEarningsReviewScreenContext', 'earningsReviewScreenContextIsCurrent',
+    'captureEarningsReviewOperationContext', 'earningsReviewOperationContextIsCurrent',
+    'refreshEarningsReviewOperationContext',
+  ].map((name) => functionSource(name)).join('\n');
+  vm.runInContext(`${helpers}; this.capture = captureEarningsReviewOperationContext; this.refresh = refreshEarningsReviewOperationContext;`, context);
+  const operationContext = context.capture('AAA', 1);
+  const older = context.refresh(operationContext);
+  const newer = context.refresh(operationContext);
+  refreshes[1].resolve('newer');
+  await newer;
+  refreshes[0].resolve('older');
+  await older;
+  assert.deepEqual(rendered, { list: 'newer', detail: 'newer' });
+});
+
 async function earningsRecordMutationHarness(name) {
   const symbolScreen = { view: 'earnings-review', detail: { kind: 'earnings-symbol', symbol: 'AAA' } };
   const { controller } = await controllerAt(symbolScreen);
@@ -304,6 +392,7 @@ async function earningsHarness(name, { file = false } = {}) {
   const context = vm.createContext({
     browserNavigationController: controller,
     navigationRenderGeneration: 10,
+    earningsReviewRefreshRequestId: 0,
     earningsReviewSelectedSymbol: 'AAA',
     earningsReviewSelectedRecordId: 1,
     earningsReviewGenerateBtn: fakeElement(),

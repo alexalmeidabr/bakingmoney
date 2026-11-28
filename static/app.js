@@ -340,6 +340,7 @@ let earningsCalendarAddFormDefaultsApplied = false;
 let browserNavigationController = null;
 let navigationRenderGeneration = 0;
 let portfolioAccountChangeRequestId = 0;
+let earningsReviewRefreshRequestId = 0;
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
   hybrid_ai_weight: 0.70,
@@ -4265,8 +4266,9 @@ async function renderNavigationScreen(screen) {
 }
 
 function navigationRequestCurrent(options = {}) {
-  return options.navigationGeneration == null
-    || options.navigationGeneration === navigationRenderGeneration;
+  return (options.navigationGeneration == null
+      || options.navigationGeneration === navigationRenderGeneration)
+    && (typeof options.requestCurrent !== 'function' || options.requestCurrent());
 }
 
 function navigateToScreen(screen) {
@@ -6641,10 +6643,14 @@ function earningsReviewOperationContextIsCurrent(context) {
 
 async function refreshEarningsReviewOperationContext(context) {
   if (!earningsReviewOperationContextIsCurrent(context)) return false;
-  await refreshEarningsReviewListOnly();
-  if (!earningsReviewOperationContextIsCurrent(context)) return false;
+  const refreshRequestId = ++earningsReviewRefreshRequestId;
+  const requestCurrent = () => refreshRequestId === earningsReviewRefreshRequestId
+    && earningsReviewOperationContextIsCurrent(context);
+  await refreshEarningsReviewListOnly({ requestCurrent });
+  if (!requestCurrent()) return false;
   return openEarningsReviewRecordDetail(context.symbol, context.reviewId, {
     navigationGeneration: context.navigationGeneration,
+    requestCurrent,
   });
 }
 
@@ -6831,6 +6837,7 @@ async function openEarningsReviewSymbolHistory(symbol, options = {}) {
   earningsReviewSymbolHeaderEl.textContent = `Loading ${normalized} earnings history…`;
   earningsReviewSymbolStatusEl.textContent = 'Loading earnings history…';
   earningsReviewSymbolStatusEl.className = 'status';
+  earningsReviewCreateSubmitBtn.disabled = false;
   earningsReviewSymbolTableBody.innerHTML = '';
   try {
     const response = await fetch(`/api/earnings-review/${encodeURIComponent(normalized)}`);
@@ -6852,12 +6859,14 @@ async function openEarningsReviewSymbolHistory(symbol, options = {}) {
   }
 }
 
-async function refreshEarningsReviewListOnly() {
+async function refreshEarningsReviewListOnly(options = {}) {
   const response = await fetch('/api/earnings-review');
   const payload = await response.json();
+  if (typeof options.requestCurrent === 'function' && !options.requestCurrent()) return false;
   if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review list.'));
   earningsReviewItems = Array.isArray(payload.items) ? payload.items : [];
   renderEarningsReviewList();
+  return true;
 }
 
 async function loadEarningsReview() {
@@ -7008,11 +7017,13 @@ async function openEarningsReviewRecordDetail(symbol, reviewId, options = {}) {
   earningsReviewDocumentsStatusEl.className = 'status';
   earningsReviewDocumentFileEl.value = '';
   earningsReviewDocumentFileNameEl.textContent = 'No file chosen';
+  earningsReviewDocumentUploadBtn.disabled = true;
   try {
     const response = await fetch(`/api/earnings-review/${encodeURIComponent(normalized)}/${encodeURIComponent(earningsReviewSelectedRecordId)}`);
     const payload = await response.json();
     if (!navigationRequestCurrent(options)) return false;
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to load earnings review record.'));
+    earningsReviewDocumentUploadBtn.disabled = false;
     const item = payload.item || {};
     const snapshot = item.thesis_snapshot || {};
     earningsReviewDetailTitleEl.textContent = `Earnings Review: ${item.symbol} ${item.fiscal_year} ${item.fiscal_quarter}`;

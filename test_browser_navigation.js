@@ -775,6 +775,7 @@ test('an older Earnings company-history response cannot overwrite a newer naviga
     earningsReviewSelectedRecordId: null, earningsReviewSymbolHistory: null,
     earningsReviewSymbolTitleEl: fakeElement(), earningsReviewSymbolHeaderEl: fakeElement(),
     earningsReviewSymbolStatusEl: fakeElement(), earningsReviewSymbolTableBody: fakeElement(),
+    earningsReviewCreateSubmitBtn: fakeElement(),
     setEarningsReviewTab() {}, showEarningsReviewSymbolHistoryView() {}, fetch: deferred.fetch,
     extractErrorMessage: () => 'error', renderEarningsReviewSymbolHistoryTable() { renders += 1; },
   });
@@ -800,6 +801,7 @@ test('an older Earnings review response cannot overwrite a newer navigation gene
     earningsReviewWatchpointsEl: fakeElement(), earningsReviewSnapshotSummaryEl: fakeElement(),
     earningsReviewDocumentsTableBody: fakeElement(), earningsReviewDocumentsStatusEl: fakeElement(),
     earningsReviewDocumentFileEl: fakeElement(), earningsReviewDocumentFileNameEl: fakeElement(),
+    earningsReviewDocumentUploadBtn: fakeElement(),
     setEarningsReviewTab() {}, showEarningsReviewDetail() {}, fetch: deferred.fetch,
     extractErrorMessage: () => 'error', formatDate: String, formatDateTime: String,
     renderEarningsSnapshotSummary() { renders += 1; }, renderEarningsKeyVariables() { renders += 1; },

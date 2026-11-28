@@ -339,6 +339,7 @@ let earningsCalendarReleaseDateSortDirection = 'asc';
 let earningsCalendarAddFormDefaultsApplied = false;
 let browserNavigationController = null;
 let navigationRenderGeneration = 0;
+let portfolioAccountChangeRequestId = 0;
 const DEFAULT_SCENARIO_PROBABILITY_SETTINGS = {
   probability_source_mode: 'hybrid',
   hybrid_ai_weight: 0.70,
@@ -1851,7 +1852,10 @@ async function handlePortfolioAccountChange() {
     rememberPlanPreferences();
     clearSimulationContext();
   }
+  const accountChangeRequestId = ++portfolioAccountChangeRequestId;
+  const navigationContextBeforeAccountChange = navigationController?.captureContext();
   selectedPortfolioAccountId = normalizePortfolioAccountId(portfolioAccountSelectEl?.value);
+  const accountId = selectedPortfolioAccountId;
   resetActionPlanExecutionMode();
   if (selectedPortfolioAccountId) localStorage.setItem(PORTFOLIO_ACCOUNT_STORAGE_KEY, selectedPortfolioAccountId);
   else localStorage.removeItem(PORTFOLIO_ACCOUNT_STORAGE_KEY);
@@ -1861,7 +1865,10 @@ async function handlePortfolioAccountChange() {
   clearPositionsDisplay('', 'status');
   clearActionPlanDisplay('', 'status');
   await reloadPortfolioScopedViews();
-  if (navigationScreenBeforeAccountChange?.detail?.kind === 'action') {
+  if (accountChangeRequestId === portfolioAccountChangeRequestId
+      && accountId === selectedPortfolioAccountId
+      && navigationController?.isCurrentContext(navigationContextBeforeAccountChange)
+      && navigationScreenBeforeAccountChange?.detail?.kind === 'action') {
     const navigationListScreen = { view: navigationScreenBeforeAccountChange.view };
     if (navigationListScreen.view === 'action-plan-simulator' && selectedSimulation?.id != null) {
       navigationListScreen.simulationId = selectedSimulation.id;
@@ -6599,6 +6606,48 @@ function renderEarningsReviewDocuments(documents) {
   earningsReviewDocumentsStatusEl.className = 'status';
 }
 
+function captureEarningsReviewScreenContext() {
+  return {
+    navigationGeneration: navigationRenderGeneration,
+    navigationContext: browserNavigationController?.captureContext() || null,
+  };
+}
+
+function earningsReviewScreenContextIsCurrent(context) {
+  if (!context || context.navigationGeneration !== navigationRenderGeneration) return false;
+  if (!context.navigationContext) return true;
+  return browserNavigationController?.isCurrentContext(context.navigationContext) === true;
+}
+
+function captureEarningsReviewOperationContext(symbol, reviewId) {
+  return {
+    ...captureEarningsReviewScreenContext(),
+    symbol: String(symbol || '').trim().toUpperCase(),
+    reviewId: Number(reviewId),
+  };
+}
+
+function earningsReviewOperationContextIsCurrent(context) {
+  if (!earningsReviewScreenContextIsCurrent(context)
+      || context.symbol !== String(earningsReviewSelectedSymbol || '').trim().toUpperCase()
+      || context.reviewId !== Number(earningsReviewSelectedRecordId)) return false;
+  if (!context.navigationContext) return true;
+  const screen = context.navigationContext.screen;
+  return screen?.view === 'earnings-review'
+    && screen.detail?.kind === 'earnings-review'
+    && screen.detail.symbol === context.symbol
+    && screen.detail.reviewId === context.reviewId;
+}
+
+async function refreshEarningsReviewOperationContext(context) {
+  if (!earningsReviewOperationContextIsCurrent(context)) return false;
+  await refreshEarningsReviewListOnly();
+  if (!earningsReviewOperationContextIsCurrent(context)) return false;
+  return openEarningsReviewRecordDetail(context.symbol, context.reviewId, {
+    navigationGeneration: context.navigationGeneration,
+  });
+}
+
 async function uploadEarningsReviewDocument() {
   if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId) return;
   const file = earningsReviewDocumentFileEl.files && earningsReviewDocumentFileEl.files[0];
@@ -6607,6 +6656,10 @@ async function uploadEarningsReviewDocument() {
     earningsReviewDocumentsStatusEl.className = 'status error';
     return;
   }
+  const operationContext = captureEarningsReviewOperationContext(
+    earningsReviewSelectedSymbol,
+    earningsReviewSelectedRecordId,
+  );
   const formData = new FormData();
   formData.append('document_type', earningsReviewDocumentTypeEl.value);
   formData.append('file', file);
@@ -6614,22 +6667,23 @@ async function uploadEarningsReviewDocument() {
   earningsReviewDocumentsStatusEl.textContent = 'Uploading document…';
   earningsReviewDocumentsStatusEl.className = 'status';
   try {
-    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(earningsReviewSelectedRecordId)}/documents`, {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(operationContext.symbol)}/${encodeURIComponent(operationContext.reviewId)}/documents`, {
       method: 'POST',
       body: formData,
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to upload earnings document.'));
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDocumentFileEl.value = '';
     earningsReviewDocumentFileNameEl.textContent = 'No file chosen';
     earningsReviewDocumentsStatusEl.textContent = 'Document uploaded successfully.';
-    await refreshEarningsReviewListOnly();
-    await openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, earningsReviewSelectedRecordId);
+    await refreshEarningsReviewOperationContext(operationContext);
   } catch (error) {
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDocumentsStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewDocumentsStatusEl.className = 'status error';
   } finally {
-    earningsReviewDocumentUploadBtn.disabled = false;
+    if (earningsReviewOperationContextIsCurrent(operationContext)) earningsReviewDocumentUploadBtn.disabled = false;
   }
 }
 
@@ -6639,18 +6693,23 @@ async function deleteEarningsReviewDocument(documentId, fileName) {
     `Delete Earnings Document\n\nAre you sure you want to delete this document${fileName ? ` (${fileName})` : ''}? This action cannot be undone.`
   );
   if (!confirmed) return;
+  const operationContext = captureEarningsReviewOperationContext(
+    earningsReviewSelectedSymbol,
+    earningsReviewSelectedRecordId,
+  );
   earningsReviewDocumentsStatusEl.textContent = 'Deleting document…';
   earningsReviewDocumentsStatusEl.className = 'status';
   try {
-    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(earningsReviewSelectedRecordId)}/documents/${encodeURIComponent(documentId)}`, {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(operationContext.symbol)}/${encodeURIComponent(operationContext.reviewId)}/documents/${encodeURIComponent(documentId)}`, {
       method: 'DELETE',
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to delete earnings document.'));
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDocumentsStatusEl.textContent = 'Document deleted successfully.';
-    await refreshEarningsReviewListOnly();
-    await openEarningsReviewRecordDetail(earningsReviewSelectedSymbol, earningsReviewSelectedRecordId);
+    await refreshEarningsReviewOperationContext(operationContext);
   } catch (error) {
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDocumentsStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewDocumentsStatusEl.className = 'status error';
   }
@@ -6839,6 +6898,8 @@ function toggleEarningsReviewCreateForm(show) {
 
 async function createEarningsReviewRecord() {
   if (!earningsReviewSelectedSymbol) return;
+  const targetSymbol = earningsReviewSelectedSymbol;
+  const operationContext = captureEarningsReviewScreenContext();
   const payload = {
     fiscal_year: Number(earningsReviewCreateYearEl.value),
     fiscal_quarter: earningsReviewCreateQuarterEl.value,
@@ -6848,45 +6909,57 @@ async function createEarningsReviewRecord() {
   earningsReviewSymbolStatusEl.className = 'status';
   earningsReviewCreateSubmitBtn.disabled = true;
   try {
-    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}`, {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(targetSymbol)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(result, 'Unable to create earnings review record.'));
+    if (!earningsReviewScreenContextIsCurrent(operationContext)
+        || earningsReviewSelectedSymbol !== targetSymbol) return;
     toggleEarningsReviewCreateForm(false);
+    earningsReviewCreateSubmitBtn.disabled = false;
     await navigateToScreen({
       view: 'earnings-review',
-      detail: { kind: 'earnings-review', symbol: earningsReviewSelectedSymbol, reviewId: Number(result.item?.id) },
+      detail: { kind: 'earnings-review', symbol: targetSymbol, reviewId: Number(result.item?.id) },
     });
   } catch (error) {
+    if (!earningsReviewScreenContextIsCurrent(operationContext)
+        || earningsReviewSelectedSymbol !== targetSymbol) return;
     earningsReviewSymbolStatusEl.textContent = `Error: ${error.message}`;
     earningsReviewSymbolStatusEl.className = 'status error';
   } finally {
-    earningsReviewCreateSubmitBtn.disabled = false;
+    if (earningsReviewScreenContextIsCurrent(operationContext)
+        && earningsReviewSelectedSymbol === targetSymbol) earningsReviewCreateSubmitBtn.disabled = false;
   }
 }
 
 async function deleteEarningsReviewRecord({ reviewId, fiscalYear, fiscalQuarter }) {
   if (!earningsReviewSelectedSymbol || !Number.isFinite(reviewId)) return;
+  const targetSymbol = earningsReviewSelectedSymbol;
   const confirmed = window.confirm(
     `Delete Earnings Review\n\nAre you sure you want to delete this earnings review for FY${fiscalYear} ${fiscalQuarter}? This action cannot be undone.`
   );
   if (!confirmed) return;
+  const operationContext = captureEarningsReviewScreenContext();
   earningsReviewSymbolStatusEl.textContent = 'Deleting earnings review record…';
   earningsReviewSymbolStatusEl.className = 'status';
   try {
-    const response = await fetch(`/api/earnings-review/${encodeURIComponent(earningsReviewSelectedSymbol)}/${encodeURIComponent(reviewId)}`, {
+    const response = await fetch(`/api/earnings-review/${encodeURIComponent(targetSymbol)}/${encodeURIComponent(reviewId)}`, {
       method: 'DELETE',
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Failed to delete earnings review. Please try again.'));
+    if (!earningsReviewScreenContextIsCurrent(operationContext)
+        || earningsReviewSelectedSymbol !== targetSymbol) return;
     await navigateBack({
       view: 'earnings-review',
-      detail: { kind: 'earnings-symbol', symbol: earningsReviewSelectedSymbol },
+      detail: { kind: 'earnings-symbol', symbol: targetSymbol },
     });
   } catch (_error) {
+    if (!earningsReviewScreenContextIsCurrent(operationContext)
+        || earningsReviewSelectedSymbol !== targetSymbol) return;
     earningsReviewSymbolStatusEl.textContent = 'Failed to delete earnings review. Please try again.';
     earningsReviewSymbolStatusEl.className = 'status error';
   }
@@ -6970,6 +7043,7 @@ async function generateEarningsWatchpoints() {
   if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId) return;
   const targetSymbol = earningsReviewSelectedSymbol;
   const targetReviewId = earningsReviewSelectedRecordId;
+  const operationContext = captureEarningsReviewOperationContext(targetSymbol, targetReviewId);
   earningsReviewGenerateBtn.disabled = true;
   earningsReviewDetailMetaEl.textContent = `Generating earnings watchpoints for ${targetSymbol} ${targetReviewId}…`;
   earningsReviewDetailMetaEl.className = 'status';
@@ -6979,10 +7053,11 @@ async function generateEarningsWatchpoints() {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to generate earnings watchpoints.'));
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDetailMetaEl.textContent = 'Earnings watchpoints generated successfully.';
-    await refreshEarningsReviewListOnly();
-    await openEarningsReviewRecordDetail(targetSymbol, targetReviewId);
+    await refreshEarningsReviewOperationContext(operationContext);
   } catch (error) {
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
     earningsReviewDetailMetaEl.className = 'status error';
     earningsReviewGenerateBtn.disabled = false;
@@ -6993,6 +7068,7 @@ async function analyseEarningsWatchpoints() {
   if (!earningsReviewSelectedSymbol || !earningsReviewSelectedRecordId) return;
   const targetSymbol = earningsReviewSelectedSymbol;
   const targetReviewId = earningsReviewSelectedRecordId;
+  const operationContext = captureEarningsReviewOperationContext(targetSymbol, targetReviewId);
   earningsReviewAnalyseBtn.disabled = true;
   earningsReviewDetailMetaEl.textContent = `Analysing earnings watchpoints for ${targetSymbol} ${targetReviewId}…`;
   earningsReviewDetailMetaEl.className = 'status';
@@ -7002,10 +7078,11 @@ async function analyseEarningsWatchpoints() {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(extractErrorMessage(payload, 'Unable to analyse earnings watchpoints.'));
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDetailMetaEl.textContent = 'Earnings watchpoints analysed successfully.';
-    await refreshEarningsReviewListOnly();
-    await openEarningsReviewRecordDetail(targetSymbol, targetReviewId);
+    await refreshEarningsReviewOperationContext(operationContext);
   } catch (error) {
+    if (!earningsReviewOperationContextIsCurrent(operationContext)) return;
     earningsReviewDetailMetaEl.textContent = `Error: ${error.message}`;
     earningsReviewDetailMetaEl.className = 'status error';
     earningsReviewAnalyseBtn.disabled = false;

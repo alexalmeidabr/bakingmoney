@@ -220,6 +220,17 @@
         if (!target) return false;
         return this.navigate(target);
       },
+      captureContext: () => ({
+        revision: navigationRevision,
+        sequence: activeSequence,
+        screen: normalizeScreen(activeScreen),
+      }),
+      isCurrentContext(context) {
+        return Boolean(context)
+          && context.revision === navigationRevision
+          && context.sequence === activeSequence
+          && screensEqual(normalizeScreen(context.screen), activeScreen);
+      },
       currentScreen: () => activeScreen,
       currentSequence: () => activeSequence,
     };

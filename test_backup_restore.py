@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 import web_server
+import action_plan_prices
 
 
 class BackupRestoreValidationTests(unittest.TestCase):
@@ -57,6 +58,38 @@ class BackupRestoreValidationTests(unittest.TestCase):
                 copied_conn.close()
             self.assertEqual(row[0], "backup-test")
 
+    def test_backup_snapshot_preserves_distinct_contract_observations(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = os.path.join(tmpdir, "source.db")
+            destination_path = os.path.join(tmpdir, "snapshot.db")
+            with mock.patch.object(web_server, "DB_PATH", source_path):
+                web_server.init_db()
+            conn = web_server.sqlite3.connect(source_path)
+            try:
+                for contract_key, price in (("conid:111", 100), ("conid:222", 105)):
+                    action_plan_prices.persist_observation(conn, "A", "ABC", {
+                        "symbol": "ABC", "contract_key": contract_key, "price": price,
+                        "price_source": "last", "market_observed_at": "2026-11-22T10:00:00+00:00",
+                    })
+                action_plan_prices.save_contract_selection(
+                    conn, "A", "ABC", "conid:222", "STK", "USD",
+                    "2026-11-22T10:01:00+00:00",
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            web_server._create_db_backup_snapshot(source_path, destination_path)
+            copied = web_server.sqlite3.connect(destination_path)
+            try:
+                saved = action_plan_prices.load_observations(copied, "A")["ABC"]
+                selection = action_plan_prices.load_contract_selections(copied, "A")["ABC"]
+            finally:
+                copied.close()
+            self.assertEqual({("conid:111", 100), ("conid:222", 105)}, {
+                (row["contract_key"], row["price"]) for row in saved
+            })
+            self.assertEqual(selection["contract_key"], "conid:222")
+
     def test_build_backup_manifest_reports_env_flag(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "manifest.db")
@@ -106,6 +139,31 @@ class BackupRestoreValidationTests(unittest.TestCase):
             finally:
                 conn.close()
             self.assertIsNotNone(row)
+
+    def test_older_backup_without_contract_selections_validates_and_migrates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "older-contract-selection.db")
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+            conn = web_server.sqlite3.connect(db_path)
+            try:
+                conn.execute("DROP TABLE action_plan_contract_selections")
+                conn.commit()
+            finally:
+                conn.close()
+
+            web_server._validate_backup_db_file(db_path)
+            with mock.patch.object(web_server, "DB_PATH", db_path):
+                web_server.init_db()
+            conn = web_server.sqlite3.connect(db_path)
+            try:
+                table = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name='action_plan_contract_selections'"
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(table)
 
 
 if __name__ == "__main__":

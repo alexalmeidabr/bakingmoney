@@ -1,0 +1,549 @@
+"""Select and retain market observations shared by both Action Plan workspaces."""
+import math
+from datetime import datetime, timedelta, timezone
+
+BUY_ACTIONS = {"Strong Add", "Add", "Starter Buy"}
+SELL_ACTIONS = {"Sell", "Strong Sell", "Trim", "Strong Trim"}
+
+# Reliable market time determines recency. Source quality is only a fallback
+# when market times are equal or unavailable. Retrieval time is the final
+# deterministic tie-break between otherwise equivalent unknown-time quotes.
+SOURCE_QUALITY = {
+    "cached": 1,
+    "delayed_frozen": 2,
+    "frozen": 3,
+    "delayed": 4,
+    "live": 5,
+}
+UNKNOWN_CONTRACT_KEY = ""
+
+
+def _positive(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def _time(value):
+    try:
+        timestamp = datetime.fromisoformat(value) if isinstance(value, str) else value
+        if isinstance(timestamp, datetime) and timestamp.utcoffset() is not None:
+            return timestamp.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        pass
+    return None
+
+
+def _iso(value):
+    timestamp = _time(value)
+    return timestamp.isoformat() if timestamp else None
+
+
+def _source_kind(raw, source):
+    lowered = str(source or "").lower()
+    delayed = bool(raw.get("delayed") or "delay" in lowered)
+    closing = any(part in lowered for part in ("close", "prevclose", "previous_close"))
+    frozen = bool(raw.get("frozen") or "frozen" in lowered or closing)
+    cached = raw.get("price_status") == "cached_stale" or lowered == "cached" or lowered.startswith("cached_")
+    if cached:
+        return "cached", delayed, frozen
+    if delayed and frozen:
+        return "delayed_frozen", delayed, frozen
+    if delayed:
+        return "delayed", delayed, frozen
+    if frozen:
+        return "frozen", delayed, frozen
+    return "live", delayed, frozen
+
+
+def _observation(raw):
+    source = raw.get("market_data_source") or raw.get("price_source") or raw.get("source") or "cached"
+    bid, ask = _positive(raw.get("bid")), _positive(raw.get("ask"))
+    if bid is None or ask is None or ask < bid:
+        bid = ask = None
+    price = _positive(raw.get("price"))
+    derived_midpoint = price is None and bid is not None
+    if derived_midpoint:
+        price = bid + (ask - bid) / 2
+    if price is None:
+        return None
+
+    bid_at, ask_at = _time(raw.get("bid_tick_at")), _time(raw.get("ask_tick_at"))
+    explicit_market_time = _time(raw.get("market_observed_at")) or _time(raw.get("observed_at"))
+    # Side times describe a midpoint, never an independently selected Last.
+    reference_source = str(raw.get("price_source") or source).lower()
+    midpoint_source = derived_midpoint or "marketprice" in reference_source or "bid_ask" in reference_source
+    market_time = (min(bid_at, ask_at) if midpoint_source and bid is not None and bid_at and ask_at
+                   else explicit_market_time)
+    retrieved_time = (
+        _time(raw.get("retrieved_at"))
+        or _time(raw.get("price_retrieved_at"))
+        or _time(raw.get("refresh_at"))
+    )
+    if retrieved_time is None and explicit_market_time is None:
+        retrieved_time = _time(raw.get("price_last_successful_at"))
+    persisted_time = _time(raw.get("persisted_at"))
+    source_kind, delayed, frozen = _source_kind(raw, source)
+    acquisition_kind = raw.get("acquisition_kind")
+    if acquisition_kind not in {"streaming_live", "streaming_delayed", "snapshot"}:
+        acquisition_kind = None
+    market_iso = market_time.isoformat() if market_time else None
+    retrieved_iso = retrieved_time.isoformat() if retrieved_time else None
+    display_time = market_iso or retrieved_iso
+    timestamp_kind = "market_observation" if market_iso else "retrieval" if retrieved_iso else "unknown"
+    return dict(
+        price=price, price_source=source, source_kind=source_kind,
+        source_quality=SOURCE_QUALITY[source_kind], contract_key=raw.get("contract_key"),
+        security_type=raw.get("security_type") or raw.get("sec_type"),
+        currency=raw.get("currency"), acquisition_kind=acquisition_kind,
+        symbol=raw.get("symbol"), market_observed_at=market_iso, retrieved_at=retrieved_iso,
+        persisted_at=persisted_time.isoformat() if persisted_time else None,
+        price_timestamp_kind=timestamp_kind, price_last_successful_at=display_time,
+        bid=bid, ask=ask, bid_tick_at=bid_at.isoformat() if bid_at else None,
+        ask_tick_at=ask_at.isoformat() if ask_at else None, price_status=raw.get("price_status"),
+        delayed=delayed, frozen=frozen, price_warning=raw.get("price_warning"),
+        persisted=bool(raw.get("persisted")),
+    )
+
+
+def _rank(observation):
+    market_time = observation.get("market_observed_at")
+    proxy_time = observation.get("retrieved_at") if (
+        market_time is None
+        and observation.get("acquisition_kind") in {"streaming_live", "streaming_delayed"}
+    ) else None
+    effective_time = market_time or proxy_time
+    return (
+        effective_time is not None,
+        effective_time or "",
+        market_time is not None,
+        observation.get("source_quality", 0),
+        observation.get("bid") is not None,
+        observation.get("retrieved_at") or "",
+    )
+
+
+def _warning(item, now):
+    warnings = []
+    if item.get("price_warning"):
+        warnings.append(item["price_warning"])
+    source_kind = item.get("source_kind") or _source_kind(item, item.get("price_source"))[0]
+    delayed = bool(item.get("delayed") or "delay" in str(item.get("price_source") or "").lower())
+    frozen = bool(item.get("frozen") or "frozen" in str(item.get("price_source") or "").lower())
+    if delayed and frozen:
+        warnings.append("Delayed-frozen market data.")
+    elif delayed:
+        warnings.append("Delayed market data.")
+    elif frozen or source_kind == "frozen":
+        warnings.append("Frozen or closing market data.")
+    if item.get("persisted") or source_kind == "cached":
+        warnings.append("Using a saved market price.")
+
+    market_time = _time(item.get("market_observed_at"))
+    retrieved_time = _time(item.get("retrieved_at"))
+    if market_time is None:
+        if retrieved_time is None:
+            warnings.append("Market observation and retrieval times are unknown.")
+        elif item.get("acquisition_kind") == "streaming_live":
+            warnings.append(
+                f"Live market data was received at {retrieved_time.isoformat()}, but its exchange observation time is unknown; receipt time is used as a freshness proxy."
+            )
+        elif item.get("acquisition_kind") == "streaming_delayed":
+            warnings.append(
+                f"Delayed streaming market data was received at {retrieved_time.isoformat()}, but its exchange observation time is unknown; receipt time is used as a freshness proxy."
+            )
+        else:
+            warnings.append(f"Market observation time is unknown; quote retrieved at {retrieved_time.isoformat()}.")
+    age_time = market_time or retrieved_time
+    if age_time is not None and now - age_time > timedelta(minutes=5):
+        warnings.append("Last-known price may differ from the current market.")
+    return " ".join(dict.fromkeys(warnings)) or None
+
+
+def _instrument_metadata_matches(observation, expected_currency):
+    security_type = str(observation.get("security_type") or "").strip().upper()
+    currency = str(observation.get("currency") or "").strip().upper()
+    return (not security_type or security_type == "STK") and (
+        not currency or currency == expected_currency
+    )
+
+
+def resolve_price(position, analysis, observations=(), selected_contract=None):
+    position, analysis = position or {}, analysis or {}
+    symbol = position.get("symbol") or analysis.get("symbol")
+    position_contract = position.get("contract_key")
+    try:
+        raw_position_quantity = position.get("position")
+        position_quantity = (
+            0 if isinstance(raw_position_quantity, bool)
+            else float(raw_position_quantity or 0)
+        )
+    except (TypeError, ValueError, OverflowError):
+        position_quantity = 0
+    owned = math.isfinite(position_quantity) and position_quantity != 0
+    contract = position_contract if owned else None
+    owned_without_contract = owned and not contract
+    selected_contract = selected_contract or {}
+    selected_contract_key = selected_contract.get("contract_key") if not owned else None
+    expected_currency = str(
+        selected_contract.get("currency") or analysis.get("currency") or "USD"
+    ).strip().upper()
+    observations = list(observations or ())
+    candidates = []
+    for raw in [position, *observations]:
+        if not raw or (symbol and raw.get("symbol") and raw["symbol"] != symbol):
+            continue
+        if position.get("account_id") and raw.get("account_id") not in (None, position["account_id"]):
+            continue
+        if contract and raw.get("contract_key") != contract:
+            continue
+        if owned_without_contract and raw is not position:
+            continue
+        item = _observation(raw)
+        if item:
+            candidates.append((item, raw is position))
+    identity_warning = None
+    if not contract and not owned_without_contract:
+        if selected_contract_key:
+            candidates = [candidate for candidate in candidates
+                          if candidate[0].get("contract_key") == selected_contract_key
+                          and _instrument_metadata_matches(candidate[0], expected_currency)]
+            if not candidates:
+                identity_warning = (
+                    "The qualified contract has no usable matching price; unrelated contracts were ignored."
+                )
+        else:
+            known_contracts = {candidate[0].get("contract_key") for candidate in candidates
+                               if candidate[0].get("contract_key")}
+            if len(known_contracts) > 1:
+                candidates = []
+                identity_warning = (
+                    "Multiple contract identities are available and none is qualified; no contract price was selected."
+                )
+            elif len(known_contracts) == 1:
+                inferred_key = next(iter(known_contracts))
+                matching = [candidate for candidate in candidates
+                            if candidate[0].get("contract_key") == inferred_key]
+                candidates = [candidate for candidate in matching
+                              if _instrument_metadata_matches(candidate[0], expected_currency)]
+                if candidates:
+                    identity_warning = (
+                        "Contract identity is inferred, not verified, from the only compatible saved candidate."
+                    )
+                else:
+                    identity_warning = (
+                        "The only saved contract has incompatible instrument metadata; no contract price was selected."
+                    )
+            else:
+                candidates = [candidate for candidate in candidates
+                              if not candidate[0].get("contract_key")]
+    if candidates:
+        item, is_position = max(candidates, key=lambda candidate: _rank(candidate[0]))
+        status = item["price_status"] or ("cached_stale" if item["persisted"] else "tws_received")
+        warning = _warning(item, datetime.now(timezone.utc))
+        if owned_without_contract:
+            identity_warning = "Owned position contract identity is unknown; contract-specific saved prices were not used."
+            warning = " ".join(part for part in (warning, identity_warning) if part)
+        elif not contract and not item.get("contract_key"):
+            identity_warning = "Contract identity is unknown; this saved price was selected without an owned-contract match."
+            warning = " ".join(part for part in (warning, identity_warning) if part)
+        elif identity_warning:
+            warning = " ".join(part for part in (warning, identity_warning) if part)
+        return dict(
+            price=item["price"], price_source=item["price_source"], price_status=status,
+            market_observed_at=item["market_observed_at"], retrieved_at=item["retrieved_at"],
+            persisted_at=item["persisted_at"], price_timestamp_kind=item["price_timestamp_kind"],
+            price_last_successful_at=item["price_last_successful_at"],
+            price_warning=warning,
+            price_sizing_source="position_quote" if is_position else "market_observation",
+            contract_key=item["contract_key"], acquisition_kind=item["acquisition_kind"],
+            manual_quote_proof=item if item["bid"] else None,
+        )
+    price = _positive(analysis.get("current_price"))
+    if price:
+        return dict(
+            price=price, price_source="analysis_fallback", price_status=position.get("price_status"),
+            market_observed_at=None, retrieved_at=None, persisted_at=None,
+            price_timestamp_kind="unknown", price_last_successful_at=None,
+            price_sizing_source="analysis_price_fallback",
+            acquisition_kind=None,
+            price_warning=" ".join(part for part in (
+                "Using saved analysis price because no usable IBKR market observation is available.",
+                identity_warning,
+            ) if part),
+        )
+    return dict(
+        price=None, price_source=None, price_status="unavailable",
+        market_observed_at=None, retrieved_at=None, persisted_at=None,
+        price_timestamp_kind="unknown", price_last_successful_at=None,
+        price_warning=" ".join(part for part in (
+            "No usable market price is available for Action Plan sizing.", identity_warning,
+        ) if part),
+        price_sizing_source="unavailable",
+        acquisition_kind=None,
+    )
+
+
+def evaluate_trigger(row, preference, now=None):
+    row, preference = row or {}, preference or {}
+    action = row.get("recommended_action") or row.get("action")
+    buy = action in BUY_ACTIONS
+    direction = "at_or_below" if buy else preference.get("sell_trigger_direction") or "at_or_above"
+    trigger = _positive(preference.get("buy_trigger_price" if buy else "sell_trigger_price"))
+    if not buy and action not in SELL_ACTIONS:
+        trigger = None
+    result = dict(
+        status="no_manual_trigger", manual_trigger_price=trigger,
+        manual_trigger_direction=direction if trigger else None, verified_price=None,
+        verified_quote_at=None, verified_market_observed_at=None, verified_retrieved_at=None,
+        verified_quote_time_kind="unknown", verified_quote_expires_at=None,
+        verification_reason=None, price_source=None,
+    )
+    if trigger is None:
+        return result
+
+    price = _positive(row.get("current_price"))
+    market_observed_at = _iso(row.get("market_observed_at"))
+    retrieved_at = _iso(row.get("retrieved_at")) or (
+        _iso(row.get("price_last_successful_at")) if market_observed_at is None else None
+    )
+    source = row.get("price_source")
+    selected = _observation(row.get("manual_quote_proof") or {})
+    row_observation = _observation({
+        **row, "price": price, "market_observed_at": market_observed_at, "retrieved_at": retrieved_at,
+    }) if price is not None else None
+    if selected is None or row_observation is None:
+        current_proof = selected is not None
+    elif selected.get("bid_tick_at") and selected.get("ask_tick_at"):
+        side_time = min(_time(selected["bid_tick_at"]), _time(selected["ask_tick_at"]))
+        reference_market = _time(row_observation.get("market_observed_at"))
+        reference_receipt = _time(row_observation.get("retrieved_at")) if (
+            row_observation.get("acquisition_kind") in {"streaming_live", "streaming_delayed"}
+        ) else None
+        # A Last's own market time does not date its accompanying bid/ask.
+        # Receipt can lag current-acquisition side events by milliseconds.
+        if reference_market:
+            current_proof = side_time >= reference_market
+        elif reference_receipt:
+            current_proof = side_time >= reference_receipt - timedelta(seconds=1)
+        else:
+            current_proof = True
+    elif selected.get("market_observed_at") and row_observation.get("market_observed_at"):
+        current_proof = selected["market_observed_at"] >= row_observation["market_observed_at"]
+    elif row_observation.get("market_observed_at"):
+        current_proof = False
+    elif selected.get("market_observed_at"):
+        current_proof = True
+    else:
+        current_proof = _rank(selected) >= _rank(row_observation)
+    if selected and selected["bid"] and current_proof and all(
+            not row.get(key) or not selected.get(key) or row[key] == selected[key]
+            for key in ("contract_key", "symbol")):
+        side = "ask" if buy else "bid"
+        price = selected[side]
+        market_observed_at = selected[side + "_tick_at"] or selected["market_observed_at"]
+        retrieved_at = selected["retrieved_at"]
+        source = f"{selected['price_source']} ({side})"
+    if price is None:
+        result.update(status="price_unavailable", verification_reason="No usable market price is available.")
+        return result
+    reached = price <= trigger if direction == "at_or_below" else price >= trigger
+    timestamp_kind = "market_observation" if market_observed_at else "retrieval" if retrieved_at else "unknown"
+    observed_at = market_observed_at or retrieved_at
+    warning = row.get("price_warning")
+    if not warning:
+        warning = _warning({
+            "price_source": source or "cached", "market_observed_at": market_observed_at,
+            "retrieved_at": retrieved_at, "price_status": row.get("position_price_status"),
+        }, now or datetime.now(timezone.utc))
+    result.update(
+        status="eligible" if reached else "waiting", verified_price=price,
+        verified_quote_at=observed_at, verified_market_observed_at=market_observed_at,
+        verified_retrieved_at=retrieved_at, verified_quote_time_kind=timestamp_kind,
+        price_source=source, verification_reason=warning,
+    )
+    return result
+
+
+def _ensure_column(conn, name, definition):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(action_plan_price_observations)")}
+    if name not in columns:
+        conn.execute(f"ALTER TABLE action_plan_price_observations ADD COLUMN {name} {definition}")
+
+
+def _create_observation_table(conn):
+    conn.execute("""
+        CREATE TABLE action_plan_price_observations (
+            account_id TEXT NOT NULL, symbol TEXT NOT NULL, contract_key TEXT NOT NULL DEFAULT '',
+            price REAL NOT NULL CHECK(price > 0), price_source TEXT NOT NULL,
+            price_last_successful_at TEXT, market_observed_at TEXT, retrieved_at TEXT,
+            persisted_at TEXT, bid REAL, ask REAL,
+            bid_tick_at TEXT, ask_tick_at TEXT, delayed INTEGER NOT NULL,
+            security_type TEXT, currency TEXT, acquisition_kind TEXT,
+            price_warning TEXT, PRIMARY KEY(account_id, symbol, contract_key)
+        )
+    """)
+
+
+def _primary_key_columns(conn):
+    rows = conn.execute("PRAGMA table_info(action_plan_price_observations)").fetchall()
+    return [row[1] for row in sorted(rows, key=lambda row: row[5]) if row[5]]
+
+
+def _migrate_contract_identity_key(conn):
+    savepoint = "action_plan_price_contract_migration"
+    legacy_table = "action_plan_price_observations_legacy_contract_key"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (legacy_table,)).fetchone():
+            raise RuntimeError(f"Unexpected leftover migration table: {legacy_table}")
+        legacy_count = conn.execute("SELECT COUNT(*) FROM action_plan_price_observations").fetchone()[0]
+        conn.execute(f"ALTER TABLE action_plan_price_observations RENAME TO {legacy_table}")
+        _create_observation_table(conn)
+        conn.execute(f"""
+            INSERT INTO action_plan_price_observations
+            (account_id,symbol,contract_key,price,price_source,price_last_successful_at,
+             market_observed_at,retrieved_at,persisted_at,bid,ask,bid_tick_at,ask_tick_at,delayed,
+             security_type,currency,acquisition_kind,price_warning)
+            SELECT account_id,symbol,COALESCE(NULLIF(TRIM(contract_key), ''), ''),price,price_source,
+                   price_last_successful_at,market_observed_at,retrieved_at,persisted_at,
+                   bid,ask,bid_tick_at,ask_tick_at,delayed,security_type,currency,acquisition_kind,price_warning
+            FROM {legacy_table}
+        """)
+        migrated_count = conn.execute("SELECT COUNT(*) FROM action_plan_price_observations").fetchone()[0]
+        if migrated_count != legacy_count:
+            raise RuntimeError("action_plan_price_observations migration row count mismatch")
+        conn.execute(f"DROP TABLE {legacy_table}")
+    except Exception:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        raise
+    conn.execute(f"RELEASE {savepoint}")
+
+
+def init_schema(conn):
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='action_plan_price_observations'"
+    ).fetchone()
+    if not exists:
+        _create_observation_table(conn)
+    _ensure_column(conn, "market_observed_at", "TEXT")
+    _ensure_column(conn, "retrieved_at", "TEXT")
+    _ensure_column(conn, "persisted_at", "TEXT")
+    _ensure_column(conn, "security_type", "TEXT")
+    _ensure_column(conn, "currency", "TEXT")
+    _ensure_column(conn, "acquisition_kind", "TEXT")
+    if _primary_key_columns(conn) != ["account_id", "symbol", "contract_key"]:
+        _migrate_contract_identity_key(conn)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS action_plan_contract_selections (
+            account_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            contract_key TEXT NOT NULL,
+            security_type TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            qualified_at TEXT NOT NULL,
+            PRIMARY KEY(account_id, symbol)
+        )
+    """)
+
+
+def save_contract_selection(conn, account_id, symbol, contract_key, security_type, currency, qualified_at):
+    account_id = str(account_id or "").strip()
+    symbol = str(symbol or "").strip().upper()
+    contract_key = str(contract_key or "").strip()
+    security_type = str(security_type or "").strip().upper()
+    currency = str(currency or "").strip().upper()
+    qualified_at = _iso(qualified_at)
+    if not account_id or not symbol or not contract_key or security_type != "STK" or not currency or not qualified_at:
+        return False
+    cursor = conn.execute("""
+        INSERT INTO action_plan_contract_selections
+        (account_id, symbol, contract_key, security_type, currency, qualified_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, symbol) DO UPDATE SET
+            contract_key=excluded.contract_key,
+            security_type=excluded.security_type,
+            currency=excluded.currency,
+            qualified_at=excluded.qualified_at
+        WHERE excluded.qualified_at >= action_plan_contract_selections.qualified_at
+    """, (account_id, symbol, contract_key, security_type, currency, qualified_at))
+    return cursor.rowcount > 0
+
+
+def load_contract_selections(conn, account_id):
+    cursor = conn.execute("""
+        SELECT symbol, contract_key, security_type, currency, qualified_at
+        FROM action_plan_contract_selections
+        WHERE account_id = ?
+        ORDER BY symbol
+    """, (account_id,))
+    columns = [field[0] for field in cursor.description]
+    return {row[0]: dict(zip(columns, row)) for row in cursor}
+
+
+def _row_dict(cursor, row):
+    return dict(zip((field[0] for field in cursor.description), row))
+
+
+def persist_observation(conn, account_id, symbol, observation):
+    """Atomically retain a successful refresh. The caller owns the transaction."""
+    symbol = (symbol or "").strip().upper()
+    if not account_id or not symbol or not observation or observation.get("symbol") not in (None, symbol):
+        return False
+    if observation.get("account_id") not in (None, account_id):
+        return False
+    item = _observation(observation)
+    if item is None:
+        return False
+
+    contract_key = str(item.get("contract_key") or UNKNOWN_CONTRACT_KEY).strip()
+    cursor = conn.execute(
+        "SELECT * FROM action_plan_price_observations WHERE account_id=? AND symbol=? AND contract_key=?",
+        (account_id, symbol, contract_key),
+    )
+    existing_row = cursor.fetchone()
+    if existing_row is not None:
+        existing = _observation({**_row_dict(cursor, existing_row), "persisted": True})
+        if existing is not None and _rank(item) <= _rank(existing):
+            return False
+
+    values = dict(item, account_id=account_id, symbol=symbol, contract_key=contract_key,
+                  persisted_at=datetime.now(timezone.utc).isoformat())
+    conn.execute("""
+        INSERT INTO action_plan_price_observations
+        (account_id,symbol,contract_key,price,price_source,price_last_successful_at,
+         market_observed_at,retrieved_at,persisted_at,bid,ask,bid_tick_at,ask_tick_at,delayed,
+         security_type,currency,acquisition_kind,price_warning)
+        VALUES (:account_id,:symbol,:contract_key,:price,:price_source,:price_last_successful_at,
+                :market_observed_at,:retrieved_at,:persisted_at,:bid,:ask,:bid_tick_at,:ask_tick_at,:delayed,
+                :security_type,:currency,:acquisition_kind,:price_warning)
+        ON CONFLICT(account_id,symbol,contract_key) DO UPDATE SET
+            price=excluded.price, price_source=excluded.price_source,
+            price_last_successful_at=excluded.price_last_successful_at,
+            market_observed_at=excluded.market_observed_at, retrieved_at=excluded.retrieved_at,
+            persisted_at=excluded.persisted_at, bid=excluded.bid, ask=excluded.ask,
+            bid_tick_at=excluded.bid_tick_at, ask_tick_at=excluded.ask_tick_at,
+            delayed=excluded.delayed, security_type=excluded.security_type,
+            currency=excluded.currency, acquisition_kind=excluded.acquisition_kind,
+            price_warning=excluded.price_warning
+    """, values)
+    return True
+
+
+def load_observations(conn, account_id):
+    cursor = conn.execute(
+        "SELECT * FROM action_plan_price_observations WHERE account_id=? ORDER BY symbol, contract_key",
+        (account_id,),
+    )
+    columns = [field[0] for field in cursor.description]
+    grouped = {}
+    for row in cursor:
+        item = dict(zip(columns, row), persisted=True)
+        item["contract_key"] = item.get("contract_key") or None
+        grouped.setdefault(item["symbol"], []).append(item)
+    return grouped

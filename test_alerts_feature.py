@@ -2008,7 +2008,7 @@ class AlertsUiStructureTests(unittest.TestCase):
         self.assertIn("openAnalysisDetailForSymbol(selectedActionPlanDetail.symbol, { origin: 'action_plan' })", js)
         self.assertIn("analysisDetailOrigin === 'action_plan'", js)
         self.assertIn('← Back to Action Plan', js)
-        self.assertIn("setView('action-plan', { skipLoad: true })", js)
+        self.assertIn("setView(simulatorActive ? 'action-plan-simulator' : 'action-plan', { skipLoad: true })", js)
         self.assertIn('.action-plan-bucket-table', css)
         self.assertIn('.action-plan-tabs', css)
 

@@ -61,3 +61,4 @@ cover/
 # OS / editor
 .DS_Store
 .vscode/
+.worktrees/
